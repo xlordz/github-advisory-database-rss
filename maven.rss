@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/maven.rss</id>
     <title>Security Advisory for Java artifacts hosted at the Maven central repository</title>
-    <updated>2024-11-12T19:01:14.686Z</updated>
+    <updated>2024-11-12T20:01:24.391Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Amaven"/>
     <subtitle>Security Advisory for Java artifacts hosted at the Maven central repository on GitHub</subtitle>
@@ -11,6 +11,84 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[io.netty:netty-common] Denial of Service attack on windows app using netty]]></title>
+        <id>https://github.com/advisories/GHSA-xq3w-v528-46rv</id>
+        <link href="https://github.com/advisories/GHSA-xq3w-v528-46rv"/>
+        <updated>2024-11-12T19:53:19.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An unsafe reading of environment file could potentially cause a denial of service in Netty.
+When loaded on an Windows application, Netty attemps to load a file that does not exist. If an attacker creates such a large file, the Netty application crash.</p>
+<h3 id="details">Details</h3>
+<p>When the library netty is loaded in a java windows application, the library tries to identify the system environnement in which it is executed.</p>
+<p>At this stage, Netty tries to load both <code>/etc/os-release</code> and <code>/usr/lib/os-release</code> even though it is in a Windows environment. </p>
+<img src="https://github.com/user-attachments/assets/9466b181-9394-45a3-b0e3-1dcf105def59" alt="1" width="364">
+
+<p>If netty finds this files, it reads them and loads them into memory.</p>
+<p>By default :</p>
+<ul>
+<li>The JVM maximum memory size is set to 1 GB,</li>
+<li>A non-privileged user can create a directory at <code>C:\</code> and create files within it.</li>
+</ul>
+<img src="https://github.com/user-attachments/assets/43b359a2-5871-4592-ae2b-ffc40ac76831" alt="2" width="340">
+
+<img src="https://github.com/user-attachments/assets/ad5c6eed-451c-4513-92d5-ba0eee7715c1" alt="3" width="523">
+
+<p>the source code identified :
+<a href="https://github.com/netty/netty/blob/4.1/common/src/main/java/io/netty/util/internal/PlatformDependent.java">https://github.com/netty/netty/blob/4.1/common/src/main/java/io/netty/util/internal/PlatformDependent.java</a></p>
+<p>Despite the implementation of the function <code>normalizeOs()</code> the source code not verify the OS before reading <code>C:\etc\os-release</code> and <code>C:\usr\lib\os-release</code>.</p>
+<h3 id="poc">PoC</h3>
+<p>Create a file larger than 1 GB of data in <code>C:\etc\os-release</code> or <code>C:\usr\lib\os-release</code> on a Windows environnement and start your Netty application.</p>
+<p>To observe what the application does with the file, the security analyst used "Process Monitor" from the "Windows SysInternals" suite. (<a href="https://learn.microsoft.com/en-us/sysinternals/">https://learn.microsoft.com/en-us/sysinternals/</a>)</p>
+<pre><code>cd C:\etc
+fsutil file createnew os-release 3000000000
+</code></pre>
+<img src="https://github.com/user-attachments/assets/39df22a3-462b-4fd0-af9a-aa30077ec08f" alt="4" width="519">
+
+<img src="https://github.com/user-attachments/assets/129dbd50-fc36-4da5-8eb1-582123fb528f" alt="5" width="517">
+
+<p>The source code used is the Netty website code example : <a href="https://netty.io/4.1/xref/io/netty/example/echo/package-summary.html">Echo ‐ the very basic client and server</a>.</p>
+<p>The vulnerability was tested on the 4.1.112.Final version.</p>
+<p>The security analyst tried the same technique for <code>C:\proc\sys\net\core\somaxconn</code> with a lot of values to impact Netty but the only things that works is the "larger than 1 GB file" technique. <a href="https://github.com/netty/netty/blob/c0fdb8e9f8f256990e902fcfffbbe10754d0f3dd/common/src/main/java/io/netty/util/NetUtil.java#L186">https://github.com/netty/netty/blob/c0fdb8e9f8f256990e902fcfffbbe10754d0f3dd/common/src/main/java/io/netty/util/NetUtil.java#L186</a></p>
+<h3 id="impact">Impact</h3>
+<p>By loading the "file larger than 1 GB" into the memory, the Netty library exceeds the JVM memory limit and causes a crash in the java Windows application.</p>
+<p>This behaviour occurs 100% of the time in both Server mode and Client mode if the large file exists.</p>
+<p>Client mode :</p>
+<img src="https://github.com/user-attachments/assets/f8fe1ed0-1a42-4490-b9ed-dbc9af7804be" alt="6" width="449">
+
+<p>Server mode :</p>
+<img src="https://github.com/user-attachments/assets/b34b42bd-4fbd-4170-b93a-d29ba87b88eb" alt="7" width="464">
+
+<p>somaxconn :</p>
+<img src="https://github.com/user-attachments/assets/0656b3bb-32c6-4ae2-bff7-d93babba08a3" alt="8" width="532">
+
+<h3 id="severity">Severity</h3>
+<ul>
+<li>Attack vector : "Local" because the attacker needs to be on the system where the Netty application is running.</li>
+<li>Attack complexity : "Low" because the attacker only need to create a massive file (regardless of its contents).</li>
+<li>Privileges required : "Low" because the attacker requires a user account to exploit the vulnerability.</li>
+<li>User intercation : "None" because the administrator don't need to accidentally click anywhere to trigger the vulnerability. Furthermore, the exploitation works with defaults windows/AD settings.</li>
+<li>Scope : "Unchanged" because only Netty is affected by the vulnerability.</li>
+<li>Confidentiality : "None" because no data is exposed through exploiting the vulnerability.</li>
+<li>Integrity : "None" because the explotation of the vulnerability does not allow editing, deleting or adding data elsewhere.</li>
+<li>Availability : "High" because the exploitation of this vulnerability crashes the entire java application.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/netty/netty/security/advisories/GHSA-xq3w-v528-46rv">https://github.com/netty/netty/security/advisories/GHSA-xq3w-v528-46rv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-47535">https://nvd.nist.gov/vuln/detail/CVE-2024-47535</a></li>
+<li><a href="https://github.com/netty/netty/commit/fbf7a704a82e7449b48bd0bbb679f5661c6d61a3">https://github.com/netty/netty/commit/fbf7a704a82e7449b48bd0bbb679f5661c6d61a3</a></li>
+<li><a href="https://github.com/advisories/GHSA-xq3w-v528-46rv">https://github.com/advisories/GHSA-xq3w-v528-46rv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xq3w-v528-46rv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-12T19:53:17.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[org.webjars.npm:jsonpath-plus] JSONPath Plus Remote Code Execution (RCE) Vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-pppg-cpfq-h7wr</id>
@@ -43,7 +121,7 @@
         <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.dstu2016may] XXE vulnerability in XSLT parsing in `org.hl7.fhir.core`]]></title>
         <id>https://github.com/advisories/GHSA-gr3c-q7xf-47vh</id>
         <link href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh"/>
-        <updated>2024-11-09T14:22:22.000Z</updated>
+        <updated>2024-11-12T19:23:19.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>XSLT parsing performed by various components are vulnerable to XML external entity injections. A processed XML file with a malicious DTD tag (  ]&gt; could produce XML containing data from the host system. This impacts use cases where org.hl7.fhir.core is being used to within a host where external clients can submit XML.</p>
 <h3 id="details">Details</h3>
@@ -54,6 +132,12 @@
 <h3 id="references-1">References</h3>
 <ul>
 <li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52007">https://nvd.nist.gov/vuln/detail/CVE-2024-52007</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/issues/1571">https://github.com/hapifhir/org.hl7.fhir.core/issues/1571</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/pull/1717">https://github.com/hapifhir/org.hl7.fhir.core/pull/1717</a></li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j">https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j</a></li>
+<li><a href="https://cwe.mitre.org/data/definitions/611.html">https://cwe.mitre.org/data/definitions/611.html</a></li>
 <li><a href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/advisories/GHSA-gr3c-q7xf-47vh</a></li>
 </ul>
 ]]></content>
@@ -69,7 +153,7 @@
         <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.utilities] XXE vulnerability in XSLT parsing in `org.hl7.fhir.core`]]></title>
         <id>https://github.com/advisories/GHSA-gr3c-q7xf-47vh</id>
         <link href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh"/>
-        <updated>2024-11-09T14:22:22.000Z</updated>
+        <updated>2024-11-12T19:23:19.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>XSLT parsing performed by various components are vulnerable to XML external entity injections. A processed XML file with a malicious DTD tag (  ]&gt; could produce XML containing data from the host system. This impacts use cases where org.hl7.fhir.core is being used to within a host where external clients can submit XML.</p>
 <h3 id="details">Details</h3>
@@ -80,6 +164,12 @@
 <h3 id="references-1">References</h3>
 <ul>
 <li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52007">https://nvd.nist.gov/vuln/detail/CVE-2024-52007</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/issues/1571">https://github.com/hapifhir/org.hl7.fhir.core/issues/1571</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/pull/1717">https://github.com/hapifhir/org.hl7.fhir.core/pull/1717</a></li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j">https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j</a></li>
+<li><a href="https://cwe.mitre.org/data/definitions/611.html">https://cwe.mitre.org/data/definitions/611.html</a></li>
 <li><a href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/advisories/GHSA-gr3c-q7xf-47vh</a></li>
 </ul>
 ]]></content>
@@ -95,7 +185,7 @@
         <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.r5] XXE vulnerability in XSLT parsing in `org.hl7.fhir.core`]]></title>
         <id>https://github.com/advisories/GHSA-gr3c-q7xf-47vh</id>
         <link href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh"/>
-        <updated>2024-11-09T14:22:22.000Z</updated>
+        <updated>2024-11-12T19:23:19.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>XSLT parsing performed by various components are vulnerable to XML external entity injections. A processed XML file with a malicious DTD tag (  ]&gt; could produce XML containing data from the host system. This impacts use cases where org.hl7.fhir.core is being used to within a host where external clients can submit XML.</p>
 <h3 id="details">Details</h3>
@@ -106,6 +196,12 @@
 <h3 id="references-1">References</h3>
 <ul>
 <li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52007">https://nvd.nist.gov/vuln/detail/CVE-2024-52007</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/issues/1571">https://github.com/hapifhir/org.hl7.fhir.core/issues/1571</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/pull/1717">https://github.com/hapifhir/org.hl7.fhir.core/pull/1717</a></li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j">https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j</a></li>
+<li><a href="https://cwe.mitre.org/data/definitions/611.html">https://cwe.mitre.org/data/definitions/611.html</a></li>
 <li><a href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/advisories/GHSA-gr3c-q7xf-47vh</a></li>
 </ul>
 ]]></content>
@@ -121,7 +217,7 @@
         <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.r4b] XXE vulnerability in XSLT parsing in `org.hl7.fhir.core`]]></title>
         <id>https://github.com/advisories/GHSA-gr3c-q7xf-47vh</id>
         <link href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh"/>
-        <updated>2024-11-09T14:22:22.000Z</updated>
+        <updated>2024-11-12T19:23:19.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>XSLT parsing performed by various components are vulnerable to XML external entity injections. A processed XML file with a malicious DTD tag (  ]&gt; could produce XML containing data from the host system. This impacts use cases where org.hl7.fhir.core is being used to within a host where external clients can submit XML.</p>
 <h3 id="details">Details</h3>
@@ -132,6 +228,12 @@
 <h3 id="references-1">References</h3>
 <ul>
 <li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52007">https://nvd.nist.gov/vuln/detail/CVE-2024-52007</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/issues/1571">https://github.com/hapifhir/org.hl7.fhir.core/issues/1571</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/pull/1717">https://github.com/hapifhir/org.hl7.fhir.core/pull/1717</a></li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j">https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j</a></li>
+<li><a href="https://cwe.mitre.org/data/definitions/611.html">https://cwe.mitre.org/data/definitions/611.html</a></li>
 <li><a href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/advisories/GHSA-gr3c-q7xf-47vh</a></li>
 </ul>
 ]]></content>
@@ -147,7 +249,7 @@
         <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.r4] XXE vulnerability in XSLT parsing in `org.hl7.fhir.core`]]></title>
         <id>https://github.com/advisories/GHSA-gr3c-q7xf-47vh</id>
         <link href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh"/>
-        <updated>2024-11-09T14:22:22.000Z</updated>
+        <updated>2024-11-12T19:23:19.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>XSLT parsing performed by various components are vulnerable to XML external entity injections. A processed XML file with a malicious DTD tag (  ]&gt; could produce XML containing data from the host system. This impacts use cases where org.hl7.fhir.core is being used to within a host where external clients can submit XML.</p>
 <h3 id="details">Details</h3>
@@ -158,6 +260,12 @@
 <h3 id="references-1">References</h3>
 <ul>
 <li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52007">https://nvd.nist.gov/vuln/detail/CVE-2024-52007</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/issues/1571">https://github.com/hapifhir/org.hl7.fhir.core/issues/1571</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/pull/1717">https://github.com/hapifhir/org.hl7.fhir.core/pull/1717</a></li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j">https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j</a></li>
+<li><a href="https://cwe.mitre.org/data/definitions/611.html">https://cwe.mitre.org/data/definitions/611.html</a></li>
 <li><a href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/advisories/GHSA-gr3c-q7xf-47vh</a></li>
 </ul>
 ]]></content>
@@ -173,7 +281,7 @@
         <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.dstu3] XXE vulnerability in XSLT parsing in `org.hl7.fhir.core`]]></title>
         <id>https://github.com/advisories/GHSA-gr3c-q7xf-47vh</id>
         <link href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh"/>
-        <updated>2024-11-09T14:22:22.000Z</updated>
+        <updated>2024-11-12T19:23:19.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>XSLT parsing performed by various components are vulnerable to XML external entity injections. A processed XML file with a malicious DTD tag (  ]&gt; could produce XML containing data from the host system. This impacts use cases where org.hl7.fhir.core is being used to within a host where external clients can submit XML.</p>
 <h3 id="details">Details</h3>
@@ -184,6 +292,12 @@
 <h3 id="references-1">References</h3>
 <ul>
 <li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-gr3c-q7xf-47vh</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf">https://github.com/hapifhir/org.hl7.fhir.core/security/advisories/GHSA-6cr6-ph3p-f5rf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52007">https://nvd.nist.gov/vuln/detail/CVE-2024-52007</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/issues/1571">https://github.com/hapifhir/org.hl7.fhir.core/issues/1571</a></li>
+<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/pull/1717">https://github.com/hapifhir/org.hl7.fhir.core/pull/1717</a></li>
+<li><a href="https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j">https://cheatsheetseries.owasp.org/cheatsheets/XML_External_Entity_Prevention_Cheat_Sheet.html#jaxp-documentbuilderfactory-saxparserfactory-and-dom4j</a></li>
+<li><a href="https://cwe.mitre.org/data/definitions/611.html">https://cwe.mitre.org/data/definitions/611.html</a></li>
 <li><a href="https://github.com/advisories/GHSA-gr3c-q7xf-47vh">https://github.com/advisories/GHSA-gr3c-q7xf-47vh</a></li>
 </ul>
 ]]></content>
@@ -535,28 +649,5 @@
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2024-10-18T06:30:32.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[ca.uhn.hapi.fhir:org.hl7.fhir.validation] HAPI FHIR XML External Entity (XXE) vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-4cf2-cxp3-rjr7</id>
-        <link href="https://github.com/advisories/GHSA-4cf2-cxp3-rjr7"/>
-        <updated>2024-11-06T23:38:38.000Z</updated>
-        <content type="html"><![CDATA[<p>An XML External Entity (XXE) vulnerability in HAPI FHIR before v6.4.0 allows attackers to access sensitive information or execute arbitrary code via supplying a crafted request containing malicious XML entities.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-51132">https://nvd.nist.gov/vuln/detail/CVE-2024-51132</a></li>
-<li><a href="https://github.com/JAckLosingHeart/CVE-2024-51132-POC">https://github.com/JAckLosingHeart/CVE-2024-51132-POC</a></li>
-<li><a href="https://github.com/hapifhir/org.hl7.fhir.core">https://github.com/hapifhir/org.hl7.fhir.core</a></li>
-<li><a href="https://github.com/hapifhir/org.hl7.fhir.core/commit/7ede053a5fca50cc2802884c661a241d51703a67">https://github.com/hapifhir/org.hl7.fhir.core/commit/7ede053a5fca50cc2802884c661a241d51703a67</a></li>
-<li><a href="https://github.com/advisories/GHSA-4cf2-cxp3-rjr7">https://github.com/advisories/GHSA-4cf2-cxp3-rjr7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4cf2-cxp3-rjr7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-05T18:32:11.000Z</published>
     </entry>
 </feed>
