@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/maven.rss</id>
     <title>Security Advisory for Java artifacts hosted at the Maven central repository</title>
-    <updated>2024-12-05T22:01:22.285Z</updated>
+    <updated>2024-12-05T23:01:24.039Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Amaven"/>
     <subtitle>Security Advisory for Java artifacts hosted at the Maven central repository on GitHub</subtitle>
@@ -11,6 +11,74 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[dev.sigstore:sigstore-java] sigstore-java has a vulnerability with bundle verification]]></title>
+        <id>https://github.com/advisories/GHSA-jp26-88mw-89qr</id>
+        <link href="https://github.com/advisories/GHSA-jp26-88mw-89qr"/>
+        <updated>2024-12-05T22:22:50.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>sigstore-java has insufficient verification for a situation where a bundle provides a invalid signature for a checkpoint.</p>
+<h3 id="impact">Impact</h3>
+<p>This bug impacts clients using any variation of KeylessVerifier.verify()</p>
+<p>Currently checkpoints are only used to ensure the root hash of an inclusion proof was provided by the log in question. Failing to validate that means a bundle may provide an inclusion proof that doesn't actually correspond to the log in question. This may eventually lead a monitor/witness being unable to detect when a compromised logs are providing different views of themselves to different clients.</p>
+<p>There are other mechanisms right now that mitigate this, such as the signed entry timestamp. Sigstore-java currently requires a valid signed entry timestamp. By correctly verifying the signed entry timestamp we can make certain assertions about the log signing the log entry (like the log was aware of the artifact signing event and signed it). Therefore the impact on clients that are not monitors/witnesses is very low.</p>
+<p>All cryptographic materials and identity information in the bundle must still be verified for the verification to pass. A valid signed entry timestamp is still required for verification to pass.</p>
+<p>sigstore-gradle-plugin and sigstore-maven-plugin are not affected by this as they only provide signing functionality.</p>
+<h3 id="steps-to-reproduce">Steps To Reproduce</h3>
+<p>Build the java sigstore-cli at v1.1.0</p>
+<pre><code class="language-shell">git clone --branch v1.1.0 git@github.com:sigstore/sigstore-java
+cd sigstore-java
+./gradlew :sigstore-cli:build
+tar -xf sigstore-cli/build/distributions/sigstore-cli-1.1.0-SNAPSHOT.tar --strip-components 1
+</code></pre>
+<p>Create some random blob and sign it</p>
+<pre><code class="language-shell">dd bs=1 count=50 &lt;/dev/urandom &gt; blob
+./bin/sigstore-cli sign --bundle=blob.sigstore.json blob
+</code></pre>
+<p>Modify the checkpoint signature on the bundle, this is the last base64 section in the checkpoint, the following diff just swaps changes the last 3 base64 characters to aaa.</p>
+<pre><code class="language-diff">"checkpoint": {
++    "envelope": "rekor.sigstore.dev - 1193050959916656506\n29874050\nhnEOPEa6SDzqJDydU+J96TQyfYfqEpsGg0aVbmfjWDw\u003d\n\n— rekor.sigstore.dev wNI9ajBFAiEA4M7t/9b42FzeArRhC6oRvs7UvKwklaFLYfDDGTi2R4kCIBNc2d0VCyUbs3hd+bI7+0RHhvLOdAqYg7j/3xPe2ZPb\n"
+-    "envelope": "rekor.sigstore.dev - 1193050959916656506\n29874050\nhnEOPEa6SDzqJDydU+J96TQyfYfqEpsGg0aVbmfjWDw\u003d\n\n— rekor.sigstore.dev wNI9ajBFAiEA4M7t/9b42FzeArRhC6oRvs7UvKwklaFLYfDDGTi2R4kCIBNc2d0VCyUbs3hd+bI7+0RHhvLOdAqYg7j/3xPe2aaa\n"
+}
+</code></pre>
+<pre><code class="language-shell">./bin/sigstore-cli verify --bundle=blob.sigstore.json blob
+# no errors???!
+</code></pre>
+<h3 id="patches">Patches</h3>
+<p>Patched in v1.2.0 release (patch: <a href="https://github.com/sigstore/sigstore-java/commit/23fb4885e6704a5df4977f7acf253a745349edf9">https://github.com/sigstore/sigstore-java/commit/23fb4885e6704a5df4977f7acf253a745349edf9</a>)
+Conformance tests added <a href="https://github.com/sigstore/sigstore-conformance/pull/139">https://github.com/sigstore/sigstore-conformance/pull/139</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Verifiers may chose to verify the checkpoint manually after running <code>KeylessVerifier.verify()</code></p>
+<pre><code class="language-java">var bundle = Bundle.from(bundleFile, StandardCharsets.UTF_8);
+var entry = bundle.getEntries().get(0);
+var checkpoint = entry.getVerification().getInclusionProof().parsedCheckpoint();
+var signedData = Splitter.on("\n\n").splitToList(entry.getVerification().getInclusionProof().getCheckpoint()).get(0) + "\n";
+
+var tufClient = SigstoreTufClient.builder().usePublicGoodInstance().build();
+tufClient.update();
+var trustedRoot = tufClient.getSigstoreTrustedRoot();
+var tlog =  TransparencyLog.find(trustedRoot.getTLogs(), Hex.decode(entry.getLogID()), entry.getIntegratedTimeInstant());
+
+if (!Verifiers.newVerifier(tlog.get().getPublicKey().toJavaPublicKey()).verify(signedData.getBytes(StandardCharsets.UTF_8), checkpoint.getSignatures().get(0).getSignature())) {
+  throw new Exception("Checkpoint signature was invalid");
+}
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sigstore/sigstore-java/security/advisories/GHSA-jp26-88mw-89qr">https://github.com/sigstore/sigstore-java/security/advisories/GHSA-jp26-88mw-89qr</a></li>
+<li><a href="https://github.com/sigstore/sigstore-conformance/pull/139">https://github.com/sigstore/sigstore-conformance/pull/139</a></li>
+<li><a href="https://github.com/sigstore/sigstore-java/commit/23fb4885e6704a5df4977f7acf253a745349edf9">https://github.com/sigstore/sigstore-java/commit/23fb4885e6704a5df4977f7acf253a745349edf9</a></li>
+<li><a href="https://github.com/advisories/GHSA-jp26-88mw-89qr">https://github.com/advisories/GHSA-jp26-88mw-89qr</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jp26-88mw-89qr</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2024-12-05T22:22:49.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[org.apache.hive:hive-exec] Apache Hive: Deserialization of untrusted data when fetching partitions from the Metastore]]></title>
         <id>https://github.com/advisories/GHSA-6hqr-c69m-r76q</id>
@@ -494,35 +562,6 @@ Denial of Service, affecting Windows users. </p>
     </entry>
     <entry>
         <title type="html"><![CDATA[[org.verapdf:core-jakarta] veraPDF CLI has potential XXE (XML External Entity Injection) vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-4cx5-89vm-833x</id>
-        <link href="https://github.com/advisories/GHSA-4cx5-89vm-833x"/>
-        <updated>2024-12-02T17:15:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Executing policy checks using custom schematron files via the CLI invokes an XSL transformation that may theoretically lead to a remote code execution (RCE) vulnerability.</p>
-<h3 id="patches">Patches</h3>
-<p>We are currently working on a patch that will be released when ready.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>This doesn't affect the standard validation and policy checks functionality, veraPDF's common use cases. Most veraPDF users don't insert any custom XSLT code into policy profiles, which are based on Schematron syntax rather than direct XSL transforms. For users who do, only load custom policy files from sources you trust.</p>
-<h3 id="references">References</h3>
-<p>Original issue: #1488</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/veraPDF/veraPDF-library/security/advisories/GHSA-4cx5-89vm-833x">https://github.com/veraPDF/veraPDF-library/security/advisories/GHSA-4cx5-89vm-833x</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-52800">https://nvd.nist.gov/vuln/detail/CVE-2024-52800</a></li>
-<li><a href="https://github.com/veraPDF/veraPDF-library/issues/1488">https://github.com/veraPDF/veraPDF-library/issues/1488</a></li>
-<li><a href="https://github.com/advisories/GHSA-4cx5-89vm-833x">https://github.com/advisories/GHSA-4cx5-89vm-833x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4cx5-89vm-833x</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-12-02T17:15:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.verapdf:core] veraPDF CLI has potential XXE (XML External Entity Injection) vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-4cx5-89vm-833x</id>
         <link href="https://github.com/advisories/GHSA-4cx5-89vm-833x"/>
         <updated>2024-12-02T17:15:26.000Z</updated>
