@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-01-14T22:01:24.802Z</updated>
+    <updated>2025-01-14T23:01:15.592Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,264 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@lodestar/reqresp] Lodestar snappy checksum issue]]></title>
+        <id>https://github.com/advisories/GHSA-m9c9-mc2h-9wjw</id>
+        <link href="https://github.com/advisories/GHSA-m9c9-mc2h-9wjw"/>
+        <updated>2025-01-14T22:04:06.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Unintended permanent chain split affecting greater than or equal to 25% of the network, requiring hard fork (network partition requiring hard fork)</p>
+<p>Lodestar does not verify checksum in snappy framing uncompressed chunks.</p>
+<h3 id="vulnerability-details">Vulnerability Details</h3>
+<p>In Req/Resp protocol the messages are encoded by using ssz_snappy encoding, which is a snappy framing compression over ssz encoded message.</p>
+<p>In snappy framing format there are uncompressed chunks, each such chunk is prefixed with a checksum.</p>
+<p>Let's see how golang implementation parses such chunks - <a href="https://github.com/golang/snappy/blob/master/decode.go#L176">https://github.com/golang/snappy/blob/master/decode.go#L176</a></p>
+<pre><code>    case chunkTypeUncompressedData:
+            // Section 4.3. Uncompressed data (chunk type 0x01).
+            if chunkLen &lt; checksumSize {
+                r.err = ErrCorrupt
+                return r.err
+            }
+            buf := r.buf[:checksumSize]
+            if !r.readFull(buf, false) {
+                return r.err
+            }
+            checksum := uint32(buf[0]) | uint32(buf[1])&lt;&lt;8 | uint32(buf[2])&lt;&lt;16 | uint32(buf[3])&lt;&lt;24
+            // Read directly into r.decoded instead of via r.buf.
+            n := chunkLen - checksumSize
+            if n &gt; len(r.decoded) {
+                r.err = ErrCorrupt
+                return r.err
+            }
+            if !r.readFull(r.decoded[:n], false) {
+                return r.err
+            }
+            if crc(r.decoded[:n]) != checksum {
+                r.err = ErrCorrupt
+                return r.err
+            }
+            r.i, r.j = 0, n
+            continue
+</code></pre>
+<p>As you can see, if checksum is incorrect, decoder fails and returns error.</p>
+<p>Now let's look at lodestar decoder <a href="https://github.com/ChainSafe/lodestar/blob/unstable/packages/reqresp/src/encodingStrategies/sszSnappy/snappyFrames/uncompress.ts#L17">https://github.com/ChainSafe/lodestar/blob/unstable/packages/reqresp/src/encodingStrategies/sszSnappy/snappyFrames/uncompress.ts#L17</a></p>
+<pre><code>uncompress(chunk: Uint8ArrayList): Uint8ArrayList | null {
+    this.buffer.append(chunk);
+    const result = new Uint8ArrayList();
+    while (this.buffer.length &gt; 0) {
+      if (this.buffer.length &lt; 4) break;
+
+      const type = getChunkType(this.buffer.get(0));
+      const frameSize = getFrameSize(this.buffer, 1);
+
+      if (this.buffer.length - 4 &lt; frameSize) {
+        break;
+      }
+
+      const data = this.buffer.subarray(4, 4 + frameSize);
+      this.buffer.consume(4 + frameSize);
+
+      if (!this.state.foundIdentifier &amp;&amp; type !== ChunkType.IDENTIFIER) {
+        throw "malformed input: must begin with an identifier";
+      }
+
+      if (type === ChunkType.IDENTIFIER) {
+        if (!Buffer.prototype.equals.call(data, IDENTIFIER)) {
+          throw "malformed input: bad identifier";
+        }
+        this.state.foundIdentifier = true;
+        continue;
+      }
+
+      if (type === ChunkType.COMPRESSED) {
+        result.append(uncompress(data.subarray(4)));
+      }
+      if (type === ChunkType.UNCOMPRESSED) {
+1)        result.append(data.subarray(4));
+      }
+    }
+    if (result.length === 0) {
+      return null;
+    }
+    return result;
+  }
+</code></pre>
+<p>As you can see, checksum is not verified, bytes are appended to 'result'</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p>How to reproduce:</p>
+<p>get poc via <a href="https://gist.github.com/gln7/aab55674431b1c8d42a59ccf9d7cbf60">gist link</a> and run it:</p>
+<pre><code>$ node dec1.mjs 
+checking chunk type=255
+checking chunk type=1
+got uncompressed chunk..
+Decompressed ok 124 bytes
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ChainSafe/lodestar/security/advisories/GHSA-m9c9-mc2h-9wjw">https://github.com/ChainSafe/lodestar/security/advisories/GHSA-m9c9-mc2h-9wjw</a></li>
+<li><a href="https://github.com/ChainSafe/lodestar/commit/18a0d681dbcc51fb2ac9456f31e91f4e31a18300">https://github.com/ChainSafe/lodestar/commit/18a0d681dbcc51fb2ac9456f31e91f4e31a18300</a></li>
+<li><a href="https://github.com/advisories/GHSA-m9c9-mc2h-9wjw">https://github.com/advisories/GHSA-m9c9-mc2h-9wjw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m9c9-mc2h-9wjw</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-01-14T22:04:02.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@lodestar/reqresp] Lodestar snappy decompression issue]]></title>
+        <id>https://github.com/advisories/GHSA-53rv-hcvm-rpp9</id>
+        <link href="https://github.com/advisories/GHSA-53rv-hcvm-rpp9"/>
+        <updated>2025-01-14T22:04:01.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Unintended permanent chain split affecting greater than or equal to 25% of the network, requiring hard fork (network partition requiring hard fork)</p>
+<h3 id="description">Description</h3>
+<p>Lodestar client may fail to decode snappy framing compressed messages.</p>
+<h3 id="vulnerability-details">Vulnerability Details</h3>
+<p>In Req/Resp protocol the message are encoded by using ssz_snappy encoding, which is basically snappy framing compression over ssz encoded message.</p>
+<p>It's mentioned here - <a href="https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/p2p-interface.md">https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/p2p-interface.md</a></p>
+<pre><code>The token of the negotiated protocol ID specifies the type of encoding to be used for the req/resp interaction. Only one value is possible at this time:
+
+ssz_snappy: The contents are first SSZ-encoded and then compressed with Snappy frames compression. For objects containing a single field, only the field is SSZ-encoded not a container with a single field. For example, the BeaconBlocksByRoot request is an SSZ-encoded list of Root's. This encoding type MUST be supported by all clients.
+</code></pre>
+<p>In snappy framing format there a few types of chunks.
+We are interested in so called reserved skippable chunks. These are chunks with chunk type in range [0x80, 0xfd]
+Let's see how rust snappy handles them <a href="https://github.com/BurntSushi/rust-snappy/blob/master/src/read.rs#L137">https://github.com/BurntSushi/rust-snappy/blob/master/src/read.rs#L137</a></p>
+<pre><code>impl&lt;R: io::Read&gt; io::Read for FrameDecoder&lt;R&gt; {
+    fn read(&amp;mut self, buf: &amp;mut [u8]) -&gt; io::Result&lt;usize&gt; {
+            ... 
+           ...
+              let len = len64 as usize;
+            match ty {
+                Err(b) if 0x02 &lt;= b &amp;&amp; b &lt;= 0x7F =&gt; {
+                    // Spec says that chunk types 0x02-0x7F are reserved and
+                    // conformant decoders must return an error.
+                    fail!(Error::UnsupportedChunkType { byte: b });
+                }
+                Err(b) if 0x80 &lt;= b &amp;&amp; b &lt;= 0xFD =&gt; {
+                    // Spec says that chunk types 0x80-0xFD are reserved but
+                    // skippable.
+                    self.r.read_exact(&amp;mut self.src[0..len])?;
+                }
+</code></pre>
+<p>Similar code can be found in golang implementation - <a href="https://github.com/golang/snappy/blob/master/decode.go#L221">https://github.com/golang/snappy/blob/master/decode.go#L221</a></p>
+<pre><code>func (r *Reader) fill() error {
+    ...
+    if chunkType &lt;= 0x7f {
+            // Section 4.5. Reserved unskippable chunks (chunk types 0x02-0x7f).
+            r.err = ErrUnsupported
+            return r.err
+        }
+        // Section 4.4 Padding (chunk type 0xfe).
+        // Section 4.6. Reserved skippable chunks (chunk types 0x80-0xfd).
+        if !r.readFull(r.buf[:chunkLen], false) {
+            return r.err
+        }
+</code></pre>
+<p>Now let's see how lodestar handles such chunks <a href="https://github.com/ChainSafe/lodestar/blob/unstable/packages/reqresp/src/encodingStrategies/sszSnappy/snappyFrames/uncompress.ts#L17">https://github.com/ChainSafe/lodestar/blob/unstable/packages/reqresp/src/encodingStrategies/sszSnappy/snappyFrames/uncompress.ts#L17</a></p>
+<pre><code>uncompress(chunk: Uint8ArrayList): Uint8ArrayList | null {
+    this.buffer.append(chunk);
+    const result = new Uint8ArrayList();
+    while (this.buffer.length &gt; 0) {
+      if (this.buffer.length &lt; 4) break;
+
+      const type = getChunkType(this.buffer.get(0));
+      const frameSize = getFrameSize(this.buffer, 1);
+
+      if (this.buffer.length - 4 &lt; frameSize) {
+        break;
+      }
+
+      const data = this.buffer.subarray(4, 4 + frameSize);
+      this.buffer.consume(4 + frameSize);
+
+      if (!this.state.foundIdentifier &amp;&amp; type !== ChunkType.IDENTIFIER) {
+        throw "malformed input: must begin with an identifier";
+      }
+
+      if (type === ChunkType.IDENTIFIER) {
+        if (!Buffer.prototype.equals.call(data, IDENTIFIER)) {
+          throw "malformed input: bad identifier";
+        }
+        this.state.foundIdentifier = true;
+        continue;
+      }
+
+      if (type === ChunkType.COMPRESSED) {
+        result.append(uncompress(data.subarray(4)));
+      }
+      if (type === ChunkType.UNCOMPRESSED) {
+        result.append(data.subarray(4));
+      }
+    }
+    if (result.length === 0) {
+      return null;
+    }
+    return result;
+  }
+
+ function getChunkType(value: number): ChunkType {
+  switch (value) {
+    case ChunkType.IDENTIFIER:
+      return ChunkType.IDENTIFIER;
+    case ChunkType.COMPRESSED:
+      return ChunkType.COMPRESSED;
+    case ChunkType.UNCOMPRESSED:
+      return ChunkType.UNCOMPRESSED;
+    case ChunkType.PADDING:
+      return ChunkType.PADDING;
+    default:
+      throw new Error("Unsupported snappy chunk type");
+  }
+</code></pre>
+<p>As you can see, lodestar does not recognize such chunks.</p>
+<p>If it sees such chunk, function getChunkType() throws an exception and decoding fails.</p>
+<h3 id="impact-details">Impact Details</h3>
+<p>Faulty nodes may trigger chain stall by sending messages which lodestar fails to parse, while other clients will be able to handle.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p>How to reproduce:</p>
+<ol>
+<li>get archive (via provided <a href="https://gist.github.com/gln7/bdde7f4e0bdf9d47bf810a015796867a">gist link</a>), decode and unpack it:</li>
+</ol>
+<pre><code>$ base64 -d poc.txt &gt; poc.tgz
+$ tar zxf poc.tgz
+</code></pre>
+<ol start="2">
+<li>run dec1.go to verify that our snappy file decompressed successfully</li>
+</ol>
+<pre><code>$ go run dec1.go
+
+reading 1.snappy...
+read 124 bytes, err &lt;nil&gt;
+</code></pre>
+<ol start="3">
+<li>run dec1.mjs to verify that lodestar fails to decode such file</li>
+</ol>
+<pre><code>checking chunk type=255
+checking chunk type=1
+got uncompressed chunk..
+checking chunk type=129
+file:///../poc/dec1.mjs:74
+            throw new Error("Unsupported snappy chunk type");
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ChainSafe/lodestar/security/advisories/GHSA-53rv-hcvm-rpp9">https://github.com/ChainSafe/lodestar/security/advisories/GHSA-53rv-hcvm-rpp9</a></li>
+<li><a href="https://github.com/ChainSafe/lodestar/commit/18a0d681dbcc51fb2ac9456f31e91f4e31a18300">https://github.com/ChainSafe/lodestar/commit/18a0d681dbcc51fb2ac9456f31e91f4e31a18300</a></li>
+<li><a href="https://github.com/advisories/GHSA-53rv-hcvm-rpp9">https://github.com/advisories/GHSA-53rv-hcvm-rpp9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-53rv-hcvm-rpp9</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-01-14T22:03:59.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[dom-iterator] dom-iterator code execution vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-jrvm-mcxc-mf6m</id>
@@ -932,150 +1190,6 @@ function sendRequest(socket, filePath, type) {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2024-12-18T06:30:49.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[jsii] Prototype pollution in jsii.configureCategories]]></title>
-        <id>https://github.com/advisories/GHSA-m56h-5xx3-2jc2</id>
-        <link href="https://github.com/advisories/GHSA-m56h-5xx3-2jc2"/>
-        <updated>2025-01-07T15:12:21.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>jsii</code> is a TypeScript to JavaScript compiler that also extracts an interface definition manifest to generate RPC stubs in various programming languages. jsii is typically used as a command-line tool, but it can also be loaded as a library.
-When loaded as a library into a larger application, prototype pollution may happen if untrusted user input is passed to the library. When used as a command line-tool, this pollution cannot occur.</p>
-<h2 id="impact">Impact</h2>
-<p>You may be impacted if you have written an application that loads jsii as a library, and passes untrusted user input into the <code>jsii.configureCategories()</code> function. In that case, a user can craft input in such a way that, following the invocation, a field named "category" with a user-controlled value is added to the JavaScript Object prototype. This will cause every object in the program (both new and existing) to have a field named "category", even if it shouldn't. </p>
-<p><strong>This will not affect jsii itself, but it might affect the application you have loaded jsii into.</strong></p>
-<blockquote>
-<p>The function <code>jsii.configureCategories()</code> is used to configure the severity (error, warning, etc.) of various jsii diagnostics.</p>
-</blockquote>
-<p><strong>Impacted versions: &lt;=5.7.2, &lt;=5.6.3, &lt;=5.5.14, &lt;=5.4.45</strong> </p>
-<p><strong>Example:</strong></p>
-<pre><code class="language-js">const jsii = require('jsii');
-
-// prints 'undefined'
-console.log(JSON.stringify({}.category))
-
-// calling 'configureCategories' with user input
-jsii.configureCategories(JSON.parse('{"__proto__": "user-input"}'))
-
-// from this point onwards, every single object literal in the program
-// will contain the 'category' key, with user controlled value
-console.log(JSON.stringify({}.category)) // prints 'user-input'
-
-
-// this can affect the execution of the main program in case it also makes 
-// use of an object key called 'category'. for example, if the main programs 
-// happens to have code like this:
-
-const x = {} // some object in the main program (not necessarily empty)
-
-if (x.category) {
-  // this block will always be executed, effectively 
-  // changing the behavior of the main program.
-  console.log('Do something')
-} else {
-  console.log('Do something else')
-}
-</code></pre>
-<p>For more information about javascript prototype pollution, see [1].</p>
-<h2 id="patches">Patches</h2>
-<p>A patch is included in versions <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.7.3">5.7.3</a>, <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.6.4">5.6.4</a>, <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.5.15">5.5.15</a>, <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.4.46">5.4.46</a></p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Sanitize user input to configureCategories() by stripping the <strong>proto</strong> property if detected.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory, we ask that you contact AWS/Amazon Security via our issue reporting page [2] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] <a href="https://learn.snyk.io/lesson/prototype-pollution/">https://learn.snyk.io/lesson/prototype-pollution/</a></p>
-<p>[2] <a href="https://aws.amazon.com/security/vulnerability-reporting">https://aws.amazon.com/security/issue-reporting</a></p>
-<h2 id="credits">Credits</h2>
-<p>We would like to thank <em>Tariq Hawis</em> for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/aws/jsii-compiler/security/advisories/GHSA-m56h-5xx3-2jc2">https://github.com/aws/jsii-compiler/security/advisories/GHSA-m56h-5xx3-2jc2</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.4.46">https://github.com/aws/jsii-compiler/releases/tag/v5.4.46</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.5.15">https://github.com/aws/jsii-compiler/releases/tag/v5.5.15</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.6.4">https://github.com/aws/jsii-compiler/releases/tag/v5.6.4</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.7.3">https://github.com/aws/jsii-compiler/releases/tag/v5.7.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-m56h-5xx3-2jc2">https://github.com/advisories/GHSA-m56h-5xx3-2jc2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m56h-5xx3-2jc2</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-12-18T15:50:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[jsii] Prototype pollution in jsii.configureCategories]]></title>
-        <id>https://github.com/advisories/GHSA-m56h-5xx3-2jc2</id>
-        <link href="https://github.com/advisories/GHSA-m56h-5xx3-2jc2"/>
-        <updated>2025-01-07T15:12:21.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>jsii</code> is a TypeScript to JavaScript compiler that also extracts an interface definition manifest to generate RPC stubs in various programming languages. jsii is typically used as a command-line tool, but it can also be loaded as a library.
-When loaded as a library into a larger application, prototype pollution may happen if untrusted user input is passed to the library. When used as a command line-tool, this pollution cannot occur.</p>
-<h2 id="impact">Impact</h2>
-<p>You may be impacted if you have written an application that loads jsii as a library, and passes untrusted user input into the <code>jsii.configureCategories()</code> function. In that case, a user can craft input in such a way that, following the invocation, a field named "category" with a user-controlled value is added to the JavaScript Object prototype. This will cause every object in the program (both new and existing) to have a field named "category", even if it shouldn't. </p>
-<p><strong>This will not affect jsii itself, but it might affect the application you have loaded jsii into.</strong></p>
-<blockquote>
-<p>The function <code>jsii.configureCategories()</code> is used to configure the severity (error, warning, etc.) of various jsii diagnostics.</p>
-</blockquote>
-<p><strong>Impacted versions: &lt;=5.7.2, &lt;=5.6.3, &lt;=5.5.14, &lt;=5.4.45</strong> </p>
-<p><strong>Example:</strong></p>
-<pre><code class="language-js">const jsii = require('jsii');
-
-// prints 'undefined'
-console.log(JSON.stringify({}.category))
-
-// calling 'configureCategories' with user input
-jsii.configureCategories(JSON.parse('{"__proto__": "user-input"}'))
-
-// from this point onwards, every single object literal in the program
-// will contain the 'category' key, with user controlled value
-console.log(JSON.stringify({}.category)) // prints 'user-input'
-
-
-// this can affect the execution of the main program in case it also makes 
-// use of an object key called 'category'. for example, if the main programs 
-// happens to have code like this:
-
-const x = {} // some object in the main program (not necessarily empty)
-
-if (x.category) {
-  // this block will always be executed, effectively 
-  // changing the behavior of the main program.
-  console.log('Do something')
-} else {
-  console.log('Do something else')
-}
-</code></pre>
-<p>For more information about javascript prototype pollution, see [1].</p>
-<h2 id="patches">Patches</h2>
-<p>A patch is included in versions <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.7.3">5.7.3</a>, <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.6.4">5.6.4</a>, <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.5.15">5.5.15</a>, <a href="https://github.com/aws/jsii-compiler/releases/tag/v5.4.46">5.4.46</a></p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Sanitize user input to configureCategories() by stripping the <strong>proto</strong> property if detected.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory, we ask that you contact AWS/Amazon Security via our issue reporting page [2] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] <a href="https://learn.snyk.io/lesson/prototype-pollution/">https://learn.snyk.io/lesson/prototype-pollution/</a></p>
-<p>[2] <a href="https://aws.amazon.com/security/vulnerability-reporting">https://aws.amazon.com/security/issue-reporting</a></p>
-<h2 id="credits">Credits</h2>
-<p>We would like to thank <em>Tariq Hawis</em> for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/aws/jsii-compiler/security/advisories/GHSA-m56h-5xx3-2jc2">https://github.com/aws/jsii-compiler/security/advisories/GHSA-m56h-5xx3-2jc2</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.4.46">https://github.com/aws/jsii-compiler/releases/tag/v5.4.46</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.5.15">https://github.com/aws/jsii-compiler/releases/tag/v5.5.15</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.6.4">https://github.com/aws/jsii-compiler/releases/tag/v5.6.4</a></li>
-<li><a href="https://github.com/aws/jsii-compiler/releases/tag/v5.7.3">https://github.com/aws/jsii-compiler/releases/tag/v5.7.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-m56h-5xx3-2jc2">https://github.com/advisories/GHSA-m56h-5xx3-2jc2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m56h-5xx3-2jc2</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-12-18T15:50:09.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[jsii] Prototype pollution in jsii.configureCategories]]></title>
