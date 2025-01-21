@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2025-01-21T21:01:26.159Z</updated>
+    <updated>2025-01-21T22:01:28.030Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,105 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[gix-worktree-state] gix-worktree-state nonexclusive checkout sets executable files world-writable]]></title>
+        <id>https://github.com/advisories/GHSA-fqmf-w4xh-33rh</id>
+        <link href="https://github.com/advisories/GHSA-fqmf-w4xh-33rh"/>
+        <updated>2025-01-21T21:13:07.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>gix-worktree-state</code> specifies 0777 permissions when checking out executable files, intending that the umask will restrict them appropriately. But one of the strategies it uses to set permissions is not subject to the umask. This causes files in a repository to be world-writable in some situations.</p>
+<h3 id="details">Details</h3>
+<p>Git repositories track executable bits for regular files. In tree objects and the index, regular file modes are stored as 0644 if not executable, or 0755 if executable. But this is independent of how the permissions are set in the filesystem (where supported).</p>
+<p><a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/function.rs#L8-L35"><code>gix_worktree_state::checkout</code></a> has two strategies for checking out a file and marking it executable on a Unix-like operating system, one of which is vulnerable:</p>
+<ul>
+<li>If the file is created by assuming it does not already exist, correct permissions are applied, because permissions specified when opening a file are subject to the umask.</li>
+<li>If the file is considered possibly already to exist—even in a clean checkout if the application does not specify the option to treat the destination directory as empty—then permissions conferring unrestricted access to any user account on the system are wrongly applied, because permissions specified when calling chmod on an existing file are not subject to the umask.</li>
+</ul>
+<p>&nbsp;</p>
+<p>Specifically, <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L56-L191"><code>checkout::entry::checkout</code></a> chooses the strategy for each file. The same strategy is usually chosen for each executable file, if no <a href="https://github.com/git/git/blob/a60673e9252b08d4eca90543b3729f4798b9aafd/Documentation/RelNotes/2.11.0.txt#L149-L154">process</a> (i.e. <a href="https://github.com/GitoxideLabs/gitoxide/discussions/996">long running</a>) smudge filter is in use. The strategy depends on the <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/mod.rs#L50-L53"><code>checkout::Options::destination_is_initially_empty</code></a> value, which is passed along to <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L253-L277"><code>checkout::entry::open_file</code></a>, whose return value includes a flag indicating whether permissions still need to be set:</p>
+<ul>
+<li><p>With <code>destination_is_initially_empty: true</code>, executable permissions are specified when opening the file, via <a href="https://doc.rust-lang.org/std/os/unix/fs/trait.OpenOptionsExt.html#tymethod.mode"><code>OpenOptionsEx::mode</code></a>, by its effect on the behavior of <a href="https://doc.rust-lang.org/std/fs/struct.OpenOptions.html#method.open"><code>OpenOptions::open</code></a>. A mode of 0777 is safe here, for the same reason the default mode of 0666 is safe. When creating a file, the applied mode is the specified mode with any bits unset from it that are set in the umask.</p>
+<p> <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L265-L268">https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L265-L268</a></p>
+<p>The <code>set_executable_after_creation</code> flag in the <code>open_file</code> return value is then <code>false</code>.</p>
+</li>
+<li><p>With <code>destination_is_initially_empty: false</code>, executable permissions are set in a separate step, via <a href="https://doc.rust-lang.org/beta/std/os/unix/fs/trait.PermissionsExt.html#tymethod.set_mode"><code>PermissionsExt::set_mode</code></a> and <a href="https://doc.rust-lang.org/beta/std/fs/fn.set_permissions.html"><code>set_permissions</code></a>. A mode of 0777 is not safe here, because the umask is not applied. The vulnerable code appears in <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L279-L299"><code>checkout::entry::finalize_entry</code></a>, which receives the <code>set_executable_after_creation</code> flag originally from <code>open_file</code>:</p>
+<p><a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L288-L293">https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/entry.rs#L288-L293</a></p>
+<p>The file has unrestricted permissions.</p>
+</li>
+</ul>
+<p><code>finalize_entry</code> is <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/chunk.rs#L229-L236">likewise called</a> from <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/chunk.rs#L157-L259"><code>checkout::chunk::process_delayed_filter_results</code></a>.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li><p>On a Unix-like system such as GNU/Linux or macOS, create a new project and define its dependencies. While the vulnerability is in <code>gix-worktree-state</code>, this example will use vulnerable code through the <code>gix</code> crate, which exposes it. Run:</p>
+<pre><code class="language-sh">cargo new checkout-index
+cd checkout-index
+cargo add gix gix-object
+</code></pre>
+</li>
+<li><p>In the <code>checkout-index</code> directory, edit <code>src/main.rs</code> so that its entire contents are:</p>
+<pre><code class="language-rust">fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let repo = gix::discover("has-executable")?;
+    let mut index = repo.open_index()?;
+    gix::worktree::state::checkout(
+        &amp;mut index,
+        repo.work_dir().ok_or("need non-bare repo")?,
+        gix_object::find::Never, // Can also use: repo.objects.clone()
+        &amp;gix::progress::Discard,
+        &amp;gix::progress::Discard,
+        &amp;Default::default(),
+        Default::default(),
+    )?;
+    Ok(())
+}
+</code></pre>
+</li>
+<li><p>Create the test repository that the vulnerable program will operate on. Still in the <code>checkout-index</code> directory, run:</p>
+<pre><code class="language-sh">git init has-executable
+touch has-executable/a has-executable/b
+chmod +x has-executable/b
+git -C has-executable add .
+</code></pre>
+<p>It is not necessary to commit the changes, only to stage them, since the test program will check  out the index.</p>
+</li>
+<li><p><em>Optionally</em>, run <code>rm has-executable/[ab]</code> to remove the staged files from disk.</p>
+</li>
+<li><p>Run the program by issuing <code>cargo run</code>. The program uses <code>gix-worktree-state</code> to check out the index. It should terminate successfully and not issue any errors.</p>
+</li>
+<li><p>Run <code>ls -l has-executable</code> to inspect the permissions of the checked out files. Observe that owner, group, and other all have read, write, and execute permissions on <code>b</code>.</p>
+<pre><code class="language-text">-rw-r--r-- 1 ek ek 0 Jan  9 03:38 a
+-rwxrwxrwx 1 ek ek 0 Jan  9 03:38 b
+</code></pre>
+<p>With affected versions of <code>gix-worktree-state</code>, the output shows <code>-rwxrwxrwx</code> for <code>b</code>, whether the files were removed in step 4 or not.</p>
+</li>
+<li><p>It was not necessary to set <code>destination_is_initially_empty</code> to <code>false</code> explicitly to trigger the bug, because that is its default value. If desired, modify the program to pass <code>true</code> and rerun the experiment to verify that <code>b</code> is no longer created with excessive permissions. The modified program would change the last <code>checkout</code> argument from <code>Default::default(),</code> to:</p>
+<pre><code class="language-rust">        gix::worktree::state::checkout::Options {
+            destination_is_initially_empty: true,
+            ..Default::default()
+        },
+</code></pre>
+</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Setting unlimited file permissions is a problem on systems where a user account exists on the system that should not have the ability to access and modify the files. That applies to multi-user systems, or when an account is used to run software with reduced abilities. (Some programs may also treat broad write permissions to mean less validation is required.)</p>
+<p>This bug affects Unix-like systems but not Windows. The <code>gix clone</code> command is not believed to be affected, due to <a href="https://github.com/GitoxideLabs/gitoxide/blob/af704f57bb9480c47cdd393465264d586f1d4562/gitoxide-core/src/index/checkout.rs#L14-L172"><code>checkout_exclusive</code></a>'s <a href="https://github.com/GitoxideLabs/gitoxide/blob/af704f57bb9480c47cdd393465264d586f1d4562/gitoxide-core/src/index/checkout.rs#L61">use</a> of <code>destination_is_initially_empty: true</code>. Specialized uses in which repositories are known never to have any files marked executable are unaffected. Repositories that no untrusted users can access, due to not having the ability to traverse the directories to them or due to sufficiently restrictive ACLs, are likewise unaffected.</p>
+<p>The default value of <code>destination_is_initially_empty</code> is <code>false</code>, so some applications may be affected even if they don't attempt checkouts in nonempty directories. The 0777 permissions are applied to files that are created earlier in the same checkout, as well as those that already existed, regardless of their prior permissions. On preexisting files, 0777 is set <em>even if <a href="https://github.com/GitoxideLabs/gitoxide/blob/8d84818240d44e1f5fe78a231b5d9bffd0283918/gix-worktree-state/src/checkout/mod.rs#L54-L58"><code>overwrite_existing</code></a> is <code>false</code></em>, as that prevents the checkout from changing file contents but not permissions.</p>
+<p>Files not tracked/staged as executable are not checked out with insecure permissions. Such a file that previously existed keeps its old permissions. However, this may include executable permissions that no longer match repository metadata, as well as undesired write permissions acquired from a previous vulnerable checkout. <code>set_mode(0o777)</code> clears other bits, so the bug is not exacerbated by the presence of setuid/setgid bits. In some applications, the vulnerable strategy may be used only for files rewritten by a <a href="https://git-scm.com/docs/gitattributes/2.40.0#_long_running_filter_process">long running</a> smudge filter or only in the presence of <a href="https://git-scm.com/docs/gitattributes/2.40.0#_delay">delays</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-fqmf-w4xh-33rh">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-fqmf-w4xh-33rh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-22620">https://nvd.nist.gov/vuln/detail/CVE-2025-22620</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0001.html">https://rustsec.org/advisories/RUSTSEC-2025-0001.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-fqmf-w4xh-33rh">https://github.com/advisories/GHSA-fqmf-w4xh-33rh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fqmf-w4xh-33rh</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-01-21T21:13:06.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[gitoxide] gitoxide-core does not neutralize special characters for terminals]]></title>
         <id>https://github.com/advisories/GHSA-88g2-r9rw-g55h</id>
@@ -633,41 +732,6 @@ a mutable pointer.</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2024-12-23T19:26:37.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[rage] rage vulnerable to malicious plugin names, recipients, or identities causing arbitrary binary execution]]></title>
-        <id>https://github.com/advisories/GHSA-4fg7-vxc8-qx5w</id>
-        <link href="https://github.com/advisories/GHSA-4fg7-vxc8-qx5w"/>
-        <updated>2025-01-03T19:29:42.000Z</updated>
-        <content type="html"><![CDATA[<p>A plugin name containing a path separator may allow an attacker to execute an arbitrary binary.</p>
-<p>Such a plugin name can be provided to the <code>rage</code> CLI through an attacker-controlled recipient or identity string, or to the following <code>age</code> APIs when the <code>plugin</code> feature flag is enabled:</p>
-<ul>
-<li><a href="https://docs.rs/age/0.11.0/age/plugin/struct.Identity.html#impl-FromStr-for-Identity"><code>age::plugin::Identity::from_str</code></a> (or equivalently <a href="https://doc.rust-lang.org/stable/core/primitive.str.html#method.parse"><code>str::parse::&lt;age::plugin::Identity&gt;()</code></a>)</li>
-<li><a href="https://docs.rs/age/0.11.0/age/plugin/struct.Identity.html#method.default_for_plugin"><code>age::plugin::Identity::default_for_plugin</code></a></li>
-<li><a href="https://docs.rs/age/0.11.0/age/plugin/struct.IdentityPluginV1.html#method.new"><code>age::plugin::IdentityPluginV1::new</code></a></li>
-<li><a href="https://docs.rs/age/0.11.0/age/plugin/struct.Recipient.html#impl-FromStr-for-Recipient"><code>age::plugin::Recipient::from_str</code></a> (or equivalently <a href="https://doc.rust-lang.org/stable/core/primitive.str.html#method.parse"><code>str::parse::&lt;age::plugin::Recipient&gt;()</code></a>)</li>
-<li><a href="https://docs.rs/age/0.11.0/age/plugin/struct.RecipientPluginV1.html#method.new"><code>age::plugin::RecipientPluginV1::new</code></a></li>
-</ul>
-<p>On UNIX systems, a directory matching <code>age-plugin-*</code> needs to exist in the working directory for the attack to succeed.</p>
-<p>The binary is executed with a single flag, either <code>--age-plugin=recipient-v1</code> or <code>--age-plugin=identity-v1</code>. The standard input includes the recipient or identity string,  and the random file key (if encrypting) or the header of the file (if decrypting). The format is constrained by the <a href="https://c2sp.org/age-plugin">age-plugin</a> protocol.</p>
-<p>An equivalent issue was fixed in <a href="https://github.com/FiloSottile/age">the reference Go implementation of age</a>, see advisory <a href="https://github.com/FiloSottile/age/security/advisories/GHSA-32gq-x56h-299c">GHSA-32gq-x56h-299c</a>.</p>
-<p>Thanks to ⬡-49016 for reporting this issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/str4d/rage/security/advisories/GHSA-4fg7-vxc8-qx5w">https://github.com/str4d/rage/security/advisories/GHSA-4fg7-vxc8-qx5w</a></li>
-<li><a href="https://github.com/str4d/rage/commit/703152ecfa86f27952a35b57dd525ed39396a227">https://github.com/str4d/rage/commit/703152ecfa86f27952a35b57dd525ed39396a227</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2024-0432.html">https://rustsec.org/advisories/RUSTSEC-2024-0432.html</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2024-0433.html">https://rustsec.org/advisories/RUSTSEC-2024-0433.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-4fg7-vxc8-qx5w">https://github.com/advisories/GHSA-4fg7-vxc8-qx5w</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4fg7-vxc8-qx5w</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2024-12-18T18:21:55.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[rage] rage vulnerable to malicious plugin names, recipients, or identities causing arbitrary binary execution]]></title>
