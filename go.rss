@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-02-03T16:01:23.556Z</updated>
+    <updated>2025-02-03T17:01:26.897Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,148 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cometbft/cometbft] CometBFT allows a malicious peer to stall the network by disseminating seemingly valid block parts]]></title>
+        <id>https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</id>
+        <link href="https://github.com/advisories/GHSA-r3r4-g7hq-pq4f"/>
+        <updated>2025-02-03T16:49:00.000Z</updated>
+        <content type="html"><![CDATA[<p>Name: ASA-2025-002: Malicious peer can stall network by disseminating seemingly valid block parts
+Component: CometBFT
+Criticality: High (Catastrophic Impact; Possible Likelihood per <a href="https://github.com/interchainio/security/blob/main/resources/CLASSIFICATION_MATRIX.md">ACMv1.2</a>)
+Affected versions: &lt;= v0.38.16, v1.0.0
+Affected users: Validators, Full nodes, Users</p>
+<h3 id="description">Description</h3>
+<p>A bug was identified in the CometBFT validation of block part indices and the corresponding proof part indices that can lead to incorrect processing and dissemination of invalid parts, which in turn could lead to a network halt. Additional validation was added to prevent this condition from happening.</p>
+<h3 id="patches">Patches</h3>
+<p>The new CometBFT releases <a href="https://github.com/cometbft/cometbft/releases/tag/v1.0.1">v1.0.1</a> and <a href="https://github.com/cometbft/cometbft/releases/tag/v0.38.17">v0.38.17</a> fix this issue.</p>
+<p>Unreleased code in the main branch is patched as well.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There are no known workarounds for this issue. If a node is producing these malicious proofs, the only mitigation is to upgrade CometBFT. After upgrading, the validators then will eventually conclude the correct value.</p>
+<h3 id="technical-deep-dive">Technical Deep-Dive</h3>
+<p>When the next proposer creates a block, it is split into many block parts (64kB each). Each block part is then disseminated via p2p layer in a gossip fashion. The block part contains the following fields:</p>
+<pre><code class="language-go">type Part struct {
+    Index uint32            `json:"index"`
+    Bytes cmtbytes.HexBytes `json:"bytes"`
+    Proof merkle.Proof      `json:"proof"`
+}
+</code></pre>
+<ul>
+<li><code>Index</code> - represents the index of a block part</li>
+<li><code>Bytes</code> - the actual content</li>
+<li><code>Proof</code> - Merkle proof, which allows the receiving node to quickly verify that a <code>Part</code> is indeed a piece of the proposed block.</li>
+</ul>
+<p>The <code>Proof</code> contains the following fields:</p>
+<pre><code class="language-go">type Proof struct {
+    Total    int64    `json:"total"`           // Total number of items.
+    Index    int64    `json:"index"`           // Index of item to prove.
+    LeafHash []byte   `json:"leaf_hash"`       // Hash of item value.
+    Aunts    [][]byte `json:"aunts,omitempty"` // Hashes from leaf's sibling to a root's child.
+}
+</code></pre>
+<p>Note that the total number of leaves in the Merkle tree equals the number of parts in the proposed block. Previously, CometBFT did not validate the <code>Index</code> field and specifically that <code>Part.Index</code> must be equal to <code>Part.Proof.Index</code>. This leads to a condition where, it is possible to use the proof from a different part and CometBFT accept it, even though the proof proves the different part is a piece of the proposed block and not the part that the peer actually sent to us.</p>
+<p>This condition is problematic because: </p>
+<ol>
+<li>it would disseminate the invalid block part to its neighboring nodes (because it deemed it as correct)</li>
+<li>it would mark the block part as received and ask the neighboring nodes not to relay it in the future, making it impossible to receive the correct block part.</li>
+</ol>
+<p>To address this, CometBFT was patched to verify that <code>Part.Index</code> is equal to <code>Part.Proof.Index</code>, preventing the above condition.</p>
+<h3 id="timeline">Timeline</h3>
+<ul>
+<li>January 15, 2025, 12:12pm PST: Issue reported to the Cosmos Bug Bounty program</li>
+<li>January 15, 2025, 12:31pm PST: Issue triaged by Amulet on-call, and distributed to Core team</li>
+<li>January 27, 2025, 11:28pm PST: Core team completes validation of issue</li>
+<li>January 31, 2024, 2:15pm PST: Pre-notification delivered</li>
+<li>February 3rd, 2024, 9:00am UTC+4: Patch made available</li>
+</ul>
+<p>This issue was reported by <a href="https://github.com/unknownfeature">unknown_feature</a> to the Cosmos Bug Bounty Program on HackerOne on January 15, 2025. If you believe you have found a bug in the Interchain Stack or would like to contribute to the program by reporting a bug, please see <a href="https://hackerone.com/cosmos">https://hackerone.com/cosmos</a>.</p>
+<p>If you have questions about Interchain security efforts, please reach out to our official communication channel at <a href="mailto:security@interchain.io">security@interchain.io</a>. For more information about the Interchain Foundation’s engagement with Amulet, and to sign up for security notification emails, please see <a href="https://github.com/interchainio/security">https://github.com/interchainio/security</a>.  </p>
+<p>A Github Security Advisory for this issue is available in the CometBFT <a href="https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f">repository</a>. For more information about CometBFT, see <a href="https://docs.cometbft.com/">https://docs.cometbft.com/</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f">https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f</a></li>
+<li><a href="https://github.com/cometbft/cometbft/commit/f943aabc7b9201ea1089ff3381479929435ce424">https://github.com/cometbft/cometbft/commit/f943aabc7b9201ea1089ff3381479929435ce424</a></li>
+<li><a href="https://github.com/advisories/GHSA-r3r4-g7hq-pq4f">https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-02-03T16:48:59.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cometbft/cometbft] CometBFT allows a malicious peer to stall the network by disseminating seemingly valid block parts]]></title>
+        <id>https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</id>
+        <link href="https://github.com/advisories/GHSA-r3r4-g7hq-pq4f"/>
+        <updated>2025-02-03T16:49:00.000Z</updated>
+        <content type="html"><![CDATA[<p>Name: ASA-2025-002: Malicious peer can stall network by disseminating seemingly valid block parts
+Component: CometBFT
+Criticality: High (Catastrophic Impact; Possible Likelihood per <a href="https://github.com/interchainio/security/blob/main/resources/CLASSIFICATION_MATRIX.md">ACMv1.2</a>)
+Affected versions: &lt;= v0.38.16, v1.0.0
+Affected users: Validators, Full nodes, Users</p>
+<h3 id="description">Description</h3>
+<p>A bug was identified in the CometBFT validation of block part indices and the corresponding proof part indices that can lead to incorrect processing and dissemination of invalid parts, which in turn could lead to a network halt. Additional validation was added to prevent this condition from happening.</p>
+<h3 id="patches">Patches</h3>
+<p>The new CometBFT releases <a href="https://github.com/cometbft/cometbft/releases/tag/v1.0.1">v1.0.1</a> and <a href="https://github.com/cometbft/cometbft/releases/tag/v0.38.17">v0.38.17</a> fix this issue.</p>
+<p>Unreleased code in the main branch is patched as well.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There are no known workarounds for this issue. If a node is producing these malicious proofs, the only mitigation is to upgrade CometBFT. After upgrading, the validators then will eventually conclude the correct value.</p>
+<h3 id="technical-deep-dive">Technical Deep-Dive</h3>
+<p>When the next proposer creates a block, it is split into many block parts (64kB each). Each block part is then disseminated via p2p layer in a gossip fashion. The block part contains the following fields:</p>
+<pre><code class="language-go">type Part struct {
+    Index uint32            `json:"index"`
+    Bytes cmtbytes.HexBytes `json:"bytes"`
+    Proof merkle.Proof      `json:"proof"`
+}
+</code></pre>
+<ul>
+<li><code>Index</code> - represents the index of a block part</li>
+<li><code>Bytes</code> - the actual content</li>
+<li><code>Proof</code> - Merkle proof, which allows the receiving node to quickly verify that a <code>Part</code> is indeed a piece of the proposed block.</li>
+</ul>
+<p>The <code>Proof</code> contains the following fields:</p>
+<pre><code class="language-go">type Proof struct {
+    Total    int64    `json:"total"`           // Total number of items.
+    Index    int64    `json:"index"`           // Index of item to prove.
+    LeafHash []byte   `json:"leaf_hash"`       // Hash of item value.
+    Aunts    [][]byte `json:"aunts,omitempty"` // Hashes from leaf's sibling to a root's child.
+}
+</code></pre>
+<p>Note that the total number of leaves in the Merkle tree equals the number of parts in the proposed block. Previously, CometBFT did not validate the <code>Index</code> field and specifically that <code>Part.Index</code> must be equal to <code>Part.Proof.Index</code>. This leads to a condition where, it is possible to use the proof from a different part and CometBFT accept it, even though the proof proves the different part is a piece of the proposed block and not the part that the peer actually sent to us.</p>
+<p>This condition is problematic because: </p>
+<ol>
+<li>it would disseminate the invalid block part to its neighboring nodes (because it deemed it as correct)</li>
+<li>it would mark the block part as received and ask the neighboring nodes not to relay it in the future, making it impossible to receive the correct block part.</li>
+</ol>
+<p>To address this, CometBFT was patched to verify that <code>Part.Index</code> is equal to <code>Part.Proof.Index</code>, preventing the above condition.</p>
+<h3 id="timeline">Timeline</h3>
+<ul>
+<li>January 15, 2025, 12:12pm PST: Issue reported to the Cosmos Bug Bounty program</li>
+<li>January 15, 2025, 12:31pm PST: Issue triaged by Amulet on-call, and distributed to Core team</li>
+<li>January 27, 2025, 11:28pm PST: Core team completes validation of issue</li>
+<li>January 31, 2024, 2:15pm PST: Pre-notification delivered</li>
+<li>February 3rd, 2024, 9:00am UTC+4: Patch made available</li>
+</ul>
+<p>This issue was reported by <a href="https://github.com/unknownfeature">unknown_feature</a> to the Cosmos Bug Bounty Program on HackerOne on January 15, 2025. If you believe you have found a bug in the Interchain Stack or would like to contribute to the program by reporting a bug, please see <a href="https://hackerone.com/cosmos">https://hackerone.com/cosmos</a>.</p>
+<p>If you have questions about Interchain security efforts, please reach out to our official communication channel at <a href="mailto:security@interchain.io">security@interchain.io</a>. For more information about the Interchain Foundation’s engagement with Amulet, and to sign up for security notification emails, please see <a href="https://github.com/interchainio/security">https://github.com/interchainio/security</a>.  </p>
+<p>A Github Security Advisory for this issue is available in the CometBFT <a href="https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f">repository</a>. For more information about CometBFT, see <a href="https://docs.cometbft.com/">https://docs.cometbft.com/</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f">https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f</a></li>
+<li><a href="https://github.com/cometbft/cometbft/commit/f943aabc7b9201ea1089ff3381479929435ce424">https://github.com/cometbft/cometbft/commit/f943aabc7b9201ea1089ff3381479929435ce424</a></li>
+<li><a href="https://github.com/advisories/GHSA-r3r4-g7hq-pq4f">https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-02-03T16:48:59.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/cometbft/cometbft] CometBFT allows a malicious peer to make node stuck in blocksync]]></title>
         <id>https://github.com/advisories/GHSA-22qq-3xwm-r5x4</id>
@@ -696,49 +838,5 @@ with</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-01-29T19:19:11.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/argoproj/argo-cd/v2] ArgoCD Namespace Isolation Break]]></title>
-        <id>https://github.com/advisories/GHSA-58fx-7v9q-3g56</id>
-        <link href="https://github.com/advisories/GHSA-58fx-7v9q-3g56"/>
-        <updated>2025-01-28T20:40:01.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in ArgoCD. The openshift.io/cluster-monitoring label is applied to all namespaces that deploy an ArgoCD CR instance, allowing the namespace to create a rogue PrometheusRule. This issue can have adverse effects on the platform monitoring stack, as the rule is rolled out cluster-wide when the label is applied.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-13484">https://nvd.nist.gov/vuln/detail/CVE-2024-13484</a></li>
-<li><a href="https://access.redhat.com/security/cve/CVE-2024-13484">https://access.redhat.com/security/cve/CVE-2024-13484</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2269376">https://bugzilla.redhat.com/show_bug.cgi?id=2269376</a></li>
-<li><a href="https://github.com/advisories/GHSA-58fx-7v9q-3g56">https://github.com/advisories/GHSA-58fx-7v9q-3g56</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-58fx-7v9q-3g56</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-01-28T18:31:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/cri-o/cri-o] CRI-O Path Traversal vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-hp5j-2585-qx6g</id>
-        <link href="https://github.com/advisories/GHSA-hp5j-2585-qx6g"/>
-        <updated>2025-01-28T19:15:28.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was found in CRI-O. A path traversal issue in the log management functions (UnMountPodLogs and LinkContainerLogs) may allow an attacker with permissions to create and delete Pods to unmount arbitrary host paths, leading to node-level denial of service by unmounting critical system directories.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-0750">https://nvd.nist.gov/vuln/detail/CVE-2025-0750</a></li>
-<li><a href="https://access.redhat.com/security/cve/CVE-2025-0750">https://access.redhat.com/security/cve/CVE-2025-0750</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2339405">https://bugzilla.redhat.com/show_bug.cgi?id=2339405</a></li>
-<li><a href="https://github.com/advisories/GHSA-hp5j-2585-qx6g">https://github.com/advisories/GHSA-hp5j-2585-qx6g</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hp5j-2585-qx6g</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-01-28T12:31:07.000Z</published>
     </entry>
 </feed>
