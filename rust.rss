@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2025-02-10T17:01:21.709Z</updated>
+    <updated>2025-02-10T18:01:30.839Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,34 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[hickory-proto] Hickory DNS's DNSSEC validation may accept broken authentication chains]]></title>
+        <id>https://github.com/advisories/GHSA-37wc-h8xc-5hc4</id>
+        <link href="https://github.com/advisories/GHSA-37wc-h8xc-5hc4"/>
+        <updated>2025-02-10T17:46:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The DNSSEC validation routines treat entire RRsets of DNSKEY records as trusted once they have established trust in only one of the DNSKEYs. As a result, if a zone includes a DNSKEY with a public key that matches a configured trust anchor, all keys in that zone will be trusted to authenticate other records in the zone. There is a second variant of this vulnerability involving DS records, where an authenticated DS record covering one DNSKEY leads to trust in signatures made by an unrelated DNSKEY in the same zone.</p>
+<h3 id="details">Details</h3>
+<p><code>verify_dnskey_rrset()</code> will return <code>Ok(true)</code> if any record's public key matches a trust anchor. This results in <code>verify_rrset()</code> returning a <code>Secure</code> proof. This ultimately results in successfully verifying a response containing DNSKEY records. <code>verify_default_rrset()</code> looks up DNSKEY records by calling <code>handle.lookup()</code>, which takes the above code path. There's a comment following this that says "DNSKEYs were already validated by the inner query in the above lookup", but this is not the case. To fully verify the whole RRset of DNSKEYs, it would be necessary to check self-signatures by the trusted key over the other keys. Later in <code>verify_default_rrset()</code>, <code>verify_rrset_with_dnskey()</code> is called multiple times with different keys and signatures, and if any call succeeds, then its <code>Proof</code> is returned.</p>
+<p>Similarly, <code>verify_dnskey_rrset()</code> returns <code>Ok(false)</code> if any DNSKEY record is covered by a DS record. A comment says "If all the keys are valid, then we are secure", but this is only checking that one key is authenticated by a DS in the parent zone's delegation point. This time, after control flow returns to <code>verify_rrset()</code>, it will call <code>verify_default_rrset()</code>. The special handling for DNSKEYs in <code>verify_default_rrset()</code> will then call <code>verify_rrset_with_dnskey()</code> using each KSK DNSKEY record, and if one call succeeds, return its <code>Proof</code>. If there are multiple KSK DNSKEYs in the RRset, then this leads to another authentication break. We need to either pass the authenticated DNSKEYs from the DS covering check to the RRSIG validation, or we need to perform this RRSIG validation of the DNSKEY RRset inside <code>verify_dnskey_rrset()</code> and cut <code>verify_default_rrset()</code> out of DNSKEY RRset validation entirely.</p>
+<h3 id="poc">PoC</h3>
+<p>The proof of concepts have been integrated into the conformance test suite, as <code>resolver::dnssec::scenarios::bogus::bogus_zone_plus_trust_anchor_dnskey</code> and <code>resolver::dnssec::scenarios::bogus::bogus_zone_plus_ds_covered_dnskey</code>.</p>
+<h3 id="impact">Impact</h3>
+<p>This impacts Hickory DNS users relying on DNSSEC verification in the client library, stub resolver, or recursive resolver.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/hickory-dns/hickory-dns/security/advisories/GHSA-37wc-h8xc-5hc4">https://github.com/hickory-dns/hickory-dns/security/advisories/GHSA-37wc-h8xc-5hc4</a></li>
+<li><a href="https://github.com/advisories/GHSA-37wc-h8xc-5hc4">https://github.com/advisories/GHSA-37wc-h8xc-5hc4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-37wc-h8xc-5hc4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-02-10T17:46:00.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[cosmwasm-vm] wasmvm: Malicious smart contract can slow down block production]]></title>
         <id>https://github.com/advisories/GHSA-mx2j-7cmv-353c</id>
@@ -897,73 +925,5 @@ Windows is much less affected than Unix-like systems due to limitations on what 
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-01-07T15:25:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[deno] fetch: Authorization headers not dropped when redirecting cross-origin]]></title>
-        <id>https://github.com/advisories/GHSA-f27p-cmv8-xhm6</id>
-        <link href="https://github.com/advisories/GHSA-f27p-cmv8-xhm6"/>
-        <updated>2025-01-07T02:52:56.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When you send a request with the <code>Authorization</code> header to one domain, and the response asks to redirect to a different domain, Deno's<code>fetch()</code> redirect handling creates a follow-up redirect request that keeps the original <code>Authorization</code> header, leaking its content to that second domain.</p>
-<h3 id="details">Details</h3>
-<p>The <a href="https://fetch.spec.whatwg.org/#ref-for-cors-non-wildcard-request-header-name">right behavior</a> would be to drop the <code>Authorization</code> header instead, in this scenario. The same is generally applied to <code>Cookie</code> and <code>Proxy-Authorization</code> headers, and is done for not only host changes, but also protocol/port changes. Generally referred to as "origin".</p>
-<p>The <a href="https://docs.deno.com/runtime/reference/web_platform_apis/#:~:text=Deno%20does%20not%20follow%20the,leaking%20authenticated%20data%20cross%20origin.">documentation</a> states: </p>
-<blockquote>
-<p>Deno does not follow the same-origin policy, because the Deno user agent currently does not have the concept of origins, and it does not have a cookie jar. This means Deno <strong>does not need</strong> to protect against leaking authenticated data cross origin </p>
-</blockquote>
-<h3 id="reproduction">Reproduction</h3>
-<pre><code class="language-ts">const ac = new AbortController()
-
-const server1 = Deno.serve({ port: 3001, signal: ac.signal }, (req) =&gt; {
-  return new Response(null, {
-    status: 302,
-    headers: {
-      'location': 'http://localhost:3002/redirected'
-    },
-  })
-})
-
-const server2 = Deno.serve({ port: 3002, signal: ac.signal }, (req) =&gt; {
-  const body = JSON.stringify({
-    url: req.url,
-    hasAuth: req.headers.has('authorization'),
-  })
-  return new Response(body, {
-    status: 200,
-    headers: {'content-type': 'application/json'},
-  })
-})
-
-async function main() {
-  const response = await fetch("http://localhost:3001/", {
-    headers: {authorization: 'Bearer foo'}
-  })
-  const body = await response.json()
-  
-  ac.abort()
-  
-  if (body.hasAuth) {
-    console.error('ERROR: Authorization header should not be present after cross-origin redirect')
-  } else {
-    console.log('SUCCESS: Authorization header is not present after cross-origin redirect')
-  }
-}
-
-setTimeout(main, 500)
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/denoland/deno/security/advisories/GHSA-f27p-cmv8-xhm6">https://github.com/denoland/deno/security/advisories/GHSA-f27p-cmv8-xhm6</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-21620">https://nvd.nist.gov/vuln/detail/CVE-2025-21620</a></li>
-<li><a href="https://github.com/advisories/GHSA-f27p-cmv8-xhm6">https://github.com/advisories/GHSA-f27p-cmv8-xhm6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f27p-cmv8-xhm6</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-01-06T22:27:09.000Z</published>
     </entry>
 </feed>
