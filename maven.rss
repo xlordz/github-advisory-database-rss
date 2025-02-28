@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/maven.rss</id>
     <title>Security Advisory for Java artifacts hosted at the Maven central repository</title>
-    <updated>2025-02-28T19:01:26.304Z</updated>
+    <updated>2025-02-28T20:01:29.435Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Amaven"/>
     <subtitle>Security Advisory for Java artifacts hosted at the Maven central repository on GitHub</subtitle>
@@ -11,6 +11,98 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[io.pebbletemplates:pebble] Pebble has Arbitrary Local File Inclusion (LFI) Vulnerability via `include` macro]]></title>
+        <id>https://github.com/advisories/GHSA-p75g-cxfj-7wrx</id>
+        <link href="https://github.com/advisories/GHSA-p75g-cxfj-7wrx"/>
+        <updated>2025-02-28T19:45:04.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>If untrusted user input is used to dynamically create a <code>PebbleTemplate</code> with the method <code>PebbleEngine#getLiteralTemplate</code>, then an attacker can include arbitrary local files from the file system into the generated template, leaking potentially sensitive information into the output of <code>PebbleTemplate#evaluate</code>. This is done via the <code>include</code> macro.</p>
+<h3 id="details">Details</h3>
+<p>The <code>include</code> macro calls <code>PebbleTempateImpl#resolveRelativePath</code> with the <code>relativePath</code> argument passed within the template:</p>
+<p>Example template:</p>
+<pre><code>{% include [relativePath] %}
+</code></pre>
+<p>When <code>resolveRelativePath</code> is called, the <code>relativePath</code>  is resolved against the <code>PebbleTemplateImpl.name</code> variable.</p>
+<pre><code class="language-java">  /**
+   * This method resolves the given relative path based on this template file path.
+   *
+   * @param relativePath the path which should be resolved.
+   * @return the resolved path.
+   */
+  public String resolveRelativePath(String relativePath) {
+    String resolved = this.engine.getLoader().resolveRelativePath(relativePath, this.name);
+    if (resolved == null) {
+      return relativePath;
+    } else {
+      return resolved;
+    }
+  }
+</code></pre>
+<p><a href="https://github.com/PebbleTemplates/pebble/blob/82ad7fcf9e9eaa45ee82ae3335a1409d19c10263/pebble/src/main/java/io/pebbletemplates/pebble/template/PebbleTemplateImpl.java#L380">https://github.com/PebbleTemplates/pebble/blob/82ad7fcf9e9eaa45ee82ae3335a1409d19c10263/pebble/src/main/java/io/pebbletemplates/pebble/template/PebbleTemplateImpl.java#L380</a></p>
+<p>Unfortunately, when the template is created from a string, as is the case when <code>PebbleEngine#getLiteralTemplate</code> is used, the <code>PebbleTemplateImpl.name</code> variable is actually the entirety of the contents of the template, not a filename as the logic expects. The net result is that the <code>relativePath</code> is resolved against the system root directory. As a result, files accessible from the root directory of the filesystem can be included into a template. </p>
+<h3 id="poc">PoC</h3>
+<p>The following test demonstrates the vulnerability:</p>
+<pre><code class="language-java">PebbleEngine e = new PebbleEngine.Builder().build();
+
+String templateString = """
+        {% include '/etc/passwd' %}
+        """;
+PebbleTemplate template = e.getLiteralTemplate(templateString);
+
+try (final Writer writer = new StringWriter()) {
+    template.evaluate(writer, new HashMap&lt;&gt;());
+    System.out.println(writer);
+}
+</code></pre>
+<p>As an attacker, the following malicious template demonstrates the vulnerability:</p>
+<pre><code>{% include '/etc/passwd' %}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is an arbitrary  Local File Inclusion (LFI) vulnerability. It can allow attackers to exfiltrate the contents of the local filesystem, including sensitive files into <code>PebbleTemplate</code> output. This can also be used to access the <code>/proc</code> filesystem which can give an attacker access to environment variables.</p>
+<h3 id="fix">Fix</h3>
+<p>There exists no published fix for this vulnerability. The best way to mitigate this vulnerability is to disable the <code>include</code> macro in Pebble Templates.</p>
+<p>The following can safeguard your application from this vulnerability:</p>
+<pre><code class="language-java">new PebbleEngine.Builder()
+            .registerExtensionCustomizer(new DisallowExtensionCustomizerBuilder()
+                    .disallowedTokenParserTags(List.of("include"))
+                    .build())
+            .build();
+</code></pre>
+<h3 id="report-timeline">Report Timeline</h3>
+<p>Vulnerability was reported under the Open Source Security Foundation (OpenSSF) <a href="https://openssf.org/about/vulnerability-disclosure-policy/">Model Outbound Vulnerability Disclosure Policy: Version 0.1</a>.</p>
+<ul>
+<li><a href="https://github.com/PebbleTemplates/pebble/issues/680#issue-2409727829">Jul 15, 2024</a> Maintainer Contacted to enable private vulnerability reporting</li>
+<li><a href="https://github.com/PebbleTemplates/pebble/issues/680#issuecomment-2236970984">Jul 18, 2024</a> I opened a GHSA 
+ to report this vulnerability to the maintainer <a href="https://github.com/PebbleTemplates/pebble/security/advisories/GHSA-7c6h-hmf9-7wj7">https://github.com/PebbleTemplates/pebble/security/advisories/GHSA-7c6h-hmf9-7wj7</a> (private link)</li>
+<li>Jul 29, 2024 GHSA updated to ping maintainer about vulnerability, no response</li>
+<li>Oct 1, 2024 GHSA updated to ping maintainer about vulnerability, no response</li>
+<li>Nov 15, 2024 GHSA updated to inform maintainer that disclosure timeline had lapsed, no response.</li>
+<li>Feb 19, 2025 GHSA updated to inform maintainer that disclosure would occur imminently, no response.</li>
+<li>Feb 24, 2025 this GHSA was created to disclose this vulnerability <strong>without a patch available</strong>.</li>
+</ul>
+<p>For further discussion, see this issue: <a href="https://github.com/PebbleTemplates/pebble/issues/688">https://github.com/PebbleTemplates/pebble/issues/688</a></p>
+<h3 id="credit">Credit</h3>
+<p>This vulnerability was discovered by @JLLeitschuh while at <a href="https://www.chainguard.dev">Chainguard Labs</a>. Jonathan is currently independent.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/JLLeitschuh/security-research/security/advisories/GHSA-p75g-cxfj-7wrx">https://github.com/JLLeitschuh/security-research/security/advisories/GHSA-p75g-cxfj-7wrx</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1686">https://nvd.nist.gov/vuln/detail/CVE-2025-1686</a></li>
+<li><a href="https://github.com/PebbleTemplates/pebble/issues/680">https://github.com/PebbleTemplates/pebble/issues/680</a></li>
+<li><a href="https://github.com/PebbleTemplates/pebble/issues/688">https://github.com/PebbleTemplates/pebble/issues/688</a></li>
+<li><a href="https://pebbletemplates.io/wiki/tag/include">https://pebbletemplates.io/wiki/tag/include</a></li>
+<li><a href="https://security.snyk.io/vuln/SNYK-JAVA-IOPEBBLETEMPLATES-8745594">https://security.snyk.io/vuln/SNYK-JAVA-IOPEBBLETEMPLATES-8745594</a></li>
+<li><a href="https://github.com/advisories/GHSA-p75g-cxfj-7wrx">https://github.com/advisories/GHSA-p75g-cxfj-7wrx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p75g-cxfj-7wrx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-02-28T19:45:03.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[io.quarkus:quarkus-rest-deployment] Quarkus REST Endpoint Request Parameter Leakage Due to Shared Instance]]></title>
         <id>https://github.com/advisories/GHSA-phg3-gv66-q38x</id>
@@ -570,83 +662,5 @@ When the null-bytes are encountered by the <code>InputStreamReader</code>, it wi
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-02-10T18:14:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[io.netty:netty-common] Denial of Service attack on windows app using netty]]></title>
-        <id>https://github.com/advisories/GHSA-xq3w-v528-46rv</id>
-        <link href="https://github.com/advisories/GHSA-xq3w-v528-46rv"/>
-        <updated>2025-02-18T15:57:46.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An unsafe reading of environment file could potentially cause a denial of service in Netty.
-When loaded on an Windows application, Netty attemps to load a file that does not exist. If an attacker creates such a large file, the Netty application crash.</p>
-<h3 id="details">Details</h3>
-<p>When the library netty is loaded in a java windows application, the library tries to identify the system environnement in which it is executed.</p>
-<p>At this stage, Netty tries to load both <code>/etc/os-release</code> and <code>/usr/lib/os-release</code> even though it is in a Windows environment. </p>
-<img src="https://github.com/user-attachments/assets/9466b181-9394-45a3-b0e3-1dcf105def59" alt="1" width="364">
-
-<p>If netty finds this files, it reads them and loads them into memory.</p>
-<p>By default :</p>
-<ul>
-<li>The JVM maximum memory size is set to 1 GB,</li>
-<li>A non-privileged user can create a directory at <code>C:\</code> and create files within it.</li>
-</ul>
-<img src="https://github.com/user-attachments/assets/43b359a2-5871-4592-ae2b-ffc40ac76831" alt="2" width="340">
-
-<img src="https://github.com/user-attachments/assets/ad5c6eed-451c-4513-92d5-ba0eee7715c1" alt="3" width="523">
-
-<p>the source code identified :
-<a href="https://github.com/netty/netty/blob/4.1/common/src/main/java/io/netty/util/internal/PlatformDependent.java">https://github.com/netty/netty/blob/4.1/common/src/main/java/io/netty/util/internal/PlatformDependent.java</a></p>
-<p>Despite the implementation of the function <code>normalizeOs()</code> the source code not verify the OS before reading <code>C:\etc\os-release</code> and <code>C:\usr\lib\os-release</code>.</p>
-<h3 id="poc">PoC</h3>
-<p>Create a file larger than 1 GB of data in <code>C:\etc\os-release</code> or <code>C:\usr\lib\os-release</code> on a Windows environnement and start your Netty application.</p>
-<p>To observe what the application does with the file, the security analyst used "Process Monitor" from the "Windows SysInternals" suite. (<a href="https://learn.microsoft.com/en-us/sysinternals/">https://learn.microsoft.com/en-us/sysinternals/</a>)</p>
-<pre><code>cd C:\etc
-fsutil file createnew os-release 3000000000
-</code></pre>
-<img src="https://github.com/user-attachments/assets/39df22a3-462b-4fd0-af9a-aa30077ec08f" alt="4" width="519">
-
-<img src="https://github.com/user-attachments/assets/129dbd50-fc36-4da5-8eb1-582123fb528f" alt="5" width="517">
-
-<p>The source code used is the Netty website code example : <a href="https://netty.io/4.1/xref/io/netty/example/echo/package-summary.html">Echo ‐ the very basic client and server</a>.</p>
-<p>The vulnerability was tested on the 4.1.112.Final version.</p>
-<p>The security analyst tried the same technique for <code>C:\proc\sys\net\core\somaxconn</code> with a lot of values to impact Netty but the only things that works is the "larger than 1 GB file" technique. <a href="https://github.com/netty/netty/blob/c0fdb8e9f8f256990e902fcfffbbe10754d0f3dd/common/src/main/java/io/netty/util/NetUtil.java#L186">https://github.com/netty/netty/blob/c0fdb8e9f8f256990e902fcfffbbe10754d0f3dd/common/src/main/java/io/netty/util/NetUtil.java#L186</a></p>
-<h3 id="impact">Impact</h3>
-<p>By loading the "file larger than 1 GB" into the memory, the Netty library exceeds the JVM memory limit and causes a crash in the java Windows application.</p>
-<p>This behaviour occurs 100% of the time in both Server mode and Client mode if the large file exists.</p>
-<p>Client mode :</p>
-<img src="https://github.com/user-attachments/assets/f8fe1ed0-1a42-4490-b9ed-dbc9af7804be" alt="6" width="449">
-
-<p>Server mode :</p>
-<img src="https://github.com/user-attachments/assets/b34b42bd-4fbd-4170-b93a-d29ba87b88eb" alt="7" width="464">
-
-<p>somaxconn :</p>
-<img src="https://github.com/user-attachments/assets/0656b3bb-32c6-4ae2-bff7-d93babba08a3" alt="8" width="532">
-
-<h3 id="severity">Severity</h3>
-<ul>
-<li>Attack vector : "Local" because the attacker needs to be on the system where the Netty application is running.</li>
-<li>Attack complexity : "Low" because the attacker only need to create a massive file (regardless of its contents).</li>
-<li>Privileges required : "Low" because the attacker requires a user account to exploit the vulnerability.</li>
-<li>User intercation : "None" because the administrator don't need to accidentally click anywhere to trigger the vulnerability. Furthermore, the exploitation works with defaults windows/AD settings.</li>
-<li>Scope : "Unchanged" because only Netty is affected by the vulnerability.</li>
-<li>Confidentiality : "None" because no data is exposed through exploiting the vulnerability.</li>
-<li>Integrity : "None" because the explotation of the vulnerability does not allow editing, deleting or adding data elsewhere.</li>
-<li>Availability : "High" because the exploitation of this vulnerability crashes the entire java application.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/netty/netty/security/advisories/GHSA-xq3w-v528-46rv">https://github.com/netty/netty/security/advisories/GHSA-xq3w-v528-46rv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-47535">https://nvd.nist.gov/vuln/detail/CVE-2024-47535</a></li>
-<li><a href="https://github.com/netty/netty/commit/fbf7a704a82e7449b48bd0bbb679f5661c6d61a3">https://github.com/netty/netty/commit/fbf7a704a82e7449b48bd0bbb679f5661c6d61a3</a></li>
-<li><a href="https://github.com/advisories/GHSA-xq3w-v528-46rv">https://github.com/advisories/GHSA-xq3w-v528-46rv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-xq3w-v528-46rv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2024-11-12T19:53:17.000Z</published>
     </entry>
 </feed>
