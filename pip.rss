@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-02-28T02:25:21.211Z</updated>
+    <updated>2025-02-28T03:07:55.040Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,87 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[spotipy] Spotipy's cache file, containing spotify auth token, is created with overly broad permissions]]></title>
+        <id>https://github.com/advisories/GHSA-pwhh-q4h6-w599</id>
+        <link href="https://github.com/advisories/GHSA-pwhh-q4h6-w599"/>
+        <updated>2025-02-28T02:34:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>CacheHandler</code> class creates a cache file to store the auth token here: <a href="https://github.com/spotipy-dev/spotipy/blob/master/spotipy/cache_handler.py#L93-L98">https://github.com/spotipy-dev/spotipy/blob/master/spotipy/cache_handler.py#L93-L98</a></p>
+<p>The file created has <code>rw-r--r--</code> (644) permissions by default, when it could be locked down to <code>rw-------</code> (600) permissions. I think <code>600</code> is a sensible default.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/0b7ebbc1-a27a-4528-ab6a-135c7886766a"></p>
+<h3 id="details">Details</h3>
+<p>This leads to overly broad exposure of the spotify auth token. If this token can be read by an attacker (another user on the machine, or a process running as another user), it can be used to perform administrative actions on the Spotify account, depending on the scope granted to the token.</p>
+<h3 id="poc">PoC</h3>
+<p>Run an application that uses spotipy with client creation like this:</p>
+<pre><code class="language-python">from pathlib import Path
+import spotipy
+from os import getenv
+
+def create_spotify_client(client_id: str, client_secret: str) -&gt; spotipy.Spotify:
+    """Create and return an authenticated Spotify client.
+
+    Args:
+        client_id: Spotify API client ID
+        client_secret: Spotify API client secret
+
+    Returns:
+        An authenticated Spotify client instance
+    """
+    cache_path = Path.home() / ".cache" / "spotify-backup/.auth_cache"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_handler = spotipy.cache_handler.CacheFileHandler(cache_path=str(cache_path))
+
+    client = spotipy.Spotify(
+        auth_manager=spotipy.oauth2.SpotifyOAuth(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri="http://localhost:8000/callback",
+            cache_handler=cache_handler,
+            scope=[
+                "user-library-read",
+                "playlist-read-private",
+                "playlist-read-collaborative",
+            ],
+        )
+    )
+
+    return client
+
+create_spotify_client()
+</code></pre>
+<p>And then check the file permissions on the cache file that was created with:</p>
+<pre><code class="language-bash">$ ls -la ~/.cache/spotify-backup/.auth_cache`
+.rw-r--r--. alichtman alichtman 562 B Thu Feb 20 02:12:33 2025  /home/alichtman/.cache/spotify-backup/.auth_cache
+</code></pre>
+<p>If this issue is combined with another misconfiguration, like having <code>o+r</code> permissions set on your home directory, an attacker will be able to read this file and steal this auth token.</p>
+<p>Good defense in depth would be to restrict read permissions on this cache file that contains an auth token</p>
+<h3 id="impact">Impact</h3>
+<p>Potential exposure of Spotify auth token to other users with access to the machine. A worst case scenario is if the token is granted all permissions, and can be used to do any of:</p>
+<ul>
+<li>exfiltrate spotify likes / saved playlists</li>
+<li>delete your content</li>
+<li>modify your content w/o your permission</li>
+</ul>
+<p>If someone were to discover an RCE in Spotify that you could trigger on a machine by having a song played (or song metadata parsed or something), this auth token could maybe be used to add a song to a playlist, or control playback (allowing further exploitation).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/spotipy-dev/spotipy/security/advisories/GHSA-pwhh-q4h6-w599">https://github.com/spotipy-dev/spotipy/security/advisories/GHSA-pwhh-q4h6-w599</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27154">https://nvd.nist.gov/vuln/detail/CVE-2025-27154</a></li>
+<li><a href="https://github.com/spotipy-dev/spotipy/commit/1ca453f6ef87a2a9e9876f52b6cb38d13532ccf2">https://github.com/spotipy-dev/spotipy/commit/1ca453f6ef87a2a9e9876f52b6cb38d13532ccf2</a></li>
+<li><a href="https://github.com/spotipy-dev/spotipy/blob/master/spotipy/cache_handler.py#L93-L98">https://github.com/spotipy-dev/spotipy/blob/master/spotipy/cache_handler.py#L93-L98</a></li>
+<li><a href="https://github.com/spotipy-dev/spotipy/releases/tag/2.25.1">https://github.com/spotipy-dev/spotipy/releases/tag/2.25.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-pwhh-q4h6-w599">https://github.com/advisories/GHSA-pwhh-q4h6-w599</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pwhh-q4h6-w599</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-02-28T02:34:38.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[copyparty] copyparty renders unsanitized filenames as HTML when user uploads empty files]]></title>
         <id>https://github.com/advisories/GHSA-m2jw-cj8v-937r</id>
@@ -1102,29 +1183,5 @@ nginx:x:999:999:nginx user:/nonexistent:/usr/sbin/nologin
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2024-06-12T15:31:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[fastecdsa] Uninitialized Variable in fastecdsa]]></title>
-        <id>https://github.com/advisories/GHSA-ph86-g9r3-5qw4</id>
-        <link href="https://github.com/advisories/GHSA-ph86-g9r3-5qw4"/>
-        <updated>2025-02-12T21:59:32.000Z</updated>
-        <content type="html"><![CDATA[<p>Versions of the package fastecdsa before 2.3.2 use an Uninitialized Variable on the stack, via the curvemath_mul function in src/curveMath.c, due to being used and interpreted as user-defined type. Depending on the variable's actual value it could be arbitrary free(), arbitrary realloc(), null pointer dereference and other. Since the stack can be controlled by the attacker, the vulnerability could be used to corrupt allocator structure, leading to possible heap exploitation. The attacker could cause denial of service by exploiting this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-21502">https://nvd.nist.gov/vuln/detail/CVE-2024-21502</a></li>
-<li><a href="https://github.com/AntonKueltz/fastecdsa/commit/57fc5689c95d649dab7ef60cc99ac64589f01e36">https://github.com/AntonKueltz/fastecdsa/commit/57fc5689c95d649dab7ef60cc99ac64589f01e36</a></li>
-<li><a href="https://gist.github.com/keltecc/49da037072276f21b005a8337c15db26">https://gist.github.com/keltecc/49da037072276f21b005a8337c15db26</a></li>
-<li><a href="https://github.com/AntonKueltz/fastecdsa/blob/v2.3.1/src/curveMath.c%23L210">https://github.com/AntonKueltz/fastecdsa/blob/v2.3.1/src/curveMath.c%23L210</a></li>
-<li><a href="https://security.snyk.io/vuln/SNYK-PYTHON-FASTECDSA-6262045">https://security.snyk.io/vuln/SNYK-PYTHON-FASTECDSA-6262045</a></li>
-<li><a href="https://github.com/advisories/GHSA-ph86-g9r3-5qw4">https://github.com/advisories/GHSA-ph86-g9r3-5qw4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-ph86-g9r3-5qw4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-02-24T06:30:17.000Z</published>
     </entry>
 </feed>
