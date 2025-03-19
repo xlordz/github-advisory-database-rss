@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2025-03-19T16:01:28.348Z</updated>
+    <updated>2025-03-19T17:01:30.963Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,735 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[sylius/paypal-plugin] Sylius PayPal Plugin has an Order Manipulation Vulnerability after PayPal Checkout]]></title>
+        <id>https://github.com/advisories/GHSA-hxg4-65p5-9w37</id>
+        <link href="https://github.com/advisories/GHSA-hxg4-65p5-9w37"/>
+        <updated>2025-03-19T16:46:30.000Z</updated>
+        <content type="html"><![CDATA[<p>A discovered vulnerability allows users to modify their shopping cart after completing the PayPal Checkout process and payment authorization. If a user initiates a PayPal transaction from a product page or the cart page and then returns to the order summary page, they can still manipulate the cart contents before finalizing the order. As a result, the order amount in Sylius may be higher than the amount actually captured by PayPal, leading to a scenario where merchants deliver products or services without full payment.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Users can exploit this flaw to receive products/services without paying the full amount.</li>
+<li>Merchants may suffer financial losses due to underpaid orders.</li>
+<li>Trust in the integrity of the payment process is compromised.</li>
+</ul>
+<h3 id="patches">Patches</h3>
+<p>The issue is fixed in versions: 1.6.2, 1.7.2, 2.0.2 and above.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>To resolve the problem in the end application without updating to the newest patches, there is a need to overwrite <code>PayPalOrderCompleteProcessor</code> with modified logic:</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\Processor;
+
+use Sylius\Bundle\PayumBundle\Model\GatewayConfigInterface;
+use Sylius\Component\Core\Model\OrderInterface;
+use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethodInterface;
+use Sylius\PayPalPlugin\Manager\PaymentStateManagerInterface;
+
+final class PayPalOrderCompleteProcessor
+{
+    public function __construct(private readonly PaymentStateManagerInterface $paymentStateManager) {
+    }
+
+    public function completePayPalOrder(OrderInterface $order): void
+    {
+        $payment = $order-&gt;getLastPayment(PaymentInterface::STATE_PROCESSING);
+        if ($payment === null) {
+            return;
+        }
+
+        /** @var PaymentMethodInterface $paymentMethod */
+        $paymentMethod = $payment-&gt;getMethod();
+        /** @var GatewayConfigInterface $gatewayConfig */
+        $gatewayConfig = $paymentMethod-&gt;getGatewayConfig();
+
+        if ($gatewayConfig-&gt;getFactoryName() !== 'sylius.pay_pal') {
+            return;
+        }
+
+        try {
+            $this-&gt;verify($payment);
+        } catch (\Exception) {
+            $this-&gt;paymentStateManager-&gt;cancel($payment);
+
+            return;
+        }
+
+        $this-&gt;paymentStateManager-&gt;complete($payment);
+    }
+
+    private function verify(PaymentInterface $payment): void
+    {
+        $totalAmount = $this-&gt;getTotalPaymentAmountFromPaypal($payment);
+
+        if ($payment-&gt;getOrder()-&gt;getTotal() !== $totalAmount) {
+            throw new \Exception();
+        }
+    }
+
+    private function getTotalPaymentAmountFromPaypal(PaymentInterface $payment): int
+    {
+        $details = $payment-&gt;getDetails();
+
+        return $details['payment_amount'] ?? 0;
+    }
+}
+</code></pre>
+<h3 id="important">IMPORTANT</h3>
+<p>For <code>PayPalPlugin 2.x</code> change:</p>
+<pre><code class="language-php">$gatewayConfig-&gt;getFactoryName() !== 'sylius.pay_pal'
+</code></pre>
+<p>to</p>
+<pre><code class="language-php">$gatewayConfig-&gt;getFactoryName() !== SyliusPayPalExtension::PAYPAL_FACTORY_NAME
+</code></pre>
+<p>Also there is a need to overwrite <code>CompletePayPalOrderListener</code> with modified logic:</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\EventListener\Workflow;
+
+use App\Processor\PayPalOrderCompleteProcessor;
+use Sylius\Component\Core\Model\OrderInterface;
+use Symfony\Component\Workflow\Event\CompletedEvent;
+use Webmozart\Assert\Assert;
+
+final class CompletePayPalOrderListener
+{
+    public function __construct(private readonly PayPalOrderCompleteProcessor $completeProcessor)
+    {
+    }
+
+    public function __invoke(CompletedEvent $event): void
+    {
+        /** @var OrderInterface $order */
+        $order = $event-&gt;getSubject();
+        Assert::isInstanceOf($order, OrderInterface::class);
+
+        $this-&gt;completeProcessor-&gt;completePayPalOrder($order);
+    }
+}
+</code></pre>
+<p>And to overwrite <code>CaptureAction</code> with modified logic (if you didn't have it already):</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\Payum\Action;
+
+use Payum\Core\Action\ActionInterface;
+use Payum\Core\Exception\RequestNotSupportedException;
+use Payum\Core\Request\Capture;
+use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethodInterface;
+use Sylius\PayPalPlugin\Api\CacheAuthorizeClientApiInterface;
+use Sylius\PayPalPlugin\Api\CreateOrderApiInterface;
+use Sylius\PayPalPlugin\Payum\Action\StatusAction;
+use Sylius\PayPalPlugin\Provider\UuidProviderInterface;
+
+final class CaptureAction implements ActionInterface
+{
+    public function __construct(
+        private CacheAuthorizeClientApiInterface $authorizeClientApi,
+        private CreateOrderApiInterface $createOrderApi,
+        private UuidProviderInterface $uuidProvider,
+    ) {
+    }
+
+    /** @param Capture $request */
+    public function execute($request): void
+    {
+        RequestNotSupportedException::assertSupports($this, $request);
+
+        /** @var PaymentInterface $payment */
+        $payment = $request-&gt;getModel();
+        /** @var PaymentMethodInterface $paymentMethod */
+        $paymentMethod = $payment-&gt;getMethod();
+
+        $token = $this-&gt;authorizeClientApi-&gt;authorize($paymentMethod);
+
+        $referenceId = $this-&gt;uuidProvider-&gt;provide();
+        $content = $this-&gt;createOrderApi-&gt;create($token, $payment, $referenceId);
+
+        if ($content['status'] === 'CREATED') {
+            $payment-&gt;setDetails([
+                'status' =&gt; StatusAction::STATUS_CAPTURED,
+                'paypal_order_id' =&gt; $content['id'],
+                'reference_id' =&gt; $referenceId,
+                'payment_amount' =&gt; $payment-&gt;getAmount(),
+            ]);
+        }
+    }
+
+    public function supports($request): bool
+    {
+        return
+            $request instanceof Capture &amp;&amp;
+            $request-&gt;getModel() instanceof PaymentInterface
+        ;
+    }
+}
+</code></pre>
+<p>After that, register services in the container when using PayPal 1.x:</p>
+<pre><code class="language-yaml">Sylius\PayPalPlugin\EventListener\Workflow\CompletePayPalOrderListener:
+    class: App\EventListener\Workflow\CompletePayPalOrderListener
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Processor\PayPalOrderCompleteProcessor'
+    tags: 
+        - { name: 'kernel.event_listener', event: 'workflow.sylius_order_checkout.completed.complete', priority: 100 }
+    
+Sylius\PayPalPlugin\Processor\PayPalOrderCompleteProcessor:
+    class: App\Processor\PayPalOrderCompleteProcessor
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Manager\PaymentStateManagerInterface'
+
+Sylius\PayPalPlugin\Payum\Action\CaptureAction:
+    class: App\Payum\Action\CaptureAction
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Api\CacheAuthorizeClientApiInterface'
+        - '@Sylius\PayPalPlugin\Api\CreateOrderApiInterface'
+        - '@Sylius\PayPalPlugin\Provider\UuidProviderInterface'
+    tags:
+        - { name: 'payum.action', factory: 'sylius.pay_pal', alias: 'payum.action.capture' }
+</code></pre>
+<p>or when using PayPal 2.x:</p>
+<pre><code class="language-yaml">sylius_paypal.listener.workflow.complete_paypal_order:
+    class: App\EventListener\Workflow\CompletePayPalOrderListener
+    public: true
+    arguments:
+        - '@sylius_paypal.processor.paypal_order_complete'
+    tags: 
+        - { name: 'kernel.event_listener', event: 'workflow.sylius_order_checkout.completed.complete', priority: 100 }
+    
+sylius_paypal.processor.paypal_order_complete:
+    class: App\Processor\PayPalOrderCompleteProcessor
+    public: true
+    arguments:
+        - '@sylius_paypal.manager.payment_state'
+
+sylius_paypal.payum.action.capture:
+    class: App\Payum\Action\CaptureAction
+    public: true
+    arguments:
+        - '@sylius_paypal.api.cache_authorize_client'
+        - '@sylius_paypal.api.create_order'
+        - '@sylius_paypal.provider.uuid'
+    tags:
+        - { name: 'payum.action', factory: 'sylius.paypal', alias: 'payum.action.capture' }
+</code></pre>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory:</p>
+<ul>
+<li>Open an issue in <a href="https://github.com/Sylius/Sylius/issues">Sylius issues</a></li>
+<li>Email us at <a href="mailto:security@sylius.com">security@sylius.com</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Sylius/PayPalPlugin/security/advisories/GHSA-hxg4-65p5-9w37">https://github.com/Sylius/PayPalPlugin/security/advisories/GHSA-hxg4-65p5-9w37</a></li>
+<li><a href="https://github.com/Sylius/PayPalPlugin/commit/5613df827a6d4fc50862229295976200a68e97aa">https://github.com/Sylius/PayPalPlugin/commit/5613df827a6d4fc50862229295976200a68e97aa</a></li>
+<li><a href="https://github.com/advisories/GHSA-hxg4-65p5-9w37">https://github.com/advisories/GHSA-hxg4-65p5-9w37</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hxg4-65p5-9w37</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-19T16:46:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sylius/paypal-plugin] Sylius PayPal Plugin has an Order Manipulation Vulnerability after PayPal Checkout]]></title>
+        <id>https://github.com/advisories/GHSA-hxg4-65p5-9w37</id>
+        <link href="https://github.com/advisories/GHSA-hxg4-65p5-9w37"/>
+        <updated>2025-03-19T16:46:30.000Z</updated>
+        <content type="html"><![CDATA[<p>A discovered vulnerability allows users to modify their shopping cart after completing the PayPal Checkout process and payment authorization. If a user initiates a PayPal transaction from a product page or the cart page and then returns to the order summary page, they can still manipulate the cart contents before finalizing the order. As a result, the order amount in Sylius may be higher than the amount actually captured by PayPal, leading to a scenario where merchants deliver products or services without full payment.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Users can exploit this flaw to receive products/services without paying the full amount.</li>
+<li>Merchants may suffer financial losses due to underpaid orders.</li>
+<li>Trust in the integrity of the payment process is compromised.</li>
+</ul>
+<h3 id="patches">Patches</h3>
+<p>The issue is fixed in versions: 1.6.2, 1.7.2, 2.0.2 and above.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>To resolve the problem in the end application without updating to the newest patches, there is a need to overwrite <code>PayPalOrderCompleteProcessor</code> with modified logic:</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\Processor;
+
+use Sylius\Bundle\PayumBundle\Model\GatewayConfigInterface;
+use Sylius\Component\Core\Model\OrderInterface;
+use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethodInterface;
+use Sylius\PayPalPlugin\Manager\PaymentStateManagerInterface;
+
+final class PayPalOrderCompleteProcessor
+{
+    public function __construct(private readonly PaymentStateManagerInterface $paymentStateManager) {
+    }
+
+    public function completePayPalOrder(OrderInterface $order): void
+    {
+        $payment = $order-&gt;getLastPayment(PaymentInterface::STATE_PROCESSING);
+        if ($payment === null) {
+            return;
+        }
+
+        /** @var PaymentMethodInterface $paymentMethod */
+        $paymentMethod = $payment-&gt;getMethod();
+        /** @var GatewayConfigInterface $gatewayConfig */
+        $gatewayConfig = $paymentMethod-&gt;getGatewayConfig();
+
+        if ($gatewayConfig-&gt;getFactoryName() !== 'sylius.pay_pal') {
+            return;
+        }
+
+        try {
+            $this-&gt;verify($payment);
+        } catch (\Exception) {
+            $this-&gt;paymentStateManager-&gt;cancel($payment);
+
+            return;
+        }
+
+        $this-&gt;paymentStateManager-&gt;complete($payment);
+    }
+
+    private function verify(PaymentInterface $payment): void
+    {
+        $totalAmount = $this-&gt;getTotalPaymentAmountFromPaypal($payment);
+
+        if ($payment-&gt;getOrder()-&gt;getTotal() !== $totalAmount) {
+            throw new \Exception();
+        }
+    }
+
+    private function getTotalPaymentAmountFromPaypal(PaymentInterface $payment): int
+    {
+        $details = $payment-&gt;getDetails();
+
+        return $details['payment_amount'] ?? 0;
+    }
+}
+</code></pre>
+<h3 id="important">IMPORTANT</h3>
+<p>For <code>PayPalPlugin 2.x</code> change:</p>
+<pre><code class="language-php">$gatewayConfig-&gt;getFactoryName() !== 'sylius.pay_pal'
+</code></pre>
+<p>to</p>
+<pre><code class="language-php">$gatewayConfig-&gt;getFactoryName() !== SyliusPayPalExtension::PAYPAL_FACTORY_NAME
+</code></pre>
+<p>Also there is a need to overwrite <code>CompletePayPalOrderListener</code> with modified logic:</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\EventListener\Workflow;
+
+use App\Processor\PayPalOrderCompleteProcessor;
+use Sylius\Component\Core\Model\OrderInterface;
+use Symfony\Component\Workflow\Event\CompletedEvent;
+use Webmozart\Assert\Assert;
+
+final class CompletePayPalOrderListener
+{
+    public function __construct(private readonly PayPalOrderCompleteProcessor $completeProcessor)
+    {
+    }
+
+    public function __invoke(CompletedEvent $event): void
+    {
+        /** @var OrderInterface $order */
+        $order = $event-&gt;getSubject();
+        Assert::isInstanceOf($order, OrderInterface::class);
+
+        $this-&gt;completeProcessor-&gt;completePayPalOrder($order);
+    }
+}
+</code></pre>
+<p>And to overwrite <code>CaptureAction</code> with modified logic (if you didn't have it already):</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\Payum\Action;
+
+use Payum\Core\Action\ActionInterface;
+use Payum\Core\Exception\RequestNotSupportedException;
+use Payum\Core\Request\Capture;
+use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethodInterface;
+use Sylius\PayPalPlugin\Api\CacheAuthorizeClientApiInterface;
+use Sylius\PayPalPlugin\Api\CreateOrderApiInterface;
+use Sylius\PayPalPlugin\Payum\Action\StatusAction;
+use Sylius\PayPalPlugin\Provider\UuidProviderInterface;
+
+final class CaptureAction implements ActionInterface
+{
+    public function __construct(
+        private CacheAuthorizeClientApiInterface $authorizeClientApi,
+        private CreateOrderApiInterface $createOrderApi,
+        private UuidProviderInterface $uuidProvider,
+    ) {
+    }
+
+    /** @param Capture $request */
+    public function execute($request): void
+    {
+        RequestNotSupportedException::assertSupports($this, $request);
+
+        /** @var PaymentInterface $payment */
+        $payment = $request-&gt;getModel();
+        /** @var PaymentMethodInterface $paymentMethod */
+        $paymentMethod = $payment-&gt;getMethod();
+
+        $token = $this-&gt;authorizeClientApi-&gt;authorize($paymentMethod);
+
+        $referenceId = $this-&gt;uuidProvider-&gt;provide();
+        $content = $this-&gt;createOrderApi-&gt;create($token, $payment, $referenceId);
+
+        if ($content['status'] === 'CREATED') {
+            $payment-&gt;setDetails([
+                'status' =&gt; StatusAction::STATUS_CAPTURED,
+                'paypal_order_id' =&gt; $content['id'],
+                'reference_id' =&gt; $referenceId,
+                'payment_amount' =&gt; $payment-&gt;getAmount(),
+            ]);
+        }
+    }
+
+    public function supports($request): bool
+    {
+        return
+            $request instanceof Capture &amp;&amp;
+            $request-&gt;getModel() instanceof PaymentInterface
+        ;
+    }
+}
+</code></pre>
+<p>After that, register services in the container when using PayPal 1.x:</p>
+<pre><code class="language-yaml">Sylius\PayPalPlugin\EventListener\Workflow\CompletePayPalOrderListener:
+    class: App\EventListener\Workflow\CompletePayPalOrderListener
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Processor\PayPalOrderCompleteProcessor'
+    tags: 
+        - { name: 'kernel.event_listener', event: 'workflow.sylius_order_checkout.completed.complete', priority: 100 }
+    
+Sylius\PayPalPlugin\Processor\PayPalOrderCompleteProcessor:
+    class: App\Processor\PayPalOrderCompleteProcessor
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Manager\PaymentStateManagerInterface'
+
+Sylius\PayPalPlugin\Payum\Action\CaptureAction:
+    class: App\Payum\Action\CaptureAction
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Api\CacheAuthorizeClientApiInterface'
+        - '@Sylius\PayPalPlugin\Api\CreateOrderApiInterface'
+        - '@Sylius\PayPalPlugin\Provider\UuidProviderInterface'
+    tags:
+        - { name: 'payum.action', factory: 'sylius.pay_pal', alias: 'payum.action.capture' }
+</code></pre>
+<p>or when using PayPal 2.x:</p>
+<pre><code class="language-yaml">sylius_paypal.listener.workflow.complete_paypal_order:
+    class: App\EventListener\Workflow\CompletePayPalOrderListener
+    public: true
+    arguments:
+        - '@sylius_paypal.processor.paypal_order_complete'
+    tags: 
+        - { name: 'kernel.event_listener', event: 'workflow.sylius_order_checkout.completed.complete', priority: 100 }
+    
+sylius_paypal.processor.paypal_order_complete:
+    class: App\Processor\PayPalOrderCompleteProcessor
+    public: true
+    arguments:
+        - '@sylius_paypal.manager.payment_state'
+
+sylius_paypal.payum.action.capture:
+    class: App\Payum\Action\CaptureAction
+    public: true
+    arguments:
+        - '@sylius_paypal.api.cache_authorize_client'
+        - '@sylius_paypal.api.create_order'
+        - '@sylius_paypal.provider.uuid'
+    tags:
+        - { name: 'payum.action', factory: 'sylius.paypal', alias: 'payum.action.capture' }
+</code></pre>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory:</p>
+<ul>
+<li>Open an issue in <a href="https://github.com/Sylius/Sylius/issues">Sylius issues</a></li>
+<li>Email us at <a href="mailto:security@sylius.com">security@sylius.com</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Sylius/PayPalPlugin/security/advisories/GHSA-hxg4-65p5-9w37">https://github.com/Sylius/PayPalPlugin/security/advisories/GHSA-hxg4-65p5-9w37</a></li>
+<li><a href="https://github.com/Sylius/PayPalPlugin/commit/5613df827a6d4fc50862229295976200a68e97aa">https://github.com/Sylius/PayPalPlugin/commit/5613df827a6d4fc50862229295976200a68e97aa</a></li>
+<li><a href="https://github.com/advisories/GHSA-hxg4-65p5-9w37">https://github.com/advisories/GHSA-hxg4-65p5-9w37</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hxg4-65p5-9w37</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-19T16:46:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sylius/paypal-plugin] Sylius PayPal Plugin has an Order Manipulation Vulnerability after PayPal Checkout]]></title>
+        <id>https://github.com/advisories/GHSA-hxg4-65p5-9w37</id>
+        <link href="https://github.com/advisories/GHSA-hxg4-65p5-9w37"/>
+        <updated>2025-03-19T16:46:30.000Z</updated>
+        <content type="html"><![CDATA[<p>A discovered vulnerability allows users to modify their shopping cart after completing the PayPal Checkout process and payment authorization. If a user initiates a PayPal transaction from a product page or the cart page and then returns to the order summary page, they can still manipulate the cart contents before finalizing the order. As a result, the order amount in Sylius may be higher than the amount actually captured by PayPal, leading to a scenario where merchants deliver products or services without full payment.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Users can exploit this flaw to receive products/services without paying the full amount.</li>
+<li>Merchants may suffer financial losses due to underpaid orders.</li>
+<li>Trust in the integrity of the payment process is compromised.</li>
+</ul>
+<h3 id="patches">Patches</h3>
+<p>The issue is fixed in versions: 1.6.2, 1.7.2, 2.0.2 and above.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>To resolve the problem in the end application without updating to the newest patches, there is a need to overwrite <code>PayPalOrderCompleteProcessor</code> with modified logic:</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\Processor;
+
+use Sylius\Bundle\PayumBundle\Model\GatewayConfigInterface;
+use Sylius\Component\Core\Model\OrderInterface;
+use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethodInterface;
+use Sylius\PayPalPlugin\Manager\PaymentStateManagerInterface;
+
+final class PayPalOrderCompleteProcessor
+{
+    public function __construct(private readonly PaymentStateManagerInterface $paymentStateManager) {
+    }
+
+    public function completePayPalOrder(OrderInterface $order): void
+    {
+        $payment = $order-&gt;getLastPayment(PaymentInterface::STATE_PROCESSING);
+        if ($payment === null) {
+            return;
+        }
+
+        /** @var PaymentMethodInterface $paymentMethod */
+        $paymentMethod = $payment-&gt;getMethod();
+        /** @var GatewayConfigInterface $gatewayConfig */
+        $gatewayConfig = $paymentMethod-&gt;getGatewayConfig();
+
+        if ($gatewayConfig-&gt;getFactoryName() !== 'sylius.pay_pal') {
+            return;
+        }
+
+        try {
+            $this-&gt;verify($payment);
+        } catch (\Exception) {
+            $this-&gt;paymentStateManager-&gt;cancel($payment);
+
+            return;
+        }
+
+        $this-&gt;paymentStateManager-&gt;complete($payment);
+    }
+
+    private function verify(PaymentInterface $payment): void
+    {
+        $totalAmount = $this-&gt;getTotalPaymentAmountFromPaypal($payment);
+
+        if ($payment-&gt;getOrder()-&gt;getTotal() !== $totalAmount) {
+            throw new \Exception();
+        }
+    }
+
+    private function getTotalPaymentAmountFromPaypal(PaymentInterface $payment): int
+    {
+        $details = $payment-&gt;getDetails();
+
+        return $details['payment_amount'] ?? 0;
+    }
+}
+</code></pre>
+<h3 id="important">IMPORTANT</h3>
+<p>For <code>PayPalPlugin 2.x</code> change:</p>
+<pre><code class="language-php">$gatewayConfig-&gt;getFactoryName() !== 'sylius.pay_pal'
+</code></pre>
+<p>to</p>
+<pre><code class="language-php">$gatewayConfig-&gt;getFactoryName() !== SyliusPayPalExtension::PAYPAL_FACTORY_NAME
+</code></pre>
+<p>Also there is a need to overwrite <code>CompletePayPalOrderListener</code> with modified logic:</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\EventListener\Workflow;
+
+use App\Processor\PayPalOrderCompleteProcessor;
+use Sylius\Component\Core\Model\OrderInterface;
+use Symfony\Component\Workflow\Event\CompletedEvent;
+use Webmozart\Assert\Assert;
+
+final class CompletePayPalOrderListener
+{
+    public function __construct(private readonly PayPalOrderCompleteProcessor $completeProcessor)
+    {
+    }
+
+    public function __invoke(CompletedEvent $event): void
+    {
+        /** @var OrderInterface $order */
+        $order = $event-&gt;getSubject();
+        Assert::isInstanceOf($order, OrderInterface::class);
+
+        $this-&gt;completeProcessor-&gt;completePayPalOrder($order);
+    }
+}
+</code></pre>
+<p>And to overwrite <code>CaptureAction</code> with modified logic (if you didn't have it already):</p>
+<pre><code class="language-php">&lt;?php
+
+declare(strict_types=1);
+
+namespace App\Payum\Action;
+
+use Payum\Core\Action\ActionInterface;
+use Payum\Core\Exception\RequestNotSupportedException;
+use Payum\Core\Request\Capture;
+use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethodInterface;
+use Sylius\PayPalPlugin\Api\CacheAuthorizeClientApiInterface;
+use Sylius\PayPalPlugin\Api\CreateOrderApiInterface;
+use Sylius\PayPalPlugin\Payum\Action\StatusAction;
+use Sylius\PayPalPlugin\Provider\UuidProviderInterface;
+
+final class CaptureAction implements ActionInterface
+{
+    public function __construct(
+        private CacheAuthorizeClientApiInterface $authorizeClientApi,
+        private CreateOrderApiInterface $createOrderApi,
+        private UuidProviderInterface $uuidProvider,
+    ) {
+    }
+
+    /** @param Capture $request */
+    public function execute($request): void
+    {
+        RequestNotSupportedException::assertSupports($this, $request);
+
+        /** @var PaymentInterface $payment */
+        $payment = $request-&gt;getModel();
+        /** @var PaymentMethodInterface $paymentMethod */
+        $paymentMethod = $payment-&gt;getMethod();
+
+        $token = $this-&gt;authorizeClientApi-&gt;authorize($paymentMethod);
+
+        $referenceId = $this-&gt;uuidProvider-&gt;provide();
+        $content = $this-&gt;createOrderApi-&gt;create($token, $payment, $referenceId);
+
+        if ($content['status'] === 'CREATED') {
+            $payment-&gt;setDetails([
+                'status' =&gt; StatusAction::STATUS_CAPTURED,
+                'paypal_order_id' =&gt; $content['id'],
+                'reference_id' =&gt; $referenceId,
+                'payment_amount' =&gt; $payment-&gt;getAmount(),
+            ]);
+        }
+    }
+
+    public function supports($request): bool
+    {
+        return
+            $request instanceof Capture &amp;&amp;
+            $request-&gt;getModel() instanceof PaymentInterface
+        ;
+    }
+}
+</code></pre>
+<p>After that, register services in the container when using PayPal 1.x:</p>
+<pre><code class="language-yaml">Sylius\PayPalPlugin\EventListener\Workflow\CompletePayPalOrderListener:
+    class: App\EventListener\Workflow\CompletePayPalOrderListener
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Processor\PayPalOrderCompleteProcessor'
+    tags: 
+        - { name: 'kernel.event_listener', event: 'workflow.sylius_order_checkout.completed.complete', priority: 100 }
+    
+Sylius\PayPalPlugin\Processor\PayPalOrderCompleteProcessor:
+    class: App\Processor\PayPalOrderCompleteProcessor
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Manager\PaymentStateManagerInterface'
+
+Sylius\PayPalPlugin\Payum\Action\CaptureAction:
+    class: App\Payum\Action\CaptureAction
+    public: true
+    arguments:
+        - '@Sylius\PayPalPlugin\Api\CacheAuthorizeClientApiInterface'
+        - '@Sylius\PayPalPlugin\Api\CreateOrderApiInterface'
+        - '@Sylius\PayPalPlugin\Provider\UuidProviderInterface'
+    tags:
+        - { name: 'payum.action', factory: 'sylius.pay_pal', alias: 'payum.action.capture' }
+</code></pre>
+<p>or when using PayPal 2.x:</p>
+<pre><code class="language-yaml">sylius_paypal.listener.workflow.complete_paypal_order:
+    class: App\EventListener\Workflow\CompletePayPalOrderListener
+    public: true
+    arguments:
+        - '@sylius_paypal.processor.paypal_order_complete'
+    tags: 
+        - { name: 'kernel.event_listener', event: 'workflow.sylius_order_checkout.completed.complete', priority: 100 }
+    
+sylius_paypal.processor.paypal_order_complete:
+    class: App\Processor\PayPalOrderCompleteProcessor
+    public: true
+    arguments:
+        - '@sylius_paypal.manager.payment_state'
+
+sylius_paypal.payum.action.capture:
+    class: App\Payum\Action\CaptureAction
+    public: true
+    arguments:
+        - '@sylius_paypal.api.cache_authorize_client'
+        - '@sylius_paypal.api.create_order'
+        - '@sylius_paypal.provider.uuid'
+    tags:
+        - { name: 'payum.action', factory: 'sylius.paypal', alias: 'payum.action.capture' }
+</code></pre>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory:</p>
+<ul>
+<li>Open an issue in <a href="https://github.com/Sylius/Sylius/issues">Sylius issues</a></li>
+<li>Email us at <a href="mailto:security@sylius.com">security@sylius.com</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Sylius/PayPalPlugin/security/advisories/GHSA-hxg4-65p5-9w37">https://github.com/Sylius/PayPalPlugin/security/advisories/GHSA-hxg4-65p5-9w37</a></li>
+<li><a href="https://github.com/Sylius/PayPalPlugin/commit/5613df827a6d4fc50862229295976200a68e97aa">https://github.com/Sylius/PayPalPlugin/commit/5613df827a6d4fc50862229295976200a68e97aa</a></li>
+<li><a href="https://github.com/advisories/GHSA-hxg4-65p5-9w37">https://github.com/advisories/GHSA-hxg4-65p5-9w37</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hxg4-65p5-9w37</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-19T16:46:30.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[getformwork/formwork] Cross-site scripting (XSS) vulnerability in Description metadata]]></title>
         <id>https://github.com/advisories/GHSA-5pxr-7m4j-jjc6</id>
@@ -1757,278 +2486,5 @@ Overall, the attack is relatively difficult to carry out, but if successful, the
         </author>
         <category label="severity" term="LOW"/>
         <published>2025-03-13T18:32:21.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[flarum/framework] Flarum Vulnerable to Session Hijacking via Authoritative Subdomain Cookie Overwrite]]></title>
-        <id>https://github.com/advisories/GHSA-hg9j-64wp-m9px</id>
-        <link href="https://github.com/advisories/GHSA-hg9j-64wp-m9px"/>
-        <updated>2025-03-12T22:06:19.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
-<p>A session hijacking vulnerability exists when an attacker-controlled <strong>authoritative subdomain</strong> under a parent domain (e.g., <code>subdomain.host.com</code>) sets cookies scoped to the parent domain (<code>.host.com</code>). This allows session token replacement for applications hosted on sibling subdomains (e.g., <code>community.host.com</code>) if session tokens aren't rotated post-authentication.  </p>
-<p><strong>Key Constraints</strong>:  </p>
-<ul>
-<li>Attacker must control <strong>any subdomain</strong> under the parent domain (e.g., <code>evil.host.com</code> or <code>x.y.host.com</code>).  </li>
-<li>Parent domain must <strong>not</strong> be on the <a href="https://publicsuffix.org/">Public Suffix List</a>.</li>
-</ul>
-<p>Due to non-existent session token rotation after authenticating we can theoretically reproduce the vulnerability by using browser dev tools, but due to the browser's security measures this does not seem to be exploitable as described.</p>
-<hr>
-<h2 id="proof-of-concept-deno"><strong>Proof of Concept (Deno)</strong></h2>
-<pre><code class="language-ts">Deno.serve({
-    port: 8000, // default
-    hostname: 'localhost',
-    onListen: (o) =&gt; console.log(`Server started at http://${o.hostname}:${o.port}`, o),
-  },
-  async (req) =&gt; (console.log(req), new Response(
-    `You've been served! You came from ${req.headers.get('referer')}`,
-    {
-      //status: 302, // would redirect user to page they came from
-      status: 200,
-      headers: {
-        'set-cookie': 'session_cookie=mytoken; Domain=.deno.dev; Secure; HttpOnly',
-        'location': req.headers.get('referer')
-      }
-    }
-  ))
-);
-</code></pre>
-<h3 id="attack-flow"><strong>Attack Flow</strong></h3>
-<ol>
-<li><strong>Attacker Setup</strong>: Hosts server at <code>evil.host.com</code>.</li>
-<li><strong>Harvest Session Token</strong>: Attacker visits <code>community.host.com</code> to get a session token for himself to replace the victim's token with his own.</li>
-<li><strong>Victim Interaction</strong>: User clicks link to <code>https://evil.host.com</code>.  </li>
-<li><strong>Cookie Override</strong>: Server sets cookie with <code>Domain=.host.com</code> and the harvested token from step 2.  </li>
-<li><strong>Session Hijacking</strong>: Victim's future requests to <code>community.host.com</code> use attacker's token.</li>
-</ol>
-<hr>
-<h2 id="why-reverse-dns-subdomains-fail"><strong>Why Reverse DNS Subdomains Fail</strong></h2>
-<p>Browsers block cookie setting for parent domains unless:  </p>
-<ol>
-<li><strong>Authoritative Subdomain</strong>: Server must belong to a direct child domain (e.g., <code>a.host.com</code>, not <code>x.y.host.com</code>).  </li>
-<li><strong>Public Suffix Exclusion</strong>: If <code>host.com</code> is on the Public Suffix List (e.g., like <code>github.io</code>), browsers block cross-subdomain cookies.</li>
-</ol>
-<p><strong>Example</strong>:  </p>
-<ul>
-<li>❌ <code>123.cust.dynamic.host.com</code> → Cannot set <code>Domain=.host.com</code>.  </li>
-<li>✅ <code>evil.host.com</code> → Can set <code>Domain=.host.com</code> (if not on PSL).</li>
-</ul>
-<hr>
-<h2 id="browser-security-behavior"><strong>Browser Security Behavior</strong></h2>
-<h3 id="1-cookie-domain-validation">1. <strong>Cookie Domain Validation</strong></h3>
-<p>Per <a href="https://datatracker.ietf.org/doc/html/rfc6265#section-5.3">RFC 6265 §5.3</a>:  </p>
-<blockquote>
-<p>Cookies can only be set for domains the server is authoritative for.  </p>
-</blockquote>
-<h3 id="2-public-suffix-list-psl">2. <strong>Public Suffix List (PSL)</strong></h3>
-<p>Domains like <code>host.com</code> on the PSL trigger browser protections:  </p>
-<blockquote>
-<p>Subdomains of PSL-listed domains cannot set cookies for parent domains.  </p>
-</blockquote>
-<p><strong>Verification</strong>:  </p>
-<ul>
-<li>Check PSL status: <a href="https://publicsuffix.org/list/">https://publicsuffix.org/list/</a></li>
-</ul>
-<hr>
-<h2 id="impact"><strong>Impact</strong></h2>
-<ul>
-<li><strong>Account Takeover</strong>: Attacker gains authenticated session access.</li>
-<li><strong>Data Exposure</strong>: Email, private messages, and other personal data exposed.</li>
-<li><strong>Exploitable Only If</strong>:  <ul>
-<li>Parent domain is <strong>not</strong> PSL-listed.  </li>
-<li>Attacker controls <strong>direct child subdomain</strong> (e.g., <code>evil.host.com</code>).</li>
-</ul>
-</li>
-</ul>
-<hr>
-<h2 id="remediation"><strong>Remediation</strong></h2>
-<ol>
-<li><strong>Session Token Rotation</strong>:  <pre><code class="language-ts">// After authentication:
-invalidateOldSession();
-const newToken = generateToken();
-</code></pre>
-</li>
-<li><strong>Cookie Scoping (already in place)</strong>:  <pre><code class="language-ts">// Restrict cookies to explicit subdomain:
-"Set-Cookie": "session=token; Domain=community.host.com; Secure; HttpOnly; SameSite=Lax";
-</code></pre>
-</li>
-<li><strong>Public Suffix Registration</strong>:<br>Add <code>host.com</code> to the Public Suffix List via <a href="https://publicsuffix.org/submit/">PSL Submission</a>.</li>
-</ol>
-<hr>
-<h2 id="revised-vulnerability-criteria"><strong>Revised Vulnerability Criteria</strong></h2>
-<p><strong>Prerequisites</strong>:  </p>
-<ul>
-<li>Attacker controls authoritative subdomain (e.g., <code>evil.host.com</code>).  </li>
-<li>Parent domain (<code>host.com</code>) is <strong>not</strong> PSL-listed.  </li>
-<li>Session tokens persist post-authentication.</li>
-</ul>
-<hr>
-<h2 id="references"><strong>References</strong></h2>
-<ul>
-<li><a href="https://tools.ietf.org/html/rfc6265">RFC 6265: HTTP Cookie Handling</a>  </li>
-<li><a href="https://publicsuffix.org/">Public Suffix List</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px">https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27794">https://nvd.nist.gov/vuln/detail/CVE-2025-27794</a></li>
-<li><a href="https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402">https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402</a></li>
-<li><a href="https://github.com/flarum/framework/releases/tag/v1.8.10">https://github.com/flarum/framework/releases/tag/v1.8.10</a></li>
-<li><a href="https://github.com/advisories/GHSA-hg9j-64wp-m9px">https://github.com/advisories/GHSA-hg9j-64wp-m9px</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hg9j-64wp-m9px</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-12T22:06:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[flarum/core] Flarum Vulnerable to Session Hijacking via Authoritative Subdomain Cookie Overwrite]]></title>
-        <id>https://github.com/advisories/GHSA-hg9j-64wp-m9px</id>
-        <link href="https://github.com/advisories/GHSA-hg9j-64wp-m9px"/>
-        <updated>2025-03-12T22:06:19.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
-<p>A session hijacking vulnerability exists when an attacker-controlled <strong>authoritative subdomain</strong> under a parent domain (e.g., <code>subdomain.host.com</code>) sets cookies scoped to the parent domain (<code>.host.com</code>). This allows session token replacement for applications hosted on sibling subdomains (e.g., <code>community.host.com</code>) if session tokens aren't rotated post-authentication.  </p>
-<p><strong>Key Constraints</strong>:  </p>
-<ul>
-<li>Attacker must control <strong>any subdomain</strong> under the parent domain (e.g., <code>evil.host.com</code> or <code>x.y.host.com</code>).  </li>
-<li>Parent domain must <strong>not</strong> be on the <a href="https://publicsuffix.org/">Public Suffix List</a>.</li>
-</ul>
-<p>Due to non-existent session token rotation after authenticating we can theoretically reproduce the vulnerability by using browser dev tools, but due to the browser's security measures this does not seem to be exploitable as described.</p>
-<hr>
-<h2 id="proof-of-concept-deno"><strong>Proof of Concept (Deno)</strong></h2>
-<pre><code class="language-ts">Deno.serve({
-    port: 8000, // default
-    hostname: 'localhost',
-    onListen: (o) =&gt; console.log(`Server started at http://${o.hostname}:${o.port}`, o),
-  },
-  async (req) =&gt; (console.log(req), new Response(
-    `You've been served! You came from ${req.headers.get('referer')}`,
-    {
-      //status: 302, // would redirect user to page they came from
-      status: 200,
-      headers: {
-        'set-cookie': 'session_cookie=mytoken; Domain=.deno.dev; Secure; HttpOnly',
-        'location': req.headers.get('referer')
-      }
-    }
-  ))
-);
-</code></pre>
-<h3 id="attack-flow"><strong>Attack Flow</strong></h3>
-<ol>
-<li><strong>Attacker Setup</strong>: Hosts server at <code>evil.host.com</code>.</li>
-<li><strong>Harvest Session Token</strong>: Attacker visits <code>community.host.com</code> to get a session token for himself to replace the victim's token with his own.</li>
-<li><strong>Victim Interaction</strong>: User clicks link to <code>https://evil.host.com</code>.  </li>
-<li><strong>Cookie Override</strong>: Server sets cookie with <code>Domain=.host.com</code> and the harvested token from step 2.  </li>
-<li><strong>Session Hijacking</strong>: Victim's future requests to <code>community.host.com</code> use attacker's token.</li>
-</ol>
-<hr>
-<h2 id="why-reverse-dns-subdomains-fail"><strong>Why Reverse DNS Subdomains Fail</strong></h2>
-<p>Browsers block cookie setting for parent domains unless:  </p>
-<ol>
-<li><strong>Authoritative Subdomain</strong>: Server must belong to a direct child domain (e.g., <code>a.host.com</code>, not <code>x.y.host.com</code>).  </li>
-<li><strong>Public Suffix Exclusion</strong>: If <code>host.com</code> is on the Public Suffix List (e.g., like <code>github.io</code>), browsers block cross-subdomain cookies.</li>
-</ol>
-<p><strong>Example</strong>:  </p>
-<ul>
-<li>❌ <code>123.cust.dynamic.host.com</code> → Cannot set <code>Domain=.host.com</code>.  </li>
-<li>✅ <code>evil.host.com</code> → Can set <code>Domain=.host.com</code> (if not on PSL).</li>
-</ul>
-<hr>
-<h2 id="browser-security-behavior"><strong>Browser Security Behavior</strong></h2>
-<h3 id="1-cookie-domain-validation">1. <strong>Cookie Domain Validation</strong></h3>
-<p>Per <a href="https://datatracker.ietf.org/doc/html/rfc6265#section-5.3">RFC 6265 §5.3</a>:  </p>
-<blockquote>
-<p>Cookies can only be set for domains the server is authoritative for.  </p>
-</blockquote>
-<h3 id="2-public-suffix-list-psl">2. <strong>Public Suffix List (PSL)</strong></h3>
-<p>Domains like <code>host.com</code> on the PSL trigger browser protections:  </p>
-<blockquote>
-<p>Subdomains of PSL-listed domains cannot set cookies for parent domains.  </p>
-</blockquote>
-<p><strong>Verification</strong>:  </p>
-<ul>
-<li>Check PSL status: <a href="https://publicsuffix.org/list/">https://publicsuffix.org/list/</a></li>
-</ul>
-<hr>
-<h2 id="impact"><strong>Impact</strong></h2>
-<ul>
-<li><strong>Account Takeover</strong>: Attacker gains authenticated session access.</li>
-<li><strong>Data Exposure</strong>: Email, private messages, and other personal data exposed.</li>
-<li><strong>Exploitable Only If</strong>:  <ul>
-<li>Parent domain is <strong>not</strong> PSL-listed.  </li>
-<li>Attacker controls <strong>direct child subdomain</strong> (e.g., <code>evil.host.com</code>).</li>
-</ul>
-</li>
-</ul>
-<hr>
-<h2 id="remediation"><strong>Remediation</strong></h2>
-<ol>
-<li><strong>Session Token Rotation</strong>:  <pre><code class="language-ts">// After authentication:
-invalidateOldSession();
-const newToken = generateToken();
-</code></pre>
-</li>
-<li><strong>Cookie Scoping (already in place)</strong>:  <pre><code class="language-ts">// Restrict cookies to explicit subdomain:
-"Set-Cookie": "session=token; Domain=community.host.com; Secure; HttpOnly; SameSite=Lax";
-</code></pre>
-</li>
-<li><strong>Public Suffix Registration</strong>:<br>Add <code>host.com</code> to the Public Suffix List via <a href="https://publicsuffix.org/submit/">PSL Submission</a>.</li>
-</ol>
-<hr>
-<h2 id="revised-vulnerability-criteria"><strong>Revised Vulnerability Criteria</strong></h2>
-<p><strong>Prerequisites</strong>:  </p>
-<ul>
-<li>Attacker controls authoritative subdomain (e.g., <code>evil.host.com</code>).  </li>
-<li>Parent domain (<code>host.com</code>) is <strong>not</strong> PSL-listed.  </li>
-<li>Session tokens persist post-authentication.</li>
-</ul>
-<hr>
-<h2 id="references"><strong>References</strong></h2>
-<ul>
-<li><a href="https://tools.ietf.org/html/rfc6265">RFC 6265: HTTP Cookie Handling</a>  </li>
-<li><a href="https://publicsuffix.org/">Public Suffix List</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px">https://github.com/flarum/framework/security/advisories/GHSA-hg9j-64wp-m9px</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27794">https://nvd.nist.gov/vuln/detail/CVE-2025-27794</a></li>
-<li><a href="https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402">https://github.com/flarum/framework/commit/a05aaea3ee1e0a8b870935183193cd6052f1d402</a></li>
-<li><a href="https://github.com/flarum/framework/releases/tag/v1.8.10">https://github.com/flarum/framework/releases/tag/v1.8.10</a></li>
-<li><a href="https://github.com/advisories/GHSA-hg9j-64wp-m9px">https://github.com/advisories/GHSA-hg9j-64wp-m9px</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hg9j-64wp-m9px</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-12T22:06:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[laravel/framework] Laravel has a File Validation Bypass]]></title>
-        <id>https://github.com/advisories/GHSA-78fx-h6xr-vch4</id>
-        <link href="https://github.com/advisories/GHSA-78fx-h6xr-vch4"/>
-        <updated>2025-03-12T21:29:28.000Z</updated>
-        <content type="html"><![CDATA[<p>When using wildcard validation to validate a given file or image field array (<code>files.*</code>), a user-crafted malicious request could potentially bypass the validation rules.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/laravel/framework/security/advisories/GHSA-78fx-h6xr-vch4">https://github.com/laravel/framework/security/advisories/GHSA-78fx-h6xr-vch4</a></li>
-<li><a href="https://github.com/laravel/framework/commit/2d133034fefddfb047838f4caca3687a3ba811a5">https://github.com/laravel/framework/commit/2d133034fefddfb047838f4caca3687a3ba811a5</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27515">https://nvd.nist.gov/vuln/detail/CVE-2025-27515</a></li>
-<li><a href="https://github.com/laravel/framework/commit/a4f7a8f9b83e21882abeef78c3174c66b0f4a26b">https://github.com/laravel/framework/commit/a4f7a8f9b83e21882abeef78c3174c66b0f4a26b</a></li>
-<li><a href="https://github.com/advisories/GHSA-78fx-h6xr-vch4">https://github.com/advisories/GHSA-78fx-h6xr-vch4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-78fx-h6xr-vch4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-05T19:09:39.000Z</published>
     </entry>
 </feed>
