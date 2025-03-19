@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-03-19T15:01:35.036Z</updated>
+    <updated>2025-03-19T16:01:30.577Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -12,54 +12,293 @@
     <category term="MODERATE"/>
     <category term="LOW"/>
     <entry>
+        <title type="html"><![CDATA[[vllm] vLLM Allows Remote Code Execution via Mooncake Integration]]></title>
+        <id>https://github.com/advisories/GHSA-x3m8-f7g5-qhm7</id>
+        <link href="https://github.com/advisories/GHSA-x3m8-f7g5-qhm7"/>
+        <updated>2025-03-19T15:55:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When vLLM is configured to use Mooncake, unsafe deserialization exposed directly over ZMQ/TCP on all network interfaces will allow attackers to execute remote code on distributed hosts.</p>
+<h3 id="details">Details</h3>
+<ol>
+<li>Pickle deserialization vulnerabilities are <a href="https://docs.python.org/3/library/pickle.html">well documented</a>.</li>
+<li>The <a href="https://github.com/vllm-project/vllm/blob/9bebc9512f9340e94579b9bd69cfdc452c4d5bb0/vllm/distributed/kv_transfer/kv_pipe/mooncake_pipe.py#L206">mooncake pipe</a> is exposed over the network (by design to enable disaggregated prefilling across distributed environments) using ZMQ over TCP, greatly increasing exploitability. Further, the mooncake integration opens these sockets listening on all interfaces on the host, meaning it can not be configured to only use a private, trusted network.</li>
+<li>The root problem is <a href="https://github.com/vllm-project/vllm/blob/9bebc9512f9340e94579b9bd69cfdc452c4d5bb0/vllm/distributed/kv_transfer/kv_pipe/mooncake_pipe.py#L257"><code>recv_tensor()</code></a> calls <a href="https://github.com/vllm-project/vllm/blob/9bebc9512f9340e94579b9bd69cfdc452c4d5bb0/vllm/distributed/kv_transfer/kv_pipe/mooncake_pipe.py#L244"><code>_recv_impl</code></a> which passes the raw network bytes to <code>pickle.loads()</code>. Additionally, it does not appear that there are any controls (network, authentication, etc) to prevent arbitrary users from sending this payload to the affected service.</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>This is a remote code execution vulnerability impacting any deployments using Mooncake to distribute KV across distributed hosts.</p>
+<h3 id="remediation">Remediation</h3>
+<p>This issue is resolved by <a href="https://github.com/vllm-project/vllm/pull/14228">https://github.com/vllm-project/vllm/pull/14228</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-x3m8-f7g5-qhm7">https://github.com/vllm-project/vllm/security/advisories/GHSA-x3m8-f7g5-qhm7</a></li>
+<li><a href="https://github.com/vllm-project/vllm/pull/14228">https://github.com/vllm-project/vllm/pull/14228</a></li>
+<li><a href="https://github.com/vllm-project/vllm/commit/288ca110f68d23909728627d3100e5a8db820aa2">https://github.com/vllm-project/vllm/commit/288ca110f68d23909728627d3100e5a8db820aa2</a></li>
+<li><a href="https://github.com/advisories/GHSA-x3m8-f7g5-qhm7">https://github.com/advisories/GHSA-x3m8-f7g5-qhm7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x3m8-f7g5-qhm7</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-03-19T15:55:58.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vllm] vLLM denial of service via outlines unbounded cache on disk]]></title>
+        <id>https://github.com/advisories/GHSA-mgrm-fgjv-mhv8</id>
+        <link href="https://github.com/advisories/GHSA-mgrm-fgjv-mhv8"/>
+        <updated>2025-03-19T15:52:29.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>The <a href="https://dottxt-ai.github.io/outlines/latest/">outlines</a> library is one of the backends used by vLLM to support structured output (a.k.a. guided decoding). Outlines provides an optional cache for its compiled grammars on the local filesystem. This cache has been on by default in vLLM. Outlines is also available by default through the OpenAI compatible API server.</p>
+<p>The affected code in vLLM is <a href="https://github.com/vllm-project/vllm/blob/53be4a863486d02bd96a59c674bbec23eec508f6/vllm/model_executor/guided_decoding/outlines_logits_processors.py">vllm/model_executor/guided_decoding/outlines_logits_processors.py</a>, which unconditionally uses the cache from outlines. vLLM should have this off by default and allow administrators to opt-in due to the potential for abuse.</p>
+<p>A malicious user can send a stream of very short decoding requests with unique schemas, resulting in an addition to the cache for each request. This can result in a Denial of Service if the filesystem runs out of space.</p>
+<p>Note that even if vLLM was configured to use a different backend by default, it is still possible to choose outlines on a per-request basis using the <code>guided_decoding_backend</code> key of the <code>extra_body</code> field of the request.</p>
+<p>This issue applies to the V0 engine only. The V1 engine is not affected.</p>
+<h3 id="patches">Patches</h3>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/pull/14837">https://github.com/vllm-project/vllm/pull/14837</a></li>
+</ul>
+<p>The fix is to disable this cache by default since it does not provide an option to limit its size. If you want to use this cache anyway, you may set the <code>VLLM_V0_USE_OUTLINES_CACHE</code> environment variable to <code>1</code>.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no way to workaround this issue in existing versions of vLLM other than preventing untrusted access to the OpenAI compatible API server.</p>
+<h3 id="references">References</h3>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-mgrm-fgjv-mhv8">https://github.com/vllm-project/vllm/security/advisories/GHSA-mgrm-fgjv-mhv8</a></li>
+<li><a href="https://github.com/vllm-project/vllm/pull/14837">https://github.com/vllm-project/vllm/pull/14837</a></li>
+<li><a href="https://github.com/vllm-project/vllm/blob/53be4a863486d02bd96a59c674bbec23eec508f6/vllm/model_executor/guided_decoding/outlines_logits_processors.py">https://github.com/vllm-project/vllm/blob/53be4a863486d02bd96a59c674bbec23eec508f6/vllm/model_executor/guided_decoding/outlines_logits_processors.py</a></li>
+<li><a href="https://github.com/advisories/GHSA-mgrm-fgjv-mhv8">https://github.com/advisories/GHSA-mgrm-fgjv-mhv8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mgrm-fgjv-mhv8</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-19T15:52:26.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[apache-airflow-providers-mysql] Apache Airflow MySQL Provider is Vulnerable to SQL Injection]]></title>
+        <id>https://github.com/advisories/GHSA-hhm6-jjf4-6pm3</id>
+        <link href="https://github.com/advisories/GHSA-hhm6-jjf4-6pm3"/>
+        <updated>2025-03-19T15:48:18.000Z</updated>
+        <content type="html"><![CDATA[<p>Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection') vulnerability in Apache Airflow MySQL Provider.</p>
+<p>When user triggered a DAG with dump_sql or load_sql functions they could pass a table parameter from a UI, that could cause SQL injection by running SQL that was not intended.
+It could lead to data corruption, modification and others.
+This issue affects Apache Airflow MySQL Provider: before 6.2.0.</p>
+<p>Users are recommended to upgrade to version 6.2.0, which fixes the issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27018">https://nvd.nist.gov/vuln/detail/CVE-2025-27018</a></li>
+<li><a href="https://github.com/apache/airflow/pull/47254">https://github.com/apache/airflow/pull/47254</a></li>
+<li><a href="https://github.com/apache/airflow/pull/47255">https://github.com/apache/airflow/pull/47255</a></li>
+<li><a href="https://lists.apache.org/thread/m8ohgkwz4mq9njohf66sjwqjdy28gvzf">https://lists.apache.org/thread/m8ohgkwz4mq9njohf66sjwqjdy28gvzf</a></li>
+<li><a href="https://github.com/advisories/GHSA-hhm6-jjf4-6pm3">https://github.com/advisories/GHSA-hhm6-jjf4-6pm3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hhm6-jjf4-6pm3</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-19T09:30:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[PostQuantum-Feldman-VSS] Post-Quantum Secure Feldman's Verifiable Secret Sharing has Timing Side-Channels in Matrix Operations]]></title>
+        <id>https://github.com/advisories/GHSA-q65w-fg65-79f4</id>
+        <link href="https://github.com/advisories/GHSA-q65w-fg65-79f4"/>
+        <updated>2025-03-19T15:28:09.000Z</updated>
+        <content type="html"><![CDATA[<p><strong>Description:</strong></p>
+<p>The <code>feldman_vss</code> library contains timing side-channel vulnerabilities in its matrix operations, specifically within the <code>_find_secure_pivot</code> function and potentially other parts of <code>_secure_matrix_solve</code>. These vulnerabilities are due to Python's execution model, which does not guarantee constant-time execution. An attacker with the ability to measure the execution time of these functions (e.g., through repeated calls with carefully crafted inputs) could potentially recover secret information used in the Verifiable Secret Sharing (VSS) scheme.</p>
+<p>The <code>_find_secure_pivot</code> function, used during Gaussian elimination in <code>_secure_matrix_solve</code>, attempts to find a non-zero pivot element. However, the conditional statement <code>if matrix[row][col] != 0 and row_random &lt; min_value:</code> has execution time that depends on the value of <code>matrix[row][col]</code>. This timing difference can be exploited by an attacker.</p>
+<p>The <code>constant_time_compare</code> function in this file also does not provide a constant-time guarantee.</p>
+<p>This advisory formalizes the timing side-channel vulnerabilities already documented in the library's "Known Security Vulnerabilities" section. The Python implementation of matrix operations in the _find_secure_pivot and _secure_matrix_solve functions cannot guarantee constant-time execution, potentially leaking information about secret polynomial coefficients.</p>
+<p>An attacker with the ability to make precise timing measurements of these operations could potentially extract secret information through statistical analysis of execution times, though practical exploitation would require significant expertise and controlled execution environments.</p>
+<p><strong>Impact:</strong></p>
+<p>Successful exploitation of these timing side-channels could allow an attacker to recover secret keys or other sensitive information protected by the VSS scheme.  This could lead to a complete compromise of the shared secret.</p>
+<p><strong>References:</strong></p>
+<ul>
+<li>File: <code>feldman_vss.py</code></li>
+<li>Function: <code>_find_secure_pivot</code></li>
+<li>Function: <code>_secure_matrix_solve</code></li>
+<li>Function: <code>constant_time_compare</code></li>
+<li><a href="https://www.rambus.com/wp-content/uploads/2015/08/TimingAttacks.pdf">Timing Attacks on Implementations of Diffie-Hellman, RSA, DSS, and Other Systems (1996)</a> - A seminal paper on timing attacks.</li>
+<li><a href="https://en.wikipedia.org/wiki/Side-channel_attack">Side-Channel Attacks</a> - Wikipedia article on side-channel attacks.</li>
+</ul>
+<p><strong>Remediation:</strong></p>
+<p>As acknowledged in the library's documentation, these vulnerabilities cannot be adequately addressed in pure Python. The advisory recommends:</p>
+<ol>
+<li><p>SHORT TERM: Consider using this library only in environments where timing measurements by attackers are infeasible.</p>
+</li>
+<li><p>MEDIUM TERM: Implement your own wrappers around critical operations using constant-time libraries in languages like Rust, Go, or C.</p>
+</li>
+<li><p>LONG TERM: Wait for the planned Rust implementation mentioned in the library documentation that will properly address these issues.</p>
+</li>
+</ol>
+<p>Note that the usage of random.Random() identified in the _refresh_shares_additive function is intentional and secure as documented in the "False-Positive Vulnerabilities" section of the code, and should not be considered part of this vulnerability.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-q65w-fg65-79f4">https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-q65w-fg65-79f4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-29780">https://nvd.nist.gov/vuln/detail/CVE-2025-29780</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Side-channel_attack">https://en.wikipedia.org/wiki/Side-channel_attack</a></li>
+<li><a href="https://www.rambus.com/wp-content/uploads/2015/08/TimingAttacks.pdf">https://www.rambus.com/wp-content/uploads/2015/08/TimingAttacks.pdf</a></li>
+<li><a href="https://github.com/advisories/GHSA-q65w-fg65-79f4">https://github.com/advisories/GHSA-q65w-fg65-79f4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-q65w-fg65-79f4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-14T19:55:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[PostQuantum-Feldman-VSS] Post-Quantum Secure Feldman's Verifiable Secret Sharing has Inadequate Fault Injection Countermeasures in `secure_redundant_execution`]]></title>
+        <id>https://github.com/advisories/GHSA-r8gc-qc2c-c7vh</id>
+        <link href="https://github.com/advisories/GHSA-r8gc-qc2c-c7vh"/>
+        <updated>2025-03-19T15:26:35.000Z</updated>
+        <content type="html"><![CDATA[<p><strong>Description:</strong></p>
+<p>The <code>secure_redundant_execution</code> function in feldman_vss.py attempts to mitigate fault injection attacks by executing a function multiple times and comparing results. However, several critical weaknesses exist:</p>
+<ol>
+<li>Python's execution environment cannot guarantee true isolation between redundant executions</li>
+<li>The constant-time comparison implementation in Python is subject to timing variations</li>
+<li>The randomized execution order and timing provide insufficient protection against sophisticated fault attacks</li>
+<li>The error handling may leak timing information about partial execution results</li>
+</ol>
+<p>These limitations make the protection ineffective against targeted fault injection attacks, especially from attackers with physical access to the hardware.</p>
+<p><strong>Impact:</strong></p>
+<p>A successful fault injection attack could allow an attacker to:</p>
+<ol>
+<li>Bypass the redundancy check mechanisms</li>
+<li>Extract secret polynomial coefficients during share generation or verification</li>
+<li>Force the acceptance of invalid shares during verification</li>
+<li>Manipulate the commitment verification process to accept fraudulent commitments</li>
+</ol>
+<p>This undermines the core security guarantees of the Verifiable Secret Sharing scheme.</p>
+<p><strong>References:</strong></p>
+<ul>
+<li>File: <code>feldman_vss.py</code></li>
+<li>Function: <code>secure_redundant_execution</code></li>
+<li><a href="https://en.wikipedia.org/wiki/Fault_attack">Fault Attacks</a> - Wikipedia article on fault attacks.</li>
+<li>Bar-El, H., et al. "The Sorcerer's Apprentice Guide to Fault Attacks" - <a href="https://eprint.iacr.org/2004/100.pdf">https://eprint.iacr.org/2004/100.pdf</a></li>
+<li>CWE-1279: <a href="https://cwe.mitre.org/data/definitions/1279.html">https://cwe.mitre.org/data/definitions/1279.html</a></li>
+<li>NIST SP 800-90B section on implementation validation</li>
+</ul>
+<p><strong>Remediation:</strong></p>
+<p>Long-term remediation requires reimplementing the security-critical functions in a lower-level language like Rust.</p>
+<p>Short-term mitigations:</p>
+<ol>
+<li>Deploy the software in environments with physical security controls</li>
+<li>Increase the redundancy count (from 5 to a higher number) by modifying the source code</li>
+<li>Add external verification of cryptographic operations when possible</li>
+<li>Consider using hardware security modules (HSMs) for key operations</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-r8gc-qc2c-c7vh">https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-r8gc-qc2c-c7vh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-29779">https://nvd.nist.gov/vuln/detail/CVE-2025-29779</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Fault_attack">https://en.wikipedia.org/wiki/Fault_attack</a></li>
+<li><a href="https://eprint.iacr.org/2004/100.pdf">https://eprint.iacr.org/2004/100.pdf</a></li>
+<li><a href="https://github.com/advisories/GHSA-r8gc-qc2c-c7vh">https://github.com/advisories/GHSA-r8gc-qc2c-c7vh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-r8gc-qc2c-c7vh</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-14T19:55:17.000Z</published>
+    </entry>
+    <entry>
         <title type="html"><![CDATA[[PostQuantum-Feldman-VSS] PostQuantum-Feldman-VSS'S Dependency Vulnerability in gmpy2 Leading to Interpreter Crash]]></title>
         <id>https://github.com/advisories/GHSA-v432-7f47-9g94</id>
         <link href="https://github.com/advisories/GHSA-v432-7f47-9g94"/>
-        <updated>2025-03-17T14:48:08.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>PostQuantum-Feldman-VSS, in versions ≤0.7.6b0, is vulnerable due to its dependency on gmpy2, which can crash the Python interpreter if memory allocation fails. This can be exploited for denial-of-service attacks, impacting the availability of systems using the library.</p>
-<h2 id="description">Description</h2>
-<p>The vulnerability arises from gmpy2’s behavior, as noted in its documentation: </p>
-<blockquote>
-<p>gmpy2 can crash the Python interpreter in case of memory allocation failure (<a href="https://gmpy2.readthedocs.io/en/latest/overview.html">gmpy2 Overview</a>)</p>
-</blockquote>
-<p>This stems from gmpy2’s reliance on the GMP library, which terminates the program when memory allocation fails (<a href="https://gmplib.org/manual/Memory-Management">GMP Memory Management</a>). An attacker can exploit this by crafting inputs that exhaust memory, causing the interpreter to crash and disrupting service for legitimate users.</p>
-<h2 id="impact">Impact</h2>
+        <updated>2025-03-19T15:25:00.000Z</updated>
+        <content type="html"><![CDATA[<p><strong>Description:</strong></p>
+<p>PostQuantum-Feldman-VSS, a Python library implementing Feldman's Verifiable Secret Sharing scheme with post-quantum security, was vulnerable to denial-of-service attacks in versions up to and including 0.7.6b0.  This vulnerability stems from the library's reliance on the <code>gmpy2</code> library for arbitrary-precision arithmetic.  <code>gmpy2</code>, in turn, depends on the GNU Multiple Precision Arithmetic Library (GMP). GMP, by design, terminates the process when it cannot allocate memory.  An attacker could exploit this by providing carefully crafted inputs that cause <code>gmpy2</code> to attempt to allocate extremely large amounts of memory, leading to a crash of the Python interpreter and thus a denial of service.</p>
+<p><strong>Vulnerability Details:</strong></p>
+<p>The core issue lies in the behavior of GMP (and thus, <code>gmpy2</code>) when memory allocation fails.  Instead of raising a standard Python exception that could be caught and handled, GMP terminates the entire process. This behavior is documented in the GMP and gmpy2 documentation:</p>
 <ul>
-<li><strong>Availability</strong>: High impact, as the interpreter crash leads to complete denial of service.</li>
-<li><strong>Confidentiality and Integrity</strong>: No direct impact, as the vulnerability does not allow unauthorized access or data modification.</li>
+<li><strong>GMP Memory Management:</strong> <a href="https://gmplib.org/manual/Memory-Management">https://gmplib.org/manual/Memory-Management</a> (States that the default behavior is to terminate the program.)</li>
+<li><strong>gmpy2 Overview:</strong> <a href="https://gmpy2.readthedocs.io/en/latest/overview.html">https://gmpy2.readthedocs.io/en/latest/overview.html</a> (Warns that <code>gmpy2</code> can crash the interpreter on memory allocation failure.)</li>
 </ul>
-<h2 id="affected-versions">Affected Versions</h2>
+<p>Specific operations within the PostQuantum-Feldman-VSS library that were particularly vulnerable include:</p>
 <ul>
-<li>All versions of PostQuantum-Feldman-VSS ≤0.7.6b0</li>
+<li><strong>Large Exponentiation (<code>exp</code>, <code>secure_exp</code>):</strong>  Exponentiation with very large bases or exponents can lead to extremely large results, consuming excessive memory.</li>
+<li><strong>Multi-exponentiation (<code>efficient_multi_exp</code>):</strong>  Similar to exponentiation, but with multiple bases and exponents, increasing the risk.</li>
+<li><strong>Matrix Operations (<code>_secure_matrix_solve</code>):</strong>  Large matrices used in polynomial reconstruction could lead to significant memory usage.</li>
+<li><strong>Polynomial Evaluation (<code>_evaluate_polynomial</code>):</strong> Evaluating polynomials with large coefficients or at large values of <code>x</code> could trigger excessive memory allocation.</li>
 </ul>
-<h2 id="patched-versions">Patched Versions</h2>
-<ul>
-<li>Versions &gt;0.7.6b0 (e.g., 0.7.7 or later, once released with the <code>SafeGMPy2</code> implementation)</li>
-</ul>
-<h2 id="workarounds-for-vulnerable-versions">Workarounds (For Vulnerable Versions)</h2>
-<p>For users unable to upgrade to a patched version:</p>
-<ul>
-<li><strong>Estimate Memory Usage</strong>: Manually estimate memory requirements before operations and ensure sufficient resources.</li>
-<li><strong>Monitor System Resources</strong>: Implement monitoring to detect and respond to memory exhaustion attempts.</li>
-<li><strong>Custom Memory Allocation</strong>: Use GMP’s custom allocation functions to handle failures gracefully (<a href="https://gmplib.org/manual/Custom-Allocation">GMP Custom Allocation</a>).</li>
-</ul>
-<h2 id="mitigation-details">Mitigation Details</h2>
-<p>The fix introduces a <code>SafeGMPy2</code> wrapper that:</p>
+<p><strong>Mitigations in 0.8.0b2:</strong></p>
+<p>Version 0.8.0b2 implements <em>significant mitigations</em> to greatly reduce the risk of this denial-of-service vulnerability.  These mitigations <strong>do not</strong> completely eliminate the underlying issue (as that would require changes to GMP itself), but they make successful exploitation <em>far</em> more difficult.  The mitigations include:</p>
 <ol>
-<li>Checks input sizes against configurable limits (e.g., <code>DEFAULT_MAX_BITS_POWMOD = 20000</code>).</li>
-<li>Estimates output sizes to prevent excessive memory use (e.g., in multiplication and powmod).</li>
-<li>Wraps critical gmpy2 functions (mpz, powmod, invert) with try-except blocks to raise <code>MemorySafetyError</code> instead of crashing.</li>
-<li>Monkey-patches gmpy2 to enforce these safety checks globally.
-This has been integrated into key classes like <code>CyclicGroup</code> and <code>FeldmanVSS</code>, ensuring memory-safe cryptographic operations.</li>
-</ol>
-<h2 id="references">References</h2>
+<li><p><strong>Memory Monitoring (<code>MemoryMonitor</code> class):</strong></p>
 <ul>
-<li><a href="https://gmpy2.readthedocs.io/en/latest/overview.html">gmpy2 Overview Documentation</a></li>
-<li><a href="https://gmplib.org/manual/Memory-Management">GMP Memory Management Documentation</a></li>
-<li><a href="https://gmplib.org/manual/Custom-Allocation">GMP Custom Allocation Documentation</a></li>
+<li>A new <code>MemoryMonitor</code> class is introduced to track estimated memory usage throughout the library's operations.</li>
+<li>This class allows setting a maximum memory limit (defaulting to 1024MB, but configurable).</li>
+<li>It provides methods to <code>check_allocation</code>, <code>allocate</code>, and <code>release</code> memory, raising a <code>MemoryError</code> if an operation would exceed the configured limit.</li>
 </ul>
-<h3 id="references-1">References</h3>
+</li>
+<li><p><strong>Memory Safety Checks (<code>check_memory_safety</code> function):</strong></p>
+<ul>
+<li>A new <code>check_memory_safety</code> function is used to estimate the memory requirements of various <code>gmpy2</code> operations <em>before</em> they are executed.</li>
+<li>This function considers the operation type (<code>exp</code>, <code>mul</code>, <code>pow</code>, <code>mod</code>, <code>polynomial</code>, <code>matrix</code>, <code>polynomial_eval</code>) and the bit lengths of the operands.</li>
+<li>It uses conservative estimates and scaling factors to account for <code>gmpy2</code>'s internal overhead.</li>
+<li>If the estimated memory usage exceeds the limit set by the <code>MemoryMonitor</code>, the operation is rejected <em>before</em> calling <code>gmpy2</code>, preventing the crash.</li>
+</ul>
+</li>
+<li><p><strong>Integration into Core Classes:</strong></p>
+<ul>
+<li>The <code>CyclicGroup</code> and <code>FeldmanVSS</code> classes now use the <code>check_memory_safety</code> function before performing potentially memory-intensive operations like <code>exp</code>, <code>mul</code>, <code>efficient_multi_exp</code>, <code>_evaluate_polynomial</code>, and <code>_secure_matrix_solve</code>.</li>
+</ul>
+</li>
+<li><p><strong>Enhanced Input Validation and Error Handling:</strong></p>
+<ul>
+<li>Added improved input validation in functions.</li>
+<li>Raises custom exceptions like <code>SecurityError</code>, <code>SerializationError</code>, <code>VerificationError</code>, and <code>ParameterError</code> that include detailed information for forensics and debugging.</li>
+</ul>
+</li>
+<li><p><strong>Safer Defaults and Configuration:</strong></p>
+<ul>
+<li>The library is configured to use safe primes and large bit lengths by default, reducing the likelihood of accidental misconfiguration leading to excessively large numbers.</li>
+<li>The <code>VSSConfig</code> class allows users to customize the <code>prime_bits</code> and <code>cache_size</code>, enabling them to tailor the library to their specific memory constraints.</li>
+</ul>
+</li>
+</ol>
+<p><strong>Limitations of Mitigations:</strong></p>
+<ul>
+<li><strong>Estimation Inaccuracy:</strong> The <code>check_memory_safety</code> function relies on <em>estimations</em> of memory usage. While these estimations are conservative, they are not perfect.  It is still theoretically possible (though much less likely) for an operation to consume more memory than estimated, leading to a crash.</li>
+<li><strong>GMP Behavior:</strong> The fundamental issue of GMP terminating the process on memory allocation failure remains.  The mitigations prevent most common cases, but a sufficiently determined attacker with knowledge of the estimation algorithm <em>might</em> still be able to craft an input that triggers a crash.</li>
+<li><strong>Not a Complete Fix:</strong> Version 0.8.0b2 is a <em>mitigation</em>, not a complete <em>elimination</em> of the vulnerability.</li>
+</ul>
+<p><strong>Workarounds (for versions &lt;= 0.7.6b0):</strong></p>
+<p>If upgrading to version 0.8.0b2 (or later) is not immediately possible, the following workarounds can help reduce the risk:</p>
+<ul>
+<li><strong>Limit Input Sizes:</strong>  Carefully restrict the size of inputs to the library, particularly the bit lengths of secrets, shares, and coefficients, and the threshold value (t).  Avoid using excessively large values.  Use the <code>check_memory_safety</code> function (available in 0.8.0b2) to manually check the memory usage.</li>
+<li><strong>Resource Monitoring:</strong> Implement external monitoring of your application's memory usage.  If memory usage approaches dangerous levels, take action to prevent a crash (e.g., terminate the process, reject new requests, etc.).</li>
+<li><strong>Input Validation:</strong> Thoroughly validate all inputs to the library, ensuring they are within expected ranges and of the correct types.</li>
+<li><strong>Rate Limiting:</strong> Implement rate limiting to prevent an attacker from flooding your system with requests designed to consume excessive memory.</li>
+<li><strong>Custom Memory Allocation</strong>:  <em>Advanced users</em> could potentially modify the GMP library to use custom allocation functions that raise Python exceptions instead of terminating the process.  This is a complex and potentially risky approach, and is <strong>not recommended</strong> for most users.  (See <a href="https://gmplib.org/manual/Custom-Allocation">GMP Custom Allocation Documentation</a>).</li>
+</ul>
+<p><strong>Recommendations:</strong></p>
+<ul>
+<li><strong>Upgrade to 0.8.0b2 (or later) as soon as possible.</strong> This is the <em>most important</em> step you can take.</li>
+<li><strong>Configure Memory Limits:</strong>  Use the <code>MemoryMonitor</code> in 0.8.0b2 (or later) to set appropriate memory limits for your application.  Consider your system's available memory and the expected workload.</li>
+<li><strong>Monitor Memory Usage:</strong>  Even with the mitigations, continue to monitor your application's memory usage and be prepared to handle potential memory exhaustion events.</li>
+<li><strong>Follow Security Best Practices:</strong>  Implement robust input validation, rate limiting, and other security measures to protect your application from various attacks, not just this specific vulnerability.</li>
+</ul>
+<p><strong>Future Work:</strong></p>
+<ul>
+<li><strong>Rust Integration:</strong>  The long-term solution is to implement the most memory-intensive and security-critical operations in a lower-level language like Rust, which provides more control over memory management and can avoid the problematic GMP behavior. This is planned for future versions.</li>
+<li><strong>More Precise Memory Estimation:</strong>  Research and improve the accuracy of the memory estimation algorithms used in <code>check_memory_safety</code>.</li>
+<li><strong>Fuzz Testing:</strong>  Conduct extensive fuzz testing to identify any remaining edge cases that could trigger excessive memory allocation.</li>
+</ul>
+<h3 id="references">References</h3>
 <ul>
 <li><a href="https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-v432-7f47-9g94">https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-v432-7f47-9g94</a></li>
 <li><a href="https://github.com/advisories/GHSA-v432-7f47-9g94">https://github.com/advisories/GHSA-v432-7f47-9g94</a></li>
@@ -171,114 +410,6 @@ This has been integrated into key classes like <code>CyclicGroup</code> and <cod
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2025-03-14T15:32:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[PostQuantum-Feldman-VSS] Post-Quantum Secure Feldman's Verifiable Secret Sharing has Inadequate Fault Injection Countermeasures in `secure_redundant_execution`]]></title>
-        <id>https://github.com/advisories/GHSA-r8gc-qc2c-c7vh</id>
-        <link href="https://github.com/advisories/GHSA-r8gc-qc2c-c7vh"/>
-        <updated>2025-03-14T19:55:19.000Z</updated>
-        <content type="html"><![CDATA[<p><strong>Description:</strong></p>
-<p>The <code>secure_redundant_execution</code> function in feldman_vss.py attempts to mitigate fault injection attacks by executing a function multiple times and comparing results. However, several critical weaknesses exist:</p>
-<ol>
-<li>Python's execution environment cannot guarantee true isolation between redundant executions</li>
-<li>The constant-time comparison implementation in Python is subject to timing variations</li>
-<li>The randomized execution order and timing provide insufficient protection against sophisticated fault attacks</li>
-<li>The error handling may leak timing information about partial execution results</li>
-</ol>
-<p>These limitations make the protection ineffective against targeted fault injection attacks, especially from attackers with physical access to the hardware.</p>
-<p><strong>Impact:</strong></p>
-<p>A successful fault injection attack could allow an attacker to:</p>
-<ol>
-<li>Bypass the redundancy check mechanisms</li>
-<li>Extract secret polynomial coefficients during share generation or verification</li>
-<li>Force the acceptance of invalid shares during verification</li>
-<li>Manipulate the commitment verification process to accept fraudulent commitments</li>
-</ol>
-<p>This undermines the core security guarantees of the Verifiable Secret Sharing scheme.</p>
-<p><strong>References:</strong></p>
-<ul>
-<li>File: <code>feldman_vss.py</code></li>
-<li>Function: <code>secure_redundant_execution</code></li>
-<li><a href="https://en.wikipedia.org/wiki/Fault_attack">Fault Attacks</a> - Wikipedia article on fault attacks.</li>
-<li>Bar-El, H., et al. "The Sorcerer's Apprentice Guide to Fault Attacks" - <a href="https://eprint.iacr.org/2004/100.pdf">https://eprint.iacr.org/2004/100.pdf</a></li>
-<li>CWE-1279: <a href="https://cwe.mitre.org/data/definitions/1279.html">https://cwe.mitre.org/data/definitions/1279.html</a></li>
-<li>NIST SP 800-90B section on implementation validation</li>
-</ul>
-<p><strong>Remediation:</strong></p>
-<p>Long-term remediation requires reimplementing the security-critical functions in a lower-level language like Rust.</p>
-<p>Short-term mitigations:</p>
-<ol>
-<li>Deploy the software in environments with physical security controls</li>
-<li>Increase the redundancy count (from 5 to a higher number) by modifying the source code</li>
-<li>Add external verification of cryptographic operations when possible</li>
-<li>Consider using hardware security modules (HSMs) for key operations</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-r8gc-qc2c-c7vh">https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-r8gc-qc2c-c7vh</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-29779">https://nvd.nist.gov/vuln/detail/CVE-2025-29779</a></li>
-<li><a href="https://en.wikipedia.org/wiki/Fault_attack">https://en.wikipedia.org/wiki/Fault_attack</a></li>
-<li><a href="https://eprint.iacr.org/2004/100.pdf">https://eprint.iacr.org/2004/100.pdf</a></li>
-<li><a href="https://github.com/advisories/GHSA-r8gc-qc2c-c7vh">https://github.com/advisories/GHSA-r8gc-qc2c-c7vh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r8gc-qc2c-c7vh</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-14T19:55:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[PostQuantum-Feldman-VSS] Post-Quantum Secure Feldman's Verifiable Secret Sharing has Timing Side-Channels in Matrix Operations]]></title>
-        <id>https://github.com/advisories/GHSA-q65w-fg65-79f4</id>
-        <link href="https://github.com/advisories/GHSA-q65w-fg65-79f4"/>
-        <updated>2025-03-14T19:55:11.000Z</updated>
-        <content type="html"><![CDATA[<p><strong>Description:</strong></p>
-<p>The <code>feldman_vss</code> library contains timing side-channel vulnerabilities in its matrix operations, specifically within the <code>_find_secure_pivot</code> function and potentially other parts of <code>_secure_matrix_solve</code>. These vulnerabilities are due to Python's execution model, which does not guarantee constant-time execution. An attacker with the ability to measure the execution time of these functions (e.g., through repeated calls with carefully crafted inputs) could potentially recover secret information used in the Verifiable Secret Sharing (VSS) scheme.</p>
-<p>The <code>_find_secure_pivot</code> function, used during Gaussian elimination in <code>_secure_matrix_solve</code>, attempts to find a non-zero pivot element. However, the conditional statement <code>if matrix[row][col] != 0 and row_random &lt; min_value:</code> has execution time that depends on the value of <code>matrix[row][col]</code>. This timing difference can be exploited by an attacker.</p>
-<p>The <code>constant_time_compare</code> function in this file also does not provide a constant-time guarantee.</p>
-<p>This advisory formalizes the timing side-channel vulnerabilities already documented in the library's "Known Security Vulnerabilities" section. The Python implementation of matrix operations in the _find_secure_pivot and _secure_matrix_solve functions cannot guarantee constant-time execution, potentially leaking information about secret polynomial coefficients.</p>
-<p>An attacker with the ability to make precise timing measurements of these operations could potentially extract secret information through statistical analysis of execution times, though practical exploitation would require significant expertise and controlled execution environments.</p>
-<p><strong>Impact:</strong></p>
-<p>Successful exploitation of these timing side-channels could allow an attacker to recover secret keys or other sensitive information protected by the VSS scheme.  This could lead to a complete compromise of the shared secret.</p>
-<p><strong>References:</strong></p>
-<ul>
-<li>File: <code>feldman_vss.py</code></li>
-<li>Function: <code>_find_secure_pivot</code></li>
-<li>Function: <code>_secure_matrix_solve</code></li>
-<li>Function: <code>constant_time_compare</code></li>
-<li><a href="https://www.rambus.com/wp-content/uploads/2015/08/TimingAttacks.pdf">Timing Attacks on Implementations of Diffie-Hellman, RSA, DSS, and Other Systems (1996)</a> - A seminal paper on timing attacks.</li>
-<li><a href="https://en.wikipedia.org/wiki/Side-channel_attack">Side-Channel Attacks</a> - Wikipedia article on side-channel attacks.</li>
-</ul>
-<p><strong>Remediation:</strong></p>
-<p>As acknowledged in the library's documentation, these vulnerabilities cannot be adequately addressed in pure Python. The advisory recommends:</p>
-<ol>
-<li><p>SHORT TERM: Consider using this library only in environments where timing measurements by attackers are infeasible.</p>
-</li>
-<li><p>MEDIUM TERM: Implement your own wrappers around critical operations using constant-time libraries in languages like Rust, Go, or C.</p>
-</li>
-<li><p>LONG TERM: Wait for the planned Rust implementation mentioned in the library documentation that will properly address these issues.</p>
-</li>
-</ol>
-<p>Note that the usage of random.Random() identified in the _refresh_shares_additive function is intentional and secure as documented in the "False-Positive Vulnerabilities" section of the code, and should not be considered part of this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-q65w-fg65-79f4">https://github.com/DavidOsipov/PostQuantum-Feldman-VSS/security/advisories/GHSA-q65w-fg65-79f4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-29780">https://nvd.nist.gov/vuln/detail/CVE-2025-29780</a></li>
-<li><a href="https://en.wikipedia.org/wiki/Side-channel_attack">https://en.wikipedia.org/wiki/Side-channel_attack</a></li>
-<li><a href="https://www.rambus.com/wp-content/uploads/2015/08/TimingAttacks.pdf">https://www.rambus.com/wp-content/uploads/2015/08/TimingAttacks.pdf</a></li>
-<li><a href="https://github.com/advisories/GHSA-q65w-fg65-79f4">https://github.com/advisories/GHSA-q65w-fg65-79f4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q65w-fg65-79f4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-14T19:55:10.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[basicsr] XPixelGroup BasicSR Command Injection]]></title>
@@ -618,141 +749,5 @@ torch.load(file)
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-03-10T18:26:44.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[picklescan] Zip Flag Bit Exploit Crashes Picklescan But Not PyTorch]]></title>
-        <id>https://github.com/advisories/GHSA-w8jq-xcqf-f792</id>
-        <link href="https://github.com/advisories/GHSA-w8jq-xcqf-f792"/>
-        <updated>2025-03-10T18:26:36.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>PickleScan fails to detect malicious pickle files inside PyTorch model archives when certain ZIP file flag bits are modified. By flipping specific bits in the ZIP file headers, an attacker can embed malicious pickle files that remain undetected by PickleScan while still being successfully loaded by PyTorch's torch.load(). This can lead to arbitrary code execution when loading a compromised model.</p>
-<h3 id="details">Details</h3>
-<p>PickleScan relies on Python’s zipfile module to extract and scan files within ZIP-based model archives. However, certain flag bits in ZIP headers affect how files are interpreted, and some of these bits cause PickleScan to fail while leaving PyTorch’s loading mechanism unaffected.</p>
-<p>By modifying the flag_bits field in the ZIP file entry, an attacker can:</p>
-<ul>
-<li>Embed a malicious pickle file (bad_file.pkl) in a PyTorch model archive.</li>
-<li>Flip specific bits (e.g., 0x1, 0x20, 0x40) in the ZIP metadata.</li>
-<li>Prevent PickleScan from scanning the archive due to errors raised by zipfile.</li>
-<li>Successfully load the model with torch.load(), which ignores the flag modifications.</li>
-</ul>
-<p>This technique effectively bypasses PickleScan's security checks while maintaining model functionality.</p>
-<h3 id="poc">PoC</h3>
-<pre><code>import os
-import zipfile
-import torch
-from picklescan import cli
-
-def can_scan(zip_file):
-    try:
-        cli.print_summary(False, cli.scan_file_path(zip_file))
-        return True
-    except Exception:
-        return False
-
-bit_to_flip = 0x1  # Change to 0x20 or 0x40 to test different flag bits
-
-zip_file = "model.pth"
-model = {'a': 1, 'b': 2, 'c': 3}
-torch.save(model, zip_file)
-
-with zipfile.ZipFile(zip_file, "r") as source:
-    flipped_name = f"flipped_{bit_to_flip}_{zip_file}"
-    with zipfile.ZipFile(flipped_name, "w") as dest:
-        bad_file = zipfile.ZipInfo("model/bad_file.pkl")
-        
-        # Modify the ZIP flag bits
-        bad_file.flag_bits |= bit_to_flip
-        
-        dest.writestr(bad_file, b"bad content")
-        for item in source.infolist():
-            dest.writestr(item, source.read(item.filename))
-
-if model == torch.load(flipped_name, weights_only=False):
-    if not can_scan(flipped_name):
-        print('Found exploitable bit:', bit_to_flip)
-else:
-    os.remove(flipped_name)
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Severity: <code>High</code></p>
-<ul>
-<li>Who is impacted? Any organization or user relying on PickleScan to detect malicious pickle files inside PyTorch models.</li>
-<li>What is the impact? Attackers can embed malicious pickle payloads inside PyTorch models that evade PickleScan's detection but still execute upon loading.</li>
-<li>Potential Exploits: This vulnerability could be exploited in machine learning supply chain attacks, allowing attackers to distribute backdoored models on platforms like Hugging Face or PyTorch Hub.</li>
-</ul>
-<h3 id="recommendations">Recommendations</h3>
-<ul>
-<li>Improve ZIP Handling: PickleScan should use a more relaxed ZIP parser marches on when encountering modified flag bits.</li>
-<li>Scan All Embedded Files Regardless of Flags: Ensure that files with altered metadata are still extracted and analyzed.</li>
-</ul>
-<p>By addressing these issues, PickleScan can provide stronger protection against manipulated PyTorch model archives.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1945">https://nvd.nist.gov/vuln/detail/CVE-2025-1945</a></li>
-<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
-<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945</a></li>
-<li><a href="https://github.com/advisories/GHSA-w8jq-xcqf-f792">https://github.com/advisories/GHSA-w8jq-xcqf-f792</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w8jq-xcqf-f792</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-10T18:26:35.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[picklescan] Duplicate Advisory: Zip Flag Bit Exploit Crashes Picklescan But Not PyTorch]]></title>
-        <id>https://github.com/advisories/GHSA-2fh4-gpch-vqv4</id>
-        <link href="https://github.com/advisories/GHSA-2fh4-gpch-vqv4"/>
-        <updated>2025-03-10T18:31:04.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of GHSA-w8jq-xcqf-f792. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>picklescan before 0.0.23 fails to detect malicious pickle files inside PyTorch model archives when certain ZIP file flag bits are modified. By flipping specific bits in the ZIP file headers, an attacker can embed malicious pickle files that remain undetected by PickleScan while still being successfully loaded by PyTorch's torch.load(). This can lead to arbitrary code execution when loading a compromised model.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-w8jq-xcqf-f792</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1945">https://nvd.nist.gov/vuln/detail/CVE-2025-1945</a></li>
-<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
-<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1945</a></li>
-<li><a href="https://github.com/advisories/GHSA-2fh4-gpch-vqv4">https://github.com/advisories/GHSA-2fh4-gpch-vqv4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2fh4-gpch-vqv4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-10T12:30:56.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[picklescan] Duplicate Advisory: Zip Exploit Crashes Picklescan But Not PyTorch ]]></title>
-        <id>https://github.com/advisories/GHSA-w6mr-mj53-x258</id>
-        <link href="https://github.com/advisories/GHSA-w6mr-mj53-x258"/>
-        <updated>2025-03-10T18:25:49.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of GHSA-7q5r-7gvp-wc82. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>picklescan before 0.0.23 is vulnerable to a ZIP archive manipulation attack that causes it to crash when attempting to extract and scan PyTorch model archives. By modifying the filename in the ZIP header while keeping the original filename in the directory listing, an attacker can make PickleScan raise a BadZipFile error. However, PyTorch's more forgiving ZIP implementation still allows the model to be loaded, enabling malicious payloads to bypass detection.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-7q5r-7gvp-wc82</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-1944">https://nvd.nist.gov/vuln/detail/CVE-2025-1944</a></li>
-<li><a href="https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781">https://github.com/mmaitre314/picklescan/commit/e58e45e0d9e091159c1554f9b04828bbb40b9781</a></li>
-<li><a href="https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944">https://sites.google.com/sonatype.com/vulnerabilities/cve-2025-1944</a></li>
-<li><a href="https://github.com/advisories/GHSA-w6mr-mj53-x258">https://github.com/advisories/GHSA-w6mr-mj53-x258</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w6mr-mj53-x258</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-10T12:30:55.000Z</published>
     </entry>
 </feed>
