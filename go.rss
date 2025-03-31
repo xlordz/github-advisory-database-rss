@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-03-31T16:01:29.223Z</updated>
+    <updated>2025-03-31T17:01:17.455Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,222 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/beego/beego] Beego allows Reflected/Stored XSS in Beego's RenderForm() Function Due to Unescaped User Input]]></title>
+        <id>https://github.com/advisories/GHSA-2j42-h78h-q4fg</id>
+        <link href="https://github.com/advisories/GHSA-2j42-h78h-q4fg"/>
+        <updated>2025-03-31T16:55:23.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Cross-Site Scripting (XSS) vulnerability exists in Beego's <code>RenderForm()</code> function due to improper HTML escaping of user-controlled data. This vulnerability allows attackers to inject malicious JavaScript code that executes in victims' browsers, potentially leading to session hijacking, credential theft, or account takeover. The vulnerability affects any application using Beego's <code>RenderForm()</code> function with user-provided data. Since it is a high-level function generating an entire form markup, many developers would assume it automatically escapes attributes (the way most frameworks do).</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability is located in the <code>renderFormField()</code> function in Beego's <code>templatefunc.go</code> file (around lines 316-356). This function directly injects user-provided values into HTML without proper escaping:</p>
+<pre><code class="language-go">return fmt.Sprintf(`%v&lt;input%v%v name="%v" type="%v" value="%v"%v&gt;`, 
+    label, id, class, name, fType, value, requiredString)
+</code></pre>
+<p>None of the values (label, id, class, name, value) are properly HTML-escaped before being inserted into the HTML template. This allows attackers to break out of the attribute context or inject HTML tags directly.
+The vulnerability can be exploited in two main ways:</p>
+<ul>
+<li>Attribute Injection: By injecting code into fields like DisplayName, an attacker can break out of the attribute context and execute JavaScript.</li>
+<li>Content Injection: By injecting HTML tags into textarea content, an attacker can execute JavaScript.</li>
+</ul>
+<p>The <code>RenderForm()</code> function returns <code>template.HTML</code>, which bypasses Go's automatic HTML escaping, making this vulnerability particularly dangerous.</p>
+<h3 id="poc">PoC</h3>
+<p>Retrieve the following (secret) gist: <a href="https://gist.github.com/thevilledev/8fd0cab3f098320aa9daab04be59fd2b">https://gist.github.com/thevilledev/8fd0cab3f098320aa9daab04be59fd2b</a></p>
+<p>To run it:</p>
+<pre><code class="language-go">go mod init beego-xss-poc
+go mod tidy
+go run poc.go
+</code></pre>
+<p>Open your browser and navigate to <a href="http://localhost:8080/">http://localhost:8080/</a></p>
+<p>The application demonstrates the vulnerability through several examples:</p>
+<ul>
+<li><code>/profile</code> - Shows a profile with malicious data in the Display Name and Bio fields</li>
+<li><code>/admin</code> - Shows multiple user profiles, including one with malicious data</li>
+<li><code>/submit</code> - Allows you to create your own profile with malicious data</li>
+</ul>
+<p>In addition, you may use this Go test in <code>templatefunc_test.go</code>. The test passes, validating the vulnerability.</p>
+<pre><code class="language-go">func TestRenderFormXSSVulnerability(t *testing.T) {
+    type UserProfile struct {
+        DisplayName string `form:"displayName,text,Name:"`
+        Bio         string `form:",textarea"`
+    }
+
+    // Test case 1: Attribute injection in input field
+    maliciousUser := UserProfile{
+        DisplayName: `" onmouseover="alert('XSS')" data-malicious="`,
+        Bio:         "Normal bio text",
+    }
+
+    output := RenderForm(&amp;maliciousUser)
+
+    // The vulnerable output would contain the unescaped JavaScript
+    if !strings.Contains(string(output), `onmouseover="alert('XSS')"`) {
+        t.Errorf("Expected XSS vulnerability in attribute, but got safe output: %v", output)
+    }
+
+    // Test case 2: Script injection in textarea
+    maliciousUser2 := UserProfile{
+        DisplayName: "Normal Name",
+        Bio:         `&lt;/textarea&gt;&lt;script&gt;alert('XSS')&lt;/script&gt;&lt;textarea&gt;`,
+    }
+
+    output = RenderForm(&amp;maliciousUser2)
+
+    // The vulnerable output would contain the unescaped script tag
+    if !strings.Contains(string(output), `&lt;/textarea&gt;&lt;script&gt;alert('XSS')`) {
+        t.Errorf("Expected XSS vulnerability in textarea content, but got safe output: %v", output)
+    }
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a high-severity vulnerability with the following impacts:</p>
+<ul>
+<li>Cross-Site Scripting (XSS): Allows execution of arbitrary JavaScript in the context of the victim's browser.</li>
+<li>Session Hijacking: Attackers can steal session cookies and impersonate victims.</li>
+<li>Credential Theft: Attackers can create fake login forms to steal credentials.</li>
+<li>Account Takeover: Attackers can perform actions on behalf of the victim.</li>
+<li>Data Exfiltration: Sensitive data visible in the browser can be stolen.</li>
+</ul>
+<p>This is particularly concerning in admin panels or user management interfaces where one user's data is displayed to another user (typically an administrator).</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>The vulnerability can be fixed by properly escaping all user-provided values before inserting them into HTML, for example:</p>
+<pre><code class="language-go">// Convert value to string and escape it
+valueStr := ""
+if value != nil {
+    valueStr = template.HTMLEscapeString(fmt.Sprintf("%v", value))
+}
+
+// Escape the name and label
+escapedName := template.HTMLEscapeString(name)
+escapedLabel := template.HTMLEscapeString(label)
+escapedType := template.HTMLEscapeString(fType)
+
+return fmt.Sprintf(`%v&lt;input%v%v name="%v" type="%v" value="%v"%v&gt;`, 
+    escapedLabel, id, class, escapedName, escapedType, valueStr, requiredString)
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/beego/beego/security/advisories/GHSA-2j42-h78h-q4fg">https://github.com/beego/beego/security/advisories/GHSA-2j42-h78h-q4fg</a></li>
+<li><a href="https://github.com/beego/beego/commit/939bb18c66406466715ddadd25dd9ffa6f169e25">https://github.com/beego/beego/commit/939bb18c66406466715ddadd25dd9ffa6f169e25</a></li>
+<li><a href="https://github.com/advisories/GHSA-2j42-h78h-q4fg">https://github.com/advisories/GHSA-2j42-h78h-q4fg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2j42-h78h-q4fg</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-03-31T16:55:22.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/beego/beego/v2] Beego allows Reflected/Stored XSS in Beego's RenderForm() Function Due to Unescaped User Input]]></title>
+        <id>https://github.com/advisories/GHSA-2j42-h78h-q4fg</id>
+        <link href="https://github.com/advisories/GHSA-2j42-h78h-q4fg"/>
+        <updated>2025-03-31T16:55:23.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Cross-Site Scripting (XSS) vulnerability exists in Beego's <code>RenderForm()</code> function due to improper HTML escaping of user-controlled data. This vulnerability allows attackers to inject malicious JavaScript code that executes in victims' browsers, potentially leading to session hijacking, credential theft, or account takeover. The vulnerability affects any application using Beego's <code>RenderForm()</code> function with user-provided data. Since it is a high-level function generating an entire form markup, many developers would assume it automatically escapes attributes (the way most frameworks do).</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability is located in the <code>renderFormField()</code> function in Beego's <code>templatefunc.go</code> file (around lines 316-356). This function directly injects user-provided values into HTML without proper escaping:</p>
+<pre><code class="language-go">return fmt.Sprintf(`%v&lt;input%v%v name="%v" type="%v" value="%v"%v&gt;`, 
+    label, id, class, name, fType, value, requiredString)
+</code></pre>
+<p>None of the values (label, id, class, name, value) are properly HTML-escaped before being inserted into the HTML template. This allows attackers to break out of the attribute context or inject HTML tags directly.
+The vulnerability can be exploited in two main ways:</p>
+<ul>
+<li>Attribute Injection: By injecting code into fields like DisplayName, an attacker can break out of the attribute context and execute JavaScript.</li>
+<li>Content Injection: By injecting HTML tags into textarea content, an attacker can execute JavaScript.</li>
+</ul>
+<p>The <code>RenderForm()</code> function returns <code>template.HTML</code>, which bypasses Go's automatic HTML escaping, making this vulnerability particularly dangerous.</p>
+<h3 id="poc">PoC</h3>
+<p>Retrieve the following (secret) gist: <a href="https://gist.github.com/thevilledev/8fd0cab3f098320aa9daab04be59fd2b">https://gist.github.com/thevilledev/8fd0cab3f098320aa9daab04be59fd2b</a></p>
+<p>To run it:</p>
+<pre><code class="language-go">go mod init beego-xss-poc
+go mod tidy
+go run poc.go
+</code></pre>
+<p>Open your browser and navigate to <a href="http://localhost:8080/">http://localhost:8080/</a></p>
+<p>The application demonstrates the vulnerability through several examples:</p>
+<ul>
+<li><code>/profile</code> - Shows a profile with malicious data in the Display Name and Bio fields</li>
+<li><code>/admin</code> - Shows multiple user profiles, including one with malicious data</li>
+<li><code>/submit</code> - Allows you to create your own profile with malicious data</li>
+</ul>
+<p>In addition, you may use this Go test in <code>templatefunc_test.go</code>. The test passes, validating the vulnerability.</p>
+<pre><code class="language-go">func TestRenderFormXSSVulnerability(t *testing.T) {
+    type UserProfile struct {
+        DisplayName string `form:"displayName,text,Name:"`
+        Bio         string `form:",textarea"`
+    }
+
+    // Test case 1: Attribute injection in input field
+    maliciousUser := UserProfile{
+        DisplayName: `" onmouseover="alert('XSS')" data-malicious="`,
+        Bio:         "Normal bio text",
+    }
+
+    output := RenderForm(&amp;maliciousUser)
+
+    // The vulnerable output would contain the unescaped JavaScript
+    if !strings.Contains(string(output), `onmouseover="alert('XSS')"`) {
+        t.Errorf("Expected XSS vulnerability in attribute, but got safe output: %v", output)
+    }
+
+    // Test case 2: Script injection in textarea
+    maliciousUser2 := UserProfile{
+        DisplayName: "Normal Name",
+        Bio:         `&lt;/textarea&gt;&lt;script&gt;alert('XSS')&lt;/script&gt;&lt;textarea&gt;`,
+    }
+
+    output = RenderForm(&amp;maliciousUser2)
+
+    // The vulnerable output would contain the unescaped script tag
+    if !strings.Contains(string(output), `&lt;/textarea&gt;&lt;script&gt;alert('XSS')`) {
+        t.Errorf("Expected XSS vulnerability in textarea content, but got safe output: %v", output)
+    }
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a high-severity vulnerability with the following impacts:</p>
+<ul>
+<li>Cross-Site Scripting (XSS): Allows execution of arbitrary JavaScript in the context of the victim's browser.</li>
+<li>Session Hijacking: Attackers can steal session cookies and impersonate victims.</li>
+<li>Credential Theft: Attackers can create fake login forms to steal credentials.</li>
+<li>Account Takeover: Attackers can perform actions on behalf of the victim.</li>
+<li>Data Exfiltration: Sensitive data visible in the browser can be stolen.</li>
+</ul>
+<p>This is particularly concerning in admin panels or user management interfaces where one user's data is displayed to another user (typically an administrator).</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>The vulnerability can be fixed by properly escaping all user-provided values before inserting them into HTML, for example:</p>
+<pre><code class="language-go">// Convert value to string and escape it
+valueStr := ""
+if value != nil {
+    valueStr = template.HTMLEscapeString(fmt.Sprintf("%v", value))
+}
+
+// Escape the name and label
+escapedName := template.HTMLEscapeString(name)
+escapedLabel := template.HTMLEscapeString(label)
+escapedType := template.HTMLEscapeString(fType)
+
+return fmt.Sprintf(`%v&lt;input%v%v name="%v" type="%v" value="%v"%v&gt;`, 
+    escapedLabel, id, class, escapedName, escapedType, valueStr, requiredString)
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/beego/beego/security/advisories/GHSA-2j42-h78h-q4fg">https://github.com/beego/beego/security/advisories/GHSA-2j42-h78h-q4fg</a></li>
+<li><a href="https://github.com/beego/beego/commit/939bb18c66406466715ddadd25dd9ffa6f169e25">https://github.com/beego/beego/commit/939bb18c66406466715ddadd25dd9ffa6f169e25</a></li>
+<li><a href="https://github.com/advisories/GHSA-2j42-h78h-q4fg">https://github.com/advisories/GHSA-2j42-h78h-q4fg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2j42-h78h-q4fg</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-03-31T16:55:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[go.rgst.io/stencil/v2] go.rgst.io/stencil/v2 vulnerable to Path Traversal]]></title>
         <id>https://github.com/advisories/GHSA-p799-q2pr-6mxj</id>
@@ -599,144 +815,6 @@ status: {}
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-03-24T19:07:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/cilium/cilium] Cilium East-west traffic not subject to egress policy enforcement for requests via Gateway API load balancers]]></title>
-        <id>https://github.com/advisories/GHSA-24qp-4xx8-3jvj</id>
-        <link href="https://github.com/advisories/GHSA-24qp-4xx8-3jvj"/>
-        <updated>2025-03-24T21:47:17.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>For Cilium users who:</p>
-<ul>
-<li>Use Gateway API for Ingress for some services <strong>AND</strong></li>
-<li>Use <a href="https://docs.cilium.io/en/stable/network/lb-ipam/">LB-IPAM</a> or BGP for LB Service implementation <strong>AND</strong></li>
-<li>Use network policies to block egress traffic from workloads in a namespace to workloads in other namespaces</li>
-</ul>
-<p>Egress traffic from workloads covered by such network policies to LoadBalancers configured by <code>Gateway</code> resources will incorrectly be allowed.</p>
-<p>LoadBalancer resources not deployed via a Gateway API configuration are not affected by this issue.</p>
-<h3 id="patches">Patches</h3>
-<p>This issue was fixed by <a href="https://github.com/cilium/proxy/pull/1172">https://github.com/cilium/proxy/pull/1172</a>.</p>
-<p>This issue affects:</p>
-<ul>
-<li>Cilium v1.15 between v1.15.0 and v1.15.14 inclusive</li>
-<li>Cilium v1.16 between v1.16.0 and v1.16.7 inclusive</li>
-<li>Cilium v1.17 between v1.17.0 and v1.17.1 inclusive</li>
-</ul>
-<p>This issue is fixed in:</p>
-<ul>
-<li>Cilium v1.15.15</li>
-<li>Cilium v1.16.8</li>
-<li>Cilium v1.17.2</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>A Clusterwide Cilium Network Policy can be used to work around this issue for users who are unable to upgrade. An outline of such a policy is provided below:</p>
-<pre><code>apiVersion: "cilium.io/v2"
-kind: CiliumClusterwideNetworkPolicy
-metadata:
-  name: "workaround"
-spec:
-  endpointSelector:
-    matchExpressions:
-    - key: reserved:ingress
-      operator: Exists
-  ingress:
-  - fromEntities:
-    - world
-</code></pre>
-<ul>
-<li>The policy opens up connectivity from all locations outside the cluster into the Cilium Ingress Gateway.</li>
-<li>The policy establishes a default deny for all other traffic towards the Cilium Ingress Gateway, including all in-cluster sources.</li>
-<li>It is possible to tailor the policy to more narrowly allow inbound traffic while creating a default deny posture for traffic between namespaces. Users should edit the policy to bring it in line with the security requirements particular to their environments.</li>
-</ul>
-<h3 id="acknowledgements">Acknowledgements</h3>
-<p>The Cilium community has worked together with members of the Isovalent team to prepare these mitigations. Special thanks to @jrajahalme for the fix.</p>
-<h3 id="for-more-information">For more information</h3>
-<p>If you think you have found a vulnerability affecting Cilium, we strongly encourage you to report it to our security mailing list at <a href="mailto:security@cilium.io">security@cilium.io</a>. This is a private mailing list for the Cilium security team, and your report will be treated as top priority.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/cilium/cilium/security/advisories/GHSA-24qp-4xx8-3jvj">https://github.com/cilium/cilium/security/advisories/GHSA-24qp-4xx8-3jvj</a></li>
-<li><a href="https://github.com/cilium/proxy/pull/1172">https://github.com/cilium/proxy/pull/1172</a></li>
-<li><a href="https://docs.cilium.io/en/stable/network/lb-ipam">https://docs.cilium.io/en/stable/network/lb-ipam</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-30162">https://nvd.nist.gov/vuln/detail/CVE-2025-30162</a></li>
-<li><a href="https://github.com/advisories/GHSA-24qp-4xx8-3jvj">https://github.com/advisories/GHSA-24qp-4xx8-3jvj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-24qp-4xx8-3jvj</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-24T19:05:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/cilium/cilium] Cilium East-west traffic not subject to egress policy enforcement for requests via Gateway API load balancers]]></title>
-        <id>https://github.com/advisories/GHSA-24qp-4xx8-3jvj</id>
-        <link href="https://github.com/advisories/GHSA-24qp-4xx8-3jvj"/>
-        <updated>2025-03-24T21:47:17.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>For Cilium users who:</p>
-<ul>
-<li>Use Gateway API for Ingress for some services <strong>AND</strong></li>
-<li>Use <a href="https://docs.cilium.io/en/stable/network/lb-ipam/">LB-IPAM</a> or BGP for LB Service implementation <strong>AND</strong></li>
-<li>Use network policies to block egress traffic from workloads in a namespace to workloads in other namespaces</li>
-</ul>
-<p>Egress traffic from workloads covered by such network policies to LoadBalancers configured by <code>Gateway</code> resources will incorrectly be allowed.</p>
-<p>LoadBalancer resources not deployed via a Gateway API configuration are not affected by this issue.</p>
-<h3 id="patches">Patches</h3>
-<p>This issue was fixed by <a href="https://github.com/cilium/proxy/pull/1172">https://github.com/cilium/proxy/pull/1172</a>.</p>
-<p>This issue affects:</p>
-<ul>
-<li>Cilium v1.15 between v1.15.0 and v1.15.14 inclusive</li>
-<li>Cilium v1.16 between v1.16.0 and v1.16.7 inclusive</li>
-<li>Cilium v1.17 between v1.17.0 and v1.17.1 inclusive</li>
-</ul>
-<p>This issue is fixed in:</p>
-<ul>
-<li>Cilium v1.15.15</li>
-<li>Cilium v1.16.8</li>
-<li>Cilium v1.17.2</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>A Clusterwide Cilium Network Policy can be used to work around this issue for users who are unable to upgrade. An outline of such a policy is provided below:</p>
-<pre><code>apiVersion: "cilium.io/v2"
-kind: CiliumClusterwideNetworkPolicy
-metadata:
-  name: "workaround"
-spec:
-  endpointSelector:
-    matchExpressions:
-    - key: reserved:ingress
-      operator: Exists
-  ingress:
-  - fromEntities:
-    - world
-</code></pre>
-<ul>
-<li>The policy opens up connectivity from all locations outside the cluster into the Cilium Ingress Gateway.</li>
-<li>The policy establishes a default deny for all other traffic towards the Cilium Ingress Gateway, including all in-cluster sources.</li>
-<li>It is possible to tailor the policy to more narrowly allow inbound traffic while creating a default deny posture for traffic between namespaces. Users should edit the policy to bring it in line with the security requirements particular to their environments.</li>
-</ul>
-<h3 id="acknowledgements">Acknowledgements</h3>
-<p>The Cilium community has worked together with members of the Isovalent team to prepare these mitigations. Special thanks to @jrajahalme for the fix.</p>
-<h3 id="for-more-information">For more information</h3>
-<p>If you think you have found a vulnerability affecting Cilium, we strongly encourage you to report it to our security mailing list at <a href="mailto:security@cilium.io">security@cilium.io</a>. This is a private mailing list for the Cilium security team, and your report will be treated as top priority.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/cilium/cilium/security/advisories/GHSA-24qp-4xx8-3jvj">https://github.com/cilium/cilium/security/advisories/GHSA-24qp-4xx8-3jvj</a></li>
-<li><a href="https://github.com/cilium/proxy/pull/1172">https://github.com/cilium/proxy/pull/1172</a></li>
-<li><a href="https://docs.cilium.io/en/stable/network/lb-ipam">https://docs.cilium.io/en/stable/network/lb-ipam</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-30162">https://nvd.nist.gov/vuln/detail/CVE-2025-30162</a></li>
-<li><a href="https://github.com/advisories/GHSA-24qp-4xx8-3jvj">https://github.com/advisories/GHSA-24qp-4xx8-3jvj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-24qp-4xx8-3jvj</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-24T19:05:04.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/cilium/cilium] Cilium East-west traffic not subject to egress policy enforcement for requests via Gateway API load balancers]]></title>
