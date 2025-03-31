@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-03-31T22:01:25.686Z</updated>
+    <updated>2025-03-31T23:01:20.959Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,116 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[aws-cdk-lib] aws-cdk-lib has Insertion of Sensitive Information into Log File vulnerability when using Cognito UserPoolClient Construct]]></title>
+        <id>https://github.com/advisories/GHSA-qq4x-c6h6-rfxh</id>
+        <link href="https://github.com/advisories/GHSA-qq4x-c6h6-rfxh"/>
+        <updated>2025-03-31T22:37:43.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <a href="https://aws.amazon.com/cdk/">AWS Cloud Development Kit (CDK)</a> is an open-source framework for defining cloud infrastructure using code. Customers use it to create their own applications which are converted to AWS CloudFormation templates during deployment to a customer’s AWS account. CDK contains pre-built components called "<a href="https://docs.aws.amazon.com/cdk/v2/guide/constructs.html">constructs</a>" that are higher-level abstractions providing defaults and best practices. This approach enables developers to use familiar programming languages to define complex cloud infrastructure more efficiently than writing raw CloudFormation templates.</p>
+<p>The CDK <a href="https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_cognito.UserPool.html">Cognito UserPool</a> construct deploys an AWS cognito user pool. An <a href="https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools.html">Amazon Cognito user pool</a> is a user directory for web and mobile app authentication and authorization. Customers can deploy a client under this user pool through construct ‘<a href="https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_cognito.UserPoolClient.html">UserPoolClient</a>’ or through helper method '<a href="https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_cognito.UserPool.html#addwbrclientid-options">addClient</a>'. A user pool client resource represents an Amazon <a href="https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-client-apps.html">Cognito user pool client</a> which is a configuration within a user pool that interacts with one mobile or web application authenticating with Amazon Cognito. </p>
+<p>When users of the 'cognito.UserPoolClient' construct generate a secret value for the application client in AWS CDK, they can then reference the generated secrets in their stack. The CDK had an issue where, when the custom resource performed an SDK API call to 'DescribeCognitoUserPoolClient' to retrieve the generated secret, the full response was logged in the associated lambda function's log group. Any user authenticated in the account where logs of the custom resource are accessible and who has read-only permission could view the secret written to those logs. </p>
+<p>This issue does not affect customers who are generating the secret value outside of the CDK as the secret is not referenced or logged.</p>
+<h3 id="impact">Impact</h3>
+<p>To leverage this issue, an actor has to be authenticated in the account where logs of the custom resource Custom::DescribeCognitoUserPoolClient are accessible and have read-only permission for lambda function logs. </p>
+<p>Users can review access to their log group through AWS CloudTrail logs to detect any unexpected access to read the logs.</p>
+<p><strong>Impacted versions: &gt;2.37.0 and &lt;=2.187.0</strong></p>
+<h3 id="patches">Patches</h3>
+<p>The patches are included in the AWS CDK Library release v2.187.0. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes. To fully address this issue, users should rotate the secret by generating a new secret stored in AWS Secrets Manager. References to the secret will use the new secret on update. </p>
+<p>When new CDK applications using the latest version are initialized, they will use the new behavior with updated logging. </p>
+<p>Existing applications must upgrade to the latest version, change the <a href="https://github.com/aws/aws-cdk/blob/main/packages/aws-cdk-lib/cx-api/FEATURE_FLAGS.md">feature flag</a> (@aws-cdk/cognito:logUserPoolClientSecretValue) to false, redeploy the application to apply this fix and use the new implementation with updated logging behavior.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Users can override the implementation changing Logging to be Logging.withDataHidden(). For example define class CustomUserPoolClient extends UserPoolClient and&nbsp; in the new class define get userPoolClientSecret() to use Logging.withDataHidden().</p>
+<p>Example</p>
+<pre><code>export class CustomUserPoolClient extends UserPoolClient {
+
+  private readonly customUserPool : UserPool;
+  private readonly customuserPoolClientId : string;
+  constructor(scope: Construct, id: string, props: UserPoolClientProps) {
+    super(scope, id, props);
+
+    this.customUserPool = new UserPool(this, 'pool', {
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    const client = this.customUserPool.addClient('client', { generateSecret: true });
+  }
+
+
+
+  // Override the userPoolClientSecret getter to always return the secret
+  public get userPoolClientSecret(): SecretValue {
+    // Create the Custom Resource that assists in resolving the User Pool Client secret
+    const secretValue = SecretValue.resourceAttribute(new AwsCustomResource(
+      this,
+      'DescribeCognitoUserPoolClient',
+      {
+    resourceType: 'Custom::DescribeCognitoUserPoolClient',
+    onUpdate: {
+      region: cdk.Stack.of(this).region,
+      service: 'CognitoIdentityServiceProvider',
+      action: 'describeUserPoolClient',
+      parameters: {
+        UserPoolId: this.customUserPool.userPoolId,
+        ClientId: this.customUserPool,
+      },
+      physicalResourceId: PhysicalResourceId.of(this.userPoolClientId),
+      // Disable logging of sensitive data
+      logging: Logging.withDataHidden(),
+    },
+    policy: AwsCustomResourcePolicy.fromSdkCalls({
+      resources: [this.customUserPool.userPoolArn],
+    }),
+    installLatestAwsSdk: false,
+      },
+    ).getResponseField('UserPoolClient.ClientSecret'));
+    
+    return secretValue;
+  }
+}
+</code></pre>
+<h3 id="references">References</h3>
+<p>If you have any questions or comments about this advisory please contact AWS/Amazon Security via our <a href="https://aws.amazon.com/security/vulnerability-reporting">vulnerability reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/aws/aws-cdk/security/advisories/GHSA-qq4x-c6h6-rfxh">https://github.com/aws/aws-cdk/security/advisories/GHSA-qq4x-c6h6-rfxh</a></li>
+<li><a href="https://github.com/aws/aws-cdk/commit/d02e64aac18a72195ddcdb973defea7f32382c33">https://github.com/aws/aws-cdk/commit/d02e64aac18a72195ddcdb973defea7f32382c33</a></li>
+<li><a href="https://github.com/advisories/GHSA-qq4x-c6h6-rfxh">https://github.com/advisories/GHSA-qq4x-c6h6-rfxh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qq4x-c6h6-rfxh</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-31T22:37:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gifplayer] gifplayer XSS vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-gr7w-hmch-25g7</id>
+        <link href="https://github.com/advisories/GHSA-gr7w-hmch-25g7"/>
+        <updated>2025-03-31T22:36:12.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>XSS vulnerability. All versions under 0.3.7 are impacted</p>
+<h3 id="patches">Patches</h3>
+<p>Please upgrade to 0.3.7</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rubentd/gifplayer/security/advisories/GHSA-gr7w-hmch-25g7">https://github.com/rubentd/gifplayer/security/advisories/GHSA-gr7w-hmch-25g7</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31128">https://nvd.nist.gov/vuln/detail/CVE-2025-31128</a></li>
+<li><a href="https://github.com/rubentd/gifplayer/commit/2966193d4d066e5a6ba09dbdf1e1c7f8238630c8">https://github.com/rubentd/gifplayer/commit/2966193d4d066e5a6ba09dbdf1e1c7f8238630c8</a></li>
+<li><a href="https://github.com/advisories/GHSA-gr7w-hmch-25g7">https://github.com/advisories/GHSA-gr7w-hmch-25g7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gr7w-hmch-25g7</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-31T22:36:11.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[vite] Vite has a `server.fs.deny` bypassed for `inline` and `raw` with `?import` query]]></title>
         <id>https://github.com/advisories/GHSA-4r4m-qw57-chr8</id>
@@ -825,69 +935,5 @@ this is server2
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2023-02-03T03:30:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@nestjs/common] nest allows a remote attacker to execute arbitrary code via the Content-Type header]]></title>
-        <id>https://github.com/advisories/GHSA-cj7v-w2c7-cp7c</id>
-        <link href="https://github.com/advisories/GHSA-cj7v-w2c7-cp7c"/>
-        <updated>2025-03-27T21:13:50.000Z</updated>
-        <content type="html"><![CDATA[<p>File Upload vulnerability in nestjs nest v.11.0.11 allows a remote attacker to execute arbitrary code via the Content-Type header.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-29409">https://nvd.nist.gov/vuln/detail/CVE-2024-29409</a></li>
-<li><a href="https://github.com/nestjs/nest/issues/13311#issuecomment-1993839495">https://github.com/nestjs/nest/issues/13311#issuecomment-1993839495</a></li>
-<li><a href="https://gist.github.com/aydinnyunus/801342361584d1491c67a820a714f53f">https://gist.github.com/aydinnyunus/801342361584d1491c67a820a714f53f</a></li>
-<li><a href="https://github.com/nestjs/nest/blob/83a48b2c7396985144b7a6cd5d3bee1abb7c5d81/packages/common/pipes/file/file-type.validator.ts#L19">https://github.com/nestjs/nest/blob/83a48b2c7396985144b7a6cd5d3bee1abb7c5d81/packages/common/pipes/file/file-type.validator.ts#L19</a></li>
-<li><a href="https://github.com/advisories/GHSA-cj7v-w2c7-cp7c">https://github.com/advisories/GHSA-cj7v-w2c7-cp7c</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cj7v-w2c7-cp7c</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-14T18:30:51.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vega-functions] Vega vulnerable to Cross-site Scripting via RegExp.prototype[@@replace]]]></title>
-        <id>https://github.com/advisories/GHSA-963h-3v39-3pqf</id>
-        <link href="https://github.com/advisories/GHSA-963h-3v39-3pqf"/>
-        <updated>2025-03-27T18:00:25.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
-<p>Users running Vega/Vega-lite JSON definitions could run unexpected JavaScript code when drawing graphs, unless the library is used with the <code>vega-interpreter</code>.</p>
-<h2 id="workarounds">Workarounds</h2>
-<ul>
-<li>Use <code>vega</code> with <a href="https://vega.github.io/vega/usage/interpreter/">expression interpreter</a></li>
-<li>Upgrade to a <a href="https://github.com/vega/vega/releases/tag/v5.32.0">newer Vega version</a> (<code>5.32.0</code>)</li>
-</ul>
-<h3 id="poc-summary">POC Summary</h3>
-<p>Calling <code>replace</code> with a <code>RegExp</code>-like pattern calls <code>RegExp.prototype[@@replace]</code>, which can then call an attacker-controlled <code>exec</code> function.</p>
-<h3 id="poc-details">POC Details</h3>
-<p>Consider the function call <code>replace('foo', {__proto__: /h/.constructor.prototype, global: false})</code>. Since <code>pattern</code> has <code>RegExp.prototype[@@replace]</code>, <code>pattern.exec('foo')</code> winds up being called.</p>
-<p>The resulting malicious call looks like this:</p>
-<pre><code>replace(&lt;string argument&gt;, {__proto__: /h/.constructor.prototype, exec: &lt;function&gt;, global: false})
-</code></pre>
-<p>Since functions cannot be returned from this, an attacker that wishes to escalate to XSS must abuse <code>event.view</code> to gain access to <code>eval</code>.</p>
-<h3 id="reproduction-steps">Reproduction steps</h3>
-<pre><code>{"$schema":"https://vega.github.io/schema/vega/v5.json","signals":[{"name":"a","on":[{"events":"body:mousemove{99999}","update":"replace('alert(1)',{__proto__:/h/.constructor.prototype,exec:event.view.eval,global:false})"}]}]}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vega/vega/security/advisories/GHSA-963h-3v39-3pqf">https://github.com/vega/vega/security/advisories/GHSA-963h-3v39-3pqf</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27793">https://nvd.nist.gov/vuln/detail/CVE-2025-27793</a></li>
-<li><a href="https://github.com/vega/vega/commit/694560c0aa576df8b6c5f0f7d202ac82233e6966">https://github.com/vega/vega/commit/694560c0aa576df8b6c5f0f7d202ac82233e6966</a></li>
-<li><a href="https://github.com/vega/vega/releases/tag/v5.32.0">https://github.com/vega/vega/releases/tag/v5.32.0</a></li>
-<li><a href="https://vega.github.io/vega/usage/interpreter">https://vega.github.io/vega/usage/interpreter</a></li>
-<li><a href="https://github.com/advisories/GHSA-963h-3v39-3pqf">https://github.com/advisories/GHSA-963h-3v39-3pqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-963h-3v39-3pqf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-27T18:00:24.000Z</published>
     </entry>
 </feed>
