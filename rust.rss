@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2025-04-04T16:01:31.669Z</updated>
+    <updated>2025-04-04T17:01:30.076Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -12,676 +12,1463 @@
     <category term="MODERATE"/>
     <category term="LOW"/>
     <entry>
-        <title type="html"><![CDATA[[tauri-plugin-shell] Improper Scope Validation in the `open` Endpoint of `tauri-plugin-shell`]]></title>
-        <id>https://github.com/advisories/GHSA-c9pr-q8gx-3mgp</id>
-        <link href="https://github.com/advisories/GHSA-c9pr-q8gx-3mgp"/>
-        <updated>2025-04-03T13:26:09.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The Tauri <a href="https://tauri.app/plugin/shell/"><code>shell</code></a>  plugin exposes functionality to execute code and open programs on the system. The <a href="https://tauri.app/reference/javascript/shell/#open"><code>open</code></a> endpoint of this plugin is designed to allow open functionality with the system opener (e.g. 
- <code>xdg-open</code> on Linux). This was meant to be restricted to a reasonable number of protocols like <code>https</code> or <code>mailto</code> by default.</p>
-<p>This default restriction was not functional due to improper validation of the allowed protocols, allowing for potentially dangerous protocols like <code>file://</code>, <code>smb://</code>, or <code>nfs://</code> and others  to be opened by the system registered protocol handler.</p>
-<p>By passing untrusted user input to the <code>open</code> endpoint these potentially dangerous protocols can be abused to gain remote code execution on the system. This either requires direct exposure of the endpoint to application users or code execution in the frontend of a Tauri application.</p>
-<p>You are not affected if you have explicitly configured a validation regex or manually set the <code>open</code> endpoint to <code>true</code> in the plugin configuration. </p>
-<p>Technically the scope was never a limitation for the rust side as it is not seen as an enforceable security boundary but we decided to mark the rust crate as affected since the plugin does not need to be a frontend dependency to be exposed.</p>
-<h3 id="patches">Patches</h3>
-<p>The issue has been patched in the <code>2.2.1</code> version of the plugin.
-The plugin now differentiates between an unset scope and an explicit validation disable for the <code>open</code> endpoint.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>A way to prevent arbitrary protocols would be setting the shell plugin configuration value <code>open</code> to <code>true</code>.</p>
-<p><code>tauri.conf.json</code></p>
-<pre><code class="language-json5">"plugins": {
-    "shell": {
-          "open": true
-     },
+        <title type="html"><![CDATA[[gix-worktree-state] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
 }
 </code></pre>
-<p>The above will only allow <code>mailto</code>, <code>http</code> and <code>https</code> links to be opened.</p>
-<p>If the <code>open</code> endpoint should not be allowed at all there are two possible workarounds.</p>
-<ul>
-<li>Defining a non matching regex like <code>tauri^</code> in the plugin configuration</li>
-<li>Removing <code>shell:default</code> and all instances of <code>shell:allow-open</code> from the <a href="https://tauri.app/security/capabilities/"><code>capabilities</code></a></li>
-</ul>
-<p>Alternatively we recommend usage of the <a href="https://tauri.app/plugin/opener/"><code>opener</code></a>  plugin, as the shell plugin deprecated the <code>open</code> endpoint previously.</p>
-<h3 id="references">References</h3>
-<h4 id="poc">PoC</h4>
-<p>This is a windows specific proof of concept.</p>
-<ol>
-<li>Use <code>create-tauri-app</code> to make a new Tauri app.</li>
-<li>Run <code>tauri add shell</code> to add the shell plugin.</li>
-<li>Execute <code>await window.__TAURI_INTERNALS__.invoke("plugin:shell|open", {path: "file:///c:/windows/system32/calc.exe"});</code> in the developer console.</li>
-<li>Observe the calculator being executed</li>
-</ol>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/tauri-apps/plugins-workspace/security/advisories/GHSA-c9pr-q8gx-3mgp">https://github.com/tauri-apps/plugins-workspace/security/advisories/GHSA-c9pr-q8gx-3mgp</a></li>
-<li><a href="https://github.com/tauri-apps/plugins-workspace/commit/9cf0390a52497e273db1a1b613a0e26827aa327c">https://github.com/tauri-apps/plugins-workspace/commit/9cf0390a52497e273db1a1b613a0e26827aa327c</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31477">https://nvd.nist.gov/vuln/detail/CVE-2025-31477</a></li>
-<li><a href="https://github.com/advisories/GHSA-c9pr-q8gx-3mgp">https://github.com/advisories/GHSA-c9pr-q8gx-3mgp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c9pr-q8gx-3mgp</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2025-04-02T22:36:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pyo3] PyO3 Risk of buffer overflow in `PyString::from_object`]]></title>
-        <id>https://github.com/advisories/GHSA-pph8-gcv7-4qj5</id>
-        <link href="https://github.com/advisories/GHSA-pph8-gcv7-4qj5"/>
-        <updated>2025-04-02T13:19:20.000Z</updated>
-        <content type="html"><![CDATA[<p><code>PyString::from_object</code> took <code>&amp;str</code> arguments and forwarded them directly to the Python C API without checking for terminating nul bytes. This could lead the Python interpreter to read beyond the end of the <code>&amp;str</code> data and potentially leak contents of the out-of-bounds read (by raising a Python exception containing a copy of the data including the overflow).</p>
-<p>In PyO3 0.24.1 this function will now allocate a <code>CString</code> to guarantee a terminating nul bytes. PyO3 0.25 will likely offer an alternative API which takes <code>&amp;CStr</code> arguments.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/PyO3/pyo3/issues/5005">https://github.com/PyO3/pyo3/issues/5005</a></li>
-<li><a href="https://github.com/PyO3/pyo3/pull/5008">https://github.com/PyO3/pyo3/pull/5008</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0020.html">https://rustsec.org/advisories/RUSTSEC-2025-0020.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-pph8-gcv7-4qj5">https://github.com/advisories/GHSA-pph8-gcv7-4qj5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pph8-gcv7-4qj5</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-04-02T13:19:19.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[ouch] Ouch Improper Restriction of Operations within the Bounds of a Memory Buffer vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-6xfj-hhwh-r3c2</id>
-        <link href="https://github.com/advisories/GHSA-6xfj-hhwh-r3c2"/>
-        <updated>2025-04-02T00:15:08.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was found in ouch-org ouch up to 0.3.1. It has been classified as critical. This affects the function ouch::archive::zip::convert_zip_date_time of the file zip.rs. The manipulation of the argument month leads to memory corruption. The attack needs to be approached locally. The exploit has been disclosed to the public and may be used. Upgrading to version 0.4.0 is able to address this issue. It is recommended to upgrade the affected component.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-13941">https://nvd.nist.gov/vuln/detail/CVE-2024-13941</a></li>
-<li><a href="https://github.com/ouch-org/ouch/issues/707">https://github.com/ouch-org/ouch/issues/707</a></li>
-<li><a href="https://github.com/rustsec/advisory-db/pull/2084/files">https://github.com/rustsec/advisory-db/pull/2084/files</a></li>
-<li><a href="https://github.com/ouch-org/ouch/releases/tag/0.4.0">https://github.com/ouch-org/ouch/releases/tag/0.4.0</a></li>
-<li><a href="https://github.com/user-attachments/files/16767988/ouch.crash.report.docx">https://github.com/user-attachments/files/16767988/ouch.crash.report.docx</a></li>
-<li><a href="https://vuldb.com/?ctiid.302055">https://vuldb.com/?ctiid.302055</a></li>
-<li><a href="https://vuldb.com/?id.302055">https://vuldb.com/?id.302055</a></li>
-<li><a href="https://vuldb.com/?submit.524511">https://vuldb.com/?submit.524511</a></li>
-<li><a href="https://github.com/advisories/GHSA-6xfj-hhwh-r3c2">https://github.com/advisories/GHSA-6xfj-hhwh-r3c2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6xfj-hhwh-r3c2</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-04-01T21:31:30.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[array-init-cursor] array-init-cursor is unsound when used with types that implement `Drop`]]></title>
-        <id>https://github.com/advisories/GHSA-67r5-rqwv-9p9q</id>
-        <link href="https://github.com/advisories/GHSA-67r5-rqwv-9p9q"/>
-        <updated>2025-03-31T16:13:36.000Z</updated>
-        <content type="html"><![CDATA[<p>The <code>Drop</code> implementation will get run twice when using the cursor.</p>
-<p>This issue does not affect you, if you are using only using the crate with types that are <code>Copy</code> such as <code>u8</code>.</p>
-<p>This issue also does not affect you, if you are only depending on it through the crate <code>planus</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/planus-org/planus/issues/293">https://github.com/planus-org/planus/issues/293</a></li>
-<li><a href="https://github.com/planus-org/planus/pull/294">https://github.com/planus-org/planus/pull/294</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0019.html">https://rustsec.org/advisories/RUSTSEC-2025-0019.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-67r5-rqwv-9p9q">https://github.com/advisories/GHSA-67r5-rqwv-9p9q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-67r5-rqwv-9p9q</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-31T16:13:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tough] tough cyclic delegation graphs are not detected]]></title>
-        <id>https://github.com/advisories/GHSA-j8x2-777p-23fc</id>
-        <link href="https://github.com/advisories/GHSA-j8x2-777p-23fc"/>
-        <updated>2025-04-03T06:18:42.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>In a TUF repository, the targets role’s signature indicates which target files are trusted by clients. The role can delegate full or partial trust to other roles, meaning that that role is trusted to sign target file metadata. Delegated roles can further delegate trust to other delegated roles. When searching for metadata about a given target, tough failed to detect cyclical role delegations.</p>
-<h2 id="impact">Impact</h2>
-<p>When interacting with TUF repositories which contain cyclical role delegations, tough will fail to detect the cycles and will exhaust its stack while recursively searching the delegation graph. The exhausted call stack will cause the process to abort.</p>
-<p>Impacted versions: &lt; v0.20.0</p>
-<h2 id="patches">Patches</h2>
-<p>A fix for this issue is available in tough version 0.20.0 and later. Customers are advised to upgrade to version 0.20.0 or later and ensure any forked or derivative code is patched to incorporate the new fixes.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>There is no recommended work around. Customers are advised to upgrade to version 0.20.0 or the latest version.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory we ask that you contact AWS/Amazon Security via our vulnerability reporting page [1] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] Vulnerability reporting page: <a href="https://aws.amazon.com/security/vulnerability-reporting">https://aws.amazon.com/security/vulnerability-reporting</a></p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>These issues were identified by the <a href="https://github.com/theupdateframework/tuf-conformance">TUF-Conformance project</a>. We would like to thank Google for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-j8x2-777p-23fc">https://github.com/awslabs/tough/security/advisories/GHSA-j8x2-777p-23fc</a></li>
-<li><a href="https://github.com/awslabs/tough/commit/c5ee1718e630fdedc5676bf71b5bef10e4c7f91c">https://github.com/awslabs/tough/commit/c5ee1718e630fdedc5676bf71b5bef10e4c7f91c</a></li>
-<li><a href="https://aws.amazon.com/security/security-bulletins/AWS-2025-007">https://aws.amazon.com/security/security-bulletins/AWS-2025-007</a></li>
-<li><a href="https://github.com/advisories/GHSA-j8x2-777p-23fc">https://github.com/advisories/GHSA-j8x2-777p-23fc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-j8x2-777p-23fc</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-28T22:13:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tough] tough terminating targets role delegations are not respected]]></title>
-        <id>https://github.com/advisories/GHSA-v4wr-j3w6-mxqc</id>
-        <link href="https://github.com/advisories/GHSA-v4wr-j3w6-mxqc"/>
-        <updated>2025-04-03T06:18:45.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Delegations are a mechanism defined by the TUF specification that allow multiple different identities to provide and sign content within a single repository. Terminating delegations and delegation priority give a TUF repository unambiguous control over how overlapping delegations are resolved. tough erroneously will not terminate a search as required, and will accept information from a lower-priority delegation that should have been ignored.</p>
-<h2 id="impact">Impact</h2>
-<p>When interacting with TUF repositories that use delegations, the tough client could fetch targets owned by the incorrect role. An actor which had delegated ownership of a subset of a TUF repository could provide arbitrary contents to tough clients for targets owned by the delegating identity.</p>
-<p>Impacted versions: &lt; v0.20.0</p>
-<h2 id="patches">Patches</h2>
-<p>A fix for this issue is available in tough version 0.20.0 and later. Customers are advised to upgrade to version 0.20.0 or later and ensure any forked or derivative code is patched to incorporate the new fixes.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>There is no recommended work around. Customers are advised to upgrade to version 0.20.0 or the latest version.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory we ask that you contact AWS/Amazon Security via our vulnerability reporting page [1] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] Vulnerability reporting page: <a href="https://aws.amazon.com/security/vulnerability-reporting">https://aws.amazon.com/security/vulnerability-reporting</a></p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>These issues were identified by the <a href="https://github.com/theupdateframework/tuf-conformance">TUF-Conformance project</a>. We would like to thank Google for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-v4wr-j3w6-mxqc">https://github.com/awslabs/tough/security/advisories/GHSA-v4wr-j3w6-mxqc</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2886">https://nvd.nist.gov/vuln/detail/CVE-2025-2886</a></li>
-<li><a href="https://github.com/awslabs/tough/commit/598111f88105a707ee68b0fa06c52da7176ea96a">https://github.com/awslabs/tough/commit/598111f88105a707ee68b0fa06c52da7176ea96a</a></li>
-<li><a href="https://aws.amazon.com/security/security-bulletins/AWS-2025-007">https://aws.amazon.com/security/security-bulletins/AWS-2025-007</a></li>
-<li><a href="https://github.com/advisories/GHSA-v4wr-j3w6-mxqc">https://github.com/advisories/GHSA-v4wr-j3w6-mxqc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v4wr-j3w6-mxqc</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-28T22:13:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tough] tough root metadata version is not checked for sequential versioning]]></title>
-        <id>https://github.com/advisories/GHSA-5vmp-m5v2-hx47</id>
-        <link href="https://github.com/advisories/GHSA-5vmp-m5v2-hx47"/>
-        <updated>2025-04-03T06:18:47.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>When updating the root role, a TUF client must establish a trusted line of continuity to the latest set of keys. While sequentially downloading new versions of the root metadata file, tough will not check that the root object version it received was the next sequential version from the previously trusted root metadata.</p>
-<h2 id="impact">Impact</h2>
-<p>The tough client will trust an outdated or rotated root role in the event that an actor with control of the storage medium of a trusted TUF repository inappropriately replaced the contents of one of the root metadata files with an adequately signed previous version. As a result, tough could trust content associated with a previous root role.</p>
-<p>Impacted versions: &lt; v0.20.0</p>
-<h2 id="patches">Patches</h2>
-<p>A fix for this issue is available in tough version 0.20.0 and later. Customers are advised to upgrade to version 0.20.0 or later and ensure any forked or derivative code is patched to incorporate the new fixes.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>There is no recommended work around. Customers are advised to upgrade to version 0.20.0 or the latest version.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory we ask that you contact AWS/Amazon Security via our vulnerability reporting page [1] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] Vulnerability reporting page: <a href="https://aws.amazon.com/security/vulnerability-reporting">https://aws.amazon.com/security/vulnerability-reporting</a></p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>These issues were identified by the <a href="https://github.com/theupdateframework/tuf-conformance">TUF-Conformance project</a>. We would like to thank Google for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-5vmp-m5v2-hx47">https://github.com/awslabs/tough/security/advisories/GHSA-5vmp-m5v2-hx47</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2885">https://nvd.nist.gov/vuln/detail/CVE-2025-2885</a></li>
-<li><a href="https://github.com/awslabs/tough/commit/0eeb60aefe27f00b65730634b788a1aafb8bf3c6">https://github.com/awslabs/tough/commit/0eeb60aefe27f00b65730634b788a1aafb8bf3c6</a></li>
-<li><a href="https://aws.amazon.com/security/security-bulletins/AWS-2025-007">https://aws.amazon.com/security/security-bulletins/AWS-2025-007</a></li>
-<li><a href="https://github.com/advisories/GHSA-5vmp-m5v2-hx47">https://github.com/advisories/GHSA-5vmp-m5v2-hx47</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5vmp-m5v2-hx47</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-28T22:12:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tough] tough timestamp metadata is cached when it fails snapshot rollback check]]></title>
-        <id>https://github.com/advisories/GHSA-76g3-38jv-wxh4</id>
-        <link href="https://github.com/advisories/GHSA-76g3-38jv-wxh4"/>
-        <updated>2025-04-03T06:18:39.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>TUF repositories use the timestamp role to protect against rollback events by enabling an automated process to periodically sign the role's metadata. While tough will ensure that the version of snapshot metadata in new timestamp metadata files was always greater than or equal to the previously trusted version, it will only do so after persisting the timestamp metadata to its cache.</p>
-<h2 id="impact">Impact</h2>
-<p>If the tough client successfully detects a rollback event in which timestamp metadata contains outdated snapshot metadata, the invalid timestamp metadata will still be persisted to cache as trusted. tough may then subsequently incorrectly identify valid timestamp metadata as being rolled back, preventing the client from consuming valid updates.</p>
-<p>Impacted versions: &lt; v0.20.0</p>
-<h2 id="patches">Patches</h2>
-<p>A fix for this issue is available in tough version 0.20.0 and later. Customers are advised to upgrade to version 0.20.0 or later and ensure any forked or derivative code is patched to incorporate the new fixes.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>There is no recommended work around. Customers are advised to upgrade to version 0.20.0 or the latest version.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory we ask that you contact AWS/Amazon Security via our vulnerability reporting page [1] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] Vulnerability reporting page: <a href="https://aws.amazon.com/security/vulnerability-reporting">https://aws.amazon.com/security/vulnerability-reporting</a></p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>These issues were identified by the <a href="https://github.com/theupdateframework/tuf-conformance">TUF-Conformance project</a>. We would like to thank Google for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-76g3-38jv-wxh4">https://github.com/awslabs/tough/security/advisories/GHSA-76g3-38jv-wxh4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2888">https://nvd.nist.gov/vuln/detail/CVE-2025-2888</a></li>
-<li><a href="https://github.com/awslabs/tough/commit/9b400e1c8b7d6b9ab8009104fa7fe5884db05f18">https://github.com/awslabs/tough/commit/9b400e1c8b7d6b9ab8009104fa7fe5884db05f18</a></li>
-<li><a href="https://aws.amazon.com/security/security-bulletins/AWS-2025-007">https://aws.amazon.com/security/security-bulletins/AWS-2025-007</a></li>
-<li><a href="https://github.com/advisories/GHSA-76g3-38jv-wxh4">https://github.com/advisories/GHSA-76g3-38jv-wxh4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-76g3-38jv-wxh4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-28T14:49:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[tough] tough failure to detect delegated target rollback]]></title>
-        <id>https://github.com/advisories/GHSA-q6r9-r9pw-4cf7</id>
-        <link href="https://github.com/advisories/GHSA-q6r9-r9pw-4cf7"/>
-        <updated>2025-04-03T06:18:31.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>When updating the snapshot role, TUF clients should ensure that any previously encountered targets or delegated targets metadata files continue to be present in new snapshot metadata files. Likewise, the new targets and delegated targets metadata versions must be greater than or equal to the previously encountered versions. While tough will perform this check for targets metadata files, it did not perform this check for delegated targets files.</p>
-<h2 id="impact">Impact</h2>
-<p>tough could fail to detect cases where delegated targets metadata was removed or rolled back to a previous version. As a result, tough could trust and download outdated targets that it should reject.</p>
-<p>Impacted versions: &lt; v0.20.0</p>
-<h2 id="patches">Patches</h2>
-<p>A fix for this issue is available in tough version 0.20.0 and later. Customers are advised to upgrade to version 0.20.0 or later and ensure any forked or derivative code is patched to incorporate the new fixes.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>There is no recommended work around. Customers are advised to upgrade to version 0.20.0 or the latest version.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory we ask that you contact AWS/Amazon Security via our vulnerability reporting page [1] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] Vulnerability reporting page: <a href="https://aws.amazon.com/security/vulnerability-reporting%EF%BF%BC">https://aws.amazon.com/security/vulnerability-reporting</a></p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>These issues were identified by the <a href="https://github.com/theupdateframework/tuf-conformance">TUF-Conformance project</a>. We would like to thank Google for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-q6r9-r9pw-4cf7">https://github.com/awslabs/tough/security/advisories/GHSA-q6r9-r9pw-4cf7</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2887">https://nvd.nist.gov/vuln/detail/CVE-2025-2887</a></li>
-<li><a href="https://github.com/awslabs/tough/commit/3345151a87c358d1ce43aeb7e8b3ebea5ebdbab4">https://github.com/awslabs/tough/commit/3345151a87c358d1ce43aeb7e8b3ebea5ebdbab4</a></li>
-<li><a href="https://aws.amazon.com/security/security-bulletins/AWS-2025-007">https://aws.amazon.com/security/security-bulletins/AWS-2025-007</a></li>
-<li><a href="https://github.com/advisories/GHSA-q6r9-r9pw-4cf7">https://github.com/advisories/GHSA-q6r9-r9pw-4cf7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q6r9-r9pw-4cf7</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-28T14:48:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[xmas-elf] xmas-elf potential out-of-bounds read with a malformed ELF file and the HashTable API.]]></title>
-        <id>https://github.com/advisories/GHSA-9cc5-2pq7-hfj8</id>
-        <link href="https://github.com/advisories/GHSA-9cc5-2pq7-hfj8"/>
-        <updated>2025-03-26T20:11:25.000Z</updated>
-        <content type="html"><![CDATA[<p>Affected versions of this crate only validated the <code>index</code> argument of <code>HashTable::get_bucket</code> and <code>HashTable::get_chain</code> against the input-controlled <code>bucket_count</code> and <code>chain_count</code> fields, but not against the size of the ELF section. As a result, a malformed ELF file could trigger out-of-bounds reads in a consumer of the HashTable API by setting these fields to inappropriately large values that would fall outside the relevant hash table section, and by introducing correspondingly out-of-bounds hash table indexes elsewhere in the ELF file.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nrc/xmas-elf/issues/86">https://github.com/nrc/xmas-elf/issues/86</a></li>
-<li><a href="https://github.com/nrc/xmas-elf/commit/57685c35512a57269086314a42a70441af4ef451">https://github.com/nrc/xmas-elf/commit/57685c35512a57269086314a42a70441af4ef451</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0018.html">https://rustsec.org/advisories/RUSTSEC-2025-0018.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-9cc5-2pq7-hfj8">https://github.com/advisories/GHSA-9cc5-2pq7-hfj8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9cc5-2pq7-hfj8</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-26T20:11:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[web-push] Web Push Denial of Service via malicious Web Push endpoint]]></title>
-        <id>https://github.com/advisories/GHSA-fc83-9jwq-gc2m</id>
-        <link href="https://github.com/advisories/GHSA-fc83-9jwq-gc2m"/>
-        <updated>2025-03-24T19:39:29.000Z</updated>
-        <content type="html"><![CDATA[<p>Prior to version 0.10.3, the built-in clients of the <code>web-push</code> crate eagerly allocated memory based on the <code>Content-Length</code> header returned by the Web Push endpoint. Malicious Web Push endpoints could return a large <code>Content-Length</code> without ever having to send as much data, leading to denial of service by memory exhaustion.</p>
-<p>Services providing Web Push notifications typically allow the user to register an arbitrary endpoint, so the endpoint should not be trusted.</p>
-<p>The fixed version 0.10.3 now limits the amount of memory it will allocate for each response, limits the amount of data it will read from the endpoint, and returns an error if the endpoint sends too much data.</p>
-<p>As before, it is recommended that services add a timeout for each request to Web Push endpoints.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pimeys/rust-web-push/pull/68">https://github.com/pimeys/rust-web-push/pull/68</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0015.html">https://rustsec.org/advisories/RUSTSEC-2025-0015.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-fc83-9jwq-gc2m">https://github.com/advisories/GHSA-fc83-9jwq-gc2m</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fc83-9jwq-gc2m</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-24T19:39:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pared] pared Vulnerable to Use After Free in `Parc` and `Prc` Due to Missing Lifetime Constraints]]></title>
-        <id>https://github.com/advisories/GHSA-vgmh-mqm4-8j88</id>
-        <link href="https://github.com/advisories/GHSA-vgmh-mqm4-8j88"/>
-        <updated>2025-03-24T16:06:29.000Z</updated>
-        <content type="html"><![CDATA[<p>Affected versions of this crate didn't provide sufficient lifetime constraints to conversion functions from <code>alloc::sync::Arc</code> and <code>alloc::rc::Rc</code>, which made it possible to create projections of these reference counted pointers. Unlike the original reference counted pointers, these projections could outlive original data's lifetimes.</p>
-<p>This projected pointer could cause the original <code>Arc</code>'s or <code>Rc</code>'s <code>Drop::drop</code> to get called at a point where the original data was no longer valid, leading to a potential use after free.</p>
-<p>The affected functions were</p>
-<ul>
-<li><code>pared::prc::Prc::from_rc</code></li>
-<li><code>pared::prc::Prc::project</code></li>
-<li><code>pared::prc::Prc::try_from_rc</code></li>
-<li><code>pared::sync::Parc::from_arc</code></li>
-<li><code>pared::sync::Parc::project</code></li>
-<li><code>pared::sync::Parc::try_from_arc</code></li>
-</ul>
-<p>This flaw was fixed in <a href="https://github.com/radekvit/pared/commit/108f540ea8acb6073751a1aa386085c1cdc4fd1e">108f540ea8acb6073751a1aa386085c1cdc4fd1e</a> by requiring that the type stored in the <code>Arc</code>s and <code>Rc</code>s passed to these functions contain <code>T: 'static</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/radekvit/pared/issues/2">https://github.com/radekvit/pared/issues/2</a></li>
-<li><a href="https://github.com/radekvit/pared/commit/108f540ea8acb6073751a1aa386085c1cdc4fd1e">https://github.com/radekvit/pared/commit/108f540ea8acb6073751a1aa386085c1cdc4fd1e</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0016.html">https://rustsec.org/advisories/RUSTSEC-2025-0016.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-vgmh-mqm4-8j88">https://github.com/advisories/GHSA-vgmh-mqm4-8j88</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vgmh-mqm4-8j88</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-24T16:06:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[redlib] Redlib allows a Denial of Service via DEFLATE Decompression Bomb in restore_preferences Form]]></title>
-        <id>https://github.com/advisories/GHSA-g8vq-v3mg-7mrg</id>
-        <link href="https://github.com/advisories/GHSA-g8vq-v3mg-7mrg"/>
-        <updated>2025-03-21T15:26:55.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability has been identified in Redlib where an attacker can cause a denial-of-service (DOS) condition by submitting a specially crafted base2048-encoded DEFLATE decompression bomb to the restore_preferences form. This leads to excessive memory consumption and potential system instability, which can be exploited to disrupt Redlib instances. This vulnerability was introduced in 2e95e1fc6e2064ccfae87964b4860bda55eddb9a and fixed in 15147cea8e42f6569a11603d661d71122f6a02dc.</p>
-<h3 id="impact">Impact</h3>
-<p><em>What kind of vulnerability is it? Who is impacted?</em></p>
-<p>This vulnerability allows a remote attacker with network access to exploit the preference restoration mechanism by providing a compressed payload that expands dramatically upon decompression. The issue arises because the system automatically decompresses user-supplied data without enforcing size limits, potentially leading to:</p>
-<ul>
-<li>Out-of-memory (OOM) conditions</li>
-<li>OS-level resource exhaustion, potentially leading to broader system instability or crashes</li>
-<li>Repeated exploitation, keeping the target system in a persistent degraded state</li>
-<li>Denial-of-service of any public instance</li>
-</ul>
-<h3 id="patches">Patches</h3>
-<p>The problem has been patched in 15147cea8e42f6569a11603d661d71122f6a02dc. Users should upgrade to v0.36.0.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Until a patch is available, users can:</p>
-<ul>
-<li>Implement request size limits at the web server or application level to reject excessively large inputs.</li>
-<li>Disable or restrict the restore_preferences route (<code>/settings/encoded-restore</code>) at the reverse-proxy level if not required.</li>
-<li>Monitor server logs for unusually large or repeated restore_preferences requests and block offending IPs.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/crewjam/saml/security/advisories/GHSA-5mqj-xc49-246p">https://github.com/crewjam/saml/security/advisories/GHSA-5mqj-xc49-246p</a></li>
-<li><a href="https://github.com/redlib-org/redlib/security/advisories/GHSA-g8vq-v3mg-7mrg">https://github.com/redlib-org/redlib/security/advisories/GHSA-g8vq-v3mg-7mrg</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-30160">https://nvd.nist.gov/vuln/detail/CVE-2025-30160</a></li>
-<li><a href="https://github.com/redlib-org/redlib/commit/15147cea8e42f6569a11603d661d71122f6a02dc">https://github.com/redlib-org/redlib/commit/15147cea8e42f6569a11603d661d71122f6a02dc</a></li>
-<li><a href="https://github.com/redlib-org/redlib/commit/2e95e1fc6e2064ccfae87964b4860bda55eddb9a">https://github.com/redlib-org/redlib/commit/2e95e1fc6e2064ccfae87964b4860bda55eddb9a</a></li>
-<li><a href="https://github.com/advisories/GHSA-g8vq-v3mg-7mrg">https://github.com/advisories/GHSA-g8vq-v3mg-7mrg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g8vq-v3mg-7mrg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-21T15:26:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[libcontainer] Libcontainer is affected by capabilities elevation similar to GHSA-f3fp-gc8g-vw66]]></title>
-        <id>https://github.com/advisories/GHSA-5w4j-f78p-4wh9</id>
-        <link href="https://github.com/advisories/GHSA-5w4j-f78p-4wh9"/>
-        <updated>2025-03-21T15:42:07.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>In libcontainer, while creating a tenant container, the tenant builder accepts a list of capabilities to be added in the spec of tenant container. Code can be seen <a href="https://github.com/youki-dev/youki/blob/9e63fa4da1672a78ca45100f3059a732784a5174/crates/libcontainer/src/container/tenant_builder.rs#L408">here</a> . The logic here adds the given capabilities to all capabilities of main container if present in spec, otherwise simply set provided capabilities as capabilities of the tenant container.</p>
-<p>However, GHSA-f3fp-gc8g-vw66 was opened on runc mentioning that setting inherited caps in any case for tenant container can lead to elevation of capabilities. For this, they added a fix <a href="https://github.com/opencontainers/runc/blob/986451c24e17c8d4be3c454f60b1f7be4af3e8b4/exec.go#L234-L242">here</a> where they never set new inherited caps on tenant, and set ambient caps only if original container had inherited caps.</p>
-<p>Similarly crun never sets inherited caps as can be seen <a href="https://github.com/containers/crun/blob/3ec6298abd79e144fbf3fa6db90793ff4c0516f9/src/exec.c#L319">here</a>.</p>
-<blockquote>
-<p>[!NOTE]
-This does not affect youki binary itself, as the exec implementation is partially broken and does not pass on the user-provided caps to tenant containers, this is only applicable if you are using libcontainer directly and using the tenant builder.</p>
-</blockquote>
-<h3 id="workarounds">Workarounds</h3>
-<ul>
-<li>Do not pass any user-provided capabilities to the tenant builder, in which case no capabilities will be set on tenant.</li>
-<li>Alternatively you can verify the capabilities of original container and filter the user passed capabilities before setting them on tenant.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/opencontainers/runc/security/advisories/GHSA-f3fp-gc8g-vw66">https://github.com/opencontainers/runc/security/advisories/GHSA-f3fp-gc8g-vw66</a></li>
-<li><a href="https://man7.org/linux/man-pages/man7/capabilities.7.html">https://man7.org/linux/man-pages/man7/capabilities.7.html</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/opencontainers/runc/security/advisories/GHSA-f3fp-gc8g-vw66">https://github.com/opencontainers/runc/security/advisories/GHSA-f3fp-gc8g-vw66</a></li>
-<li><a href="https://github.com/youki-dev/youki/security/advisories/GHSA-5w4j-f78p-4wh9">https://github.com/youki-dev/youki/security/advisories/GHSA-5w4j-f78p-4wh9</a></li>
-<li><a href="https://github.com/youki-dev/youki/commit/747e342d2026fbf3a395db3e2a491ebef00082f1">https://github.com/youki-dev/youki/commit/747e342d2026fbf3a395db3e2a491ebef00082f1</a></li>
-<li><a href="https://github.com/containers/crun/blob/3ec6298abd79e144fbf3fa6db90793ff4c0516f9/src/exec.c#L319">https://github.com/containers/crun/blob/3ec6298abd79e144fbf3fa6db90793ff4c0516f9/src/exec.c#L319</a></li>
-<li><a href="https://github.com/opencontainers/runc/blob/986451c24e17c8d4be3c454f60b1f7be4af3e8b4/exec.go#L234-L242">https://github.com/opencontainers/runc/blob/986451c24e17c8d4be3c454f60b1f7be4af3e8b4/exec.go#L234-L242</a></li>
-<li><a href="https://github.com/youki-dev/youki/blob/9e63fa4da1672a78ca45100f3059a732784a5174/crates/libcontainer/src/container/tenant_builder.rs#L408">https://github.com/youki-dev/youki/blob/9e63fa4da1672a78ca45100f3059a732784a5174/crates/libcontainer/src/container/tenant_builder.rs#L408</a></li>
-<li><a href="https://man7.org/linux/man-pages/man7/capabilities.7.html">https://man7.org/linux/man-pages/man7/capabilities.7.html</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27612">https://nvd.nist.gov/vuln/detail/CVE-2025-27612</a></li>
-<li><a href="https://github.com/advisories/GHSA-5w4j-f78p-4wh9">https://github.com/advisories/GHSA-5w4j-f78p-4wh9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5w4j-f78p-4wh9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-21T15:18:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[cosmwasm] CosmWasm Allows Bypass of Capability Restrictions in Blockchains]]></title>
-        <id>https://github.com/advisories/GHSA-cg8r-jwg7-r2x4</id>
-        <link href="https://github.com/advisories/GHSA-cg8r-jwg7-r2x4"/>
-        <updated>2025-03-21T21:11:33.000Z</updated>
-        <content type="html"><![CDATA[<p>An issue in CosmWasm prior to v2.2.0 allows attackers to bypass capability restrictions in blockchains by exploiting a lack of runtime capability validation. This allows attackers to deploy a contract without capability enforcement, and execute unauthorized actions on the blockchain.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-25500">https://nvd.nist.gov/vuln/detail/CVE-2025-25500</a></li>
-<li><a href="https://gist.github.com/H3T76/8096a6ff9410f3a6d9a25db1a68ae657#file-cve-2025-25500">https://gist.github.com/H3T76/8096a6ff9410f3a6d9a25db1a68ae657#file-cve-2025-25500</a></li>
-<li><a href="https://github.com/CVEProject/cveproject.github.io/blob/gh-pages/requester/reservation-guidelines.md">https://github.com/CVEProject/cveproject.github.io/blob/gh-pages/requester/reservation-guidelines.md</a></li>
-<li><a href="https://github.com/CosmWasm/cosmwasm/blob/v2.2.0/CHANGELOG.md">https://github.com/CosmWasm/cosmwasm/blob/v2.2.0/CHANGELOG.md</a></li>
-<li><a href="https://github.com/advisories/GHSA-cg8r-jwg7-r2x4">https://github.com/advisories/GHSA-cg8r-jwg7-r2x4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cg8r-jwg7-r2x4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-18T15:30:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[zip] zip Incorrectly Canonicalizes Paths during Archive Extraction Leading to Arbitrary File Write]]></title>
-        <id>https://github.com/advisories/GHSA-94vh-gphv-8pm8</id>
-        <link href="https://github.com/advisories/GHSA-94vh-gphv-8pm8"/>
-        <updated>2025-03-19T15:51:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>In the archive extraction routine of affected versions of the <code>zip</code> crate, symbolic links earlier in the archive are allowed to be used for later files in the archive without validation of the final canonicalized path, allowing maliciously crafted archives to overwrite arbitrary files in the file system when extracted.</p>
-<h3 id="details">Details</h3>
-<p>This is a variant of the <a href="https://github.com/snyk/zip-slip-vulnerability">zip-slip</a> vulnerability, we can make the extraction logic step outside of the target directory by creating a symlink to the parent directory and then extracting further files through that symlink.</p>
-<p>The documentation of the [<code>::zip::read::ZipArchive::extract</code>] method is in my opinion implying this should not happen:</p>
-<blockquote>
-<p>"Paths are sanitized with ZipFile::enclosed_name." ...
-[<code>::zip::read::FileOptions::enclosed_name</code>] ... is resistant to path-based exploits ... can’t resolve to a path outside the current directory.</p>
-</blockquote>
-<p>Most archive software either decline to extract symlinks that traverse out of the directory or defer creation of symlinks after all files have been created to prevent unexpected behavior when later entries depend on earlier symbolic link entries.</p>
-<h3 id="poc">PoC</h3>
-<p><a href="https://gist.github.com/eternal-flame-AD/bf71ef4f6828e741eb12ce7fd47b7b85">https://gist.github.com/eternal-flame-AD/bf71ef4f6828e741eb12ce7fd47b7b85</a></p>
-<h3 id="impact">Impact</h3>
-<p>Users who extract untrusted archive files using the following high-level API method may be affected and critical files on the system may be overwritten with arbitrary file permissions, which can potentially lead to code execution.</p>
-<ul>
-<li>zip::unstable::stream::ZipStreamReader::extract</li>
-<li>zip::read::ZipArchive::extract</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/zip-rs/zip2/security/advisories/GHSA-94vh-gphv-8pm8">https://github.com/zip-rs/zip2/security/advisories/GHSA-94vh-gphv-8pm8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-29787">https://nvd.nist.gov/vuln/detail/CVE-2025-29787</a></li>
-<li><a href="https://github.com/zip-rs/zip2/commit/a2e062f37066c3b12860a32eb1cb44856cfb7afe">https://github.com/zip-rs/zip2/commit/a2e062f37066c3b12860a32eb1cb44856cfb7afe</a></li>
-<li><a href="https://gist.github.com/eternal-flame-AD/bf71ef4f6828e741eb12ce7fd47b7b85">https://gist.github.com/eternal-flame-AD/bf71ef4f6828e741eb12ce7fd47b7b85</a></li>
-<li><a href="https://github.com/zip-rs/zip2/releases/tag/v2.3.0">https://github.com/zip-rs/zip2/releases/tag/v2.3.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-94vh-gphv-8pm8">https://github.com/advisories/GHSA-94vh-gphv-8pm8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-94vh-gphv-8pm8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-17T21:26:32.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[zincati] Zincati allows unprivileged access to rpm-ostree D-Bus `Deploy()` and `FinalizeDeployment()` methods]]></title>
-        <id>https://github.com/advisories/GHSA-w6fv-6gcc-x825</id>
-        <link href="https://github.com/advisories/GHSA-w6fv-6gcc-x825"/>
-        <updated>2025-03-19T15:00:21.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Zincati ships a polkit rule which allows the <code>zincati</code> system user to use the following actions:</p>
-<ul>
-<li><code>org.projectatomic.rpmostree1.deploy</code>: used to deploy updates to the system</li>
-<li><code>org.projectatomic.rpmostree1.finalize-deployment</code>: used to reboot the system into the deployed update</li>
-</ul>
-<p>Since Zincati <a href="https://github.com/coreos/zincati/releases/tag/v0.0.24">v0.0.24</a>, this polkit rule contains a logic error which broadens access of those polkit actions to any unprivileged user rather than just the <code>zincati</code> system user.</p>
-<p>In practice, this means that any unprivileged user with access to the system D-Bus socket is able to deploy older Fedora CoreOS versions (which may have other known vulnerabilities). Note that rpm-ostree enforces that the selected version must be from the same branch the system is currently on so this cannot directly be used to deploy an attacker-controlled update payload.</p>
-<p>This primarily impacts users running untrusted workloads with access to the system D-Bus socket. Note that in general, untrusted workloads should not be given this access, whether containerized or not. By default, containers do not have access to the system D-Bus socket.</p>
-<h3 id="patches">Patches</h3>
-<p>The logic error is fixed in Zincati v0.0.30. The fix is included in the following FCOS releases:</p>
-<ul>
-<li>On the <code>stable</code> stream: 41.20250302.3.2</li>
-<li>On the <code>testing</code> stream: 41.20250315.2.0</li>
-<li>On the <code>next</code> stream: 42.20250316.1.0</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>A workaround is to add the following polkit rule:</p>
-<pre><code class="language-javascript">polkit.addRule(function(action, subject) {
-    if (action.id == "org.projectatomic.rpmostree1.deploy" ||
-        action.id == "org.projectatomic.rpmostree1.finalize-deployment" ||
-        action.id == "org.projectatomic.rpmostree1.cleanup") {
-        if (subject.user != "zincati") {
-                return polkit.Result.NO;
-        }
-    }
-});
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
 </code></pre>
-<p>to e.g. <code>/etc/polkit-1/rules.d/00-zincati-fix.rules</code> (it must sort earlier than <code>zincati.rules</code> lexicographically).</p>
-<p>Note that this rule will deny all non-root users other than <code>zincati</code> from using those actions. If you've added polkit rules to allow e.g. the <code>core</code> user or other users, you will need to adjust the policy (or make sure the ordering is appropriate).</p>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
 <h3 id="references">References</h3>
-<p>This issue was introduced by <a href="https://github.com/coreos/zincati/commit/28a43aa2c1edda091ba659677d73c13e6e3ea99d">this commit</a>, and is fixed in <a href="https://github.com/coreos/zincati/releases/tag/v0.0.30">v0.0.30</a>.</p>
-<h3 id="references-1">References</h3>
 <ul>
-<li><a href="https://github.com/coreos/zincati/security/advisories/GHSA-w6fv-6gcc-x825">https://github.com/coreos/zincati/security/advisories/GHSA-w6fv-6gcc-x825</a></li>
-<li><a href="https://github.com/coreos/zincati/commit/01d8e89f799e6ba21bdf7dc668abce23bd0d8f78">https://github.com/coreos/zincati/commit/01d8e89f799e6ba21bdf7dc668abce23bd0d8f78</a></li>
-<li><a href="https://github.com/coreos/zincati/commit/28a43aa2c1edda091ba659677d73c13e6e3ea99d">https://github.com/coreos/zincati/commit/28a43aa2c1edda091ba659677d73c13e6e3ea99d</a></li>
-<li><a href="https://github.com/coreos/zincati/releases/tag/v0.0.24">https://github.com/coreos/zincati/releases/tag/v0.0.24</a></li>
-<li><a href="https://github.com/coreos/zincati/releases/tag/v0.0.30">https://github.com/coreos/zincati/releases/tag/v0.0.30</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27512">https://nvd.nist.gov/vuln/detail/CVE-2025-27512</a></li>
-<li><a href="https://github.com/advisories/GHSA-w6fv-6gcc-x825">https://github.com/advisories/GHSA-w6fv-6gcc-x825</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
 </ul>
 ]]></content>
         <author>
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w6fv-6gcc-x825</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-17T14:46:56.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gurk] gurk (aka gurk-rs) mishandles ANSI escape sequences]]></title>
-        <id>https://github.com/advisories/GHSA-89xp-c3mq-qj84</id>
-        <link href="https://github.com/advisories/GHSA-89xp-c3mq-qj84"/>
-        <updated>2025-03-17T14:45:41.000Z</updated>
-        <content type="html"><![CDATA[<p>gurk (aka gurk-rs) through 0.6.3 mishandles ANSI escape sequences.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-30089">https://nvd.nist.gov/vuln/detail/CVE-2025-30089</a></li>
-<li><a href="https://github.com/boxdot/gurk-rs/issues/384">https://github.com/boxdot/gurk-rs/issues/384</a></li>
-<li><a href="https://crates.io/crates/gurk">https://crates.io/crates/gurk</a></li>
-<li><a href="https://github.com/advisories/GHSA-89xp-c3mq-qj84">https://github.com/advisories/GHSA-89xp-c3mq-qj84</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-89xp-c3mq-qj84</uri>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
         </author>
         <category label="severity" term="MODERATE"/>
-        <published>2025-03-17T00:30:21.000Z</published>
+        <published>2025-04-04T16:06:08.000Z</published>
     </entry>
     <entry>
-        <title type="html"><![CDATA[[below] Below has Incorrect Permission Assignment for Critical Resource]]></title>
-        <id>https://github.com/advisories/GHSA-9mc5-7qhg-fp3w</id>
-        <link href="https://github.com/advisories/GHSA-9mc5-7qhg-fp3w"/>
-        <updated>2025-03-21T21:51:09.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A privilege escalation vulnerability existed in the Below service prior to v0.9.0 due to the creation of a world-writable directory at /var/log/below. This could have allowed local unprivileged users to escalate to root privileges through symlink attacks that manipulate files such as /etc/shadow.</p>
-<h3 id="patches">Patches</h3>
-<p><a href="https://github.com/facebookincubator/below/commit/10e73a21d67baa2cd613ee92ce999cda145e1a83">https://github.com/facebookincubator/below/commit/10e73a21d67baa2cd613ee92ce999cda145e1a83</a></p>
-<p>This is included in version 0.9.0</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Change the permission on <code>/var/log/below</code> manually</p>
+        <title type="html"><![CDATA[[gix-worktree] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
 <h3 id="references">References</h3>
-<p><a href="https://www.facebook.com/security/advisories/cve-2025-27591">https://www.facebook.com/security/advisories/cve-2025-27591</a>
-<a href="https://www.cve.org/CVERecord?id=CVE-2025-27591">https://www.cve.org/CVERecord?id=CVE-2025-27591</a></p>
-<h3 id="references-1">References</h3>
 <ul>
-<li><a href="https://github.com/facebookincubator/below/security/advisories/GHSA-9mc5-7qhg-fp3w">https://github.com/facebookincubator/below/security/advisories/GHSA-9mc5-7qhg-fp3w</a></li>
-<li><a href="https://github.com/facebookincubator/below/commit/10e73a21d67baa2cd613ee92ce999cda145e1a83">https://github.com/facebookincubator/below/commit/10e73a21d67baa2cd613ee92ce999cda145e1a83</a></li>
-<li><a href="https://www.facebook.com/security/advisories/cve-2025-27591">https://www.facebook.com/security/advisories/cve-2025-27591</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-27591">https://nvd.nist.gov/vuln/detail/CVE-2025-27591</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2025/03/12/1">http://www.openwall.com/lists/oss-security/2025/03/12/1</a></li>
-<li><a href="https://github.com/facebookincubator/below/commit/da9382e6e3e332fd2c3195e22f34977f83f0f1f3">https://github.com/facebookincubator/below/commit/da9382e6e3e332fd2c3195e22f34977f83f0f1f3</a></li>
-<li><a href="https://github.com/advisories/GHSA-9mc5-7qhg-fp3w">https://github.com/advisories/GHSA-9mc5-7qhg-fp3w</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
 </ul>
 ]]></content>
         <author>
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9mc5-7qhg-fp3w</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-11T21:12:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[protobuf] Crash due to uncontrolled recursion in protobuf crate]]></title>
-        <id>https://github.com/advisories/GHSA-2gh3-rmm4-6rq5</id>
-        <link href="https://github.com/advisories/GHSA-2gh3-rmm4-6rq5"/>
-        <updated>2025-03-11T17:08:08.000Z</updated>
-        <content type="html"><![CDATA[<p>Affected version of this crate did not properly parse unknown fields when parsing a user-supplied input.</p>
-<p>This allows an attacker to cause a stack overflow when parsing the message on untrusted data.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/stepancheg/rust-protobuf/issues/749">https://github.com/stepancheg/rust-protobuf/issues/749</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2024-0437.html">https://rustsec.org/advisories/RUSTSEC-2024-0437.html</a></li>
-<li><a href="https://github.com/stepancheg/rust-protobuf/commit/f06992f46771c0a092593b9ebf7afd48740b3ed6">https://github.com/stepancheg/rust-protobuf/commit/f06992f46771c0a092593b9ebf7afd48740b3ed6</a></li>
-<li><a href="https://github.com/advisories/GHSA-2gh3-rmm4-6rq5">https://github.com/advisories/GHSA-2gh3-rmm4-6rq5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2gh3-rmm4-6rq5</uri>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
         </author>
         <category label="severity" term="MODERATE"/>
-        <published>2025-03-07T20:02:37.000Z</published>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-traverse] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-status] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-revwalk] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-revision] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-ref] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-protocol] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-negotiate] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-merge] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-fsck] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-filter] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-discover] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-dir] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-diff] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-config] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-blame] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix-archive] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gix] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gitoxide-core] gitoxide does not detect SHA-1 collision attacks]]></title>
+        <id>https://github.com/advisories/GHSA-2frx-2596-x5r6</id>
+        <link href="https://github.com/advisories/GHSA-2frx-2596-x5r6"/>
+        <updated>2025-04-04T16:06:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>gitoxide uses SHA-1 hash implementations without any collision detection, leaving it vulnerable to hash collision attacks.</p>
+<h3 id="details">Details</h3>
+<p>gitoxide uses the <code>sha1_smol</code> or <code>sha1</code> crate, both of which implement standard SHA-1 without any mitigations for collision attacks. This means that two distinct Git objects with colliding SHA-1 hashes would break the Git object model and integrity checks when used with gitoxide.</p>
+<p>The SHA-1 function is considered cryptographically insecure. However, in the wake of the SHAttered attacks, this issue was mitigated in Git 2.13.0 in 2017 by using the <a href="https://github.com/crmarcstevens/sha1collisiondetection">sha1collisiondetection</a> algorithm by default and producing an error when known SHA-1 collisions are detected. Git is in the process of migrating to using SHA-256 for object hashes, but this has not been rolled out widely yet and gitoxide does not support SHA-256 object hashes.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates the problem, using the two <a href="https://shattered.io/">SHAttered PDFs</a>:</p>
+<pre><code class="language-rust">use sha1_checked::{CollisionResult, Digest};
+
+fn sha1_oid_of_file(filename: &amp;str) -&gt; gix::ObjectId {
+    let mut hasher = gix::features::hash::hasher(gix::hash::Kind::Sha1);
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    gix::ObjectId::Sha1(hasher.digest())
+}
+
+fn sha1dc_oid_of_file(filename: &amp;str) -&gt; Result&lt;gix::ObjectId, String&gt; {
+    // Matches Git’s behaviour.
+    let mut hasher = sha1_checked::Builder::default().safe_hash(false).build();
+    hasher.update(&amp;std::fs::read(filename).unwrap());
+    match hasher.try_finalize() {
+        CollisionResult::Ok(digest) =&gt; Ok(gix::ObjectId::Sha1(digest.into())),
+        CollisionResult::Mitigated(_) =&gt; unreachable!(),
+        CollisionResult::Collision(digest) =&gt; Err(format!(
+            "Collision attack: {}",
+            gix::ObjectId::Sha1(digest.into()).to_hex()
+        )),
+    }
+}
+
+fn main() {
+    dbg!(sha1_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1_oid_of_file("shattered-2.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-1.pdf"));
+    dbg!(sha1dc_oid_of_file("shattered-2.pdf"));
+}
+</code></pre>
+<p>The output is as follows:</p>
+<pre><code>[src/main.rs:24:5] sha1_oid_of_file("shattered-1.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:25:5] sha1_oid_of_file("shattered-2.pdf") = Sha1(38762cf7f55934b34d179ae6a4c80cadccbb7f0a)
+[src/main.rs:26:5] sha1dc_oid_of_file("shattered-1.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+[src/main.rs:27:5] sha1dc_oid_of_file("shattered-2.pdf") = Err(
+    "Collision attack: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a",
+)
+</code></pre>
+<p>The latter behaviour matches Git.</p>
+<p>Since the SHAttered PDFs are not in a valid format for Git objects, a direct proof‐of‐concept using higher‐level APIs cannot be immediately demonstrated without significant computational resources.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker with the ability to mount a collision attack on SHA-1 like the <a href="https://shattered.io/">SHAttered</a> or <a href="https://sha-mbles.github.io/">SHA-1 is a Shambles</a> attacks could create two distinct Git objects with the same hash. This is becoming increasingly affordable for well‐resourced attackers, with the Shambles researchers in 2020 estimating $45k for a chosen‐prefix collision or $11k for a classical collision, and projecting less than $10k for a chosen‐prefix collision by 2025. The result could be used to disguise malicious repository contents, or potentially exploit assumptions in the logic of programs using gitoxide to cause further vulnerabilities.</p>
+<p>This vulnerability affects any user of gitoxide, including <code>gix-*</code> library crates, that reads or writes Git objects.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-2frx-2596-x5r6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-31130">https://nvd.nist.gov/vuln/detail/CVE-2025-31130</a></li>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d">https://github.com/GitoxideLabs/gitoxide/commit/4660f7a6f71873311f68f170b0f1f6659a02829d</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0021.html">https://rustsec.org/advisories/RUSTSEC-2025-0021.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2frx-2596-x5r6">https://github.com/advisories/GHSA-2frx-2596-x5r6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2frx-2596-x5r6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-04T16:06:08.000Z</published>
     </entry>
 </feed>
