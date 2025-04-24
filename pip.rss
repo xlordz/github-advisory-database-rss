@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-04-24T16:01:35.662Z</updated>
+    <updated>2025-04-24T17:01:17.631Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,114 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[h11] h11 accepts some malformed Chunked-Encoding bodies]]></title>
+        <id>https://github.com/advisories/GHSA-vqfr-h8mv-ghfj</id>
+        <link href="https://github.com/advisories/GHSA-vqfr-h8mv-ghfj"/>
+        <updated>2025-04-24T16:59:22.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>A leniency in h11's parsing of line terminators in chunked-coding message bodies can lead to request smuggling vulnerabilities under certain conditions.</p>
+<h3 id="details">Details</h3>
+<p>HTTP/1.1 Chunked-Encoding bodies are formatted as a sequence of "chunks", each of which consists of:</p>
+<ul>
+<li>chunk length</li>
+<li><code>\r\n</code></li>
+<li><code>length</code> bytes of content</li>
+<li><code>\r\n</code></li>
+</ul>
+<p>In versions of h11 up to 0.14.0, h11 instead parsed them as:</p>
+<ul>
+<li>chunk length</li>
+<li><code>\r\n</code></li>
+<li><code>length</code> bytes of content</li>
+<li>any two bytes</li>
+</ul>
+<p>i.e. it did not validate that the trailing <code>\r\n</code> bytes were correct, and if you put 2 bytes of garbage there it would be accepted, instead of correctly rejecting the body as malformed.</p>
+<p>By itself this is harmless. However, suppose you have a proxy or reverse-proxy that tries to analyze HTTP requests, and your proxy has a <em>different</em> bug in parsing Chunked-Encoding, acting as if the format is:</p>
+<ul>
+<li>chunk length</li>
+<li><code>\r\n</code></li>
+<li><code>length</code> bytes of content</li>
+<li>more bytes of content, as many as it takes until you find a <code>\r\n</code></li>
+</ul>
+<p>For example, <a href="https://github.com/graygnuorg/pound/pull/43">pound</a> had this bug -- it can happen if an implementer uses a generic "read until end of line" helper to consumes the trailing <code>\r\n</code>.</p>
+<p>In this case, h11 and your proxy may both accept the same stream of bytes, but interpret them differently. For example, consider the following HTTP request(s) (assume all line breaks are <code>\r\n</code>):</p>
+<pre><code>GET /one HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+
+5
+AAAAAXX2
+45
+0
+
+GET /two HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+
+0
+</code></pre>
+<p>Here h11 will interpret it as two requests, one with body <code>AAAAA45</code> and one with an empty body, while our hypothetical buggy proxy will interpret it as a single request, with body <code>AAAAXX20\r\n\r\nGET /two ...</code>. And any time two HTTP processors both accept the same string of bytes but interpret them differently, you have the conditions for a "request smuggling" attack. For example, if <code>/two</code> is a dangerous endpoint and the job of the reverse proxy is to stop requests from getting there, then an attacker could use a bytestream like the above to circumvent this protection.</p>
+<p>Even worse, if our buggy reverse proxy receives two requests from different users:</p>
+<pre><code>GET /one HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+
+5
+AAAAAXX999
+0
+</code></pre>
+<pre><code>GET /two HTTP/1.1
+Host: localhost
+Cookie: SESSION_KEY=abcdef...
+</code></pre>
+<p>...it will consider the first request to be complete and valid, and send both on to the h11-based web server over the same socket. The server will then see the two concatenated requests, and interpret them as <em>one</em> request to <code>/one</code> whose body includes <code>/two</code>'s session key, potentially allowing one user to steal another's credentials.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in h11 0.15.0.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Since exploitation requires the combination of buggy h11 with a buggy (reverse) proxy, fixing either component is sufficient to mitigate this issue.</p>
+<h3 id="credits">Credits</h3>
+<p>Reported by Jeppe Bonde Weikop on 2025-01-09.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-hyper/h11/security/advisories/GHSA-vqfr-h8mv-ghfj">https://github.com/python-hyper/h11/security/advisories/GHSA-vqfr-h8mv-ghfj</a></li>
+<li><a href="https://github.com/python-hyper/h11/commit/114803a29ce50116dc47951c690ad4892b1a36ed">https://github.com/python-hyper/h11/commit/114803a29ce50116dc47951c690ad4892b1a36ed</a></li>
+<li><a href="https://github.com/advisories/GHSA-vqfr-h8mv-ghfj">https://github.com/advisories/GHSA-vqfr-h8mv-ghfj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vqfr-h8mv-ghfj</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-04-24T16:07:56.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[picklescan] Duplicate Advisory: Picklescan Vulnerable to Exfiltration via DNS via linecache and ssl.get_server_certificate]]></title>
+        <id>https://github.com/advisories/GHSA-4p4h-9gvq-7xfg</id>
+        <link href="https://github.com/advisories/GHSA-4p4h-9gvq-7xfg"/>
+        <updated>2025-04-24T16:02:12.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="duplicate-advisory">Duplicate Advisory</h1>
+<p>This advisory has been withdrawn because it is a duplicate of GHSA-93mv-x874-956g. This link is maintained to preserve external references.</p>
+<h1 id="original-description">Original Description</h1>
+<p>The unsafe globals in Picklescan before 0.0.25 do not include ssl. Consequently, ssl.get_server_certificate can exfiltrate data via DNS after deserialization.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-46417">https://nvd.nist.gov/vuln/detail/CVE-2025-46417</a></li>
+<li><a href="https://github.com/mmaitre314/picklescan/pull/40">https://github.com/mmaitre314/picklescan/pull/40</a></li>
+<li><a href="https://github.com/advisories/GHSA-93mv-x874-956g">https://github.com/advisories/GHSA-93mv-x874-956g</a></li>
+<li><a href="https://github.com/advisories/GHSA-4p4h-9gvq-7xfg">https://github.com/advisories/GHSA-4p4h-9gvq-7xfg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4p4h-9gvq-7xfg</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-04-24T03:31:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[vyper] Vyper Does Not Check the Success of Certain Precompile Calls]]></title>
         <id>https://github.com/advisories/GHSA-vgf2-gvx8-xwc3</id>
@@ -897,68 +1005,5 @@ So it is time to update your PyTorch version~.</p>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-04-16T18:31:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[torch] PyTorch susceptible to local Denial of Service]]></title>
-        <id>https://github.com/advisories/GHSA-3749-ghw9-m3mg</id>
-        <link href="https://github.com/advisories/GHSA-3749-ghw9-m3mg"/>
-        <updated>2025-04-23T14:52:12.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability, which was classified as problematic, has been found in PyTorch 2.6.0+cu124. Affected by this issue is the function torch.mkldnn_max_pool2d. The manipulation leads to denial of service. An attack has to be approached locally. The exploit has been disclosed to the public and may be used.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2953">https://nvd.nist.gov/vuln/detail/CVE-2025-2953</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149274">https://github.com/pytorch/pytorch/issues/149274</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149274#issue-2923122269">https://github.com/pytorch/pytorch/issues/149274#issue-2923122269</a></li>
-<li><a href="https://vuldb.com/?ctiid.302006">https://vuldb.com/?ctiid.302006</a></li>
-<li><a href="https://vuldb.com/?id.302006">https://vuldb.com/?id.302006</a></li>
-<li><a href="https://vuldb.com/?submit.521279">https://vuldb.com/?submit.521279</a></li>
-<li><a href="https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models">https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models</a></li>
-<li><a href="https://github.com/advisories/GHSA-3749-ghw9-m3mg">https://github.com/advisories/GHSA-3749-ghw9-m3mg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3749-ghw9-m3mg</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-30T18:30:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vllm] vLLM vulnerable to Denial of Service by abusing xgrammar cache]]></title>
-        <id>https://github.com/advisories/GHSA-hf3c-wxg2-49q9</id>
-        <link href="https://github.com/advisories/GHSA-hf3c-wxg2-49q9"/>
-        <updated>2025-04-15T21:21:06.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>This report is to highlight a vulnerability in XGrammar, a library used by the structured output feature in vLLM. The XGrammar advisory is here: <a href="https://github.com/mlc-ai/xgrammar/security/advisories/GHSA-389x-67px-mjg3">https://github.com/mlc-ai/xgrammar/security/advisories/GHSA-389x-67px-mjg3</a></p>
-<p>The <a href="https://xgrammar.mlc.ai/docs/">xgrammar</a> library is the default backend used by vLLM to support structured output (a.k.a. guided decoding). Xgrammar provides a required, built-in cache for its compiled grammars stored in RAM. xgrammar is available by default through the OpenAI compatible API server with both the V0 and V1 engines.</p>
-<p>A malicious user can send a stream of very short decoding requests with unique schemas, resulting in an addition to the cache for each request. This can result in a Denial of Service by consuming all of the system's RAM.</p>
-<p>Note that even if vLLM was configured to use a different backend by default, it is still possible to choose xgrammar on a per-request basis using the <code>guided_decoding_backend</code> key of the <code>extra_body</code> field of the request with the V0 engine. This per-request choice is not available when using the V1 engine. </p>
-<h3 id="patches">Patches</h3>
-<ul>
-<li><a href="https://github.com/vllm-project/vllm/pull/16283">https://github.com/vllm-project/vllm/pull/16283</a></li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no way to workaround this issue in existing versions of vLLM other than preventing untrusted access to the OpenAI compatible API server.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mlc-ai/xgrammar/security/advisories/GHSA-389x-67px-mjg3">https://github.com/mlc-ai/xgrammar/security/advisories/GHSA-389x-67px-mjg3</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/mlc-ai/xgrammar/security/advisories/GHSA-389x-67px-mjg3">https://github.com/mlc-ai/xgrammar/security/advisories/GHSA-389x-67px-mjg3</a></li>
-<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-hf3c-wxg2-49q9">https://github.com/vllm-project/vllm/security/advisories/GHSA-hf3c-wxg2-49q9</a></li>
-<li><a href="https://github.com/vllm-project/vllm/pull/16283">https://github.com/vllm-project/vllm/pull/16283</a></li>
-<li><a href="https://github.com/vllm-project/vllm/commit/cb84e45ac75b42ba6795145923e8eb323bb825ad">https://github.com/vllm-project/vllm/commit/cb84e45ac75b42ba6795145923e8eb323bb825ad</a></li>
-<li><a href="https://github.com/advisories/GHSA-hf3c-wxg2-49q9">https://github.com/advisories/GHSA-hf3c-wxg2-49q9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hf3c-wxg2-49q9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-04-15T21:21:04.000Z</published>
     </entry>
 </feed>
