@@ -6,6 +6,20 @@
     "description": "Security Advisory for Python packages hosted at PyPI.org on GitHub",
     "items": [
         {
+            "content_html": "<p>python-markdownify (aka markdownify) before 0.14.1 allows large headline prefixes such as  in addition to </p><h1> through </h1><h6>. This causes memory consumption.<p></p>\n</h6><h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-46656\">https://nvd.nist.gov/vuln/detail/CVE-2025-46656</a></li>\n<li><a href=\"https://github.com/matthewwithanm/python-markdownify/issues/143\">https://github.com/matthewwithanm/python-markdownify/issues/143</a></li>\n<li><a href=\"https://github.com/matthewwithanm/python-markdownify/compare/0.14.0...0.14.1\">https://github.com/matthewwithanm/python-markdownify/compare/0.14.0...0.14.1</a></li>\n<li><a href=\"https://github.com/matthewwithanm/python-markdownify/commit/959561879693bf4a576f99c6733b50b01186aa08\">https://github.com/matthewwithanm/python-markdownify/commit/959561879693bf4a576f99c6733b50b01186aa08</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-7mpr-5m44-h73r\">https://github.com/advisories/GHSA-7mpr-5m44-h73r</a></li>\n</ul>\n",
+            "url": "https://github.com/advisories/GHSA-7mpr-5m44-h73r",
+            "title": "[markdownify] markdownify allows large headline prefixes such as <h9999999>, which causes memory consumption",
+            "date_modified": "2025-04-28T14:34:52.000Z",
+            "date_published": "2025-04-27T00:30:34.000Z",
+            "author": {
+                "name": "GitHub",
+                "url": "https://github.com/advisories/GHSA-7mpr-5m44-h73r"
+            },
+            "tags": [
+                "severity"
+            ]
+        },
+        {
             "content_html": "<h3 id=\"impact\">Impact</h3>\n<p>A leniency in h11's parsing of line terminators in chunked-coding message bodies can lead to request smuggling vulnerabilities under certain conditions.</p>\n<h3 id=\"details\">Details</h3>\n<p>HTTP/1.1 Chunked-Encoding bodies are formatted as a sequence of \"chunks\", each of which consists of:</p>\n<ul>\n<li>chunk length</li>\n<li><code>\\r\\n</code></li>\n<li><code>length</code> bytes of content</li>\n<li><code>\\r\\n</code></li>\n</ul>\n<p>In versions of h11 up to 0.14.0, h11 instead parsed them as:</p>\n<ul>\n<li>chunk length</li>\n<li><code>\\r\\n</code></li>\n<li><code>length</code> bytes of content</li>\n<li>any two bytes</li>\n</ul>\n<p>i.e. it did not validate that the trailing <code>\\r\\n</code> bytes were correct, and if you put 2 bytes of garbage there it would be accepted, instead of correctly rejecting the body as malformed.</p>\n<p>By itself this is harmless. However, suppose you have a proxy or reverse-proxy that tries to analyze HTTP requests, and your proxy has a <em>different</em> bug in parsing Chunked-Encoding, acting as if the format is:</p>\n<ul>\n<li>chunk length</li>\n<li><code>\\r\\n</code></li>\n<li><code>length</code> bytes of content</li>\n<li>more bytes of content, as many as it takes until you find a <code>\\r\\n</code></li>\n</ul>\n<p>For example, <a href=\"https://github.com/graygnuorg/pound/pull/43\">pound</a> had this bug -- it can happen if an implementer uses a generic \"read until end of line\" helper to consumes the trailing <code>\\r\\n</code>.</p>\n<p>In this case, h11 and your proxy may both accept the same stream of bytes, but interpret them differently. For example, consider the following HTTP request(s) (assume all line breaks are <code>\\r\\n</code>):</p>\n<pre><code>GET /one HTTP/1.1\nHost: localhost\nTransfer-Encoding: chunked\n\n5\nAAAAAXX2\n45\n0\n\nGET /two HTTP/1.1\nHost: localhost\nTransfer-Encoding: chunked\n\n0\n</code></pre>\n<p>Here h11 will interpret it as two requests, one with body <code>AAAAA45</code> and one with an empty body, while our hypothetical buggy proxy will interpret it as a single request, with body <code>AAAAXX20\\r\\n\\r\\nGET /two ...</code>. And any time two HTTP processors both accept the same string of bytes but interpret them differently, you have the conditions for a \"request smuggling\" attack. For example, if <code>/two</code> is a dangerous endpoint and the job of the reverse proxy is to stop requests from getting there, then an attacker could use a bytestream like the above to circumvent this protection.</p>\n<p>Even worse, if our buggy reverse proxy receives two requests from different users:</p>\n<pre><code>GET /one HTTP/1.1\nHost: localhost\nTransfer-Encoding: chunked\n\n5\nAAAAAXX999\n0\n</code></pre>\n<pre><code>GET /two HTTP/1.1\nHost: localhost\nCookie: SESSION_KEY=abcdef...\n</code></pre>\n<p>...it will consider the first request to be complete and valid, and send both on to the h11-based web server over the same socket. The server will then see the two concatenated requests, and interpret them as <em>one</em> request to <code>/one</code> whose body includes <code>/two</code>'s session key, potentially allowing one user to steal another's credentials.</p>\n<h3 id=\"patches\">Patches</h3>\n<p>Fixed in h11 0.15.0.</p>\n<h3 id=\"workarounds\">Workarounds</h3>\n<p>Since exploitation requires the combination of buggy h11 with a buggy (reverse) proxy, fixing either component is sufficient to mitigate this issue.</p>\n<h3 id=\"credits\">Credits</h3>\n<p>Reported by Jeppe Bonde Weikop on 2025-01-09.</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://github.com/python-hyper/h11/security/advisories/GHSA-vqfr-h8mv-ghfj\">https://github.com/python-hyper/h11/security/advisories/GHSA-vqfr-h8mv-ghfj</a></li>\n<li><a href=\"https://github.com/python-hyper/h11/commit/114803a29ce50116dc47951c690ad4892b1a36ed\">https://github.com/python-hyper/h11/commit/114803a29ce50116dc47951c690ad4892b1a36ed</a></li>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-43859\">https://nvd.nist.gov/vuln/detail/CVE-2025-43859</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-vqfr-h8mv-ghfj\">https://github.com/advisories/GHSA-vqfr-h8mv-ghfj</a></li>\n</ul>\n",
             "url": "https://github.com/advisories/GHSA-vqfr-h8mv-ghfj",
             "title": "[h11] h11 accepts some malformed Chunked-Encoding bodies",
@@ -266,20 +280,6 @@
             "author": {
                 "name": "GitHub",
                 "url": "https://github.com/advisories/GHSA-887c-mr87-cxwp"
-            },
-            "tags": [
-                "severity"
-            ]
-        },
-        {
-            "content_html": "<p>An issue in the component /models/config.py of Whoogle search v0.9.0 allows attackers to execute arbitrary code via supplying a crafted search query.</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2024-53305\">https://nvd.nist.gov/vuln/detail/CVE-2024-53305</a></li>\n<li><a href=\"https://github.com/benbusby/whoogle-search/commit/223f00c3c0533423114f99b30c561278bc0b42ba\">https://github.com/benbusby/whoogle-search/commit/223f00c3c0533423114f99b30c561278bc0b42ba</a></li>\n<li><a href=\"https://gist.github.com/fern89/ca5fe76ad81b4bc363e7341e523a1651\">https://gist.github.com/fern89/ca5fe76ad81b4bc363e7341e523a1651</a></li>\n<li><a href=\"https://fern89.github.io/posts/whoogle-rce\">https://fern89.github.io/posts/whoogle-rce</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-2689-cw26-6cpj\">https://github.com/advisories/GHSA-2689-cw26-6cpj</a></li>\n</ul>\n",
-            "url": "https://github.com/advisories/GHSA-2689-cw26-6cpj",
-            "title": "[whoogle-search] Whoogle allows attackers to execute arbitrary code via supplying a crafted search query",
-            "date_modified": "2025-04-16T20:38:01.000Z",
-            "date_published": "2025-04-16T18:31:54.000Z",
-            "author": {
-                "name": "GitHub",
-                "url": "https://github.com/advisories/GHSA-2689-cw26-6cpj"
             },
             "tags": [
                 "severity"
