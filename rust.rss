@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2025-05-02T12:02:06.982Z</updated>
+    <updated>2025-05-02T13:08:06.270Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,122 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[wasmtime] Wasmtime may have data leakage between instances in the pooling allocator]]></title>
+        <id>https://github.com/advisories/GHSA-wh6w-3828-g9qf</id>
+        <link href="https://github.com/advisories/GHSA-wh6w-3828-g9qf"/>
+        <updated>2025-05-02T12:51:05.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>There is a bug in Wasmtime's implementation of it's pooling instance allocator where when a linear memory is reused for another instance the initial heap snapshot of the prior instance can be visible, erroneously to the next instance. The pooling instance allocator in Wasmtime works by preallocating virtual memory for a fixed number of instances to reside in and then new instantiations pick a slot to use. Most conventional modules additionally have an initial copy-on-write "heap image" which is mapped in Wasmtime into the linear memory slot. When a heap slot is deallocated Wasmtime resets all of its contents back to the initial state but it does not unmap the image in case the next instance is an instantiation of the same module.</p>
+<p>The bug in Wasmtime occurs when a slot in the pooling allocator previously was used for a module with a heap image, meaning that its current state of memory contains the initial heap contents of that module. If the next instantiation within that slot does not itself contain a heap image then Wasmtime would leave the old heap image in place erroneously and continue with instantiation. This means that instantiations of modules without a heap image can see the initial heap image of the prior instantiation within that slot.</p>
+<p>Heap images in Wasmtime are created by precomputing WebAssembly <code>data</code> segments into one large mapping to be placed into linear memory at a particular offset. Most modules produced by toolchains today will have a heap image and an initialization snapshot. Creating a module without a heap image would require a hand-crafted <code>*.wat</code> file or a specially crafted source program. This consequence means that this bug is highly unlikely to be accidentally triggered and would otherwise require an intentional trigger with a hand-crafted module.</p>
+<p>One important part of this vulnerability is Wasmtime is highly likely to segfault when the slot is reused again with a module that itself has an initialization image. For example if module A has a heap initialization image and module B does not have a heap initialization image, then the following sequence of events could happen if they all are instantiated into the same instance slot:</p>
+<ul>
+<li>Module A is instantiated, and then deallocated. This leaves A's heap image in place, reset to its initial contents.</li>
+<li>Module B is instantiated and erroneously can see the initial heap contents of A. Module B is then deallocated and the entire heap is unmapped and reset back to zero.</li>
+<li>Module A is instantiated again, but the state tracking the slot did not account for module B so it thinks the module image is still mapped and proceeds with instantiation. Any action on A's part to access linear memory will then trap and if the host accesses A's memory it will segfault because the data that's supposed to be mapped is all unmapped.</li>
+</ul>
+<p>Adding this all together this means that in practice modules must be deliberately crafted to not have an initial heap image to view the contents of a prior image. If this module is instantiated though then when the slot is reused the next, likely image-using, module will believe its memory is mapped when it isn't, causing the host to segfault on unmapped memory it believed was mapped. </p>
+<h3 id="patches">Patches</h3>
+<p>This bug has been patched and users should upgrade to Wasmtime 2.0.2.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Trigging this bug requires the pooling allocator to be configured and for copy-on-write heap images to also be enabled. Pooling allocation is not enabled by default but copy-on-write heap images are. Mitigations for this bug include:</p>
+<ul>
+<li>Disabling the pooling allocator - note that pooling allocation is not enabled by default in Wasmtime</li>
+<li>Disabling the <code>memory-init-cow</code> feature or with <a href="https://docs.rs/wasmtime/2.0.1/wasmtime/struct.Config.html#method.memory_init_cow"><code>Config::memory_init_cow</code></a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://docs.rs/wasmtime/2.0.1/wasmtime/struct.Config.html#method.allocation_strategy"><code>Config::allocation_strategy</code></a> - configuration required to enable the pooling allocator.</li>
+<li><a href="https://docs.rs/wasmtime/2.0.1/wasmtime/struct.Config.html#method.memory_init_cow"><code>Config::memory_init_cow</code></a> - configuration required to enable or disable copy-on-write (this is enabled by default).</li>
+<li><a href="https://groups.google.com/a/bytecodealliance.org/g/sec-announce/c/c1HBDDJwNPA">Mailing list announcement</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/2614f2e9d2d36805ead8a8da0fa0c6e0d9e428a0">Patch for <code>release-2.0.0</code> branch</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/3535acbf3be032ef1ba0b469b8ab92538a8a18a6">Patch for <code>main</code></a></li>
+</ul>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory:</p>
+<ul>
+<li>Reach out to us on <a href="https://bytecodealliance.zulipchat.com/#narrow/stream/217126-wasmtime">the Bytecode Alliance Zulip chat</a></li>
+<li>Open an issue in <a href="https://github.com/bytecodealliance/wasmtime/">the bytecodealliance/wasmtime repository</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-wh6w-3828-g9qf">https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-wh6w-3828-g9qf</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/2614f2e9d2d36805ead8a8da0fa0c6e0d9e428a0">https://github.com/bytecodealliance/wasmtime/commit/2614f2e9d2d36805ead8a8da0fa0c6e0d9e428a0</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/3535acbf3be032ef1ba0b469b8ab92538a8a18a6">https://github.com/bytecodealliance/wasmtime/commit/3535acbf3be032ef1ba0b469b8ab92538a8a18a6</a></li>
+<li><a href="https://groups.google.com/a/bytecodealliance.org/g/sec-announce/c/c1HBDDJwNPA">https://groups.google.com/a/bytecodealliance.org/g/sec-announce/c/c1HBDDJwNPA</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2022-39393">https://nvd.nist.gov/vuln/detail/CVE-2022-39393</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2022-0075.html">https://rustsec.org/advisories/RUSTSEC-2022-0075.html</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2022-0098.html">https://rustsec.org/advisories/RUSTSEC-2022-0098.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-wh6w-3828-g9qf">https://github.com/advisories/GHSA-wh6w-3828-g9qf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wh6w-3828-g9qf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2022-11-10T21:16:22.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wasmtime] Wasmtime may have data leakage between instances in the pooling allocator]]></title>
+        <id>https://github.com/advisories/GHSA-wh6w-3828-g9qf</id>
+        <link href="https://github.com/advisories/GHSA-wh6w-3828-g9qf"/>
+        <updated>2025-05-02T12:51:05.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>There is a bug in Wasmtime's implementation of it's pooling instance allocator where when a linear memory is reused for another instance the initial heap snapshot of the prior instance can be visible, erroneously to the next instance. The pooling instance allocator in Wasmtime works by preallocating virtual memory for a fixed number of instances to reside in and then new instantiations pick a slot to use. Most conventional modules additionally have an initial copy-on-write "heap image" which is mapped in Wasmtime into the linear memory slot. When a heap slot is deallocated Wasmtime resets all of its contents back to the initial state but it does not unmap the image in case the next instance is an instantiation of the same module.</p>
+<p>The bug in Wasmtime occurs when a slot in the pooling allocator previously was used for a module with a heap image, meaning that its current state of memory contains the initial heap contents of that module. If the next instantiation within that slot does not itself contain a heap image then Wasmtime would leave the old heap image in place erroneously and continue with instantiation. This means that instantiations of modules without a heap image can see the initial heap image of the prior instantiation within that slot.</p>
+<p>Heap images in Wasmtime are created by precomputing WebAssembly <code>data</code> segments into one large mapping to be placed into linear memory at a particular offset. Most modules produced by toolchains today will have a heap image and an initialization snapshot. Creating a module without a heap image would require a hand-crafted <code>*.wat</code> file or a specially crafted source program. This consequence means that this bug is highly unlikely to be accidentally triggered and would otherwise require an intentional trigger with a hand-crafted module.</p>
+<p>One important part of this vulnerability is Wasmtime is highly likely to segfault when the slot is reused again with a module that itself has an initialization image. For example if module A has a heap initialization image and module B does not have a heap initialization image, then the following sequence of events could happen if they all are instantiated into the same instance slot:</p>
+<ul>
+<li>Module A is instantiated, and then deallocated. This leaves A's heap image in place, reset to its initial contents.</li>
+<li>Module B is instantiated and erroneously can see the initial heap contents of A. Module B is then deallocated and the entire heap is unmapped and reset back to zero.</li>
+<li>Module A is instantiated again, but the state tracking the slot did not account for module B so it thinks the module image is still mapped and proceeds with instantiation. Any action on A's part to access linear memory will then trap and if the host accesses A's memory it will segfault because the data that's supposed to be mapped is all unmapped.</li>
+</ul>
+<p>Adding this all together this means that in practice modules must be deliberately crafted to not have an initial heap image to view the contents of a prior image. If this module is instantiated though then when the slot is reused the next, likely image-using, module will believe its memory is mapped when it isn't, causing the host to segfault on unmapped memory it believed was mapped. </p>
+<h3 id="patches">Patches</h3>
+<p>This bug has been patched and users should upgrade to Wasmtime 2.0.2.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Trigging this bug requires the pooling allocator to be configured and for copy-on-write heap images to also be enabled. Pooling allocation is not enabled by default but copy-on-write heap images are. Mitigations for this bug include:</p>
+<ul>
+<li>Disabling the pooling allocator - note that pooling allocation is not enabled by default in Wasmtime</li>
+<li>Disabling the <code>memory-init-cow</code> feature or with <a href="https://docs.rs/wasmtime/2.0.1/wasmtime/struct.Config.html#method.memory_init_cow"><code>Config::memory_init_cow</code></a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://docs.rs/wasmtime/2.0.1/wasmtime/struct.Config.html#method.allocation_strategy"><code>Config::allocation_strategy</code></a> - configuration required to enable the pooling allocator.</li>
+<li><a href="https://docs.rs/wasmtime/2.0.1/wasmtime/struct.Config.html#method.memory_init_cow"><code>Config::memory_init_cow</code></a> - configuration required to enable or disable copy-on-write (this is enabled by default).</li>
+<li><a href="https://groups.google.com/a/bytecodealliance.org/g/sec-announce/c/c1HBDDJwNPA">Mailing list announcement</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/2614f2e9d2d36805ead8a8da0fa0c6e0d9e428a0">Patch for <code>release-2.0.0</code> branch</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/3535acbf3be032ef1ba0b469b8ab92538a8a18a6">Patch for <code>main</code></a></li>
+</ul>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory:</p>
+<ul>
+<li>Reach out to us on <a href="https://bytecodealliance.zulipchat.com/#narrow/stream/217126-wasmtime">the Bytecode Alliance Zulip chat</a></li>
+<li>Open an issue in <a href="https://github.com/bytecodealliance/wasmtime/">the bytecodealliance/wasmtime repository</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-wh6w-3828-g9qf">https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-wh6w-3828-g9qf</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/2614f2e9d2d36805ead8a8da0fa0c6e0d9e428a0">https://github.com/bytecodealliance/wasmtime/commit/2614f2e9d2d36805ead8a8da0fa0c6e0d9e428a0</a></li>
+<li><a href="https://github.com/bytecodealliance/wasmtime/commit/3535acbf3be032ef1ba0b469b8ab92538a8a18a6">https://github.com/bytecodealliance/wasmtime/commit/3535acbf3be032ef1ba0b469b8ab92538a8a18a6</a></li>
+<li><a href="https://groups.google.com/a/bytecodealliance.org/g/sec-announce/c/c1HBDDJwNPA">https://groups.google.com/a/bytecodealliance.org/g/sec-announce/c/c1HBDDJwNPA</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2022-39393">https://nvd.nist.gov/vuln/detail/CVE-2022-39393</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2022-0075.html">https://rustsec.org/advisories/RUSTSEC-2022-0075.html</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2022-0098.html">https://rustsec.org/advisories/RUSTSEC-2022-0098.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-wh6w-3828-g9qf">https://github.com/advisories/GHSA-wh6w-3828-g9qf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wh6w-3828-g9qf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2022-11-10T21:16:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[mp3-metadata] Panic in mp3-metadata due to the lack of bounds checking]]></title>
         <id>https://github.com/advisories/GHSA-927q-g9w9-pm54</id>
@@ -697,76 +813,5 @@
         </author>
         <category label="severity" term="LOW"/>
         <published>2025-04-10T21:08:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[surrealdb] SurrealDB has local file read of 2-column TSV files via analyzers ]]></title>
-        <id>https://github.com/advisories/GHSA-2cvj-g5r5-jrrg</id>
-        <link href="https://github.com/advisories/GHSA-2cvj-g5r5-jrrg"/>
-        <updated>2025-04-10T21:08:51.000Z</updated>
-        <content type="html"><![CDATA[<p>An authenticated system user at the root, namespace, or database levels can use the <code>DEFINE ANALYZER</code> statement to point to arbitrary file locations on the file system, and should the file be tab separated with two columns, the analyzer can be leveraged to exfiltrate the content.</p>
-<p>This issue was discovered and patched during an code audit and penetration test of SurrealDB by cure53, the severity defined within cure53's preliminary finding is Low, matched by our CVSS v4 assessment.</p>
-<h3 id="impact">Impact</h3>
-<p>Limited to unauthorised access to 2 column TSV files on the file system</p>
-<h3 id="patches">Patches</h3>
-<p>A patch has been created that introduces a new environment variable, <code>SURREAL_FILE_ALLOWLIST</code> , which contains a list of allowed file paths. When a mapping file is processed, the mapper checks if the file’s path is within one of the allowed paths.</p>
-<ul>
-<li>Versions 2.1.5, 2.2.2 and later are not affected by this issue.</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>Users unable to update may want to limit those with root, namespace, or database level users to trusted parties only.</p>
-<h3 id="references">References</h3>
-<p><a href="https://surrealdb.com/docs/surrealql/statements/define/analyzer#define-analyzer-statement">SurrealQL Documentation - DEFINE ANALYZER</a>
-<a href="https://github.com/surrealdb/surrealdb/pull/5600">#5600</a></p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/surrealdb/surrealdb/security/advisories/GHSA-2cvj-g5r5-jrrg">https://github.com/surrealdb/surrealdb/security/advisories/GHSA-2cvj-g5r5-jrrg</a></li>
-<li><a href="https://github.com/surrealdb/surrealdb/pull/5600">https://github.com/surrealdb/surrealdb/pull/5600</a></li>
-<li><a href="https://github.com/advisories/GHSA-2cvj-g5r5-jrrg">https://github.com/advisories/GHSA-2cvj-g5r5-jrrg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2cvj-g5r5-jrrg</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-04-10T21:08:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[surrealdb] SurrealDB vulnerable to memory exhaustion via nested functions and scripts]]></title>
-        <id>https://github.com/advisories/GHSA-m7rc-8w7m-r9qr</id>
-        <link href="https://github.com/advisories/GHSA-m7rc-8w7m-r9qr"/>
-        <updated>2025-04-10T21:08:01.000Z</updated>
-        <content type="html"><![CDATA[<p>In order to prevent DoS situations due to infinite recursions, SurrealDB implements a limit of nested calls for both native functions and embedded JavaScript functions.</p>
-<p>However, in SurrealDB instances with embedded scripting functions enabled, it was found that this limit can be circumvented by utilizing both at the same time. If a native function contains JavaScript which issues a new query that calls that function, the recursion limit is not triggered.</p>
-<p>Once executed, SurrealDB will follow the path of infinite recursions until the system runs out of memory, prior to the recursion limit being triggered.</p>
-<p>This vulnerability can only affect SurrealDB servers explicitly enabling the scripting capability with <code>--allow-scripting</code> or 
-<code>--allow-all</code> and equivalent environment variables <code>SURREAL_CAPS_ALLOW_SCRIPT=true</code> and <code>SURREAL_CAPS_ALLOW_ALL=true</code>.</p>
-<p>This issue was discovered and patched during an code audit and penetration test of SurrealDB by cure53, the severity defined within cure53's preliminary finding is Medium, matched by our CVSS v4 assessment.</p>
-<h3 id="impact">Impact</h3>
-<p>For SurrealDB instances with embedded scripting functions enabled, this attack could be used to perform a DoS attack on the server by an authenticated user. </p>
-<h3 id="patches">Patches</h3>
-<p>A patch has been created that further limits scripting function call limit recursion depth and disallows multiple calls to <code>surreadb.query()</code> to run in parallel in a scripting function.</p>
-<ul>
-<li>Versions 2.0.5, 2.1.5, 2.2.2 and later are not affected by this issue.</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>Deny execution of embedded scripting functions through the configuration of <a href="https://surrealdb.com/docs/surrealdb/security/capabilities#capabilities">capabilities</a> by starting SurrealDB with the <code>--deny-scripting</code> flag or the equivalent environment variable <code>SURREAL_CAPS_DENY_SCRIPT=true</code>. This has a usability implication, although scripting functions are disabled by default.</p>
-<h3 id="references">References</h3>
-<p><a href="https://surrealdb.com/docs/surrealdb/security/capabilities">SurrealDB Documentation - Capabilities</a>
-<a href="https://surrealdb.com/docs/surrealql/functions/script">SurrealQL Documentation - Scripting Functions</a></p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/surrealdb/surrealdb/security/advisories/GHSA-m7rc-8w7m-r9qr">https://github.com/surrealdb/surrealdb/security/advisories/GHSA-m7rc-8w7m-r9qr</a></li>
-<li><a href="https://github.com/advisories/GHSA-m7rc-8w7m-r9qr">https://github.com/advisories/GHSA-m7rc-8w7m-r9qr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m7rc-8w7m-r9qr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-04-10T21:07:44.000Z</published>
     </entry>
 </feed>
