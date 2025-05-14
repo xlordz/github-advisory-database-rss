@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-05-14T17:01:27.553Z</updated>
+    <updated>2025-05-14T18:01:35.658Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,125 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cosmos/evm] Cosmos EVM Allows Partial Precompile State Writes]]></title>
+        <id>https://github.com/advisories/GHSA-mjfq-3qr2-6g84</id>
+        <link href="https://github.com/advisories/GHSA-mjfq-3qr2-6g84"/>
+        <updated>2025-05-14T17:35:55.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Setting lower EVM call gas allows users to partially execute precompiles and error at specific points in the precompile code without reverting the partially written state. </p>
+<p>If executed on the distribution precompile when claiming funds, it could cause funds to be transferred to a user without resetting the claimable rewards to 0. The vulnerability could also be used to cause indeterministic execution by failing at other points in the code, halting validators.</p>
+<p>Any evmOS or Cosmos EVM chain using precompiles is affected.</p>
+<h3 id="patches">Patches</h3>
+<p>The vulnerability was patched by wrapping each precompile execution into an atomic function that reverts any partially committed state on error.</p>
+<ul>
+<li><a href="https://github.com/evmos/os">evmos/os</a> patch file: <a href="https://drive.google.com/file/d/1LfC0WSrQOqwTOW3qfaE6t8Jqf1PLVtS_/">https://drive.google.com/file/d/1LfC0WSrQOqwTOW3qfaE6t8Jqf1PLVtS_/</a></li>
+</ul>
+<p>For chains using a different file structure, you must manually apply the diff:</p>
+<h3 id="in-xevmstatedbgo"><strong>In <code>x/evm/statedb.go</code>:</strong></h3>
+<p>Add the following function:</p>
+<pre><code class="language-go">func (s *StateDB) RevertMultiStore(cms storetypes.CacheMultiStore, events sdk.Events) {
+    s.cacheCtx = s.cacheCtx.WithMultiStore(cms)
+    s.writeCache = func() {
+        // rollback the events to the ones
+        // on the snapshot
+        s.ctx.EventManager().EmitEvents(events)
+        cms.Write()
+    }
+}
+</code></pre>
+<h3 id="in-xevmstatedbjournalgo"><strong>In <code>x/evm/statedb/journal.go</code>:</strong></h3>
+<p>Replace the <code>Revert</code> function with the following:</p>
+<pre><code class="language-go">func (pc precompileCallChange) Revert(s *StateDB) {
+    // rollback multi store from cache ctx to the previous
+    // state stored in the snapshot
+    s.RevertMultiStore(pc.multiStore, pc.events)
+}
+</code></pre>
+<h3 id="in-precompilescommonprecompilego"><strong>In <code>precompiles/common/precompile.go</code>:</strong></h3>
+<p>Change the function signature in <code>HandleGasError</code> to:</p>
+<pre><code class="language-go">func HandleGasError(ctx sdk.Context, contract *vm.Contract, initialGas storetypes.Gas, err *error, stateDB *statedb.StateDB, snapshot snapshot) func() {
+...
+}
+</code></pre>
+<p>In the <code>HandleGasError</code> function, add the following line in the switch statement in the <code>case storetypes.ErrorOutOfGas:</code> case:</p>
+<pre><code class="language-go">stateDB.RevertMultiStore(snapshot.MultiStore, snapshot.Events)
+</code></pre>
+<p>Add the following function:</p>
+<pre><code class="language-go">// RunAtomic is used within the Run function of each Precompile implementation.
+// It handles rolling back to the provided snapshot if an error is returned from the core precompile logic.
+// Note: This is only required for stateful precompiles.
+func (p Precompile) RunAtomic(s snapshot, stateDB *statedb.StateDB, fn func() ([]byte, error)) ([]byte, error) {
+    bz, err := fn()
+    if err != nil {
+        // revert to snapshot on error
+        stateDB.RevertMultiStore(s.MultiStore, s.Events)
+    }
+    return bz, err
+}
+</code></pre>
+<h3 id="all-precompiles"><strong>All Precompiles:</strong></h3>
+<p>Finally, in each precompile, locate the <code>Run</code> function, and wrap each switch statement and return values into <code>p.RunAtomic</code>. For example:</p>
+<pre><code class="language-go">// Run executes the precompiled contract IBC transfer methods defined in the ABI.
+func (p Precompile) Run(evm *vm.EVM, contract *vm.Contract, readOnly bool) (bz []byte, err error) {
+    ctx, stateDB, snapshot, method, initialGas, args, err := p.RunSetup(evm, contract, readOnly, p.IsTransaction)
+    if err != nil {
+        return nil, err
+    }
+
+    // This handles any out of gas errors that may occur during the execution of a precompile tx or query.
+    // It avoids panics and returns the out of gas error so the EVM can continue gracefully.
+    defer cmn.HandleGasError(ctx, contract, initialGas, &amp;err, stateDB, snapshot)()
+
+        // === WRAP HERE ===
+    return p.RunAtomic(snapshot, stateDB, func() ([]byte, error) {
+        switch method.Name {
+        // TODO Approval transactions =&gt; need cosmos-sdk v0.46 &amp; ibc-go v6.2.0
+        // Authorization Methods:
+        case exampleCase:
+            bz, err = p.example(ctx, evm.Origin, stateDB, method, args)
+        default:
+            return nil, fmt.Errorf(cmn.ErrUnknownMethod, method.Name)
+        }
+
+        if err != nil {
+            return nil, err
+        }
+
+        cost := ctx.GasMeter().GasConsumed() - initialGas
+
+        if !contract.UseGas(cost) {
+            return nil, vm.ErrOutOfGas
+        }
+
+        if err := p.AddJournalEntries(stateDB, snapshot); err != nil {
+            return nil, err
+        }
+
+        return bz, nil
+    })
+}
+</code></pre>
+<h3 id="workarounds">Workarounds</h3>
+<p>There are no workarounds for chains that make use of precompiles. A coordinated upgrade is necessary to patch the issue.</p>
+<h3 id="testing">Testing</h3>
+<p>A test was introduced in the distribution precompile to ensure that partial state writes no longer occur when a lower gas amount is set.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cosmos/evm/security/advisories/GHSA-mjfq-3qr2-6g84">https://github.com/cosmos/evm/security/advisories/GHSA-mjfq-3qr2-6g84</a></li>
+<li><a href="https://github.com/cosmos/evm/commit/0fff8c144b24effbcb3addd666150ba5989d631c">https://github.com/cosmos/evm/commit/0fff8c144b24effbcb3addd666150ba5989d631c</a></li>
+<li><a href="https://drive.google.com/file/d/1LfC0WSrQOqwTOW3qfaE6t8Jqf1PLVtS_">https://drive.google.com/file/d/1LfC0WSrQOqwTOW3qfaE6t8Jqf1PLVtS_</a></li>
+<li><a href="https://github.com/advisories/GHSA-mjfq-3qr2-6g84">https://github.com/advisories/GHSA-mjfq-3qr2-6g84</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mjfq-3qr2-6g84</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-05-14T17:35:54.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/justinas/nosurf] nosurf vulnerable to CSRF due to non-functional same-origin request checks]]></title>
         <id>https://github.com/advisories/GHSA-w9hf-35q4-vcjw</id>
@@ -880,27 +999,5 @@ allow if {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-05-02T18:31:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/hashicorp/vault] Hashicorp Vault Community vulnerable to Generation of Error Message Containing Sensitive Information]]></title>
-        <id>https://github.com/advisories/GHSA-gcqf-f89c-68hv</id>
-        <link href="https://github.com/advisories/GHSA-gcqf-f89c-68hv"/>
-        <updated>2025-05-06T19:11:10.000Z</updated>
-        <content type="html"><![CDATA[<p>Vault Community and Vault Enterprise Key/Value (kv) Version 2 plugin may unintentionally expose sensitive information in server and audit logs when users submit malformed payloads during secret creation or update operations via the Vault REST API. This vulnerability, identified as CVE-2025-4166, is fixed in Vault Community 1.19.3 and Vault Enterprise 1.19.3, 1.18.9, 1.17.16, 1.16.20.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-4166">https://nvd.nist.gov/vuln/detail/CVE-2025-4166</a></li>
-<li><a href="https://discuss.hashicorp.com/t/hcsec-2025-09-vault-may-expose-sensitive-information-in-error-logs-when-processing-malformed-data-with-the-kv-v2-plugin">https://discuss.hashicorp.com/t/hcsec-2025-09-vault-may-expose-sensitive-information-in-error-logs-when-processing-malformed-data-with-the-kv-v2-plugin</a></li>
-<li><a href="https://pkg.go.dev/vuln/GO-2025-3663">https://pkg.go.dev/vuln/GO-2025-3663</a></li>
-<li><a href="https://github.com/advisories/GHSA-gcqf-f89c-68hv">https://github.com/advisories/GHSA-gcqf-f89c-68hv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gcqf-f89c-68hv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-05-02T15:31:49.000Z</published>
     </entry>
 </feed>
