@@ -1,3 +1,5 @@
+[![update RSS](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/update.yml/badge.svg)](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/update.yml)
+
 # github-advisory-database-rss
 
 RSS Feeds for [GitHub Advisory Database](https://github.com/advisories).
