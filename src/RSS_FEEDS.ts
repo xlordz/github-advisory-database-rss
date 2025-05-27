@@ -1,6 +1,6 @@
 import { SecurityAdvisoryEcosystem } from "@octokit/graphql-schema";
 
-const BASE_URL = "https://azu.github.io/github-advisory-database-rss";
+const BASE_URL = "https://xlordz.github.io/github-advisory-database-rss";
 const createBase = (ecosystem: SecurityAdvisoryEcosystem) => {
     const low = ecosystem.toLowerCase();
     return {
