@@ -1,6 +1,8 @@
 [![update RSS](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/update.yml/badge.svg)](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/update.yml)
 [![test](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/test.yml/badge.svg)](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/test.yml)
 
+RSS: [https://xlordz.github.io/github-advisory-database-rss/composer.rss]
+
 # github-advisory-database-rss
 
 RSS Feeds for [GitHub Advisory Database](https://github.com/advisories).
