@@ -1,4 +1,5 @@
 [![update RSS](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/update.yml/badge.svg)](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/update.yml)
+[![test](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/test.yml/badge.svg)](https://github.com/xlordz/github-advisory-database-rss/actions/workflows/test.yml)
 
 # github-advisory-database-rss
 
