@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-08-27T21:45:30.185Z</updated>
+    <updated>2025-08-27T21:53:49.030Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -36,7 +36,7 @@
         <title type="html"><![CDATA[[@nx/workspace] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -85,7 +85,29 @@
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -179,8 +201,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -221,7 +249,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/js] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -270,7 +298,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -364,8 +414,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -406,7 +462,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/devkit] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -455,7 +511,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -549,8 +627,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -591,7 +675,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/node] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -640,7 +724,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -734,8 +840,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -776,7 +888,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -825,7 +937,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -919,8 +1053,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -961,7 +1101,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -1010,7 +1150,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -1104,8 +1266,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -1146,7 +1314,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -1195,7 +1363,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -1289,8 +1479,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -1331,7 +1527,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -1380,7 +1576,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -1474,8 +1692,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -1516,7 +1740,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -1565,7 +1789,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -1659,8 +1905,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -1701,7 +1953,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -1750,7 +2002,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -1844,8 +2118,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -1886,7 +2166,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -1935,7 +2215,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -2029,8 +2331,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -2071,7 +2379,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/node] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -2120,7 +2428,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -2214,8 +2544,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -2256,7 +2592,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/eslint] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -2305,7 +2641,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -2399,8 +2757,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -2441,7 +2805,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/workspace] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -2490,7 +2854,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -2584,8 +2970,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -2626,7 +3018,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/js] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -2675,7 +3067,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -2769,8 +3183,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -2811,7 +3231,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/devkit] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -2860,7 +3280,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -2954,8 +3396,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -2996,7 +3444,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/enterprise-cloud] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -3045,7 +3493,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -3139,8 +3609,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -3181,7 +3657,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[@nx/key] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -3230,7 +3706,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -3324,8 +3822,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
@@ -3366,7 +3870,7 @@ telemetry.js</p>
         <title type="html"><![CDATA[[nx] Malicious versions of Nx were published]]></title>
         <id>https://github.com/advisories/GHSA-cxm3-wv7p-598c</id>
         <link href="https://github.com/advisories/GHSA-cxm3-wv7p-598c"/>
-        <updated>2025-08-27T21:38:44.000Z</updated>
+        <updated>2025-08-27T21:52:26.000Z</updated>
         <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
 <p>Malicious versions of the <a href="https://www.npmjs.com/package/nx"><code>nx</code> package</a>, as well as some supporting plugin packages, were published to npm, containing code that scans the file system, collects credentials, and posts them to GitHub as a repo under user's accounts.</p>
 <h2 id="affected-versions-of-nx">Affected Versions of <code>nx</code></h2>
@@ -3415,7 +3919,29 @@ telemetry.js</p>
 </ul>
 <p>These versions have since been removed from NPM as of 6:20 AM EDT</p>
 <h2 id="attack-vector">Attack Vector</h2>
-<p>At this time, we believe an npm token was compromised which had publish rights to the affected packages.</p>
+<h3 id="vulnerable-workflow">Vulnerable Workflow</h3>
+<p>The root cause the introduction of a vulnerable <a href="https://github.com/nrwl/nx/pull/32458">workflow</a> which contained the possibility for injecting executable code. The vulnerable workflow was reverted in <code>master</code> almost immediately after the team learned it could have been malicious. However, this proved to be inadequate to address the vulnerability.</p>
+<p>The workflow contained the 2 issues.</p>
+<h4 id="bash-injection">Bash Injection</h4>
+<pre><code class="language-yaml">      - name: Create PR message file
+        run: |
+          mkdir -p /tmp
+          cat &gt; /tmp/pr-message.txt &lt;&lt; 'EOF'
+          ${{ github.event.pull_request.title }}
+</code></pre>
+<p>The intention of these lines was to write pull request titles and bodies to a file which would then be validated via our commit format checks.</p>
+<p>However, if a PR was opened with a title such as <code>$(echo "You've been compromised")</code> the code would be executed within the workflow. We understood this once it was reported but we did not fully understand how this would compromise any secrets because the PR title validation workflow itself did not have access to any secrets. </p>
+<h4 id="elevated-permissions-via-pull_request_target">Elevated Permissions via <code>pull_request_target</code></h4>
+<pre><code class="language-yaml">on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+</code></pre>
+<p>The <code>pull_request_target</code> trigger (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target">Github Docs</a>) was used as a way to trigger the action to run whenever a PR was created or modified. However, what was missed is the warning that this trigger, unlike the standard <code>pull_request</code> trigger, runs workflows with elevated permissions including a <code>GITHUB_TOKEN</code> which has read/write repository permission. Furthermore, the workflows are executed on the target repo of the PR (<code>nrwl/nx</code>) which means that the <code>GITHUB_TOKEN</code> had permissions for the <code>nrwl/nx</code> repo. In addition, the workflow is run using the version of the workflow available on the target branch which is not necessarily <code>master</code>. We believe that the PR was made targeting an outdated branch which still contained the vulnerable workflow despite the fact that the vulnerable workflow was removed from <code>master</code>.</p>
+<p>We believe the <code>GITHUB_TOKEN</code> from this workflow was utilized to trigger another workflow, the <code>publish.yml</code> workflow. </p>
+<h3 id="exploit-of-the-publishyml-workflow">Exploit of the <code>publish.yml</code> workflow</h3>
+<p>Up until this point, the team believed that although the PR validation workflow was vulnerable, it didn't contain any secrets. The vulnerable pipeline was just a means to trigger our <code>publish.yml</code> pipeline which does indeed have the npm token which was used to publish the malicious versions of Nx.</p>
+<p>The <code>publish.yml</code> pipeline, is our most permissive pipeline. It is responsible for publishing the Nx packages and therefore has access to the npm token via a Github Secret. As such, we took great care at least within the pipeline itself that ONLY our team was able to utilize the pipeline. As recommended, our github secrets are only accessible within pipelines triggered on <code>nrwl/nx</code> and they are not accessible from any forks keeping it safe from external contributors.</p>
+<p>However, because of the elevated permissions from the PR validation workflow, the <code>publish.yml</code> workflow was triggered to run on the <code>nrwl/nx</code> repo. Additional changes were made in the <a href="https://github.com/nrwl/nx/commit/3905475cfd0e0ea670e20c6a9eaeb768169dc33d">malicious commit</a> which altered the behavior of the <code>publish.yml</code> pipeline to send the npm token to a webhook. As part of the bash injection, the PR validation workflows triggered a run of the <code>publish.yml</code> with this malicious commit and sent our npm token to an unfamiliar webhook. We believe this is how the user got a hold of the NPM token used to publish the malicious versions of Nx.</p>
 <h2 id="malicious-behavior">Malicious Behavior</h2>
 <h3 id="credentials-published-as-a-github-repo">Credentials published as a Github repo</h3>
 <p>The compromised package contained a <code>postinstall</code> script that scanned user's file system for text files, collected paths, and credentials upon installing the package. This information was then posted as an encoded string to a github repo under the user's Github account. </p>
@@ -3509,8 +4035,14 @@ npm cache clean --force
 <li><input type="checkbox" disabled="" checked=""> The <code>nx</code> package now requires <a href="https://docs.npmjs.com/trusted-publishers#supported-cicd-providers">Trusted Providers</a> methodology of publishing via our <code>.github/publish.yml</code> workflow in the <code>nrwl/nx</code> repo.</li>
 <li><input type="checkbox" disabled="" checked=""> Remove NPM tokens from our pipeline now that we're using Trusted Providers on NPM</li>
 <li><input type="checkbox" disabled="" checked=""> All NPM packages under Nx (the company) including <code>nx</code> have been set to require 2FA and cannot be published with access tokens</li>
+<li><input type="checkbox" disabled="" checked=""> All Github secrets on the <code>nrwl/nx</code> repo have been rotated. If any other secrets were compromised, they are no longer valid.</li>
+<li><input type="checkbox" disabled=""> We are continuing to assess how if any other malicious activity was done with the other secrets we have in Github but have not found any further malicious activity at this time.</li>
+<li><input type="checkbox" disabled="" checked=""> All branches containing the vulnerable pipeline on <code>nrwl/nx</code> have been updated to not have the vulnerable pipeline.</li>
+<li><input type="checkbox" disabled="" checked=""> The nx repo now also will require team members to approve workflows triggered by external contributors. This will block workflows unknown to us from slipping through.</li>
 </ul>
 <p>This advisory will be updated when there is more information available.</p>
+<h2 id="lessons-learned">Lessons Learned</h2>
+<p>Along with the preventative measures we have now put in place, the team has learned many valuable lessons from this incident. The team will soon retrospect on this incident, formulate the lessons we have learned, and share those with the community.</p>
 <h2 id="questions-and-concerns">Questions and Concerns</h2>
 <p>If you have any questions and concerns, please email us at <a href="mailto:security@nrwl.io">security@nrwl.io</a></p>
 <h2 id="references">References</h2>
