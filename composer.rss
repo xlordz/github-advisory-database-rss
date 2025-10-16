@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2025-10-16T19:57:19.661Z</updated>
+    <updated>2025-10-16T20:20:40.244Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,214 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[librenms/librenms] LibreNMS alert-rules has a Cross-Site Scripting Vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-6g2v-66ch-6xmh</id>
+        <link href="https://github.com/advisories/GHSA-6g2v-66ch-6xmh"/>
+        <updated>2025-10-16T20:18:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="executive-summary">Executive Summary</h2>
+<p><strong>Product:</strong> LibreNMS<br><strong>Vendor:</strong> LibreNMS<br><strong>Vulnerability Type:</strong> Cross-Site Scripting (XSS)<br><strong>CVSS Score:</strong> 4.3 (AV:N/AC:L/PR:H/UI:R/S:U/C:L/I:L/A:L)<br><strong>Affected Version:</strong> 25.8.0 (latest at time of discovery)<br><strong>POC File:</strong> <a href="https://trendmicro-my.sharepoint.com/:u:/p/kholoud_altookhy/EQYQOiGddUtOtz6739YUFU4B5FkNob_TvKBYEA8P6lSRQw?e=lDOR5W">Download POC</a>
+<strong>Ticket:</strong> ZDI-CAN-28105: LibreNMS Alert Rules Cross-Site Scripting Vulnerability</p>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<h3 id="description">Description</h3>
+<p>Trend Micro's Zero Day Initiative has identified a Cross-Site Scripting vulnerability in LibreNMS. The vulnerability exists in the Alert Rules functionality where the alert rule name is not properly sanitized, allowing injection of HTML code.</p>
+<h3 id="technical-details">Technical Details</h3>
+<p><strong>Version Tested:</strong> 25.8.0<br><strong>Installer File:</strong> 25.8.0.tar.gz<br><strong>Download Link:</strong> <a href="https://github.com/librenms/librenms/archive/refs/tags/25.8.0.tar.gz">https://github.com/librenms/librenms/archive/refs/tags/25.8.0.tar.gz</a><br><strong>Platform:</strong> N/A</p>
+<h3 id="attack-vector">Attack Vector</h3>
+<p>When browsing to <strong>Alerts &gt; Alert Rules</strong> page, a LibreNMS admin can add and manage alert rules. The alert rule name field is vulnerable to XSS attacks through improper sanitization.</p>
+<h2 id="root-cause-analysis">Root Cause Analysis</h2>
+<h3 id="vulnerable-request">Vulnerable Request</h3>
+<p>When creating or updating an alert rule, the following HTTP POST request is sent to <code>/ajax_form.php</code>:</p>
+<pre><code>POST /ajax_form.php HTTP/1.1
+...
+
+_token=9YjTntCuMIe2ujpumwqJQoENRXUhJzlDt33Xu7kx&amp;device_id=-1&amp;device_name=&amp;rule_id=&amp;type=alert-rules&amp;template_id=&amp;builder_json=%7B%22condition%22%3A%22AND%22%2C%22rules%22%3A%5B%7B%22id%22%3A%22access_points.accesspoint_id%22%2C%22field%22%3A%22access_points.accesspoint_id%22%2C%22type%22%3A%22string%22%2C%22input%22%3A%22text%22%2C%22operator%22%3A%22equal%22%2C%22value%22%3A%2242%22%7D%5D%2C%22valid%22%3Atrue%7D&amp;name=%3Ci%3Efoo%3C%2Fi%3E&amp;builder_rule_0_filter=access_points.accesspoint_id&amp;builder_rule_0_operator=equal&amp;builder_rule_0_value_0=42&amp;severity=warning&amp;count=1&amp;delay=1m&amp;interval=5m&amp;recovery=on&amp;acknowledgement=on&amp;proc=&amp;notes=&amp;adv_query=
+</code></pre>
+<h3 id="code-flow">Code Flow</h3>
+<ol>
+<li><strong>Request Processing:</strong> PHP script <code>includes/html/forms/alert-rules.inc.php</code> processes the request</li>
+<li><strong>Sanitization Attempt:</strong> Calls <code>strip_tags()</code> to sanitize the <code>name</code> parameter</li>
+<li><strong>Database Operation:</strong> Calls <code>dbUpdate()</code> or <code>dbInsert()</code> to save the rule</li>
+</ol>
+<h3 id="bypass-technique">Bypass Technique</h3>
+<p>The sanitization can be bypassed using XML character references:</p>
+<pre><code class="language-html">&amp;lt;script&gt;alert(1)&amp;lt;/script&gt;
+</code></pre>
+<h3 id="execution-path">Execution Path</h3>
+<ol>
+<li><strong>Page Load:</strong> Victim browses to Alerts &gt; Alert Rules page</li>
+<li><strong>Script Execution:</strong> <code>includes/html/print-alert/rules.php</code> is called</li>
+<li><strong>Modal Inclusion:</strong> Includes <code>includes/html/modal/alert_rule_list.inc.php</code> which returns HTML for modal window</li>
+<li><strong>Table Rendering:</strong> Modal contains HTML table with all rules and inline JavaScript calling <code>bootgrid()</code> function</li>
+<li><strong>XSS Trigger:</strong> The <code>bootgrid()</code> function (<a href="http://www.jquery-bootgrid.com/">http://www.jquery-bootgrid.com/</a>) rewrites table cells, decoding XML character references</li>
+<li><strong>Code Execution:</strong> Browser interprets the decoded payload as HTML tags and executes the injected script</li>
+</ol>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<h3 id="usage">Usage</h3>
+<pre><code class="language-bash">python3 poc.py client ip_addr -U &lt;username&gt; -P &lt;password&gt;
+</code></pre>
+<h3 id="optional-parameters">Optional Parameters</h3>
+<ul>
+<li><code>-E [kvp|multipart]</code> - Specify HTTP request parameter encoding</li>
+</ul>
+<h2 id="credit">Credit</h2>
+<p><strong>Discovered by:</strong> Simon Humbert of Trend Research, Trend Micro</p>
+<h2 id="about-zero-day-initiative-zdi">About Zero Day Initiative (ZDI)</h2>
+<p>Established by TippingPoint and acquired by Trend Micro, the Zero Day Initiative (ZDI) neither re-sells vulnerability details nor exploit code. Instead, upon notifying the affected product vendor, the ZDI provides its Trend Micro TippingPoint customers with zero day protection through its intrusion prevention technology. Explicit details regarding the specifics of the vulnerability are not exposed to any parties until an official vendor patch is publicly available.</p>
+<h2 id="references">References</h2>
+<ul>
+<li><strong>ZDI Website:</strong> <a href="http://www.zerodayinitiative.com">http://www.zerodayinitiative.com</a></li>
+<li><strong>Disclosure Policy:</strong> <a href="http://www.zerodayinitiative.com/advisories/disclosure_policy/">http://www.zerodayinitiative.com/advisories/disclosure_policy/</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/librenms/librenms/security/advisories/GHSA-6g2v-66ch-6xmh">https://github.com/librenms/librenms/security/advisories/GHSA-6g2v-66ch-6xmh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-62412">https://nvd.nist.gov/vuln/detail/CVE-2025-62412</a></li>
+<li><a href="https://github.com/librenms/librenms/commit/dccdf6769976a974d70f06a7ce8d5a846b29db6f">https://github.com/librenms/librenms/commit/dccdf6769976a974d70f06a7ce8d5a846b29db6f</a></li>
+<li><a href="https://github.com/librenms/librenms/releases/tag/25.10.0">https://github.com/librenms/librenms/releases/tag/25.10.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-6g2v-66ch-6xmh">https://github.com/advisories/GHSA-6g2v-66ch-6xmh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6g2v-66ch-6xmh</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-10-16T20:18:32.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[prestashop/ps_checkout] PrestaShop Checkout Target PayPal merchant account hijacking from backoffice]]></title>
+        <id>https://github.com/advisories/GHSA-wvpg-4wrh-5889</id>
+        <link href="https://github.com/advisories/GHSA-wvpg-4wrh-5889"/>
+        <updated>2025-10-16T20:00:49.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Wrong usage of the PHP <code>array_search()</code> allows bypass of validation.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched in versions:</p>
+<ul>
+<li>v4.4.1 for PrestaShop 1.7 (build number: 7.4.4.1)</li>
+<li>v4.4.1 for PrestaShop 8 (build number: 8.4.4.1)</li>
+<li>v5.0.5 for PrestaShop 1.7 (build number: 7.5.0.5)</li>
+<li>v5.0.5 for PrestaShop 8 (build number: 8.5.0.5)</li>
+<li>v5.0.5 for PrestaShop 9 (build number: 9.5.0.5)</li>
+</ul>
+<p>Read the <a href="https://github.com/PrestaShopCorp/ps_checkout/wiki/Versioning">Versioning policy</a> to learn more about the build number.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/inem0o">Léo CUNÉAZ</a> reported this issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-wvpg-4wrh-5889">https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-wvpg-4wrh-5889</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-61924">https://nvd.nist.gov/vuln/detail/CVE-2025-61924</a></li>
+<li><a href="https://github.com/advisories/GHSA-wvpg-4wrh-5889">https://github.com/advisories/GHSA-wvpg-4wrh-5889</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wvpg-4wrh-5889</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-10-16T20:00:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[prestashop/ps_checkout] PrestaShop Checkout Target PayPal merchant account hijacking from backoffice]]></title>
+        <id>https://github.com/advisories/GHSA-wvpg-4wrh-5889</id>
+        <link href="https://github.com/advisories/GHSA-wvpg-4wrh-5889"/>
+        <updated>2025-10-16T20:00:49.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Wrong usage of the PHP <code>array_search()</code> allows bypass of validation.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched in versions:</p>
+<ul>
+<li>v4.4.1 for PrestaShop 1.7 (build number: 7.4.4.1)</li>
+<li>v4.4.1 for PrestaShop 8 (build number: 8.4.4.1)</li>
+<li>v5.0.5 for PrestaShop 1.7 (build number: 7.5.0.5)</li>
+<li>v5.0.5 for PrestaShop 8 (build number: 8.5.0.5)</li>
+<li>v5.0.5 for PrestaShop 9 (build number: 9.5.0.5)</li>
+</ul>
+<p>Read the <a href="https://github.com/PrestaShopCorp/ps_checkout/wiki/Versioning">Versioning policy</a> to learn more about the build number.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/inem0o">Léo CUNÉAZ</a> reported this issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-wvpg-4wrh-5889">https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-wvpg-4wrh-5889</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-61924">https://nvd.nist.gov/vuln/detail/CVE-2025-61924</a></li>
+<li><a href="https://github.com/advisories/GHSA-wvpg-4wrh-5889">https://github.com/advisories/GHSA-wvpg-4wrh-5889</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wvpg-4wrh-5889</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-10-16T20:00:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[prestashop/ps_checkout] PrestaShop Checkout Backoffice directory traversal allows arbitrary file disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-fpxp-pfqm-x54w</id>
+        <link href="https://github.com/advisories/GHSA-fpxp-pfqm-x54w"/>
+        <updated>2025-10-16T19:59:45.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="impact">Impact</h1>
+<p>Missing validation on input vulnerable to directory traversal.</p>
+<h1 id="patches">Patches</h1>
+<p>The problem has been patched in versions:</p>
+<p>v4.4.1 for PrestaShop 1.7 (build number: 7.4.4.1)
+v4.4.1 for PrestaShop 8 (build number: 8.4.4.1)
+v5.0.5 for PrestaShop 1.7 (build number: 7.5.0.5)
+v5.0.5 for PrestaShop 8 (build number: 8.5.0.5)
+v5.0.5 for PrestaShop 9 (build number: 9.5.0.5)</p>
+<p>Read the <a href="https://github.com/PrestaShopCorp/ps_checkout/wiki/Versioning">Versioning policy</a> to learn more about the build number.</p>
+<h1 id="credits">Credits</h1>
+<p><a href="https://github.com/inem0o">Léo CUNÉAZ</a> for reportied this issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-fpxp-pfqm-x54w">https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-fpxp-pfqm-x54w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-61923">https://nvd.nist.gov/vuln/detail/CVE-2025-61923</a></li>
+<li><a href="https://github.com/advisories/GHSA-fpxp-pfqm-x54w">https://github.com/advisories/GHSA-fpxp-pfqm-x54w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fpxp-pfqm-x54w</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-10-16T19:59:44.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[prestashop/ps_checkout] PrestaShop Checkout Backoffice directory traversal allows arbitrary file disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-fpxp-pfqm-x54w</id>
+        <link href="https://github.com/advisories/GHSA-fpxp-pfqm-x54w"/>
+        <updated>2025-10-16T19:59:45.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="impact">Impact</h1>
+<p>Missing validation on input vulnerable to directory traversal.</p>
+<h1 id="patches">Patches</h1>
+<p>The problem has been patched in versions:</p>
+<p>v4.4.1 for PrestaShop 1.7 (build number: 7.4.4.1)
+v4.4.1 for PrestaShop 8 (build number: 8.4.4.1)
+v5.0.5 for PrestaShop 1.7 (build number: 7.5.0.5)
+v5.0.5 for PrestaShop 8 (build number: 8.5.0.5)
+v5.0.5 for PrestaShop 9 (build number: 9.5.0.5)</p>
+<p>Read the <a href="https://github.com/PrestaShopCorp/ps_checkout/wiki/Versioning">Versioning policy</a> to learn more about the build number.</p>
+<h1 id="credits">Credits</h1>
+<p><a href="https://github.com/inem0o">Léo CUNÉAZ</a> for reportied this issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-fpxp-pfqm-x54w">https://github.com/PrestaShopCorp/ps_checkout/security/advisories/GHSA-fpxp-pfqm-x54w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-61923">https://nvd.nist.gov/vuln/detail/CVE-2025-61923</a></li>
+<li><a href="https://github.com/advisories/GHSA-fpxp-pfqm-x54w">https://github.com/advisories/GHSA-fpxp-pfqm-x54w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fpxp-pfqm-x54w</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2025-10-16T19:59:44.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[prestashop/ps_checkout] PrestaShop Checkout allows customer account takeover via email]]></title>
         <id>https://github.com/advisories/GHSA-54hq-mf6h-48xh</id>
@@ -451,170 +659,5 @@ This is exploitable only if the code is executed outside of Drupal; the function
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-10-03T14:52:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[dolibarr/dolibarr] Dolibarr vulnerable to RCE via the computed field parameter]]></title>
-        <id>https://github.com/advisories/GHSA-27hj-48r9-x2vx</id>
-        <link href="https://github.com/advisories/GHSA-27hj-48r9-x2vx"/>
-        <updated>2025-10-01T22:00:42.000Z</updated>
-        <content type="html"><![CDATA[<p>Dolibarr ERP &amp; CRM v21.0.1 were discovered to contain a remote code execution (RCE) vulnerability in the User module configuration via the computed field parameter.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-56588">https://nvd.nist.gov/vuln/detail/CVE-2025-56588</a></li>
-<li><a href="https://github.com/PhDg1410/Research">https://github.com/PhDg1410/Research</a></li>
-<li><a href="http://dolibarr.com">http://dolibarr.com</a></li>
-<li><a href="https://github.com/Dolibarr/dolibarr/commit/b03f30c7e27fb89dbfb15902dbf4619ae77f0f86">https://github.com/Dolibarr/dolibarr/commit/b03f30c7e27fb89dbfb15902dbf4619ae77f0f86</a></li>
-<li><a href="https://github.com/advisories/GHSA-27hj-48r9-x2vx">https://github.com/advisories/GHSA-27hj-48r9-x2vx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-27hj-48r9-x2vx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-10-01T21:31:22.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[auth0/symfony] Auth0 Symfony SDK Does Not Properly Handle File Types in Bulk User Import]]></title>
-        <id>https://github.com/advisories/GHSA-7jp2-5h22-m432</id>
-        <link href="https://github.com/advisories/GHSA-7jp2-5h22-m432"/>
-        <updated>2025-10-01T21:21:36.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="overview">Overview</h3>
-<p>In applications built with the Auth0-PHP SDK, the Bulk User Import endpoint does not validate the file path wrapper or value. Without proper validation, affected applications may accept arbitrary file paths or URLs.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected by this vulnerability if you meet the following preconditions:</p>
-<ol>
-<li>Applications using the Auth0 Symfony SDK with versions between 2.0.2 and 5.4.1,</li>
-<li>Auth0 Symfony SDK uses the Auth0-PHP SDK with versions between 3.3.0 and 8.16.0.</li>
-</ol>
-<h3 id="fix">Fix</h3>
-<p>Upgrade Auth0/symfony to version 5.5.0 or greater.</p>
-<h3 id="acknowledgement">Acknowledgement</h3>
-<p>Okta would like to thank Mohamed Amine Saidani (pwni) for discovering this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/auth0/symfony/security/advisories/GHSA-7jp2-5h22-m432">https://github.com/auth0/symfony/security/advisories/GHSA-7jp2-5h22-m432</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58769">https://nvd.nist.gov/vuln/detail/CVE-2025-58769</a></li>
-<li><a href="https://github.com/auth0/symfony/commit/0b6dbd1a7e6ffeebf4cbb08831c9ca9052d2c577">https://github.com/auth0/symfony/commit/0b6dbd1a7e6ffeebf4cbb08831c9ca9052d2c577</a></li>
-<li><a href="https://github.com/auth0/symfony/releases/tag/5.5.0">https://github.com/auth0/symfony/releases/tag/5.5.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-7jp2-5h22-m432">https://github.com/advisories/GHSA-7jp2-5h22-m432</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7jp2-5h22-m432</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-10-01T21:21:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[auth0/wordpress] Auth0 Wordpress plugin Does Not Properly Handle File Types in Bulk User Import]]></title>
-        <id>https://github.com/advisories/GHSA-w22c-pw5m-482x</id>
-        <link href="https://github.com/advisories/GHSA-w22c-pw5m-482x"/>
-        <updated>2025-10-01T21:21:21.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="overview">Overview</h3>
-<p>In applications built with the Auth0-PHP SDK, the Bulk User Import endpoint does not validate the file path wrapper or value. Without proper validation, affected applications may accept arbitrary file paths or URLs.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected by this vulnerability if you meet the following preconditions:</p>
-<ol>
-<li>Applications using the Auth0 Wordpress plugin with version between 5.0.0-BETA0 and 5.3.0,</li>
-<li>Auth0 Wordpress plugin uses the Auth0-PHP SDK with versions between 3.3.0 and 8.16.0.</li>
-</ol>
-<h3 id="fix">Fix</h3>
-<p>Upgrade Auth0 Wordpress plugin to version 5.4.0 or greater.</p>
-<h3 id="acknowledgement">Acknowledgement</h3>
-<p>Okta would like to thank Mohamed Amine Saidani (pwni) for discovering this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/auth0/wordpress/security/advisories/GHSA-w22c-pw5m-482x">https://github.com/auth0/wordpress/security/advisories/GHSA-w22c-pw5m-482x</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58769">https://nvd.nist.gov/vuln/detail/CVE-2025-58769</a></li>
-<li><a href="https://github.com/auth0/wordpress/commit/5f96767faa1fe1dfe215417e7b2e64c54220a872">https://github.com/auth0/wordpress/commit/5f96767faa1fe1dfe215417e7b2e64c54220a872</a></li>
-<li><a href="https://github.com/auth0/wordpress/releases/tag/5.4.0">https://github.com/auth0/wordpress/releases/tag/5.4.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-w22c-pw5m-482x">https://github.com/advisories/GHSA-w22c-pw5m-482x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w22c-pw5m-482x</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-10-01T21:21:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[auth0/login] laravel-auth0 SDK Does Not Properly Handle File Types in Bulk User Import]]></title>
-        <id>https://github.com/advisories/GHSA-hjfh-5jmm-xr24</id>
-        <link href="https://github.com/advisories/GHSA-hjfh-5jmm-xr24"/>
-        <updated>2025-10-01T21:21:06.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="overview">Overview</h3>
-<p>In applications built with the Auth0-PHP SDK, the Bulk User Import endpoint does not validate the file path wrapper or value. Without proper validation, affected applications may accept arbitrary file paths or URLs.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected by this vulnerability if you meet the following preconditions:</p>
-<ol>
-<li>Applications using the Auth0 laravel-auth0 SDK with version between 4.0.0 and 7.18.0,</li>
-<li>Auth0 laravel-auth0 SDK uses the Auth0-PHP SDK with versions between 3.3.0 and 8.16.0.</li>
-</ol>
-<h3 id="fix">Fix</h3>
-<p>Upgrade Auth0 laravel-auth0 SDK to version 7.19.0 or greater.</p>
-<h3 id="acknowledgement">Acknowledgement</h3>
-<p>Okta would like to thank Mohamed Amine Saidani (pwni) for discovering this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/auth0/laravel-auth0/security/advisories/GHSA-hjfh-5jmm-xr24">https://github.com/auth0/laravel-auth0/security/advisories/GHSA-hjfh-5jmm-xr24</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58769">https://nvd.nist.gov/vuln/detail/CVE-2025-58769</a></li>
-<li><a href="https://github.com/auth0/laravel-auth0/commit/c33c609fb041f7fe65deb6133feee0cb33fa80a5">https://github.com/auth0/laravel-auth0/commit/c33c609fb041f7fe65deb6133feee0cb33fa80a5</a></li>
-<li><a href="https://github.com/auth0/laravel-auth0/releases/tag/7.19.0">https://github.com/auth0/laravel-auth0/releases/tag/7.19.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-hjfh-5jmm-xr24">https://github.com/advisories/GHSA-hjfh-5jmm-xr24</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hjfh-5jmm-xr24</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-10-01T21:21:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[auth0/auth0-php] auth0-PHP SDK Does Not Properly Handle File Types in Bulk User Import]]></title>
-        <id>https://github.com/advisories/GHSA-9mh6-g99m-ppcw</id>
-        <link href="https://github.com/advisories/GHSA-9mh6-g99m-ppcw"/>
-        <updated>2025-10-01T21:37:31.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="overview">Overview</h3>
-<p>In applications built with the Auth0-PHP SDK, the Bulk User Import endpoint does not validate the file path wrapper or value. Without proper validation, affected applications may accept arbitrary file paths or URLs.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected by this vulnerability if you meet the following preconditions:</p>
-<ol>
-<li>Applications using the Auth0-PHP SDK, versions between v3.3.0 and v8.16.0, or</li>
-<li>Applications using the following SDKs that rely on the Auth0-PHP SDK versions between v3.3.0 and v8.16.0:
-a. Auth0/symfony,
-b. Auth0/laravel-auth0,
-c. Auth0/wordpress.</li>
-</ol>
-<h3 id="fix">Fix</h3>
-<p>Upgrade Auth0/Auth0-PHP to version 8.17.0 or greater.</p>
-<h3 id="acknowledgement">Acknowledgement</h3>
-<p>Okta would like to thank Mohamed Amine Saidani (pwni) for discovering this vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/auth0/auth0-PHP/security/advisories/GHSA-9mh6-g99m-ppcw">https://github.com/auth0/auth0-PHP/security/advisories/GHSA-9mh6-g99m-ppcw</a></li>
-<li><a href="https://github.com/auth0/auth0-PHP/commit/9026da58f5c381cd4cb5932de829eff6eacbb65c">https://github.com/auth0/auth0-PHP/commit/9026da58f5c381cd4cb5932de829eff6eacbb65c</a></li>
-<li><a href="https://github.com/auth0/auth0-PHP/releases/tag/8.17.0">https://github.com/auth0/auth0-PHP/releases/tag/8.17.0</a></li>
-<li><a href="https://github.com/auth0/laravel-auth0/security/advisories/GHSA-hjfh-5jmm-xr24">https://github.com/auth0/laravel-auth0/security/advisories/GHSA-hjfh-5jmm-xr24</a></li>
-<li><a href="https://github.com/auth0/symfony/security/advisories/GHSA-7jp2-5h22-m432">https://github.com/auth0/symfony/security/advisories/GHSA-7jp2-5h22-m432</a></li>
-<li><a href="https://github.com/auth0/wordpress/security/advisories/GHSA-w22c-pw5m-482x">https://github.com/auth0/wordpress/security/advisories/GHSA-w22c-pw5m-482x</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-58769">https://nvd.nist.gov/vuln/detail/CVE-2025-58769</a></li>
-<li><a href="https://github.com/advisories/GHSA-9mh6-g99m-ppcw">https://github.com/advisories/GHSA-9mh6-g99m-ppcw</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9mh6-g99m-ppcw</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-10-01T21:20:45.000Z</published>
     </entry>
 </feed>
