@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-11-13T22:36:46.610Z</updated>
+    <updated>2025-11-13T22:45:00.515Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,144 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[astro] Astro development server error page vulnerable to reflected Cross-site Scripting]]></title>
+        <id>https://github.com/advisories/GHSA-w2vj-39qv-7vh7</id>
+        <link href="https://github.com/advisories/GHSA-w2vj-39qv-7vh7"/>
+        <updated>2025-11-13T22:38:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A Reflected Cross-Site Scripting (XSS) vulnerability exists in Astro's development server error pages when the <code>trailingSlash</code> configuration option is used. An attacker can inject arbitrary JavaScript code that executes in the victim's browser context by crafting a malicious URL. While this vulnerability only affects the development server and not production builds, it could be exploited to compromise developer environments through social engineering or malicious links.</p>
+<h2 id="details">Details</h2>
+<h3 id="vulnerability-location">Vulnerability Location</h3>
+<p><a href="https://github.com/withastro/astro/blob/5bc37fd5cade62f753aef66efdf40f982379029a/packages/astro/src/template/4xx.ts#L133-L149">https://github.com/withastro/astro/blob/5bc37fd5cade62f753aef66efdf40f982379029a/packages/astro/src/template/4xx.ts#L133-L149</a></p>
+<h3 id="root-cause">Root Cause</h3>
+<p>The vulnerability was introduced in commit <code>536175528</code> (PR #12994) , as part of a feature to "redirect trailing slashes on on-demand rendered pages." The feature added a helpful 404 error page in development mode to alert developers of trailing slash mismatches.</p>
+<p><strong>Issue</strong>: The <code>corrected</code> variable, which is derived from the user-controlled <code>pathname</code> parameter, is directly interpolated into the HTML without proper escaping. While the <code>pathname</code> variable itself is escaped elsewhere in the same file (line 114: <code>escape(pathname)</code>), the <code>corrected</code> variable is not sanitized before being inserted into both the <code>href</code> attribute and the link text.</p>
+<h3 id="attack-vector">Attack Vector</h3>
+<p>When a developer has configured <code>trailingSlash</code> to <code>'always'</code> or <code>'never'</code> and visits a URL with a mismatched trailing slash, the development server returns a 404 page containing the vulnerable template. An attacker can craft a URL with JavaScript payloads that will be executed when the page is rendered.</p>
+<h2 id="poc">PoC</h2>
+<h3 id="local-testing-localhost">Local Testing (localhost)</h3>
+<p>Basic vulnerability verification in local development environment</p>
+<details>
+<summary>Show details</summary>
+
+<p><code>astro.config.mjs</code>:</p>
+<pre><code class="language-javascript">import { defineConfig } from 'astro/config';
+
+export default defineConfig({
+  trailingSlash: 'never', // or 'always'
+  server: {
+    port: 3000,
+    host: true
+  }
+});
+</code></pre>
+<p><code>package.json</code>:</p>
+<pre><code class="language-json">{
+  "name": "astro-xss-poc-victim",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "astro dev"
+  },
+  "dependencies": {
+    "astro": "5.15.5"
+  }
+}
+</code></pre>
+<p>Start the development server:</p>
+<pre><code class="language-bash">npm install
+npm run dev
+</code></pre>
+<p>Access the following malicious URL depending on your configuration:</p>
+<p><strong>For <code>trailingSlash: 'never'</code></strong> (requires trailing slash):</p>
+<pre><code>http://localhost:3000/"&gt;&lt;/code&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;!--/
+</code></pre>
+<p><strong>For <code>trailingSlash: 'always'</code></strong> (no trailing slash):</p>
+<pre><code>http://localhost:3000/"&gt;&lt;/code&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;!--
+</code></pre>
+<p>When accessing the malicious URL:</p>
+<ol>
+<li>The development server returns a 404 page due to trailing slash mismatch</li>
+<li>The JavaScript payload (<code>alert(document.domain)</code>) executes in the browser</li>
+<li>An alert dialog appears, demonstrating arbitrary code execution</li>
+</ol>
+</details>
+
+<h3 id="remote-testing-ngrok">Remote Testing (ngrok)</h3>
+<p>Reproduce realistic attack scenario via external malicious link</p>
+<details>
+<summary>Show details</summary>
+
+<p>Prerequisites: ngrok account and authtoken configured (<code>ngrok config add-authtoken &lt;key&gt;</code>)</p>
+<p>Setup and Execution:</p>
+<pre><code class="language-bash">#!/bin/bash
+set -e
+
+mkdir -p logs
+
+npm i
+npm run dev &gt; ./logs/victim.log 2&gt;&amp;1 &amp;
+
+ngrok http 3000 &gt; ./logs/ngrok.log 2&gt;&amp;1 &amp;
+
+sleep 3
+
+NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | head -1 | cut -d'"' -f4)
+echo ""
+echo "=== Attack URLs ==="
+echo ""
+echo "For trailingSlash: 'never' (requires trailing slash):"
+echo "${NGROK_URL}/\"&gt;&lt;/code&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;!--/"
+echo ""
+echo "For trailingSlash: 'always' (no trailing slash):"
+echo "${NGROK_URL}/\"&gt;&lt;/code&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;!--"
+echo ""
+wait
+</code></pre>
+<p>When a remote user accesses either of the generated attack URLs:</p>
+<ol>
+<li>The request is tunneled through ngrok to the local development server</li>
+<li>The development server returns a 404 page due to trailing slash mismatch</li>
+<li>The JavaScript payload (<code>alert(document.domain)</code>) executes in the user's browser</li>
+</ol>
+<p>Both URL patterns work depending on your <code>trailingSlash</code> configuration ('never' or 'always').</p>
+</details>
+
+<h2 id="impact">Impact</h2>
+<p>This only affects the <strong>development server</strong>. Risk depends on how and where the dev server is exposed.</p>
+<h3 id="security-impact">Security impact</h3>
+<ul>
+<li><strong>Developer environment compromise</strong>: Visiting a crafted URL can run arbitrary JS in the developer's browser.</li>
+<li><strong>Session hijacking</strong>: Active developer sessions can be stolen if services are open in the browser.</li>
+<li><strong>Local resource access</strong>: JS may probe <code>localhost</code> endpoints or dev tools depending on browser policies.</li>
+<li><strong>Supply-chain risk</strong>: Malicious packages or CI that start dev servers can widen exposure.</li>
+</ul>
+<h3 id="attack-scenarios">Attack scenarios</h3>
+<ul>
+<li><strong>Social engineering</strong>: Malicious link sent to a developer triggers the XSS when opened.</li>
+<li><strong>Malicious documentation</strong>: Attack URLs embedded in issues, PRs, chat, or docs.</li>
+<li><strong>Dependency/CI abuse</strong>: Packages or automation that spawn public dev servers expose many targets.</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>The fix is straightforward and requires escaping the <code>corrected</code> variable before inserting it into the HTML template. The codebase already imports and uses the <code>escape()</code> function from the <code>html-escaper</code> package.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/withastro/astro/security/advisories/GHSA-w2vj-39qv-7vh7">https://github.com/withastro/astro/security/advisories/GHSA-w2vj-39qv-7vh7</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-64745">https://nvd.nist.gov/vuln/detail/CVE-2025-64745</a></li>
+<li><a href="https://github.com/withastro/astro/pull/12994">https://github.com/withastro/astro/pull/12994</a></li>
+<li><a href="https://github.com/withastro/astro/commit/790d9425f39bbbb462f1c27615781cd965009f91">https://github.com/withastro/astro/commit/790d9425f39bbbb462f1c27615781cd965009f91</a></li>
+<li><a href="https://github.com/withastro/astro/blob/5bc37fd5cade62f753aef66efdf40f982379029a/packages/astro/src/template/4xx.ts#L133-L149">https://github.com/withastro/astro/blob/5bc37fd5cade62f753aef66efdf40f982379029a/packages/astro/src/template/4xx.ts#L133-L149</a></li>
+<li><a href="https://github.com/advisories/GHSA-w2vj-39qv-7vh7">https://github.com/advisories/GHSA-w2vj-39qv-7vh7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w2vj-39qv-7vh7</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-11-13T22:38:30.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[vega-expression] Vega Cross-Site Scripting (XSS) via expressions abusing toString calls in environments using the VEGA_DEBUG global variable]]></title>
         <id>https://github.com/advisories/GHSA-7f2v-3qq3-vvjf</id>
@@ -1962,38 +2100,6 @@ print(f"&lt;img src=x onerror=eval({out[:-1]})&gt;")
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-11-07T15:25:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@react-native-community/cli] @react-native-community/cli has arbitrary OS command injection]]></title>
-        <id>https://github.com/advisories/GHSA-399j-vxmf-hjvr</id>
-        <link href="https://github.com/advisories/GHSA-399j-vxmf-hjvr"/>
-        <updated>2025-11-13T16:25:27.000Z</updated>
-        <content type="html"><![CDATA[<p>The Metro Development Server, which is opened by the React Native CLI, binds to external interfaces by default. The server exposes an endpoint that is vulnerable to OS command injection. This allows unauthenticated network attackers to send a POST request to the server and run arbitrary executables. On Windows, the attackers can also execute arbitrary shell commands with fully controlled arguments.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-11953">https://nvd.nist.gov/vuln/detail/CVE-2025-11953</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/15089907d1f1301b22c72d7f68846a2ef20df547">https://github.com/react-native-community/cli/commit/15089907d1f1301b22c72d7f68846a2ef20df547</a></li>
-<li><a href="https://jfrog.com/blog/cve-2025-11953-critical-react-native-community-cli-vulnerability">https://jfrog.com/blog/cve-2025-11953-critical-react-native-community-cli-vulnerability</a></li>
-<li><a href="https://github.com/react-native-community/cli/releases/tag/v20.0.0">https://github.com/react-native-community/cli/releases/tag/v20.0.0</a></li>
-<li><a href="https://github.com/react-native-community/cli/pull/1615">https://github.com/react-native-community/cli/pull/1615</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/5a792169d9883e0b0fb1ddf1ea46778f21510d18">https://github.com/react-native-community/cli/commit/5a792169d9883e0b0fb1ddf1ea46778f21510d18</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/9e1fa8cc633e5dcf32244ffa60a871880be56722">https://github.com/react-native-community/cli/commit/9e1fa8cc633e5dcf32244ffa60a871880be56722</a></li>
-<li><a href="https://github.com/react-native-community/cli/commit/a8293dc29425f56249753507bc24d87b698d46e1">https://github.com/react-native-community/cli/commit/a8293dc29425f56249753507bc24d87b698d46e1</a></li>
-<li><a href="https://github.com/react-native-community/cli?tab=readme-ov-file#compatibility">https://github.com/react-native-community/cli?tab=readme-ov-file#compatibility</a></li>
-<li><a href="https://x.com/SzymonRybczak/status/1986199665000566848">https://x.com/SzymonRybczak/status/1986199665000566848</a></li>
-<li><a href="https://github.com/react-native-community/cli/issues/2733#issuecomment-3502424164">https://github.com/react-native-community/cli/issues/2733#issuecomment-3502424164</a></li>
-<li><a href="https://x.com/szymonrybczak/status/1986199665000566848?s=46">https://x.com/szymonrybczak/status/1986199665000566848?s=46</a></li>
-<li><a href="https://x.com/thymikee/status/1986770875954475375">https://x.com/thymikee/status/1986770875954475375</a></li>
-<li><a href="https://github.com/advisories/GHSA-399j-vxmf-hjvr">https://github.com/advisories/GHSA-399j-vxmf-hjvr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-399j-vxmf-hjvr</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2025-11-03T18:31:52.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[@react-native-community/cli] @react-native-community/cli has arbitrary OS command injection]]></title>
