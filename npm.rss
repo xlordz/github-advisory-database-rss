@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2025-11-19T19:40:23.865Z</updated>
+    <updated>2025-11-19T19:48:57.357Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,117 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[astro] Astro Development Server has Arbitrary Local File Read]]></title>
+        <id>https://github.com/advisories/GHSA-x3h8-62x9-952g</id>
+        <link href="https://github.com/advisories/GHSA-x3h8-62x9-952g"/>
+        <updated>2025-11-19T19:43:06.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A vulnerability has been identified in the Astro framework's development server that allows arbitrary local file read access through the image optimization endpoint. The vulnerability affects Astro development environments and allows remote attackers to read any image file accessible to the Node.js process on the host system.</p>
+<h3 id="details">Details</h3>
+<ul>
+<li><strong>Title</strong>: Arbitrary Local File Read in Astro Development Image Endpoint</li>
+<li><strong>Type</strong>: CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')</li>
+<li><strong>Component</strong>: <code>/packages/astro/src/assets/endpoint/node.ts</code></li>
+<li><strong>Affected Versions</strong>: Astro v5.x development builds (confirmed v5.13.3)</li>
+<li><strong>Attack Vector</strong>: Network (HTTP GET request)</li>
+<li><strong>Authentication Required</strong>: None</li>
+</ul>
+<p>The vulnerability exists in the Node.js image endpoint handler used during development mode. The endpoint accepts an <code>href</code> parameter that specifies the path to an image file. In development mode, this parameter is processed without adequate path validation, allowing attackers to specify absolute file paths.</p>
+<p><strong>Vulnerable Code Location</strong>: <code>packages/astro/src/assets/endpoint/node.ts</code></p>
+<pre><code class="language-typescript">// Vulnerable code in development mode
+if (import.meta.env.DEV) {
+    fileUrl = pathToFileURL(removeQueryString(replaceFileSystemReferences(src)));
+} else {
+    // Production has proper path validation
+    // ... security checks omitted in dev mode
+}
+</code></pre>
+<p>The development branch bypasses the security checks that exist in the production code path, which validates that file paths are within the allowed assets directory.</p>
+<h3 id="poc">PoC</h3>
+<h4 id="attack-prerequisites">Attack Prerequisites</h4>
+<ol>
+<li>Astro development server must be running (<code>astro dev</code>)</li>
+<li>The <code>/_image</code> endpoint must be accessible to the attacker</li>
+<li>Target image files must be readable by the Node.js process</li>
+</ol>
+<h4 id="exploit-steps">Exploit Steps</h4>
+<ol>
+<li><p>Start Astro Development Server:</p>
+<pre><code class="language-bash">astro dev  # Typically runs on http://localhost:4321
+</code></pre>
+</li>
+<li><p>Craft Malicious Request:</p>
+<pre><code class="language-http">GET /_image?href=/[ABSOLUTE_PATH_TO_IMAGE]&amp;w=100&amp;h=100&amp;f=png HTTP/1.1
+Host: localhost:4321
+</code></pre>
+</li>
+<li><p>Example Attack:</p>
+<pre><code class="language-bash">curl "http://localhost:4321/_image?href=/%2FSystem%2FLibrary%2FImage%20Capture%2FAutomatic%20Tasks%2FMakePDF.app%2FContents%2FResources%2F0blank.jpg&amp;w=100&amp;h=100&amp;f=png" -o stolen.png
+</code></pre>
+</li>
+</ol>
+<h4 id="demonstration-results">Demonstration Results</h4>
+<p><strong>Test Environment</strong>: macOS with Astro v5.13.3</p>
+<p><strong>Successful Exploitation</strong>:</p>
+<ul>
+<li>Target: <code>/System/Library/Image Capture/Automatic Tasks/MakePDF.app/Contents/Resources/0blank.jpg</code></li>
+<li>Response: HTTP 200 OK, Content-Type: image/png</li>
+<li>Exfiltration: 303 bytes (100x100 PNG)</li>
+<li>File Created: <code>stolen-image.png</code> containing processed system image</li>
+</ul>
+<p><strong>Attack Payload</strong>:</p>
+<pre><code>http://localhost:4321/_image?href=/%2FSystem%2FLibrary%2FImage%20Capture%2FAutomatic%20Tasks%2FMakePDF.app%2FContents%2FResources%2F0blank.jpg&amp;w=100&amp;h=100&amp;f=png
+</code></pre>
+<p><strong>Server Response</strong>:</p>
+<pre><code>Status: 200 OK
+Content-Type: image/png
+Content-Length: 303
+</code></pre>
+<h3 id="impact">Impact</h3>
+<h4 id="confidentiality-impact-high">Confidentiality Impact: HIGH</h4>
+<ul>
+<li><strong>Scope</strong>: Any image file readable by the Node.js process</li>
+<li><strong>Exfiltration Method</strong>: Complete file contents via HTTP response (transformed to PNG)</li>
+</ul>
+<h4 id="integrity-impact-none">Integrity Impact: NONE</h4>
+<ul>
+<li>The vulnerability only allows reading files, not modification</li>
+</ul>
+<h4 id="availability-impact-none">Availability Impact: NONE</h4>
+<ul>
+<li>No direct impact on system availability</li>
+<li>Potential for resource exhaustion through repeated large image requests</li>
+</ul>
+<h3 id="affected-components">Affected Components</h3>
+<h4 id="primary-component">Primary Component</h4>
+<ul>
+<li><strong>File</strong>: <code>packages/astro/src/assets/endpoint/node.ts</code></li>
+<li><strong>Function</strong>: <code>loadLocalImage()</code></li>
+<li><strong>Lines</strong>: Development mode branch (~25-35)</li>
+</ul>
+<h4 id="secondary-components">Secondary Components</h4>
+<ul>
+<li><strong>File</strong>: <code>packages/astro/src/assets/endpoint/generic.ts</code></li>
+<li><strong>Impact</strong>: Uses different code path, not directly vulnerable</li>
+<li><strong>Note</strong>: Implements proper remote allowlist validation</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/withastro/astro/security/advisories/GHSA-x3h8-62x9-952g">https://github.com/withastro/astro/security/advisories/GHSA-x3h8-62x9-952g</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-64757">https://nvd.nist.gov/vuln/detail/CVE-2025-64757</a></li>
+<li><a href="https://github.com/withastro/astro/commit/b8ca69b97149becefaf89bf21853de9c905cdbb7">https://github.com/withastro/astro/commit/b8ca69b97149becefaf89bf21853de9c905cdbb7</a></li>
+<li><a href="https://github.com/advisories/GHSA-x3h8-62x9-952g">https://github.com/advisories/GHSA-x3h8-62x9-952g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x3h8-62x9-952g</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2025-11-19T19:43:05.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[glob] glob CLI: Command injection via -c/--cmd executes matches with shell:true]]></title>
         <id>https://github.com/advisories/GHSA-5j98-mcp5-4vw2</id>
@@ -1714,53 +1825,5 @@ CWE-613: Insufficient Session Expiration</p>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2025-11-14T20:50:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@apollo/composition] @apollo/composition has Improper Enforcement of Access Control on Interface Types and Fields]]></title>
-        <id>https://github.com/advisories/GHSA-mx7m-j9xf-62hw</id>
-        <link href="https://github.com/advisories/GHSA-mx7m-j9xf-62hw"/>
-        <updated>2025-11-14T17:46:56.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="summary">Summary</h1>
-<p>A vulnerability in Apollo Federation's composition logic allowed some queries to Apollo Router to improperly bypass access controls on types/fields. Apollo Federation incorrectly allowed user-defined access control directives on interface types/fields, which could be bypassed by instead querying the implementing object types/fields in Apollo Router via inline or named fragments. A fix to composition logic in Federation now disallows interfaces types and fields to contain user-defined access control directives.</p>
-<h2 id="details">Details</h2>
-<p>Apollo Federation allows users to specify access control directives (<a href="https://www.apollographql.com/docs/graphos/routing/security/authorization#authorization-directives"><code>@authenticated</code>, <code>@requiresScopes</code>, and <code>@policy</code></a>) to protect object and interface types and fields. However, the GraphQL specification does not define inheritance rules for directives from interfaces to their implementations. When querying object or interface types/fields, Apollo Router will enforce any directives on those object or interface types/fields, but ignore any directives on interface types/fields they implement. This inconsistent enforcement behavior leads to unexpected runtime security gaps.</p>
-<h2 id="who-is-impacted">Who is impacted</h2>
-<p>This vulnerability impacts Apollo Federation customers defining <code>@authenticated</code>, <code>@requiresScopes</code>, or <code>@policy</code> directives on interface types/fields.</p>
-<h3 id="scope-of-impact">Scope of Impact</h3>
-<p>This vulnerability could allow a malicious actor to craft a query that can bypass access control requirements on the interface types/fields by instead querying them via implementing object types/fields that don't have the same access control requirements via inline or named fragments.</p>
-<h2 id="patches">Patches</h2>
-<p>This vulnerability has been fixed in Apollo Federation's composition logic by rejecting user-defined access control directives entirely on interface types and fields (note that access control directives on <code>@interfaceObject</code> fields are not rejected, as those are really specifying requirements on the virtual object fields). Instead, Apollo Federation's composition logic will automatically generate access control directives for interface types/fields in the supergraph schema based on the access control directives on the implementations in subgraph schemas. </p>
-<p><em>Note that this is a breaking change to Apollo Federation, as it no longer allows user-defined access control directives directly on interfaces types and fields. You will need to remove all access control requirements on interface types/fields and manually apply them to each implementing object type/field, where appropriate.</em></p>
-<p>If users are using the Apollo Studio build pipeline with federation version 2.9 or above, then this composition patch version update is automatic and they only need to adjust the access control requirements in your subgraph schemas as mentioned above.</p>
-<p>If users are using Apollo Rover for local composition, they will need to update its composition version (after updating Apollo Router, <a href="https://www.apollographql.com/docs/graphos/platform/graph-management/updates#recommended-update-order">if necessary</a>) to one of the following versions:</p>
-<ul>
-<li>2.9.5+</li>
-<li>2.10.4+</li>
-<li>2.11.5+</li>
-<li>2.12.1+</li>
-</ul>
-<p>Users will then need adjust the access control requirements in your subgraph schemas as mentioned above.</p>
-<h2 id="workarounds">Workarounds</h2>
-<ul>
-<li>If using Apollo Rover with an unpatched composition version or are using the Apollo Studio build pipeline with Federation version 2.8 or below, users should manually copy the access control requirements on interface types/fields to each implementing object type/field where appropriate. <em>Do not</em> remove those access control requirements from the interface types/fields, as unpatched Apollo Composition will not automatically generate them in the supergraph schema.</li>
-<li>Customers not using Apollo Router access control features (<code>@authenticated</code>, <code>@requiresScopes</code>, or <code>@policy</code> directives) or not specifying access control requirements on interface types/fields are not affected and do not need to take action.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/apollographql/federation/security/advisories/GHSA-mx7m-j9xf-62hw">https://github.com/apollographql/federation/security/advisories/GHSA-mx7m-j9xf-62hw</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-64530">https://nvd.nist.gov/vuln/detail/CVE-2025-64530</a></li>
-<li><a href="https://github.com/apollographql/federation/pull/3340">https://github.com/apollographql/federation/pull/3340</a></li>
-<li><a href="https://github.com/apollographql/federation/pull/3341">https://github.com/apollographql/federation/pull/3341</a></li>
-<li><a href="https://github.com/apollographql/federation/pull/3343">https://github.com/apollographql/federation/pull/3343</a></li>
-<li><a href="https://github.com/advisories/GHSA-mx7m-j9xf-62hw">https://github.com/advisories/GHSA-mx7m-j9xf-62hw</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mx7m-j9xf-62hw</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2025-11-14T17:46:55.000Z</published>
     </entry>
 </feed>
