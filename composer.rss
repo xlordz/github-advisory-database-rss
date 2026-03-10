@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-03-10T21:58:26.102Z</updated>
+    <updated>2026-03-10T22:32:17.096Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,207 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[web-auth/webauthn-symfony-bundle] Webauthn Framework: allowed_origins collapses URL-like origins to host-only values, bypassing exact origin validation]]></title>
+        <id>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</id>
+        <link href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm"/>
+        <updated>2026-03-10T22:21:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When <code>allowed_origins</code> is configured, <code>CheckAllowedOrigins</code> reduces URL-like values to their <code>host</code> component and accepts on host match alone. This makes exact origin policies impossible to express: scheme and port differences are silently ignored.</p>
+<h3 id="details">Details</h3>
+<p><code>CheckAllowedOrigins</code> stores each configured allowed origin as:</p>
+<pre><code class="language-php">parse_url($allowedOrigin)['host'] ?? $allowedOrigin
+</code></pre>
+<p>and later reduces the received <code>clientDataJSON.origin</code> the same way:</p>
+<pre><code class="language-php">parse_url($C-&gt;origin)['host'] ?? $C-&gt;origin
+</code></pre>
+<p>If the reduced value matches, the method returns early. As a result, for the normal <code>allowed_origins</code> path, the later HTTPS check is not reached.</p>
+<p>This differs from <a href="https://www.w3.org/TR/webauthn-2/">WebAuthn Level 2</a>, which requires verifying that <code>C.origin</code> matches the RP's origin (scheme + host + port), separately from verifying that <code>authData.rpIdHash</code> matches the expected RP ID.</p>
+<p><strong>Affected code:</strong></p>
+<ul>
+<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/webauthn/src/CeremonyStep/CheckAllowedOrigins.php">CheckAllowedOrigins.php</a></li>
+</ul>
+<p><strong>Spec references:</strong></p>
+<ul>
+<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential">§7.1 Registering a New Credential</a></li>
+<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion">§7.2 Verifying an Authentication Assertion</a></li>
+<li><a href="https://www.w3.org/TR/webauthn-2/#dom-collectedclientdata-origin">CollectedClientData.origin</a></li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Configuration:</p>
+<pre><code class="language-yaml">webauthn:
+  allowed_origins:
+    - https://login.example.com:8443
+  allow_subdomains: false
+</code></pre>
+<p>Send a registration or authentication response whose <code>clientDataJSON.origin</code> is:</p>
+<pre><code class="language-text">https://login.example.com:9443
+</code></pre>
+<p><strong>Observed:</strong> the response is accepted, because both values are reduced to <code>login.example.com</code>.</p>
+<p><strong>Expected:</strong> the response should be rejected, because <code>https://login.example.com:8443</code> and <code>https://login.example.com:9443</code> are different origins.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an origin validation error (CWE-346) affecting deployments that use <code>allowed_origins</code>. The most practical browser-facing scenario is same-host / different-port origin confusion. In non-browser or custom clients, scheme confusion may also be relevant.</p>
+<h3 id="fix">Fix</h3>
+<p>Fixed in version <strong>5.2.4</strong> by rewriting <code>CheckAllowedOrigins</code> to perform full origin comparison (scheme + host + port) as required by the WebAuthn spec:</p>
+<ul>
+<li>Origins configured with a scheme (e.g. <code>https://example.com:8443</code>) are now stored and compared as full <code>scheme://host[:port]</code> values, with default port normalization (443 for HTTPS, 80 for HTTP).</li>
+<li>Origins configured without a scheme are still matched by host only, for backward compatibility.</li>
+<li>Subdomain matching now also verifies scheme and port consistency.</li>
+</ul>
+<p>See commit <a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a43">b4cd9a43</a>.</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>Upgrade to <code>web-auth/webauthn-framework</code> (or <code>web-auth/webauthn-lib</code> / <code>web-auth/webauthn-symfony-bundle</code>) <strong>&gt;= 5.2.4</strong>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
+<li><a href="https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839">https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30964">https://nvd.nist.gov/vuln/detail/CVE-2026-30964</a></li>
+<li><a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01">https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01</a></li>
+<li><a href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-10T01:19:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[web-auth/webauthn-lib] Webauthn Framework: allowed_origins collapses URL-like origins to host-only values, bypassing exact origin validation]]></title>
+        <id>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</id>
+        <link href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm"/>
+        <updated>2026-03-10T22:21:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When <code>allowed_origins</code> is configured, <code>CheckAllowedOrigins</code> reduces URL-like values to their <code>host</code> component and accepts on host match alone. This makes exact origin policies impossible to express: scheme and port differences are silently ignored.</p>
+<h3 id="details">Details</h3>
+<p><code>CheckAllowedOrigins</code> stores each configured allowed origin as:</p>
+<pre><code class="language-php">parse_url($allowedOrigin)['host'] ?? $allowedOrigin
+</code></pre>
+<p>and later reduces the received <code>clientDataJSON.origin</code> the same way:</p>
+<pre><code class="language-php">parse_url($C-&gt;origin)['host'] ?? $C-&gt;origin
+</code></pre>
+<p>If the reduced value matches, the method returns early. As a result, for the normal <code>allowed_origins</code> path, the later HTTPS check is not reached.</p>
+<p>This differs from <a href="https://www.w3.org/TR/webauthn-2/">WebAuthn Level 2</a>, which requires verifying that <code>C.origin</code> matches the RP's origin (scheme + host + port), separately from verifying that <code>authData.rpIdHash</code> matches the expected RP ID.</p>
+<p><strong>Affected code:</strong></p>
+<ul>
+<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/webauthn/src/CeremonyStep/CheckAllowedOrigins.php">CheckAllowedOrigins.php</a></li>
+</ul>
+<p><strong>Spec references:</strong></p>
+<ul>
+<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential">§7.1 Registering a New Credential</a></li>
+<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion">§7.2 Verifying an Authentication Assertion</a></li>
+<li><a href="https://www.w3.org/TR/webauthn-2/#dom-collectedclientdata-origin">CollectedClientData.origin</a></li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Configuration:</p>
+<pre><code class="language-yaml">webauthn:
+  allowed_origins:
+    - https://login.example.com:8443
+  allow_subdomains: false
+</code></pre>
+<p>Send a registration or authentication response whose <code>clientDataJSON.origin</code> is:</p>
+<pre><code class="language-text">https://login.example.com:9443
+</code></pre>
+<p><strong>Observed:</strong> the response is accepted, because both values are reduced to <code>login.example.com</code>.</p>
+<p><strong>Expected:</strong> the response should be rejected, because <code>https://login.example.com:8443</code> and <code>https://login.example.com:9443</code> are different origins.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an origin validation error (CWE-346) affecting deployments that use <code>allowed_origins</code>. The most practical browser-facing scenario is same-host / different-port origin confusion. In non-browser or custom clients, scheme confusion may also be relevant.</p>
+<h3 id="fix">Fix</h3>
+<p>Fixed in version <strong>5.2.4</strong> by rewriting <code>CheckAllowedOrigins</code> to perform full origin comparison (scheme + host + port) as required by the WebAuthn spec:</p>
+<ul>
+<li>Origins configured with a scheme (e.g. <code>https://example.com:8443</code>) are now stored and compared as full <code>scheme://host[:port]</code> values, with default port normalization (443 for HTTPS, 80 for HTTP).</li>
+<li>Origins configured without a scheme are still matched by host only, for backward compatibility.</li>
+<li>Subdomain matching now also verifies scheme and port consistency.</li>
+</ul>
+<p>See commit <a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a43">b4cd9a43</a>.</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>Upgrade to <code>web-auth/webauthn-framework</code> (or <code>web-auth/webauthn-lib</code> / <code>web-auth/webauthn-symfony-bundle</code>) <strong>&gt;= 5.2.4</strong>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
+<li><a href="https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839">https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30964">https://nvd.nist.gov/vuln/detail/CVE-2026-30964</a></li>
+<li><a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01">https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01</a></li>
+<li><a href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-10T01:19:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[web-auth/webauthn-framework] Webauthn Framework: allowed_origins collapses URL-like origins to host-only values, bypassing exact origin validation]]></title>
+        <id>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</id>
+        <link href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm"/>
+        <updated>2026-03-10T22:21:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When <code>allowed_origins</code> is configured, <code>CheckAllowedOrigins</code> reduces URL-like values to their <code>host</code> component and accepts on host match alone. This makes exact origin policies impossible to express: scheme and port differences are silently ignored.</p>
+<h3 id="details">Details</h3>
+<p><code>CheckAllowedOrigins</code> stores each configured allowed origin as:</p>
+<pre><code class="language-php">parse_url($allowedOrigin)['host'] ?? $allowedOrigin
+</code></pre>
+<p>and later reduces the received <code>clientDataJSON.origin</code> the same way:</p>
+<pre><code class="language-php">parse_url($C-&gt;origin)['host'] ?? $C-&gt;origin
+</code></pre>
+<p>If the reduced value matches, the method returns early. As a result, for the normal <code>allowed_origins</code> path, the later HTTPS check is not reached.</p>
+<p>This differs from <a href="https://www.w3.org/TR/webauthn-2/">WebAuthn Level 2</a>, which requires verifying that <code>C.origin</code> matches the RP's origin (scheme + host + port), separately from verifying that <code>authData.rpIdHash</code> matches the expected RP ID.</p>
+<p><strong>Affected code:</strong></p>
+<ul>
+<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/webauthn/src/CeremonyStep/CheckAllowedOrigins.php">CheckAllowedOrigins.php</a></li>
+</ul>
+<p><strong>Spec references:</strong></p>
+<ul>
+<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential">§7.1 Registering a New Credential</a></li>
+<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion">§7.2 Verifying an Authentication Assertion</a></li>
+<li><a href="https://www.w3.org/TR/webauthn-2/#dom-collectedclientdata-origin">CollectedClientData.origin</a></li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Configuration:</p>
+<pre><code class="language-yaml">webauthn:
+  allowed_origins:
+    - https://login.example.com:8443
+  allow_subdomains: false
+</code></pre>
+<p>Send a registration or authentication response whose <code>clientDataJSON.origin</code> is:</p>
+<pre><code class="language-text">https://login.example.com:9443
+</code></pre>
+<p><strong>Observed:</strong> the response is accepted, because both values are reduced to <code>login.example.com</code>.</p>
+<p><strong>Expected:</strong> the response should be rejected, because <code>https://login.example.com:8443</code> and <code>https://login.example.com:9443</code> are different origins.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an origin validation error (CWE-346) affecting deployments that use <code>allowed_origins</code>. The most practical browser-facing scenario is same-host / different-port origin confusion. In non-browser or custom clients, scheme confusion may also be relevant.</p>
+<h3 id="fix">Fix</h3>
+<p>Fixed in version <strong>5.2.4</strong> by rewriting <code>CheckAllowedOrigins</code> to perform full origin comparison (scheme + host + port) as required by the WebAuthn spec:</p>
+<ul>
+<li>Origins configured with a scheme (e.g. <code>https://example.com:8443</code>) are now stored and compared as full <code>scheme://host[:port]</code> values, with default port normalization (443 for HTTPS, 80 for HTTP).</li>
+<li>Origins configured without a scheme are still matched by host only, for backward compatibility.</li>
+<li>Subdomain matching now also verifies scheme and port consistency.</li>
+</ul>
+<p>See commit <a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a43">b4cd9a43</a>.</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>Upgrade to <code>web-auth/webauthn-framework</code> (or <code>web-auth/webauthn-lib</code> / <code>web-auth/webauthn-symfony-bundle</code>) <strong>&gt;= 5.2.4</strong>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
+<li><a href="https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839">https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30964">https://nvd.nist.gov/vuln/detail/CVE-2026-30964</a></li>
+<li><a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01">https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01</a></li>
+<li><a href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-10T01:19:46.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[wpmetabox/meta-box] Meta Box Plugin for WordPress: Authenticated (Contributor+) Arbitrary File Deletion via ajax_delete_file]]></title>
         <id>https://github.com/advisories/GHSA-m4q3-832v-44j6</id>
@@ -740,198 +941,6 @@ curl --path-as-is -k -H $'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; 
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-03-10T18:22:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[web-auth/webauthn-symfony-bundle] Webauthn Framework: allowed_origins collapses URL-like origins to host-only values, bypassing exact origin validation]]></title>
-        <id>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</id>
-        <link href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm"/>
-        <updated>2026-03-10T18:45:35.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When <code>allowed_origins</code> is configured, <code>CheckAllowedOrigins</code> reduces URL-like values to their <code>host</code> and accepts on host match. This makes exact origin policies impossible to express: scheme and port differences are lost for URL-like entries.</p>
-<h3 id="details">Details</h3>
-<p><code>CheckAllowedOrigins</code> stores each configured allowed origin as:</p>
-<ul>
-<li><code>parse_url($allowedOrigin)['host'] ?? $allowedOrigin</code></li>
-</ul>
-<p>and later reduces the received <code>clientDataJSON.origin</code> the same way:</p>
-<ul>
-<li><code>parse_url($C-&gt;origin)['host'] ?? $C-&gt;origin</code></li>
-</ul>
-<p>If the reduced value matches, the method returns early. As a result, for the normal <code>allowed_origins</code> path, the later HTTPS check is not reached.</p>
-<p>This differs from WebAuthn Level 2, which requires verifying that <code>C.origin</code> matches the RP’s origin, separately from verifying that <code>authData.rpIdHash</code> matches the expected RP ID.</p>
-<p>Code:</p>
-<ul>
-<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/webauthn/src/CeremonyStep/CheckAllowedOrigins.php">CheckAllowedOrigins.php</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/symfony/src/DependencyInjection/Compiler/CeremonyStepManagerFactoryCompilerPass.php">CeremonyStepManagerFactoryCompilerPass.php</a></li>
-</ul>
-<p>Spec:</p>
-<ul>
-<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential">WebAuthn Level 2 - §7.1 Registering a New Credential</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion">WebAuthn Level 2 - §7.2 Verifying an Authentication Assertion</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#relying-party-identifier">WebAuthn Level 2 - RP ID definition / origin constraints</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#dom-collectedclientdata-origin">WebAuthn Level 2 - CollectedClientData.origin</a></li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Configuration:</p>
-<pre><code class="language-yaml">webauthn:
-  allowed_origins:
-    - https://login.example.com:8443
-  allow_subdomains: false
-</code></pre>
-<p>Send a registration or authentication response whose <code>clientDataJSON.origin</code> is:</p>
-<pre><code class="language-text">https://login.example.com:9443
-</code></pre>
-<p>Observed result:
-the response is accepted by <code>CheckAllowedOrigins</code>, because both values are reduced to <code>login.example.com</code>.</p>
-<p>Expected result:
-the response should be rejected, because <code>https://login.example.com:8443</code> and <code>https://login.example.com:9443</code> are different origins.</p>
-<h3 id="impact">Impact</h3>
-<p>This is an origin validation error affecting deployments that use <code>allowed_origins</code>.</p>
-<p>It bypasses the separate exact-origin check required by WebAuthn. The most practical browser-facing example is same-host / different-port origin confusion. In non-browser or custom clients, scheme confusion for URL-like entries may also be relevant.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839">https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30964">https://nvd.nist.gov/vuln/detail/CVE-2026-30964</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01">https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01</a></li>
-<li><a href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-10T01:19:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[web-auth/webauthn-lib] Webauthn Framework: allowed_origins collapses URL-like origins to host-only values, bypassing exact origin validation]]></title>
-        <id>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</id>
-        <link href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm"/>
-        <updated>2026-03-10T18:45:35.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When <code>allowed_origins</code> is configured, <code>CheckAllowedOrigins</code> reduces URL-like values to their <code>host</code> and accepts on host match. This makes exact origin policies impossible to express: scheme and port differences are lost for URL-like entries.</p>
-<h3 id="details">Details</h3>
-<p><code>CheckAllowedOrigins</code> stores each configured allowed origin as:</p>
-<ul>
-<li><code>parse_url($allowedOrigin)['host'] ?? $allowedOrigin</code></li>
-</ul>
-<p>and later reduces the received <code>clientDataJSON.origin</code> the same way:</p>
-<ul>
-<li><code>parse_url($C-&gt;origin)['host'] ?? $C-&gt;origin</code></li>
-</ul>
-<p>If the reduced value matches, the method returns early. As a result, for the normal <code>allowed_origins</code> path, the later HTTPS check is not reached.</p>
-<p>This differs from WebAuthn Level 2, which requires verifying that <code>C.origin</code> matches the RP’s origin, separately from verifying that <code>authData.rpIdHash</code> matches the expected RP ID.</p>
-<p>Code:</p>
-<ul>
-<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/webauthn/src/CeremonyStep/CheckAllowedOrigins.php">CheckAllowedOrigins.php</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/symfony/src/DependencyInjection/Compiler/CeremonyStepManagerFactoryCompilerPass.php">CeremonyStepManagerFactoryCompilerPass.php</a></li>
-</ul>
-<p>Spec:</p>
-<ul>
-<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential">WebAuthn Level 2 - §7.1 Registering a New Credential</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion">WebAuthn Level 2 - §7.2 Verifying an Authentication Assertion</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#relying-party-identifier">WebAuthn Level 2 - RP ID definition / origin constraints</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#dom-collectedclientdata-origin">WebAuthn Level 2 - CollectedClientData.origin</a></li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Configuration:</p>
-<pre><code class="language-yaml">webauthn:
-  allowed_origins:
-    - https://login.example.com:8443
-  allow_subdomains: false
-</code></pre>
-<p>Send a registration or authentication response whose <code>clientDataJSON.origin</code> is:</p>
-<pre><code class="language-text">https://login.example.com:9443
-</code></pre>
-<p>Observed result:
-the response is accepted by <code>CheckAllowedOrigins</code>, because both values are reduced to <code>login.example.com</code>.</p>
-<p>Expected result:
-the response should be rejected, because <code>https://login.example.com:8443</code> and <code>https://login.example.com:9443</code> are different origins.</p>
-<h3 id="impact">Impact</h3>
-<p>This is an origin validation error affecting deployments that use <code>allowed_origins</code>.</p>
-<p>It bypasses the separate exact-origin check required by WebAuthn. The most practical browser-facing example is same-host / different-port origin confusion. In non-browser or custom clients, scheme confusion for URL-like entries may also be relevant.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839">https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30964">https://nvd.nist.gov/vuln/detail/CVE-2026-30964</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01">https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01</a></li>
-<li><a href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-10T01:19:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[web-auth/webauthn-framework] Webauthn Framework: allowed_origins collapses URL-like origins to host-only values, bypassing exact origin validation]]></title>
-        <id>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</id>
-        <link href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm"/>
-        <updated>2026-03-10T18:45:35.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When <code>allowed_origins</code> is configured, <code>CheckAllowedOrigins</code> reduces URL-like values to their <code>host</code> and accepts on host match. This makes exact origin policies impossible to express: scheme and port differences are lost for URL-like entries.</p>
-<h3 id="details">Details</h3>
-<p><code>CheckAllowedOrigins</code> stores each configured allowed origin as:</p>
-<ul>
-<li><code>parse_url($allowedOrigin)['host'] ?? $allowedOrigin</code></li>
-</ul>
-<p>and later reduces the received <code>clientDataJSON.origin</code> the same way:</p>
-<ul>
-<li><code>parse_url($C-&gt;origin)['host'] ?? $C-&gt;origin</code></li>
-</ul>
-<p>If the reduced value matches, the method returns early. As a result, for the normal <code>allowed_origins</code> path, the later HTTPS check is not reached.</p>
-<p>This differs from WebAuthn Level 2, which requires verifying that <code>C.origin</code> matches the RP’s origin, separately from verifying that <code>authData.rpIdHash</code> matches the expected RP ID.</p>
-<p>Code:</p>
-<ul>
-<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/webauthn/src/CeremonyStep/CheckAllowedOrigins.php">CheckAllowedOrigins.php</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/blob/d58906e/src/symfony/src/DependencyInjection/Compiler/CeremonyStepManagerFactoryCompilerPass.php">CeremonyStepManagerFactoryCompilerPass.php</a></li>
-</ul>
-<p>Spec:</p>
-<ul>
-<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-registering-a-new-credential">WebAuthn Level 2 - §7.1 Registering a New Credential</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion">WebAuthn Level 2 - §7.2 Verifying an Authentication Assertion</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#relying-party-identifier">WebAuthn Level 2 - RP ID definition / origin constraints</a></li>
-<li><a href="https://www.w3.org/TR/webauthn-2/#dom-collectedclientdata-origin">WebAuthn Level 2 - CollectedClientData.origin</a></li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Configuration:</p>
-<pre><code class="language-yaml">webauthn:
-  allowed_origins:
-    - https://login.example.com:8443
-  allow_subdomains: false
-</code></pre>
-<p>Send a registration or authentication response whose <code>clientDataJSON.origin</code> is:</p>
-<pre><code class="language-text">https://login.example.com:9443
-</code></pre>
-<p>Observed result:
-the response is accepted by <code>CheckAllowedOrigins</code>, because both values are reduced to <code>login.example.com</code>.</p>
-<p>Expected result:
-the response should be rejected, because <code>https://login.example.com:8443</code> and <code>https://login.example.com:9443</code> are different origins.</p>
-<h3 id="impact">Impact</h3>
-<p>This is an origin validation error affecting deployments that use <code>allowed_origins</code>.</p>
-<p>It bypasses the separate exact-origin check required by WebAuthn. The most practical browser-facing example is same-host / different-port origin confusion. In non-browser or custom clients, scheme confusion for URL-like entries may also be relevant.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/web-auth/webauthn-framework/security/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839">https://github.com/web-auth/webauthn-framework/commit/535cc3c2dcbd9c3dfd5e00a254ad4a984e5e7839</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30964">https://nvd.nist.gov/vuln/detail/CVE-2026-30964</a></li>
-<li><a href="https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01">https://github.com/web-auth/webauthn-framework/commit/b4cd9a4394c35fcac6080fd2f84f4f58a30abc01</a></li>
-<li><a href="https://github.com/advisories/GHSA-f7pm-6hr8-7ggm">https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f7pm-6hr8-7ggm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-10T01:19:46.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[flarum/nicknames] flarum/nicknames extension has display name injection in notification emails (autolink & markdown)]]></title>
