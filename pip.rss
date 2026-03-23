@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-03-23T19:54:56.763Z</updated>
+    <updated>2026-03-23T20:31:50.536Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,74 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[cbor2] cbor2 has a Denial of Service via Uncontrolled Recursion in cbor2.loads]]></title>
+        <id>https://github.com/advisories/GHSA-3c37-wwvx-h642</id>
+        <link href="https://github.com/advisories/GHSA-3c37-wwvx-h642"/>
+        <updated>2026-03-23T20:24:00.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<ul>
+<li>The <code>cbor2</code> library is vulnerable to a Denial of Service (DoS) attack caused by uncontrolled recursion when decoding deeply nested CBOR structures.</li>
+<li>This vulnerability affects both the pure Python implementation and the C extension (<code>_cbor2</code>). The C extension correctly uses Python's C-API for recursion protection (<code>Py_EnterRecursiveCall</code>), but this mechanism is designed to prevent a stack overflow by raising a <code>RecursionError</code>. In some environments, this exception is not caught, thus causing the service process to terminate.</li>
+<li>While the library handles moderate nesting, it lacks a configurable, data-driven depth limit independent of Python's global recursion setting. An attacker can supply a crafted CBOR payload containing thousands of nested arrays (e.g., <code>0x81</code>). When <code>cbor2.loads()</code> attempts to parse this, it hits the interpreter's recursion limit, causing the call to raise a <code>RecursionError</code>.</li>
+<li>By sending a stream of small (&lt;100KB) malicious packets, an attacker can repeatedly crash worker processes faster than they can be restarted, resulting in a complete and sustained Denial of Service.</li>
+</ul>
+<h3 id="details">Details</h3>
+<ul>
+<li>The vulnerability stems from the recursive design of the <code>CBORDecoder</code> class, specifically how it decodes nested container types like Arrays and Maps.</li>
+<li>Inside <code>decode_array</code> (and similarly <code>decode_map</code>), the decoder iterates through the number of elements specified in the CBOR header. For each element, it calls <code>self.decode()</code> again to parse the nested item. This recursive call lacks a depth-tracking mechanism.</li>
+<li>Vulnerable Code Locations:<ul>
+<li><code>cbor2/decoder.py</code> (Pure Python implementation)</li>
+<li><code>source/decoder.c</code> (C extension implementation)</li>
+</ul>
+</li>
+<li>Execution Flow:<ol>
+<li>The <code>cbor2.loads()</code> function initializes a <code>CBORDecoder</code> and calls its <code>decode()</code> method.</li>
+<li>The <code>decode()</code> method reads the initial byte and dispatches control to a specific handler based on the major type. For an Array (Major Type 4), it calls <code>decode_array</code>.</li>
+<li><code>decode_array</code> loops and calls <code>self.decode()</code> for each item, leading to deep recursion when parsing a payload like <code>[...[...[1]...]...]</code>.</li>
+</ol>
+</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<pre><code>import cbor2
+
+DEPTH = 1000
+
+payload = b'\x81' * DEPTH + b'\x01'
+print(f"[*] Payload size: {len(payload) / 1024:.2f} KB")
+print("[*] Triggering decoder...")
+
+try:
+    cbor2.loads(payload)
+    print("[+] Parsed successfully (Not Vulnerable)")
+except RecursionError:
+    print("\n[!] VULNERABLE: RecursionError triggered!")
+except Exception as e:
+    print(f"\n[-] Unexpected Error: {type(e).__name__}: {e}")
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Scope: This vulnerability affects any application using <code>cbor2</code> to parse untrusted data. Common use cases include IoT data processing, WebAuthn (FIDO2) authentication flows, and inter-service communication over COSE (CBOR Object Signing and Encryption).</li>
+<li>Attack Vector: A remote, unauthenticated attacker can achieve a full Denial of Service with a highly efficient, low-bandwidth attack. A payload under 100KB is sufficient to reliably terminate a Python worker process.</li>
+</ul>
+<h3 id="credit">Credit</h3>
+<p>This issue was discovered by Kevin Tu of TMIR at ByteDance. The patch was developed by @agronholm.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/agronholm/cbor2/security/advisories/GHSA-3c37-wwvx-h642">https://github.com/agronholm/cbor2/security/advisories/GHSA-3c37-wwvx-h642</a></li>
+<li><a href="https://github.com/agronholm/cbor2/pull/275">https://github.com/agronholm/cbor2/pull/275</a></li>
+<li><a href="https://github.com/agronholm/cbor2/releases/tag/5.9.0">https://github.com/agronholm/cbor2/releases/tag/5.9.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-3c37-wwvx-h642">https://github.com/advisories/GHSA-3c37-wwvx-h642</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3c37-wwvx-h642</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-23T20:23:57.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[pyload-ng] pyLoad SETTINGS Permission Users Can Achieve Remote Code Execution via Unrestricted Reconnect Script Configuration]]></title>
         <id>https://github.com/advisories/GHSA-r7mc-x6x7-cqxx</id>
@@ -1695,44 +1763,5 @@ HAS_SCRIPT= True
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-18T20:23:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[justhtml] JustHTML has a Sanitizer Bypass (in Markdown)]]></title>
-        <id>https://github.com/advisories/GHSA-3rcm-vjrc-p45j</id>
-        <link href="https://github.com/advisories/GHSA-3rcm-vjrc-p45j"/>
-        <updated>2026-03-18T20:19:56.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>to_markdown()</code> does not sufficiently escape text content that looks like HTML. As a result, untrusted input that is safe in <code>to_html()</code> can become raw HTML in Markdown output.</p>
-<p>This is not specific to tokenizer raw-text states like <code>&lt;title&gt;</code>, <code>&lt;noscript&gt;</code>, or <code>&lt;plaintext&gt;</code>, although those states can trigger the behavior. The root cause is broader: Markdown text serialization leaves angle brackets unescaped in text nodes.</p>
-<h2 id="details">Details</h2>
-<p>When converting a parsed document to Markdown, text nodes are escaped for a small set of Markdown metacharacters, but HTML-significant characters such as <code>&lt;</code> and <code>&gt;</code> are preserved. That means content parsed as text, including entity-decoded text or text produced by RCDATA/RAWTEXT-style parsing, can be emitted into Markdown as raw HTML.</p>
-<p>Examples of affected input include:</p>
-<ul>
-<li>Text produced from entity-decoded input such as <code>&amp;lt;script&amp;gt;...&amp;lt;/script&amp;gt;</code></li>
-<li>Text inside elements like <code>&lt;title&gt;</code>, <code>&lt;textarea&gt;</code>, <code>&lt;noscript&gt;</code> (when parsed as raw text), and <code>&lt;plaintext&gt;</code></li>
-</ul>
-<p>This is distinct from actual <code>&lt;script&gt;</code> or <code>&lt;style&gt;</code> elements in the DOM. Those are already dropped by default in <code>to_markdown()</code> unless <code>html_passthrough=True</code>.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<h3 id="general-case">General case</h3>
-<pre><code class="language-python">from justhtml import JustHTML
-
-doc = JustHTML("&lt;p&gt;&amp;lt;img src=x onerror=alert(1)&amp;gt;&lt;/p&gt;", fragment=True)
-
-print(doc.to_html())
-print()
-print(doc.to_markdown())
-### References
-
-- &lt;https://github.com/EmilStenstrom/justhtml/security/advisories/GHSA-3rcm-vjrc-p45j&gt;
-- &lt;https://github.com/advisories/GHSA-3rcm-vjrc-p45j&gt;
-</code></pre>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3rcm-vjrc-p45j</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-18T20:19:56.000Z</published>
     </entry>
 </feed>
