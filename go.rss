@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-04-01T23:43:28.360Z</updated>
+    <updated>2026-04-02T00:02:24.972Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,132 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/knadh/listmonk] listmonk's active sessions remain valid after password reset and password change]]></title>
+        <id>https://github.com/advisories/GHSA-h5j9-cvrw-v5qh</id>
+        <link href="https://github.com/advisories/GHSA-h5j9-cvrw-v5qh"/>
+        <updated>2026-04-01T23:48:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A session management vulnerability allows previously issued authenticated sessions to remain valid after sensitive account security changes, specifically password reset and password change. As a result, an attacker who has already obtained a valid session cookie can retain access to the account even after the victim changes or resets their password.</p>
+<p>This weakens account recovery and session security guarantees. I reproduced the issue on listmonk v6.0.0.</p>
+<h3 id="details">Details</h3>
+<p>The application updates account credentials successfully, but existing active sessions are not revoked afterward.</p>
+<p>This behavior was confirmed in two flows:</p>
+<ol>
+<li><p><strong>Password reset flow</strong></p>
+<ul>
+<li>A user resets their password through the forgot/reset flow.</li>
+<li>The old password becomes invalid.</li>
+<li>The new password works.</li>
+<li>However, a session cookie issued <strong>before</strong> the reset remains valid and continues to authenticate successfully.</li>
+</ul>
+</li>
+<li><p><strong>Authenticated password change flow</strong></p>
+<ul>
+<li>The same user logs in from two separate sessions.</li>
+<li>Using session A, the password is changed through the authenticated profile endpoint.</li>
+<li>The old password becomes invalid.</li>
+<li>The new password works.</li>
+<li>However, session B, issued before the password change, remains valid and continues to authenticate successfully.</li>
+</ul>
+</li>
+</ol>
+<p>From the source review, the reset flow consumes the reset token, updates the password, and creates a fresh session, but there does not appear to be any revocation of older sessions. The same applies to the profile password change flow.</p>
+<p>Relevant code areas observed during review:</p>
+<ul>
+<li><code>cmd/auth.go</code> — forgot/reset flow</li>
+<li><code>cmd/users.go</code> — authenticated profile update flow</li>
+<li><code>internal/core/users.go</code> — password update path</li>
+</ul>
+<p>Additionally:</p>
+<ul>
+<li>It was verified that reset links are single-use.</li>
+<li>It was verified that password reset on a TOTP-enabled account still enforces TOTP on fresh login.</li>
+<li>However, already-issued sessions still remain valid after reset.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<h4 id="case-1-password-reset-does-not-revoke-existing-session">Case 1: Password reset does not revoke existing session</h4>
+<ol>
+<li>Create or use a normal user account.</li>
+<li>Log in as that user and save the authenticated session cookie.</li>
+<li>Trigger forgot-password for the account.</li>
+<li>Use the emailed reset link and set a new password.</li>
+<li>Verify:<ul>
+<li>the old password no longer works</li>
+<li>the new password works</li>
+</ul>
+</li>
+<li>Replay the <strong>old pre-reset session cookie</strong> against an authenticated endpoint such as <code>/api/profile</code>.</li>
+</ol>
+<p>Example validation request:</p>
+<pre><code class="language-http">GET /api/profile HTTP/1.1
+Host: 127.0.0.1:9000
+Cookie: session=&lt;old_pre_reset_session&gt;
+</code></pre>
+<p>Observed result:</p>
+<p>Server returns <code>HTTP/1.1 200 OK</code>
+Response contains the authenticated user profile</p>
+<h4 id="case-2-password-change-does-not-revoke-other-active-sessions">Case 2: Password change does not revoke other active sessions</h4>
+<ol>
+<li><p>Log in twice as the same user and save two authenticated session cookies:</p>
+<ul>
+<li>session A</li>
+<li>session B</li>
+</ul>
+</li>
+<li><p>Using session A, change the password through the authenticated profile update endpoint.</p>
+</li>
+<li><p>Verify:</p>
+<ul>
+<li>the old password no longer works</li>
+<li>the new password works</li>
+</ul>
+</li>
+<li><p>Replay session B against an authenticated endpoint such as <code>/api/profile</code>.</p>
+</li>
+</ol>
+<p>Example password change request:</p>
+<pre><code class="language-http">PUT /api/profile HTTP/1.1
+Host: 127.0.0.1:9000
+Cookie: session=&lt;session_A&gt;
+Content-Type: application/json
+
+{
+  "name":"victim1",
+  "email":"victim1@test.local",
+  "password":"VictimChanged123"
+}
+</code></pre>
+<p>Then validate session B:</p>
+<pre><code class="language-http">GET /api/profile HTTP/1.1
+Host: 127.0.0.1:9000
+Cookie: session=&lt;session_B&gt;
+</code></pre>
+<p>Observed result:</p>
+<ul>
+<li>Server returns <code>HTTP/1.1 200 OK</code></li>
+<li>Response contains the authenticated user profile</li>
+</ul>
+<h2 id="impact">Impact</h2>
+<p>This issue allows persistence of unauthorized access after credential recovery actions.</p>
+<p>If an attacker has already stolen a valid session cookie through any means (for example malware, browser compromise, XSS, shared machine access, proxy leakage, or other session theft), the victim cannot fully recover the account by changing or resetting the password alone. The attacker’s existing session remains valid.</p>
+<p>This impacts account recovery expectations and session security for all authenticated users, including users with TOTP enabled.</p>
+<h2 id="attachment">Attachment</h2>
+<p><a href="https://github.com/user-attachments/files/25975979/listmonk-session-report.zip">listmonk-session-report.zip</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/knadh/listmonk/security/advisories/GHSA-h5j9-cvrw-v5qh">https://github.com/knadh/listmonk/security/advisories/GHSA-h5j9-cvrw-v5qh</a></li>
+<li><a href="https://github.com/advisories/GHSA-h5j9-cvrw-v5qh">https://github.com/advisories/GHSA-h5j9-cvrw-v5qh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h5j9-cvrw-v5qh</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-01T23:48:43.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/MontFerret/ferret] Ferret: Path Traversal in IO::FS::WRITE allows arbitrary file write when scraping malicious websites]]></title>
         <id>https://github.com/advisories/GHSA-j6v5-g24h-vg4j</id>
@@ -1781,55 +1907,5 @@ fetch('http://127.0.0.1:6806/api/system/getConf', {
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-03-31T23:29:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Stored XSS in Attribute View Gallery/Kanban Cover Rendering Allows Arbitrary Command Execution in Desktop Client]]></title>
-        <id>https://github.com/advisories/GHSA-rx4h-526q-4458</id>
-        <link href="https://github.com/advisories/GHSA-rx4h-526q-4458"/>
-        <updated>2026-03-31T23:28:24.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An attacker who can place a malicious URL in an Attribute View <code>mAsse</code> field can trigger stored XSS when a victim opens the Gallery or Kanban view with “Cover From -&gt; Asset Field” enabled. The vulnerable code accepts arbitrary <code>http(s)</code> URLs without extensions as images, stores the attacker-controlled string in <code>coverURL</code>, and injects it directly into an <code>&lt;img src="..."&gt;</code> attribute without escaping. In the Electron desktop client, the injected JavaScript executes with <code>nodeIntegration</code> enabled and <code>contextIsolation</code> disabled, so the XSS reaches arbitrary OS command execution under the victim’s account.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerable flow is:</p>
-<ol>
-<li><code>IsPossiblyImage(assetPath)</code> accepts arbitrary <code>http(s)</code> URLs without validating that they are safe image URLs.</li>
-<li>When an Attribute View card uses <code>Cover From -&gt; Asset Field</code>, the application copies <code>asset.Content</code> directly into <code>galleryCard.CoverURL / kanbanCard.CoverURL</code>.</li>
-<li>The front-end renderer inserts <code>coverURL</code> directly into <code>&lt;img src="${getCompressURL(item.coverURL)}"&gt;</code> without escaping quotes or other attribute-breaking characters.</li>
-<li>A payload such as <code>https://example.com/" onerror="require('child_process').exec('calc')</code> breaks out of the <code>src</code> attribute and adds an attacker-controlled <code>onerror</code> handler.
-When the image fails to load, the injected JavaScript runs in the Electron renderer. Because the desktop app enables <code>nodeIntegration: true</code> and disables <code>contextIsolation</code> and <code>webSecurity</code>, that JavaScript can access Node.js APIs and execute system commands.</li>
-</ol>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Install Electron Desktop app.</li>
-<li>Create a database / Attribute View with an mAsset column and add at least one row.</li>
-<li>Add any legitimate image to that mAsset field so the entry is stored as type image.</li>
-<li>Switch the view to Gallery or Kanban.
-5.Set Cover From to Asset Field and choose the mAsset column.</li>
-<li>Edit the existing image asset entry and replace its link with the following payload:</li>
-</ol>
-<pre><code>https://example.com/" onerror="require('child_process').exec('calc')
-</code></pre>
-<ol start="7">
-<li>Save the change and reopen or refresh the Gallery / Kanban view.</li>
-<li>Observe that the rendered HTML contains an injected onerror handler and the Calculator application starts on Windows.</li>
-</ol>
-<p>Example rendered output:</p>
-<pre><code class="language-html">&lt;img loading="lazy" class="av__gallery-img" src="https://example.com/" onerror="require('child_process').exec('calc')"&gt;
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>An attacker can store malicious content in a database asset field and execute arbitrary JavaScript when another user opens the affected Gallery or Kanban view. In the desktop client, that JavaScript has access to Node.js APIs, so the impact is not limited to browser-context XSS. The payload executes OS commands with the victim’s local user privileges, which turns this into remote code execution on the desktop application once the malicious content is delivered and rendered.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-rx4h-526q-4458">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-rx4h-526q-4458</a></li>
-<li><a href="https://github.com/advisories/GHSA-rx4h-526q-4458">https://github.com/advisories/GHSA-rx4h-526q-4458</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rx4h-526q-4458</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-03-31T23:28:23.000Z</published>
     </entry>
 </feed>
