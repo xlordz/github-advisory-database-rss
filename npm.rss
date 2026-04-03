@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-04-03T22:00:01.688Z</updated>
+    <updated>2026-04-03T22:42:02.746Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,90 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[fast-jwt] fast-jwt accepts unknown `crit` header extensions (RFC 7515 violation)]]></title>
+        <id>https://github.com/advisories/GHSA-hm7r-c7qw-ghp6</id>
+        <link href="https://github.com/advisories/GHSA-hm7r-c7qw-ghp6"/>
+        <updated>2026-04-03T22:01:26.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>fast-jwt</code> does not validate the <code>crit</code> (Critical) Header Parameter defined in RFC 7515 §4.1.11. When a JWS token contains a <code>crit</code> array listing extensions that <code>fast-jwt</code> does not understand, the library accepts the token instead of rejecting it. This violates the <strong>MUST</strong> requirement in the RFC.</p>
+<hr>
+<h2 id="rfc-requirement">RFC Requirement</h2>
+<p>RFC 7515 §4.1.11:</p>
+<blockquote>
+<p>If any of the listed extension Header Parameters are <strong>not understood
+and supported</strong> by the recipient, then the <strong>JWS is invalid</strong>.</p>
+</blockquote>
+<hr>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-javascript">const { createSigner, createVerifier } = require("fast-jwt"); // v3.3.3
+
+const signer = createSigner({ key: "secret", algorithm: "HS256" });
+const token = signer({
+  sub: "attacker",
+  role: "admin",
+  header: { crit: ["x-custom-policy"], "x-custom-policy": "require-mfa" },
+});
+
+// Should REJECT — x-custom-policy is not understood
+const verifier = createVerifier({ key: "secret", algorithms: ["HS256"] });
+try {
+  const result = verifier(token);
+  console.log("ACCEPTED:", result);
+  // Output: ACCEPTED: { sub: 'attacker', role: 'admin' }
+} catch (e) {
+  console.log("REJECTED:", e.message);
+}
+</code></pre>
+<p><strong>Expected:</strong> Error — unsupported critical extension
+<strong>Actual:</strong> Token accepted.</p>
+<h3 id="comparison">Comparison</h3>
+<pre><code class="language-javascript">// jose (panva) v4+ — correctly rejects
+const jose = require("jose");
+await jose.jwtVerify(token, new TextEncoder().encode("secret"));
+// throws: Extension Header Parameter "x-custom-policy" is not recognized
+</code></pre>
+<hr>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Split-brain verification</strong> in mixed-library environments</li>
+<li><strong>Security policy bypass</strong> when <code>crit</code> carries enforcement semantics</li>
+<li><strong>Token binding bypass</strong> (RFC 7800 <code>cnf</code> confirmation)</li>
+<li>See CVE-2025-59420 for full impact analysis</li>
+</ul>
+<hr>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>In <code>src/verifier.js</code>, add crit validation after header decoding:</p>
+<pre><code class="language-javascript">const SUPPORTED_CRIT = new Set(["b64"]);
+
+function validateCrit(header) {
+  if (!header.crit) return;
+  if (!Array.isArray(header.crit) || header.crit.length === 0)
+    throw new Error("crit must be a non-empty array");
+  for (const ext of header.crit) {
+    if (!SUPPORTED_CRIT.has(ext))
+      throw new Error(`Unsupported critical extension: ${ext}`);
+    if (!(ext in header))
+      throw new Error(`Critical extension ${ext} not present in header`);
+  }
+}
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nearform/fast-jwt/security/advisories/GHSA-hm7r-c7qw-ghp6">https://github.com/nearform/fast-jwt/security/advisories/GHSA-hm7r-c7qw-ghp6</a></li>
+<li><a href="https://github.com/advisories/GHSA-9ggr-2464-2j32">https://github.com/advisories/GHSA-9ggr-2464-2j32</a></li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.11">https://www.rfc-editor.org/rfc/rfc7515.html#section-4.1.11</a></li>
+<li><a href="https://github.com/advisories/GHSA-hm7r-c7qw-ghp6">https://github.com/advisories/GHSA-hm7r-c7qw-ghp6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hm7r-c7qw-ghp6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-03T22:01:25.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@budibase/server] Budibase: Command Injection in Bash Automation Step]]></title>
         <id>https://github.com/advisories/GHSA-gjw9-34gf-rp6m</id>
@@ -1677,46 +1761,5 @@ jsonpatch.apply(applicationData, req.body) // jsonpatch natively resolves 'from'
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-04-03T03:29:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Discord voice ingress authorization can be bypassed via channel, name, and stale-role validation gaps]]></title>
-        <id>https://github.com/advisories/GHSA-x2m8-53h4-6hch</id>
-        <link href="https://github.com/advisories/GHSA-x2m8-53h4-6hch"/>
-        <updated>2026-04-03T03:27:39.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Discord voice ingress authorization can be bypassed via channel, name, and stale-role validation gaps</p>
-<h2 id="current-maintainer-triage">Current Maintainer Triage</h2>
-<ul>
-<li>Status: narrow</li>
-<li>Assessment: Real in shipped v2026.3.28 Discord voice ingress, but impact is channel/member allowlist bypass rather than a broader critical auth break and mainline fix is unreleased.</li>
-</ul>
-<h2 id="affected-packages--versions">Affected Packages / Versions</h2>
-<ul>
-<li>Package: <code>openclaw</code> (npm)</li>
-<li>Latest published npm version: <code>2026.3.31</code></li>
-<li>Vulnerable version range: <code>&lt;=2026.3.28</code></li>
-<li>Patched versions: <code>&gt;= 2026.3.31</code></li>
-<li>First stable tag containing the fix: <code>v2026.3.31</code></li>
-</ul>
-<h2 id="fix-commits">Fix Commit(s)</h2>
-<ul>
-<li><code>dba96e7507e0900f120e5e28e57755d69bf78759</code> — 2026-03-31T21:29:13+09:00</li>
-</ul>
-<p>OpenClaw thanks @cyjhhh for reporting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-x2m8-53h4-6hch">https://github.com/openclaw/openclaw/security/advisories/GHSA-x2m8-53h4-6hch</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/dba96e7507e0900f120e5e28e57755d69bf78759">https://github.com/openclaw/openclaw/commit/dba96e7507e0900f120e5e28e57755d69bf78759</a></li>
-<li><a href="https://github.com/openclaw/openclaw/releases/tag/v2026.3.31">https://github.com/openclaw/openclaw/releases/tag/v2026.3.31</a></li>
-<li><a href="https://github.com/advisories/GHSA-x2m8-53h4-6hch">https://github.com/advisories/GHSA-x2m8-53h4-6hch</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-x2m8-53h4-6hch</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-04-03T03:27:38.000Z</published>
     </entry>
 </feed>

