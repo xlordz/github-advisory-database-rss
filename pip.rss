@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-04-21T13:44:11.206Z</updated>
+    <updated>2026-04-21T15:01:48.832Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,144 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[python-dotenv] python-dotenv: Symlink following in set_key allows arbitrary file overwrite via cross-device rename fallback]]></title>
+        <id>https://github.com/advisories/GHSA-mf9w-mj56-hr94</id>
+        <link href="https://github.com/advisories/GHSA-mf9w-mj56-hr94"/>
+        <updated>2026-04-21T14:38:59.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>set_key()</code> and <code>unset_key()</code> in python-dotenv follow symbolic links when rewriting <code>.env</code> files, allowing a local attacker to overwrite arbitrary files via a crafted symlink when a cross-device rename fallback is triggered.</p>
+<h3 id="details">Details</h3>
+<p>The <code>rewrite()</code> context manager in <code>dotenv/main.py</code> is used by both <code>set_key()</code> and <code>unset_key()</code> to safely modify <code>.env</code> files. It works by writing to a temporary file (created in the system's default temp directory, typically <code>/tmp</code>) and then using <code>shutil.move()</code> to replace the original file.</p>
+<p>When the <code>.env</code> path is a symbolic link and the temp directory resides on a different filesystem than the target (a common configuration on Linux systems using tmpfs for <code>/tmp</code>), the following sequence occurs:</p>
+<ol>
+<li><code>shutil.move()</code> first attempts <code>os.rename()</code>, which fails with an <code>OSError</code> because atomic renames cannot cross device boundaries.</li>
+<li>On failure, <code>shutil.move()</code> falls back to <code>shutil.copy2()</code> followed by <code>os.unlink()</code>.</li>
+<li><code>shutil.copy2()</code> calls <code>shutil.copyfile()</code> with <code>follow_symlinks=True</code> by default.</li>
+<li>This causes the content to be written to the <strong>symlink target</strong> rather than replacing the symlink itself.</li>
+</ol>
+<p>An attacker who has write access to the directory containing a <code>.env</code> file can pre-place a symlink pointing to any file that the application process has write access to. When the application (or a privileged process such as a deploy script, Docker entrypoint, or CI pipeline) calls <code>set_key()</code> or <code>unset_key()</code>, the symlink target is overwritten with the new <code>.env</code> content.</p>
+<p>This vulnerability does not require a race condition and is fully deterministic once the preconditions are met.</p>
+<h3 id="impact">Impact</h3>
+<p>The primary impacts are to <strong>integrity</strong> and <strong>availability</strong>:</p>
+<ul>
+<li><strong>File overwrite / destruction (DoS):</strong> An attacker can cause an application or privileged process to corrupt or destroy configuration files, database configs, or other sensitive files it would not normally have access to modify.</li>
+<li><strong>Integrity violation:</strong> The target file's original content is replaced with <code>.env</code>-formatted content controlled by the attacker.</li>
+<li><strong>Potential privilege escalation:</strong> In scenarios where a privileged process (running as root or a service account) calls <code>set_key()</code>, the attacker can leverage this to write to files beyond their own access level.</li>
+</ul>
+<p>The scope of impact depends on the application using python-dotenv and the privileges under which it runs.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p>The following script demonstrates the vulnerability. It requires <code>/tmp</code> and the user's home directory to reside on different devices (common on systemd-based Linux systems with tmpfs).</p>
+<pre><code class="language-python">import os
+import sys
+import tempfile
+from dotenv import set_key
+
+# Pre-condition: /tmp must be on a different device than the target directory.
+tmp_dev = os.stat("/tmp").st_dev
+home_dev = os.stat(os.path.expanduser("~")).st_dev
+assert tmp_dev != home_dev, "Skipped: /tmp and ~ are on the same device (no cross-device move)"
+
+with tempfile.TemporaryDirectory(dir=os.path.expanduser("~")) as workdir:
+    # File an attacker wants to overwrite
+    target = os.path.join(workdir, "victim_config.txt")
+    with open(target, "w") as f:
+        f.write("DB_PASSWORD=supersecret\n")
+
+    # Attacker pre-places a symlink at the path the application will use as .env
+    env_symlink = os.path.join(workdir, ".env")
+    os.symlink(target, env_symlink)
+
+    before = open(target).read()
+
+    # Application writes a new key -- triggers the cross-device fallback
+    set_key(env_symlink, "INJECTED", "attacker_value")
+
+    after = open(target).read()
+
+    print("Before:", repr(before))
+    print("After: ", repr(after))
+    print("Symlink target overwritten:", target)
+</code></pre>
+<p><strong>Expected output:</strong></p>
+<pre><code>Before: 'DB_PASSWORD=supersecret\n'
+After:  "DB_PASSWORD=supersecret\nINJECTED='attacker_value'\n"
+Symlink target overwritten: /home/user/tmp806nut2g/victim_config.txt
+</code></pre>
+<h3 id="remediation">Remediation</h3>
+<p>The fix changes the <code>rewrite()</code> context manager in the following ways:</p>
+<ol>
+<li><strong>Symlinks are no longer followed by default.</strong> When the <code>.env</code> path is a symlink, <code>rewrite()</code> now resolves it to the real path before proceeding, or (by default) operates on the symlink entry itself rather than the target.</li>
+<li><strong>A <code>follow_symlinks: bool = False</code> parameter</strong> is added to <code>set_key()</code> and <code>unset_key()</code> for users who explicitly need the old behavior.</li>
+<li><strong>Temp files are written in the same directory</strong> as the target <code>.env</code> file (instead of the system temp directory), eliminating the cross-device rename condition entirely.</li>
+<li><strong><code>os.replace()</code> is used instead of <code>shutil.move()</code></strong>, providing atomic replacement without symlink-following fallback behavior.</li>
+</ol>
+<p>Users are advised to upgrade to the patched version as soon as it is available on PyPI.</p>
+<h3 id="timeline">Timeline</h3>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Event</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>2026-01-09</td>
+<td>Initial report received from Giorgos Tsigourakos regarding a separate, unrelated issue also located in <code>rewrite()</code></td>
+</tr>
+<tr>
+<td>2026-01-10</td>
+<td>Co-maintainer acknowledged report, requested clarification</td>
+</tr>
+<tr>
+<td>2026-01-11</td>
+<td>Initial report assessed as not exploitable and closed</td>
+</tr>
+<tr>
+<td>2026-02-24</td>
+<td>Reporter identified new, distinct cross-device symlink attack vector with deterministic exploitation</td>
+</tr>
+<tr>
+<td>2026-02-26</td>
+<td>Co-maintainer confirmed vulnerability and shared draft patch</td>
+</tr>
+<tr>
+<td>2026-02-26</td>
+<td>Reporter validated fix with monkeypatched PoC, proposed CVSS</td>
+</tr>
+<tr>
+<td>2026-03-01</td>
+<td>Patch merged to main</td>
+</tr>
+<tr>
+<td>2026-03-01</td>
+<td>Patched version released to PyPI</td>
+</tr>
+<tr>
+<td>2026-04-20</td>
+<td>Advisory published</td>
+</tr>
+</tbody></table>
+<h3 id="patches">Patches</h3>
+<p>Upgrade to v.1.2.2 or use the patch from <a href="https://github.com/theskumar/python-dotenv/commit/790c5c02991100aa1bf41ee5330aca75edc51311.patch">https://github.com/theskumar/python-dotenv/commit/790c5c02991100aa1bf41ee5330aca75edc51311.patch</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/theskumar/python-dotenv/security/advisories/GHSA-mf9w-mj56-hr94">https://github.com/theskumar/python-dotenv/security/advisories/GHSA-mf9w-mj56-hr94</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-28684">https://nvd.nist.gov/vuln/detail/CVE-2026-28684</a></li>
+<li><a href="https://github.com/theskumar/python-dotenv/commit/790c5c02991100aa1bf41ee5330aca75edc51311">https://github.com/theskumar/python-dotenv/commit/790c5c02991100aa1bf41ee5330aca75edc51311</a></li>
+<li><a href="https://github.com/theskumar/python-dotenv/commit/790c5c02991100aa1bf41ee5330aca75edc51311.patch">https://github.com/theskumar/python-dotenv/commit/790c5c02991100aa1bf41ee5330aca75edc51311.patch</a></li>
+<li><a href="https://github.com/theskumar/python-dotenv/releases/tag/v1.2.2">https://github.com/theskumar/python-dotenv/releases/tag/v1.2.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-mf9w-mj56-hr94">https://github.com/advisories/GHSA-mf9w-mj56-hr94</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mf9w-mj56-hr94</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-21T14:38:57.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[nltk] NLTK has Arbitrary File Read via Absolute Path Input in nltk.util.filestring()]]></title>
         <id>https://github.com/advisories/GHSA-h8wq-7xc4-p3qx</id>
@@ -1031,27 +1169,5 @@ request to an internal endpoint — does not require this.</li>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-16T22:38:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[upsonic] Upsonic: remote code execution vulnerability in its MCP server/task creation functionality]]></title>
-        <id>https://github.com/advisories/GHSA-cw73-5f7h-m4gv</id>
-        <link href="https://github.com/advisories/GHSA-cw73-5f7h-m4gv"/>
-        <updated>2026-04-16T21:33:11.000Z</updated>
-        <content type="html"><![CDATA[<p>Upsonic 0.71.6 contains a remote code execution vulnerability in its MCP server/task creation functionality. The application allows users to define MCP tasks with arbitrary command and args values. Although an allowlist exists, certain allowed commands (npm, npx) accept argument flags that enable execution of arbitrary OS commands. Maliciously crafted MCP tasks may lead to remote code execution with the privileges of the Upsonic process. In version 0.72.0 Upsonic added a warning about using Stdio servers being able to execute commands directly on the machine.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-30625">https://nvd.nist.gov/vuln/detail/CVE-2026-30625</a></li>
-<li><a href="https://github.com/Upsonic/Upsonic/commit/855053fce0662227d9246268ff4a0844b481a305">https://github.com/Upsonic/Upsonic/commit/855053fce0662227d9246268ff4a0844b481a305</a></li>
-<li><a href="https://www.ox.security/blog/mcp-supply-chain-advisory-rce-vulnerabilities-across-the-ai-ecosystem">https://www.ox.security/blog/mcp-supply-chain-advisory-rce-vulnerabilities-across-the-ai-ecosystem</a></li>
-<li><a href="https://github.com/advisories/GHSA-cw73-5f7h-m4gv">https://github.com/advisories/GHSA-cw73-5f7h-m4gv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cw73-5f7h-m4gv</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-04-15T18:31:57.000Z</published>
     </entry>
 </feed>
