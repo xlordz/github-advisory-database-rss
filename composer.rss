@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-04-21T15:01:46.614Z</updated>
+    <updated>2026-04-21T16:18:04.105Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,159 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[openmage/magento-lts] OpenMage LTS: Cross-user wishlist import leads to private option & file disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-665x-ppc4-685w</id>
+        <link href="https://github.com/advisories/GHSA-665x-ppc4-685w"/>
+        <updated>2026-04-21T15:20:42.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="cross-user-wishlist-item-import-via-shared-wishlist-code-leading-to-private-option-disclosure-and-file-disclosure-variant">Cross-user wishlist item import via shared wishlist code, leading to private option disclosure and file-disclosure variant</h1>
+<h2 id="summary">Summary</h2>
+<p>The shared wishlist add-to-cart endpoint authorizes access with a public <code>sharing_code</code>, but loads the acted-on wishlist item by a separate global <code>wishlist_item_id</code> and never verifies that the item belongs to the shared wishlist referenced by that code.</p>
+<p>This lets an attacker use:</p>
+<ul>
+<li>a valid shared wishlist code for wishlist A</li>
+<li>a wishlist item ID belonging to victim wishlist B</li>
+</ul>
+<p>to import victim item B into the attacker's cart through the shared wishlist flow for wishlist A.</p>
+<p>Because the victim item's stored <code>buyRequest</code> is reused during cart import, the victim's private custom-option data is copied into the attacker's quote. If the product uses a file custom option, this can be elevated to cross-user file disclosure because the imported file metadata is preserved and the download endpoint is not ownership-bound.</p>
+<h2 id="vulnerability-type">Vulnerability Type</h2>
+<ul>
+<li>Broken object-level authorization / IDOR</li>
+<li>Cross-user data disclosure</li>
+<li>Cross-user file disclosure variant</li>
+</ul>
+<h2 id="root-cause">Root Cause</h2>
+<p>In <code>app/code/core/Mage/Wishlist/controllers/SharedController.php</code>, the shared flow does:</p>
+<pre><code class="language-php">$item = Mage::getModel('wishlist/item')-&gt;load($itemId);
+$wishlist = Mage::getModel('wishlist/wishlist')-&gt;loadByCode($code);
+...
+$item-&gt;addToCart($cart);
+</code></pre>
+<p>Relevant lines:</p>
+<ul>
+<li><code>SharedController.php:86</code> loads the wishlist item by global ID</li>
+<li><code>SharedController.php:87</code> loads the wishlist by shared code</li>
+<li><code>SharedController.php:99</code> imports the item into cart</li>
+</ul>
+<p>There is no check that:</p>
+<pre><code class="language-php">$item-&gt;getWishlistId() == $wishlist-&gt;getId()
+</code></pre>
+<p>The safe owner flow in <code>app/code/core/Mage/Wishlist/controllers/IndexController.php:521-528</code> does preserve this binding by deriving the wishlist from <code>item-&gt;getWishlistId()</code>.</p>
+<p>The imported item keeps its original <code>buyRequest</code> because <code>app/code/core/Mage/Wishlist/Model/Item.php:370-372</code> passes that stored request directly into:</p>
+<pre><code class="language-php">$cart-&gt;addProduct($product, $buyRequest);
+</code></pre>
+<h2 id="security-impact">Security Impact</h2>
+<h3 id="baseline-impact">Baseline impact</h3>
+<p>An attacker can import another user's private wishlist item into the attacker's own cart, using an unrelated shared wishlist code.</p>
+<p>This is a clear cross-user authorization bypass. The victim item's private configuration is copied into the attacker's quote, including custom-option values such as personalized text.</p>
+<h3 id="stronger-variant-cross-user-file-disclosure">Stronger variant: cross-user file disclosure</h3>
+<p>If the victim item contains a custom option of type <code>file</code>, the imported quote item preserves file metadata such as:</p>
+<ul>
+<li><code>quote_path</code></li>
+<li><code>order_path</code></li>
+<li><code>secret_key</code></li>
+</ul>
+<p>The file option renderer in <code>app/code/core/Mage/Catalog/Model/Product/Option/Type/File.php:547-552</code> generates a download URL from:</p>
+<ul>
+<li>the imported <code>sales/quote_item_option</code> ID</li>
+<li>the preserved <code>secret_key</code></li>
+</ul>
+<p>The downloader in <code>app/code/core/Mage/Sales/controllers/DownloadController.php:150-185</code>:</p>
+<ul>
+<li>loads quote item option by global ID</li>
+<li>verifies only product option type and <code>secret_key</code></li>
+<li>reads the file from <code>order_path</code> or <code>quote_path</code></li>
+</ul>
+<p>It does not verify ownership of the quote item, order, or original wishlist item. This creates a cross-user file disclosure path once victim file metadata has been imported.</p>
+<h2 id="steps-to-reproduce">Steps To Reproduce</h2>
+<h3 id="lab-data">Lab data</h3>
+<ul>
+<li>shared wishlist A:<ul>
+<li><code>wishlist_id = 1</code></li>
+<li><code>customer_id = 2</code></li>
+<li><code>sharing_code = 6376bb8c37a09c2de3664bd8cdc16412</code></li>
+</ul>
+</li>
+<li>victim wishlist B:<ul>
+<li><code>wishlist_id = 2</code></li>
+<li><code>customer_id = 3</code></li>
+</ul>
+</li>
+<li>victim item:<ul>
+<li><code>wishlist_item_id = 1</code></li>
+<li><code>wishlist_id = 2</code></li>
+<li><code>product_id = 2</code></li>
+</ul>
+</li>
+<li>victim private text option marker:<ul>
+<li><code>VICTIM-MARKER-49040822</code></li>
+</ul>
+</li>
+</ul>
+<h3 id="reproduction">Reproduction</h3>
+<p>Send:</p>
+<pre><code class="language-http">GET /wishlist/shared/cart/?code=6376bb8c37a09c2de3664bd8cdc16412&amp;item=1
+</code></pre>
+<p>Where:</p>
+<ul>
+<li><code>code</code> belongs to shared wishlist A</li>
+<li><code>item=1</code> belongs to victim wishlist B</li>
+</ul>
+<h3 id="expected-result">Expected result</h3>
+<p>The request should be rejected because the item does not belong to the shared wishlist referenced by the <code>sharing_code</code>.</p>
+<h3 id="actual-result">Actual result</h3>
+<p>The application imports victim item <code>1</code> into the attacker's quote anyway.</p>
+<h2 id="verified-evidence">Verified Evidence</h2>
+<h3 id="baseline-variant">Baseline variant</h3>
+<p>Previously verified at quote/option level in lab:</p>
+<pre><code class="language-text">option_1 = VICTIM-MARKER-49040822
+</code></pre>
+<p>This shows that the attacker's cart received victim-private custom-option data from another user's wishlist item.</p>
+<h3 id="file-disclosure-variant">File-disclosure variant</h3>
+<p>Previously verified in lab after importing a victim file-option payload:</p>
+<pre><code class="language-text">/sales/download/downloadCustomOption/id/9/key/86fca9b61c0b891b52fb/
+</code></pre>
+<p>This URL was generated from imported quote item option data containing the victim file metadata and secret key.</p>
+<h2 id="why-this-is-a-valid-bug">Why This Is A Valid Bug</h2>
+<p>This is not a timing issue and does not depend on non-default security settings.</p>
+<p>The bug is a direct authorization failure:</p>
+<ul>
+<li>authorization is based on wishlist A's share code</li>
+<li>the acted-on object is item B from another wishlist</li>
+<li>there is no item-to-wishlist binding check</li>
+<li>victim-controlled item state is then copied into attacker-controlled cart state</li>
+</ul>
+<p>That is a broken object-level authorization issue with clear cross-user impact.</p>
+<h2 id="remediation">Remediation</h2>
+<p>In <code>SharedController::cartAction()</code>, reject any request where the loaded item does not belong to the wishlist loaded from the share code:</p>
+<pre><code class="language-php">$item = Mage::getModel('wishlist/item')-&gt;load($itemId);
+$wishlist = Mage::getModel('wishlist/wishlist')-&gt;loadByCode($code);
+
+if (!$item-&gt;getId() || !$wishlist-&gt;getId() || (int) $item-&gt;getWishlistId() !== (int) $wishlist-&gt;getId()) {
+    return $this-&gt;_forward('noRoute');
+}
+</code></pre>
+<p>Defense in depth:</p>
+<ul>
+<li>bind <code>sales/download/downloadCustomOption</code> to the current quote/order owner instead of trusting only <code>id + secret_key</code></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/OpenMage/magento-lts/security/advisories/GHSA-665x-ppc4-685w">https://github.com/OpenMage/magento-lts/security/advisories/GHSA-665x-ppc4-685w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40098">https://nvd.nist.gov/vuln/detail/CVE-2026-40098</a></li>
+<li><a href="https://github.com/OpenMage/magento-lts/pull/5446">https://github.com/OpenMage/magento-lts/pull/5446</a></li>
+<li><a href="https://github.com/OpenMage/magento-lts/releases/tag/v20.17.0">https://github.com/OpenMage/magento-lts/releases/tag/v20.17.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-665x-ppc4-685w">https://github.com/advisories/GHSA-665x-ppc4-685w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-665x-ppc4-685w</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-21T15:20:41.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[openmage/magento-lts] OpenMage LTS has a Path Traversal Filter Bypass in Dataflow Module]]></title>
         <id>https://github.com/advisories/GHSA-6vqf-6fhm-7rc6</id>
@@ -1235,26 +1388,5 @@ curl "http://127.0.0.1/plugin/CloneSite/1.php"
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-16T20:40:37.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[khodakhah/nodcms] Nodcms contains a cross-site request forgery vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-3qcm-pj6q-w4c5</id>
-        <link href="https://github.com/advisories/GHSA-3qcm-pj6q-w4c5"/>
-        <updated>2026-04-16T01:34:09.000Z</updated>
-        <content type="html"><![CDATA[<p>Nodcms contains a cross-site request forgery vulnerability that allows attackers to perform unauthorized administrative actions by crafting malicious forms. Attackers can trick authenticated administrators into submitting requests to admin/user_manipulate and admin/settings/generall endpoints to create users or modify application settings without explicit consent.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2016-20054">https://nvd.nist.gov/vuln/detail/CVE-2016-20054</a></li>
-<li><a href="https://www.exploit-db.com/exploits/40707">https://www.exploit-db.com/exploits/40707</a></li>
-<li><a href="https://github.com/advisories/GHSA-3qcm-pj6q-w4c5">https://github.com/advisories/GHSA-3qcm-pj6q-w4c5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3qcm-pj6q-w4c5</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-04T21:30:27.000Z</published>
     </entry>
 </feed>

