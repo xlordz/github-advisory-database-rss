@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-05-04T19:58:24.747Z</updated>
+    <updated>2026-05-04T21:10:47.099Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,252 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[ci4-cms-erp/ci4ms] CI4MS has a Deactivated User Session Bypass (active=0)]]></title>
+        <id>https://github.com/advisories/GHSA-5hfv-c864-qcq9</id>
+        <link href="https://github.com/advisories/GHSA-5hfv-c864-qcq9"/>
+        <updated>2026-05-04T20:50:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The auth filter has the deactivated/banned user check commented out. </p>
+<h3 id="details">Details</h3>
+<p>CodeIgniter Shield's <code>loggedIn()</code> re-checks the <code>status</code> field (catching <code>status='banned'</code>), but does <strong>not</strong> re-check the <code>active</code> field for existing sessions. When an admin deactivates a user (<code>active=0</code>) after they have already logged in:</p>
+<ul>
+<li>Their session cookie remains valid</li>
+<li><code>auth()-&gt;loggedIn()</code> still returns <code>true</code></li>
+<li>The commented-out code is the only mechanism that would have checked <code>!$user-&gt;active</code></li>
+</ul>
+<h3 id="evidence">Evidence</h3>
+<img src="https://github.com/user-attachments/assets/6f75d144-5bcf-4a3f-bc35-bb0715c3ed05" alt="image" height="654" width="981">
+
+
+<h3 id="impact">Impact</h3>
+<ul>
+<li>User deactivation does NOT immediately revoke backend access</li>
+<li>Deactivated user retains full access until session expires (default: 7200s)</li>
+</ul>
+<h3 id="additional-note">Additional note</h3>
+<p>The commented-out block appears to be a deferred placeholder — it was written but disabled from the very first commit that introduced the filter, and has never been active. The later addition of SessionTracker (v0.31.4.0) suggests the dev was aware of the session revocation gap, but account-level deactivation (users.active = 0) remains unenforced. Could you verify if this is intentionally pending or simply forgotten and not documented?.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ci4-cms-erp/ci4ms/security/advisories/GHSA-5hfv-c864-qcq9">https://github.com/ci4-cms-erp/ci4ms/security/advisories/GHSA-5hfv-c864-qcq9</a></li>
+<li><a href="https://github.com/ci4-cms-erp/ci4ms/commit/2f38284281ce6b435ea42003951f14109ac2cea7">https://github.com/ci4-cms-erp/ci4ms/commit/2f38284281ce6b435ea42003951f14109ac2cea7</a></li>
+<li><a href="https://github.com/ci4-cms-erp/ci4ms/releases/tag/0.31.8.0">https://github.com/ci4-cms-erp/ci4ms/releases/tag/0.31.8.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-5hfv-c864-qcq9">https://github.com/advisories/GHSA-5hfv-c864-qcq9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5hfv-c864-qcq9</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-04T20:50:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[ci4-cms-erp/ci4ms] CI4MS Vulnerable to Arbitrary Database Table Drop via Theme deleteProcess]]></title>
+        <id>https://github.com/advisories/GHSA-vgrf-pr28-vf98</id>
+        <link href="https://github.com/advisories/GHSA-vgrf-pr28-vf98"/>
+        <updated>2026-05-04T20:50:12.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>deleteProcess()</code> action accepts a POST parameter <code>tables[]</code> containing arbitrary table names. These are passed directly to <code>$forge-&gt;dropTable()</code> without validating that the tables belong to the theme being deleted.</p>
+<p>The <code>deleteConfirm</code> view correctly populates <code>tables[]</code> from the theme's own migration files, but the server-side <code>deleteProcess</code> does not verify the received values against those files. An authenticated admin can craft a POST request with arbitrary table names and drop any table in the database.</p>
+<p>This is a real bug even within the admin trust model: the action should be scoped to the theme's own tables. The permission grants  delete this theme's data", not "drop any table".</p>
+<h3 id="details">Details</h3>
+<h3>Location</h3>
+<p><code>modules/Theme/Controllers/Theme.php</code> :: <code>deleteProcess()</code> ~line 147</p>
+<h3 id="vulnerable-code">Vulnerable Code</h3>
+<pre><code class="language-php">public function deleteProcess(string $slug)
+{
+    $themeName = $slug;
+    $activeTheme = setting('App.siteTheme');
+    if ($activeTheme === $themeName) {
+        return redirect()-&gt;route('templateSettings')...;
+    }
+
+    $tablesToDrop = $this-&gt;request-&gt;getPost('tables');  // ← user-supplied, unvalidated
+    if (!empty($tablesToDrop) &amp;&amp; is_array($tablesToDrop)) {
+        $forge = \Config\Database::forge();
+        $db    = \Config\Database::connect();
+        foreach ($tablesToDrop as $table) {
+            if ($db-&gt;tableExists($table)) {
+                $forge-&gt;dropTable($table, true);  // ← no whitelist check
+            }
+        }
+    }
+</code></pre>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Authenticate to the backend (any user with theme.delete permission)</li>
+<li>POST to <code>/backend/themes/delete-process/&lt;any_non_active_theme_slug&gt;</code></li>
+<li>Include <code>tables[]=&lt;any_table&gt;</code> in POST body</li>
+<li>The named tables are dropped without validation</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Dropped <code>ci4ms_blog</code> (confirmed in test)</li>
+<li>Dropped <code>ci4ms_users</code> + <code>ci4ms_auth_identities</code> simultaneously — disables all authentication (confirmed)</li>
+<li>Any table in the database can be targeted</li>
+</ul>
+<h3 id="additional-note">Additional note</h3>
+<p>Quick note on the design intent for deleteProcess — I noticed delete_confirm.php scopes the checkboxes to the theme's own migration files, and the CHANGELOG confirms the selective deletion was intentional (admins can choose which tables to keep). The server-side deleteProcess already has all the information it needs to validate the input — deleteConfirm derives the valid table set from the migration files, deleteProcess just needs to do the same before acting on the POST. Happy to clarify if useful.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ci4-cms-erp/ci4ms/security/advisories/GHSA-vgrf-pr28-vf98">https://github.com/ci4-cms-erp/ci4ms/security/advisories/GHSA-vgrf-pr28-vf98</a></li>
+<li><a href="https://github.com/ci4-cms-erp/ci4ms/commit/2f38284281ce6b435ea42003951f14109ac2cea7">https://github.com/ci4-cms-erp/ci4ms/commit/2f38284281ce6b435ea42003951f14109ac2cea7</a></li>
+<li><a href="https://github.com/ci4-cms-erp/ci4ms/releases/tag/0.31.8.0">https://github.com/ci4-cms-erp/ci4ms/releases/tag/0.31.8.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-vgrf-pr28-vf98">https://github.com/advisories/GHSA-vgrf-pr28-vf98</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vgrf-pr28-vf98</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-04T20:50:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[getkirby/cms] Kirby CMS's system API endpoint leaks installed version and license data to authenticated users]]></title>
+        <id>https://github.com/advisories/GHSA-x68m-c7jf-2572</id>
+        <link href="https://github.com/advisories/GHSA-x68m-c7jf-2572"/>
+        <updated>2026-05-04T19:59:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="tldr">TL;DR</h3>
+<p>This vulnerability affects all Kirby sites that might have potential attackers in the group of authenticated Panel users.</p>
+<hr>
+<h3 id="introduction">Introduction</h3>
+<p>Missing authorization allows authenticated users to perform actions they are not intended to have access to.</p>
+<p>The effects of missing authorization can include unauthorized access to sensitive information as well as unauthorized changes to content or system information.</p>
+<h3 id="impact">Impact</h3>
+<p>Kirby's user permissions control which user role is allowed to perform specific actions in the CMS. These permissions are defined for each role in the user blueprint (<code>site/blueprints/users/...</code>). The permissions control the authorization of user actions (with handling of model-specific authorization omitted here for brevity).</p>
+<p>Kirby provides the <code>access.system</code> permission (among others) that controls access to the system area of the Kirby Panel. This area contains internal system information like the installed Kirby, plugin and server versions, security state and Kirby license. If the <code>access.system</code> permission is disabled for a user role, users of that role should not be able to access this internal system information. However it is also possible to access some system information via the <code>/api/system</code> REST API endpoint. In affected releases, the response of this endpoint for authenticated users contained the installed Kirby version and the status, type and code of the installed Kirby license. These values are considered sensitive information and should be protected by the <code>access.system</code> permission.</p>
+<p>The installed Kirby version and license data can be used by malicious actors during reconnaissance when planning a separate attack.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched in <a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">Kirby 4.9.0</a> and <a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">Kirby 5.4.0</a>. Please update to one of these or a <a href="https://github.com/getkirby/kirby/releases">later version</a> to fix the vulnerability.</p>
+<p>In all of the mentioned releases, we have protected the version and license properties of the <code>/api/system</code> endpoint with a check for the existing <code>access.system</code> permission. This ensures that the REST API only outputs information that should be accessible to the user via the Panel.</p>
+<h3 id="credits">Credits</h3>
+<p>Kirby thanks @HuajiHD and @0x-bala for responsibly reporting the identified issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/getkirby/kirby/security/advisories/GHSA-x68m-c7jf-2572">https://github.com/getkirby/kirby/security/advisories/GHSA-x68m-c7jf-2572</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">https://github.com/getkirby/kirby/releases/tag/4.9.0</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">https://github.com/getkirby/kirby/releases/tag/5.4.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-x68m-c7jf-2572">https://github.com/advisories/GHSA-x68m-c7jf-2572</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x68m-c7jf-2572</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-04T19:59:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[getkirby/cms] Kirby CMS's system API endpoint leaks installed version and license data to authenticated users]]></title>
+        <id>https://github.com/advisories/GHSA-x68m-c7jf-2572</id>
+        <link href="https://github.com/advisories/GHSA-x68m-c7jf-2572"/>
+        <updated>2026-05-04T19:59:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="tldr">TL;DR</h3>
+<p>This vulnerability affects all Kirby sites that might have potential attackers in the group of authenticated Panel users.</p>
+<hr>
+<h3 id="introduction">Introduction</h3>
+<p>Missing authorization allows authenticated users to perform actions they are not intended to have access to.</p>
+<p>The effects of missing authorization can include unauthorized access to sensitive information as well as unauthorized changes to content or system information.</p>
+<h3 id="impact">Impact</h3>
+<p>Kirby's user permissions control which user role is allowed to perform specific actions in the CMS. These permissions are defined for each role in the user blueprint (<code>site/blueprints/users/...</code>). The permissions control the authorization of user actions (with handling of model-specific authorization omitted here for brevity).</p>
+<p>Kirby provides the <code>access.system</code> permission (among others) that controls access to the system area of the Kirby Panel. This area contains internal system information like the installed Kirby, plugin and server versions, security state and Kirby license. If the <code>access.system</code> permission is disabled for a user role, users of that role should not be able to access this internal system information. However it is also possible to access some system information via the <code>/api/system</code> REST API endpoint. In affected releases, the response of this endpoint for authenticated users contained the installed Kirby version and the status, type and code of the installed Kirby license. These values are considered sensitive information and should be protected by the <code>access.system</code> permission.</p>
+<p>The installed Kirby version and license data can be used by malicious actors during reconnaissance when planning a separate attack.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched in <a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">Kirby 4.9.0</a> and <a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">Kirby 5.4.0</a>. Please update to one of these or a <a href="https://github.com/getkirby/kirby/releases">later version</a> to fix the vulnerability.</p>
+<p>In all of the mentioned releases, we have protected the version and license properties of the <code>/api/system</code> endpoint with a check for the existing <code>access.system</code> permission. This ensures that the REST API only outputs information that should be accessible to the user via the Panel.</p>
+<h3 id="credits">Credits</h3>
+<p>Kirby thanks @HuajiHD and @0x-bala for responsibly reporting the identified issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/getkirby/kirby/security/advisories/GHSA-x68m-c7jf-2572">https://github.com/getkirby/kirby/security/advisories/GHSA-x68m-c7jf-2572</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">https://github.com/getkirby/kirby/releases/tag/4.9.0</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">https://github.com/getkirby/kirby/releases/tag/5.4.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-x68m-c7jf-2572">https://github.com/advisories/GHSA-x68m-c7jf-2572</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x68m-c7jf-2572</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-04T19:59:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[getkirby/cms] Kirby CMS doesn't gate user avatar creation, replacement and deletion with user update permissions]]></title>
+        <id>https://github.com/advisories/GHSA-39cp-6679-8xv2</id>
+        <link href="https://github.com/advisories/GHSA-39cp-6679-8xv2"/>
+        <updated>2026-05-04T19:58:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="tldr">TL;DR</h3>
+<p>This vulnerability affects all Kirby sites where users of a particular role have no permission to update user information (<code>user.update</code> or <code>users.update</code> permission is disabled). This can be due to configuration in the blueprint(s) of the acting users, via <code>options</code> in the blueprint(s) of the target users or via a combination of both settings.</p>
+<p>Kirby sites are <em>not</em> affected if they intend all users of the site to be able to upload, replace or delete user avatars. The vulnerability can only be exploited by authenticated users.</p>
+<hr>
+<h3 id="introduction">Introduction</h3>
+<p>Missing authorization allows authenticated users to perform actions they are not intended to have access to.</p>
+<p>The effects of missing authorization can include unauthorized access to sensitive information as well as unauthorized changes to content or system information.</p>
+<h3 id="impact">Impact</h3>
+<p>Kirby's user permissions control which user role is allowed to perform specific actions to content models in the CMS. These permissions are defined for each role in the user blueprint (<code>site/blueprints/users/...</code>). It is also possible to customize the permissions for each target model using the <code>options</code> feature (for user models again in the user blueprints). The permissions and options together control the authorization of user actions.</p>
+<p>Kirby provides the <code>user.update</code> and <code>users.update</code> permissions (among others) that control the authorization to update user information for the user's own data or the data of other users respectively. User files are separately gated by the <code>files.create</code>, <code>files.replace</code> and <code>files.delete</code> permissions (among others).</p>
+<p>In affected releases, Kirby only checked the <code>files.create</code> and <code>files.delete</code> permissions during changes to user avatars. Even though avatars are an integral part of the user profile, they were not covered by the <code>user.update</code> and <code>users.update</code> permissions. This allowed users with just file permissions to create, replace or delete user avatars.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched in <a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">Kirby 4.9.0</a> and <a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">Kirby 5.4.0</a>. Please update to one of these or a <a href="https://github.com/getkirby/kirby/releases">later version</a> to fix the vulnerability.</p>
+<p>In all of the mentioned releases, we have added additional permission checks for <code>user.update</code>/<code>users.update</code> when a user avatar is created, replaced or deleted. These permission checks apply in addition to the file permission checks (<code>files.create</code>, <code>files.replace</code> and <code>files.delete</code>). When a user avatar is replaced with a file of the same type, Kirby now consistently checks the <code>files.replace</code> permission instead of a combination of <code>files.create</code> and <code>files.delete</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/getkirby/kirby/security/advisories/GHSA-39cp-6679-8xv2">https://github.com/getkirby/kirby/security/advisories/GHSA-39cp-6679-8xv2</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">https://github.com/getkirby/kirby/releases/tag/4.9.0</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">https://github.com/getkirby/kirby/releases/tag/5.4.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-39cp-6679-8xv2">https://github.com/advisories/GHSA-39cp-6679-8xv2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-39cp-6679-8xv2</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-04T19:58:43.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[getkirby/cms] Kirby CMS doesn't gate user avatar creation, replacement and deletion with user update permissions]]></title>
+        <id>https://github.com/advisories/GHSA-39cp-6679-8xv2</id>
+        <link href="https://github.com/advisories/GHSA-39cp-6679-8xv2"/>
+        <updated>2026-05-04T19:58:44.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="tldr">TL;DR</h3>
+<p>This vulnerability affects all Kirby sites where users of a particular role have no permission to update user information (<code>user.update</code> or <code>users.update</code> permission is disabled). This can be due to configuration in the blueprint(s) of the acting users, via <code>options</code> in the blueprint(s) of the target users or via a combination of both settings.</p>
+<p>Kirby sites are <em>not</em> affected if they intend all users of the site to be able to upload, replace or delete user avatars. The vulnerability can only be exploited by authenticated users.</p>
+<hr>
+<h3 id="introduction">Introduction</h3>
+<p>Missing authorization allows authenticated users to perform actions they are not intended to have access to.</p>
+<p>The effects of missing authorization can include unauthorized access to sensitive information as well as unauthorized changes to content or system information.</p>
+<h3 id="impact">Impact</h3>
+<p>Kirby's user permissions control which user role is allowed to perform specific actions to content models in the CMS. These permissions are defined for each role in the user blueprint (<code>site/blueprints/users/...</code>). It is also possible to customize the permissions for each target model using the <code>options</code> feature (for user models again in the user blueprints). The permissions and options together control the authorization of user actions.</p>
+<p>Kirby provides the <code>user.update</code> and <code>users.update</code> permissions (among others) that control the authorization to update user information for the user's own data or the data of other users respectively. User files are separately gated by the <code>files.create</code>, <code>files.replace</code> and <code>files.delete</code> permissions (among others).</p>
+<p>In affected releases, Kirby only checked the <code>files.create</code> and <code>files.delete</code> permissions during changes to user avatars. Even though avatars are an integral part of the user profile, they were not covered by the <code>user.update</code> and <code>users.update</code> permissions. This allowed users with just file permissions to create, replace or delete user avatars.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched in <a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">Kirby 4.9.0</a> and <a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">Kirby 5.4.0</a>. Please update to one of these or a <a href="https://github.com/getkirby/kirby/releases">later version</a> to fix the vulnerability.</p>
+<p>In all of the mentioned releases, we have added additional permission checks for <code>user.update</code>/<code>users.update</code> when a user avatar is created, replaced or deleted. These permission checks apply in addition to the file permission checks (<code>files.create</code>, <code>files.replace</code> and <code>files.delete</code>). When a user avatar is replaced with a file of the same type, Kirby now consistently checks the <code>files.replace</code> permission instead of a combination of <code>files.create</code> and <code>files.delete</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/getkirby/kirby/security/advisories/GHSA-39cp-6679-8xv2">https://github.com/getkirby/kirby/security/advisories/GHSA-39cp-6679-8xv2</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/4.9.0">https://github.com/getkirby/kirby/releases/tag/4.9.0</a></li>
+<li><a href="https://github.com/getkirby/kirby/releases/tag/5.4.0">https://github.com/getkirby/kirby/releases/tag/5.4.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-39cp-6679-8xv2">https://github.com/advisories/GHSA-39cp-6679-8xv2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-39cp-6679-8xv2</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-04T19:58:43.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[getkirby/cms] Kirby CMS's read access to site, user and role information is not gated by permissions]]></title>
         <id>https://github.com/advisories/GHSA-2h7v-4372-f6x2</id>
@@ -1197,479 +1443,5 @@ case 'item_delete':
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-29T21:46:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[admidio/admidio] Admidio Exposes Cross-Organization Member Data via Permission Check Mismatch in contacts_data.php]]></title>
-        <id>https://github.com/advisories/GHSA-g8p8-94f2-28gr</id>
-        <link href="https://github.com/advisories/GHSA-g8p8-94f2-28gr"/>
-        <updated>2026-04-29T21:44:26.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>contacts_data.php</code> endpoint uses a weaker permission check (<code>isAdministratorUsers()</code>, requiring only <code>rol_edit_user=true</code>) than the frontend UI (<code>contacts.php</code>) which correctly requires the stronger <code>isAdministrator()</code> (requiring <code>rol_administrator=true</code>) and the <code>contacts_show_all</code> system setting. A user manager who is not a full administrator can directly request <code>contacts_data.php?mem_show_filter=3</code> to retrieve all user records across all organizations in the Admidio instance, bypassing multi-tenant organization isolation.</p>
-<h2 id="details">Details</h2>
-<p>The frontend page <code>contacts.php</code> and the backend data endpoint <code>contacts_data.php</code> have mismatched authorization checks for the "show all organizations" filter (<code>mem_show_filter=3</code>).</p>
-<p><strong>Frontend guard</strong> at <code>modules/contacts/contacts.php:80</code>:</p>
-<pre><code class="language-php">if ($gCurrentUser-&gt;isAdministrator() &amp;&amp; $gSettingsManager-&gt;getBool('contacts_show_all')) {
-    // Only then is filter=3 ("All Organizations") shown in the dropdown
-    $selectBoxValues = array(
-        ...
-        '3' =&gt; array('3', $gL10n-&gt;get('SYS_ALL_CONTACTS'), $gL10n-&gt;get('SYS_ALL_ORGANIZATIONS'))
-    );
-}
-</code></pre>
-<p>This correctly requires both <code>isAdministrator()</code> (<code>rol_administrator=true</code>) AND the <code>contacts_show_all</code> setting.</p>
-<p><strong>Backend check</strong> at <code>modules/contacts/contacts_data.php:235</code>:</p>
-<pre><code class="language-php">} elseif (($getMembersShowFilter === 3) &amp;&amp; $gCurrentUser-&gt;isAdministratorUsers()) {
-    $mainSql = $contactsListConfig-&gt;getSql(
-        array(
-            'showAllMembersDatabase' =&gt; true,
-            ...
-        )
-    );
-</code></pre>
-<p>This only requires <code>isAdministratorUsers()</code> which checks <code>rol_edit_user=true</code> — a weaker permission available to non-admin "user manager" roles. The <code>contacts_show_all</code> setting is never checked.</p>
-<p><strong>The critical difference between the two methods</strong> (from <code>src/Users/Entity/User.php</code>):</p>
-<ul>
-<li><code>isAdministrator()</code> (line 1507): checks the <code>rol_administrator</code> flag — full system administrator</li>
-<li><code>isAdministratorUsers()</code> (line 1625): checks <code>rol_edit_user</code> right — user management module access only</li>
-</ul>
-<p>When <code>showAllMembersDatabase=true</code> reaches <code>ListConfiguration::getSql()</code> (at <code>src/Roles/Entity/ListConfiguration.php:1022-1028</code>), the generated SQL removes ALL organization filtering:</p>
-<pre><code class="language-php">} elseif ($optionsAll['showAllMembersDatabase']) {
-    $sql = 'SELECT DISTINCT ' . $sqlMemLeader . $sqlIdColumns . $sqlColumnNames . '
-              FROM ' . TBL_USERS . '
-                   ' . $sqlJoin . '
-             WHERE usr_valid = true ' .
-        $sqlWhere .
-        $sqlOrderBys;
-}
-</code></pre>
-<p>Compare with the default query which includes <code>cat_org_id = $gCurrentOrgId</code> to restrict results to the current organization.</p>
-<p>The cross-org indicator subqueries at line 169 do correctly check <code>isAdministrator()</code>, so the <code>member_other_orga</code> columns return 0 — but this only affects display indicators, not the actual user data returned.</p>
-<h2 id="poc">PoC</h2>
-<p><strong>Prerequisites:</strong> An Admidio instance with at least two organizations sharing the same database. A user account in Organization A assigned to a role with <code>rol_edit_user=1</code> but <code>rol_administrator=0</code>.</p>
-<p><strong>Step 1:</strong> Log in as the user manager account and capture the session cookie.</p>
-<p><strong>Step 2:</strong> Request all users across all organizations by directly calling the data endpoint:</p>
-<pre><code class="language-bash">curl -s -b 'PHPSESSID=&lt;user_manager_session&gt;' \
-  'https://target/adm_program/modules/contacts/contacts_data.php?mem_show_filter=3&amp;draw=1&amp;start=0&amp;length=100&amp;search%5Bvalue%5D='
-</code></pre>
-<p><strong>Expected behavior:</strong> The request should be rejected or return only current-organization users, since the user is not a full administrator and the frontend never offers filter=3 to non-administrators.</p>
-<p><strong>Actual behavior:</strong> The endpoint returns a JSON response containing all users from ALL organizations in the database, including:</p>
-<ul>
-<li>User UUIDs (<code>usr_uuid</code>)</li>
-<li>Login names (<code>login_name</code>)</li>
-<li>Email addresses (<code>member_email</code>)</li>
-<li>All configured profile fields (names, addresses, phone numbers, etc.)</li>
-</ul>
-<p><strong>Step 3:</strong> Verify that users from Organization B (where the attacker has no membership) appear in the results by checking the <code>member_this_orga</code> field — it will be <code>0</code> for cross-org users.</p>
-<h2 id="impact">Impact</h2>
-<p>In multi-organization Admidio deployments (the primary use case for organization isolation), a user manager in one organization can exfiltrate the complete member directory of all other organizations sharing the same database. Exposed data includes:</p>
-<ul>
-<li>Full names and all configured profile fields</li>
-<li>Email addresses</li>
-<li>Login names (useful for credential attacks)</li>
-<li>User UUIDs (useful for targeting other API endpoints)</li>
-</ul>
-<p>This completely bypasses the multi-tenant organization isolation boundary. The <code>contacts_show_all</code> admin setting (intended to control this feature) is also bypassed, meaning even instances where administrators have explicitly disabled cross-org viewing are affected.</p>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Change line 235 in <code>modules/contacts/contacts_data.php</code> to match the frontend guard at <code>contacts.php:80</code>:</p>
-<pre><code class="language-php">// Before (vulnerable):
-} elseif (($getMembersShowFilter === 3) &amp;&amp; $gCurrentUser-&gt;isAdministratorUsers()) {
-
-// After (fixed):
-} elseif (($getMembersShowFilter === 3) &amp;&amp; $gCurrentUser-&gt;isAdministrator() &amp;&amp; $gSettingsManager-&gt;getBool('contacts_show_all')) {
-</code></pre>
-<p>Additionally, as defense-in-depth, add an early rejection at the top of the file (after line 59) to block the filter value entirely for unauthorized users:</p>
-<pre><code class="language-php">if ($getMembersShowFilter === 3 &amp;&amp; (!$gCurrentUser-&gt;isAdministrator() || !$gSettingsManager-&gt;getBool('contacts_show_all'))) {
-    $getMembersShowFilter = 0; // Fall back to default
-}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Admidio/admidio/security/advisories/GHSA-g8p8-94f2-28gr">https://github.com/Admidio/admidio/security/advisories/GHSA-g8p8-94f2-28gr</a></li>
-<li><a href="https://github.com/advisories/GHSA-g8p8-94f2-28gr">https://github.com/advisories/GHSA-g8p8-94f2-28gr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g8p8-94f2-28gr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-29T21:44:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[admidio/admidio] Admidio has Path Traversal via Unvalidated `name` Parameter in Document Add Mode that Enables Arbitrary Server File Read]]></title>
-        <id>https://github.com/advisories/GHSA-m9h6-8pqm-xrhf</id>
-        <link href="https://github.com/advisories/GHSA-m9h6-8pqm-xrhf"/>
-        <updated>2026-04-29T21:42:23.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>add</code> mode in <code>modules/documents-files.php</code> accepts a <code>name</code> parameter validated only as <code>'string'</code> type (HTML encoding), allowing path traversal characters (<code>../</code>) to pass through unfiltered. Combined with the absence of CSRF protection on this endpoint and <code>SameSite=Lax</code> session cookies, a low-privileged attacker can trick a documents administrator into clicking a crafted link that registers an arbitrary server file (e.g., <code>install/config.php</code> containing database credentials) into a documents folder accessible to the attacker.</p>
-<h2 id="details">Details</h2>
-<p><strong>Root cause — incorrect input validation type (modules/documents-files.php:222):</strong></p>
-<pre><code class="language-php">case 'add':
-    $getName = admFuncVariableIsValid($_GET, 'name', 'string');
-</code></pre>
-<p>The <code>'string'</code> type in <code>admFuncVariableIsValid()</code> only applies <code>SecurityUtils::encodeHTML(StringUtils::strStripTags($value))</code> (system/bootstrap/function.php:414-416). Since <code>../</code> contains no HTML special characters (<code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, <code>"</code>, <code>'</code>), path traversal sequences pass through unchanged.</p>
-<p>The correct type would be <code>'file'</code>, which calls <code>StringUtils::strIsValidFileName()</code> (src/Infrastructure/Utils/StringUtils.php:217-236). This function checks <code>basename($filename) !== $filename</code> at line 228, which would reject any path containing directory separators.</p>
-<p><strong>Missing CSRF protection (modules/documents-files.php:221-238):</strong></p>
-<pre><code class="language-php">case 'add':
-    $getName = admFuncVariableIsValid($_GET, 'name', 'string');
-
-    if (!$gCurrentUser-&gt;isAdministratorDocumentsFiles()) {
-        throw new Exception('SYS_NO_RIGHTS');
-    }
-
-    $folder = new Folder($gDb);
-    $folder-&gt;readDataByUuid($getFolderUUID);
-    $folder-&gt;addFolderOrFileToDatabase($getName);
-    // ...
-</code></pre>
-<p>No <code>SecurityUtils::validateCsrfToken()</code> or form object validation. Compare with <code>folder_delete</code> (line 140) and <code>file_delete</code> (line 170) which both validate CSRF tokens. The <code>add</code> action operates entirely via GET parameters.</p>
-<p><strong>Unsafe path construction (src/Documents/Entity/Folder.php:121-135):</strong></p>
-<pre><code class="language-php">public function addFolderOrFileToDatabase(string $newFolderFileName): void
-{
-    $newFolderFileName = urldecode($newFolderFileName);
-    $newObjectPath = $this-&gt;getFullFolderPath() . '/' . $newFolderFileName;
-    // ...
-    if (is_file($newObjectPath)) {
-        $newFile = new File($this-&gt;db);
-        $newFile-&gt;setValue('fil_fol_id', $folderId);
-        $newFile-&gt;setValue('fil_name', $newFolderFileName);  // traversal stored in DB
-        // ...
-        $newFile-&gt;save();
-    }
-}
-</code></pre>
-<p>No <code>realpath()</code> comparison or <code>basename()</code> check. The traversal filename (e.g., <code>../../../install/config.php</code>) is stored verbatim as <code>fil_name</code> in the database.</p>
-<p><strong>File served on download (src/Documents/Entity/File.php:88-91, src/Documents/Service/DocumentsService.php:68-119):</strong></p>
-<pre><code class="language-php">// File.php:88-91
-public function getFullFilePath(): string
-{
-    return $this-&gt;getFullFolderPath() . '/' . $this-&gt;getValue('fil_name', 'database');
-}
-
-// DocumentsService.php:75-118
-$completePath = $file-&gt;getFullFilePath();  // reconstructs traversal path
-// ...
-readfile($completePath);  // serves arbitrary file
-</code></pre>
-<p><strong>SameSite=Lax allows cross-site GET (src/Session/Entity/Session.php:544):</strong></p>
-<pre><code class="language-php">'samesite' =&gt; 'lax'
-</code></pre>
-<p>Top-level GET navigations from cross-site origins include the session cookie, enabling the CSRF attack vector.</p>
-<h2 id="poc">PoC</h2>
-<p><strong>Prerequisites:</strong> Attacker has a regular user account with access to the documents module. A documents administrator is available to be social-engineered.</p>
-<pre><code class="language-bash"># Step 1: As regular user, browse the documents module to obtain a public folder UUID
-curl -b 'attacker_session' 'https://target.com/modules/documents-files.php?mode=list'
-# Note a folder_uuid from the response, e.g., "550e8400-e29b-41d4-a716-446655440000"
-
-# Step 2: Craft a link targeting install/config.php (adjust ../ depth for folder nesting)
-# For a folder at adm_my_files/documents/Photos/, use three levels:
-PAYLOAD_URL='https://target.com/modules/documents-files.php?mode=add&amp;folder_uuid=550e8400-e29b-41d4-a716-446655440000&amp;name=../../../install/config.php'
-
-# Step 3: Send this link to a documents administrator (email, chat, etc.)
-# When the admin clicks it, the server's install/config.php is registered in the Photos folder
-# The admin sees a redirect back to the documents page (normal behavior)
-
-# Step 4: As attacker, list the folder to find the new file entry
-curl -b 'attacker_session' 'https://target.com/modules/documents-files.php?mode=list&amp;folder_uuid=550e8400-e29b-41d4-a716-446655440000'
-# The traversal file appears in the listing with its file_uuid
-
-# Step 5: Download the file using its UUID
-curl -b 'attacker_session' 'https://target.com/modules/documents-files.php?mode=download&amp;file_uuid=&lt;FILE_UUID&gt;'
-# Response contains the contents of install/config.php, including:
-# $g_adm_srv  (database host)
-# $g_adm_usr  (database username)
-# $g_adm_pw   (database password)
-# $g_adm_db   (database name)
-</code></pre>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Arbitrary server file read</strong>: An attacker can read any file on the server that the web server process has read access to, including <code>install/config.php</code> (database credentials), <code>/etc/passwd</code>, application source code, and other configuration files.</li>
-<li><strong>Database credential exposure</strong>: The primary target <code>install/config.php</code> contains plaintext database credentials, enabling direct database access and full compromise of the Admidio installation.</li>
-<li><strong>Low attack complexity</strong>: The CSRF vector requires only that an admin clicks a single link — no JavaScript, no form submission, no special browser behavior.</li>
-</ul>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p><strong>Fix 1 — Use <code>'file'</code> validation type for the <code>name</code> parameter (modules/documents-files.php:222):</strong></p>
-<pre><code class="language-php">// Before (vulnerable):
-$getName = admFuncVariableIsValid($_GET, 'name', 'string');
-
-// After (fixed):
-$getName = admFuncVariableIsValid($_GET, 'name', 'file');
-</code></pre>
-<p>This invokes <code>StringUtils::strIsValidFileName()</code> which checks <code>basename($filename) !== $filename</code> and rejects any path containing directory traversal.</p>
-<p><strong>Fix 2 — Add CSRF protection to the <code>add</code> mode (modules/documents-files.php:221-238):</strong></p>
-<p>Change the <code>add</code> action from GET to POST and add CSRF token validation:</p>
-<pre><code class="language-php">case 'add':
-    SecurityUtils::validateCsrfToken($_POST['adm_csrf_token']);
-    $getName = admFuncVariableIsValid($_POST, 'name', 'file');
-
-    if (!$gCurrentUser-&gt;isAdministratorDocumentsFiles()) {
-        throw new Exception('SYS_NO_RIGHTS');
-    }
-
-    $folder = new Folder($gDb);
-    $folder-&gt;readDataByUuid($getFolderUUID);
-    $folder-&gt;addFolderOrFileToDatabase($getName);
-    // ...
-</code></pre>
-<p><strong>Fix 3 (defense in depth) — Add path canonicalization in <code>addFolderOrFileToDatabase()</code> (src/Documents/Entity/Folder.php):</strong></p>
-<pre><code class="language-php">public function addFolderOrFileToDatabase(string $newFolderFileName): void
-{
-    $newFolderFileName = urldecode($newFolderFileName);
-    $newObjectPath = $this-&gt;getFullFolderPath() . '/' . $newFolderFileName;
-
-    // Ensure the resolved path is within the folder directory
-    $realPath = realpath($newObjectPath);
-    $folderPath = realpath($this-&gt;getFullFolderPath());
-    if ($realPath === false || !str_starts_with($realPath, $folderPath . '/')) {
-        throw new Exception('SYS_FILENAME_INVALID');
-    }
-    // ... rest of method
-}
-</code></pre>
-<p>All three fixes should be applied for defense in depth.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Admidio/admidio/security/advisories/GHSA-m9h6-8pqm-xrhf">https://github.com/Admidio/admidio/security/advisories/GHSA-m9h6-8pqm-xrhf</a></li>
-<li><a href="https://github.com/advisories/GHSA-m9h6-8pqm-xrhf">https://github.com/advisories/GHSA-m9h6-8pqm-xrhf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m9h6-8pqm-xrhf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-29T21:42:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[admidio/admidio] Admidio has Path Traversal in ECard Preview that Allows Reading Arbitrary Server Files Including Database Credentials]]></title>
-        <id>https://github.com/advisories/GHSA-m3vp-3jjm-gpmx</id>
-        <link href="https://github.com/advisories/GHSA-m3vp-3jjm-gpmx"/>
-        <updated>2026-04-29T21:37:25.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>ecard_preview.php</code> endpoint does not validate that the <code>ecard_template</code> POST parameter is a safe filename before passing it to <code>ECard::getEcardTemplate()</code>. An authenticated user can supply a path traversal payload (e.g., <code>../config.php</code>) to read arbitrary files accessible to the web server process, including <code>adm_my_files/config.php</code> which contains database credentials.</p>
-<h2 id="details">Details</h2>
-<p><strong>Root Cause:</strong> The <code>ecard_template</code> parameter is a select box whose value is only sanitized via <code>strStripTags()</code> during form validation, which does not restrict path traversal characters. Unlike <code>ecard_send.php</code> which explicitly validates the template name as a safe filename, <code>ecard_preview.php</code> omits this check entirely.</p>
-<p><strong>Code Path:</strong></p>
-<ol>
-<li><p><code>modules/photos/ecards.php:143-152</code> — The form creates a select box with template filenames from <code>adm_my_files/ecard_templates/</code>. The form object is stored in the session.</p>
-</li>
-<li><p><code>modules/photos/ecard_preview.php:33-34</code> — The POST request is validated against the stored form object:</p>
-</li>
-</ol>
-<pre><code class="language-php">$categoryEditForm = $gCurrentSession-&gt;getFormObject($_POST['adm_csrf_token']);
-$formValues = $categoryEditForm-&gt;validate($_POST);
-</code></pre>
-<ol start="3">
-<li><p><code>src/UI/Presenter/FormPresenter.php:2190-2243</code> — The <code>validate()</code> method applies <code>StringUtils::strStripTags()</code> to all values and performs type-specific checks for <code>captcha</code>, <code>date</code>, <code>editor</code>, <code>email</code>, <code>number</code>, <code>url</code>, and <code>uuid</code> — but has <strong>no validation case for select box values</strong>. The attacker-controlled value <code>../config.php</code> passes through unchanged.</p>
-</li>
-<li><p><code>modules/photos/ecard_preview.php:48</code> — The unvalidated value is passed directly to <code>getEcardTemplate()</code>:</p>
-</li>
-</ol>
-<pre><code class="language-php">$ecardDataToParse = $funcClass-&gt;getEcardTemplate($formValues['ecard_template']);
-</code></pre>
-<ol start="5">
-<li><code>src/Photos/ValueObject/ECard.php:67-77</code> — The filename is concatenated into the path and opened:</li>
-</ol>
-<pre><code class="language-php">public function getEcardTemplate(string $tplFilename, string $tplFolder = ''): ?string
-{
-    if ($tplFolder === '') {
-        $tplFolder = ADMIDIO_PATH . FOLDER_DATA . '/ecard_templates/';
-    }
-    // ...
-    $fileHandle = @fopen($tplFolder . $tplFilename, 'rb');
-</code></pre>
-<p>With <code>$tplFilename = '../config.php'</code>, this resolves to <code>ADMIDIO_PATH/adm_my_files/ecard_templates/../config.php</code> → <code>ADMIDIO_PATH/adm_my_files/config.php</code>.</p>
-<p><strong>Why <code>ecard_send.php</code> is NOT vulnerable:</strong> At line 35, it independently validates the template name:</p>
-<pre><code class="language-php">$postTemplateName = admFuncVariableIsValid($_POST, 'ecard_template', 'file', array('requireValue' =&gt; true));
-</code></pre>
-<p>This calls <code>strIsValidFileName()</code> which checks <code>basename($filename) !== $filename</code>, blocking any path traversal. The preview endpoint lacks this check.</p>
-<h2 id="poc">PoC</h2>
-<pre><code class="language-bash"># Step 1: Log in and visit the ecard form to create a session with a form object
-# Navigate to: /modules/photos/ecards.php?photo_uuid=&lt;valid_album_uuid&gt;&amp;photo_nr=1
-# Extract the adm_csrf_token from the rendered form HTML
-
-# Step 2: Send path traversal payload to read config.php (contains DB credentials)
-curl -b 'PHPSESSID=&lt;session_cookie&gt;' \
-  -X POST 'https://target/modules/photos/ecard_preview.php' \
-  -d 'adm_csrf_token=&lt;csrf_token&gt;&amp;ecard_template=../config.php&amp;ecard_message=test&amp;photo_uuid=&lt;valid_uuid&gt;&amp;photo_nr=1&amp;submit_action=preview'
-
-# The response body will contain the contents of adm_my_files/config.php
-# rendered inside the ecard preview HTML, including:
-#   $g_adm_srv (database host)
-#   $g_adm_db  (database name)
-#   $g_adm_usr (database username)
-#   $g_adm_pw  (database password)
-
-# To traverse further outside adm_my_files:
-# ecard_template=../../system/bootstrap/constants.php  (reads PHP source)
-# ecard_template=../../../../../etc/passwd              (reads system files)
-</code></pre>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Database credential disclosure:</strong> Any authenticated user can read <code>adm_my_files/config.php</code>, exposing database host, name, username, and password. If the database is network-accessible, this enables full database compromise.</li>
-<li><strong>Source code disclosure:</strong> Arbitrary PHP files can be read, revealing application logic, internal paths, and potentially other secrets.</li>
-<li><strong>System file disclosure:</strong> With sufficient traversal depth (<code>../../../../../etc/passwd</code>), system files can be read, aiding further attacks.</li>
-<li><strong>Low barrier to exploit:</strong> Only requires a regular member account — no admin privileges needed.</li>
-</ul>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Add filename validation to <code>ecard_preview.php</code> before passing the template name to <code>getEcardTemplate()</code>, matching the validation already present in <code>ecard_send.php</code>:</p>
-<pre><code class="language-php">// In modules/photos/ecard_preview.php, add BEFORE line 48:
-$postTemplateName = admFuncVariableIsValid(
-    $formValues, 'ecard_template', 'file', array('requireValue' =&gt; true)
-);
-$ecardDataToParse = $funcClass-&gt;getEcardTemplate($postTemplateName);
-</code></pre>
-<p>Alternatively, add select box value validation to <code>FormPresenter::validate()</code> to verify that submitted select box values match one of the predefined options, which would protect all select boxes across the application:</p>
-<pre><code class="language-php">// In src/UI/Presenter/FormPresenter.php, inside the switch statement in validate():
-case 'select':
-    if (isset($element['values']) &amp;&amp; !array_key_exists($fieldValues[$element['id']], $element['values'])) {
-        throw new Exception('SYS_FIELD_INVALID_INPUT', array($element['label']));
-    }
-    break;
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Admidio/admidio/security/advisories/GHSA-m3vp-3jjm-gpmx">https://github.com/Admidio/admidio/security/advisories/GHSA-m3vp-3jjm-gpmx</a></li>
-<li><a href="https://github.com/advisories/GHSA-m3vp-3jjm-gpmx">https://github.com/advisories/GHSA-m3vp-3jjm-gpmx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m3vp-3jjm-gpmx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-29T21:37:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[ipl/web] ipl/web is vulnerable to reflected XSS by malformed search requests]]></title>
-        <id>https://github.com/advisories/GHSA-55wf-5m3q-6jjf</id>
-        <link href="https://github.com/advisories/GHSA-55wf-5m3q-6jjf"/>
-        <updated>2026-04-29T21:01:56.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The vulnerability allows an attacker to inject malicious Javascript into a victim's browser to run it in the context of Icinga Web. The victim needs to visit a specifically prepared website and may have no immediate chance to notice any wrongdoing.</p>
-<h3 id="patches">Patches</h3>
-<p>Version 0.13.1 includes a fix for this. It will be published as part of <code>icinga-php-library</code> version 0.19.2.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Enable the Content-Security-Policy (CSP) in the general configuration of Icinga Web available since version 2.12.0.</p>
-<h3 id="references">References</h3>
-<p>None</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/Icinga/ipl-web/security/advisories/GHSA-55wf-5m3q-6jjf">https://github.com/Icinga/ipl-web/security/advisories/GHSA-55wf-5m3q-6jjf</a></li>
-<li><a href="https://github.com/Icinga/ipl-web/commit/f387e92504d7a03bb857d1aee9b7410e06dd065d">https://github.com/Icinga/ipl-web/commit/f387e92504d7a03bb857d1aee9b7410e06dd065d</a></li>
-<li><a href="https://github.com/Icinga/ipl-web/releases/tag/v0.13.1">https://github.com/Icinga/ipl-web/releases/tag/v0.13.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-55wf-5m3q-6jjf">https://github.com/advisories/GHSA-55wf-5m3q-6jjf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-55wf-5m3q-6jjf</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-29T21:01:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[roadiz/openid] OpenID Connect nonce generated but never validated — ID token replay attack]]></title>
-        <id>https://github.com/advisories/GHSA-3gx8-q682-38mx</id>
-        <link href="https://github.com/advisories/GHSA-3gx8-q682-38mx"/>
-        <updated>2026-04-29T20:51:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>roadiz/openid</code> package generates an OIDC nonce in <code>OAuth2LinkGenerator::generate()</code> and includes it in the authorization request sent to the identity provider, but <strong>never stores it</strong> and <strong>never validates it</strong> on the callback. The <code>OpenIdJwtConfigurationFactory</code> validation chain does not include a nonce constraint, and <code>OpenIdAuthenticator::authenticate()</code> never checks the nonce claim in the returned ID token against a stored value.</p>
-<h3 id="details">Details</h3>
-<p>In <code>src/OAuth2LinkGenerator.php</code>, a nonce is created and sent to the IdP:</p>
-<pre><code class="language-php">'nonce' =&gt; $this-&gt;tokenGenerator-&gt;generateToken(),
-</code></pre>
-<p>However, this value is neither stored in session, cache, nor any other persistent store.</p>
-<p>In <code>src/OpenIdJwtConfigurationFactory.php</code>, the JWT validation constraints are:</p>
-<ul>
-<li><code>LooseValidAt</code> (expiry)</li>
-<li><code>PermittedFor</code> (audience)</li>
-<li><code>IssuedBy</code> (issuer)</li>
-<li><code>HostedDomain</code> (optional)</li>
-<li><code>UserInfoEndpoint</code> (optional)</li>
-</ul>
-<p><strong>No nonce constraint is present.</strong></p>
-<p>In <code>src/Authentication/OpenIdAuthenticator.php</code>, the <code>authenticate()</code> method validates the state CSRF token correctly (fixed in v2.7.10), but never retrieves a stored nonce or compares it against the <code>nonce</code> claim in the ID token.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Obtain a valid ID token from a legitimate OIDC flow for a target user (e.g. via network interception, browser history leak, or referrer header exposure on a non-HTTPS redirect).</li>
-<li>Replay the ID token: Since the nonce in the token is never cross-checked against a client-stored value, the token passes all validation constraints as long as it has not expired.</li>
-<li>Result: An attacker can authenticate as the victim within the ID token's validity window.</li>
-</ol>
-<p>Additionally, in an authorization code flow with multiple concurrent sessions, a malicious IdP or a compromised token endpoint could inject a token with a mismatched nonce, and the application would accept it silently.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>ID token replay attacks</strong>: Valid but intercepted tokens can be reused for authentication within their validity period.</li>
-<li><strong>Token injection attacks</strong>: A malicious or compromised identity provider can inject tokens across sessions without detection.</li>
-<li>Affects any Roadiz application using the <code>roadiz/openid</code> package with OpenID Connect SSO.</li>
-</ul>
-<p>The OIDC Core 1.0 specification (Section 3.1.3.7) explicitly requires clients to verify the <code>nonce</code> claim if it was present in the authorization request.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/roadiz/core-bundle-dev-app/security/advisories/GHSA-3gx8-q682-38mx">https://github.com/roadiz/core-bundle-dev-app/security/advisories/GHSA-3gx8-q682-38mx</a></li>
-<li><a href="https://github.com/advisories/GHSA-3gx8-q682-38mx">https://github.com/advisories/GHSA-3gx8-q682-38mx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3gx8-q682-38mx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-29T20:51:40.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[roadiz/openid] OpenID Connect nonce generated but never validated — ID token replay attack]]></title>
-        <id>https://github.com/advisories/GHSA-3gx8-q682-38mx</id>
-        <link href="https://github.com/advisories/GHSA-3gx8-q682-38mx"/>
-        <updated>2026-04-29T20:51:43.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>roadiz/openid</code> package generates an OIDC nonce in <code>OAuth2LinkGenerator::generate()</code> and includes it in the authorization request sent to the identity provider, but <strong>never stores it</strong> and <strong>never validates it</strong> on the callback. The <code>OpenIdJwtConfigurationFactory</code> validation chain does not include a nonce constraint, and <code>OpenIdAuthenticator::authenticate()</code> never checks the nonce claim in the returned ID token against a stored value.</p>
-<h3 id="details">Details</h3>
-<p>In <code>src/OAuth2LinkGenerator.php</code>, a nonce is created and sent to the IdP:</p>
-<pre><code class="language-php">'nonce' =&gt; $this-&gt;tokenGenerator-&gt;generateToken(),
-</code></pre>
-<p>However, this value is neither stored in session, cache, nor any other persistent store.</p>
-<p>In <code>src/OpenIdJwtConfigurationFactory.php</code>, the JWT validation constraints are:</p>
-<ul>
-<li><code>LooseValidAt</code> (expiry)</li>
-<li><code>PermittedFor</code> (audience)</li>
-<li><code>IssuedBy</code> (issuer)</li>
-<li><code>HostedDomain</code> (optional)</li>
-<li><code>UserInfoEndpoint</code> (optional)</li>
-</ul>
-<p><strong>No nonce constraint is present.</strong></p>
-<p>In <code>src/Authentication/OpenIdAuthenticator.php</code>, the <code>authenticate()</code> method validates the state CSRF token correctly (fixed in v2.7.10), but never retrieves a stored nonce or compares it against the <code>nonce</code> claim in the ID token.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Obtain a valid ID token from a legitimate OIDC flow for a target user (e.g. via network interception, browser history leak, or referrer header exposure on a non-HTTPS redirect).</li>
-<li>Replay the ID token: Since the nonce in the token is never cross-checked against a client-stored value, the token passes all validation constraints as long as it has not expired.</li>
-<li>Result: An attacker can authenticate as the victim within the ID token's validity window.</li>
-</ol>
-<p>Additionally, in an authorization code flow with multiple concurrent sessions, a malicious IdP or a compromised token endpoint could inject a token with a mismatched nonce, and the application would accept it silently.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>ID token replay attacks</strong>: Valid but intercepted tokens can be reused for authentication within their validity period.</li>
-<li><strong>Token injection attacks</strong>: A malicious or compromised identity provider can inject tokens across sessions without detection.</li>
-<li>Affects any Roadiz application using the <code>roadiz/openid</code> package with OpenID Connect SSO.</li>
-</ul>
-<p>The OIDC Core 1.0 specification (Section 3.1.3.7) explicitly requires clients to verify the <code>nonce</code> claim if it was present in the authorization request.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/roadiz/core-bundle-dev-app/security/advisories/GHSA-3gx8-q682-38mx">https://github.com/roadiz/core-bundle-dev-app/security/advisories/GHSA-3gx8-q682-38mx</a></li>
-<li><a href="https://github.com/advisories/GHSA-3gx8-q682-38mx">https://github.com/advisories/GHSA-3gx8-q682-38mx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3gx8-q682-38mx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-29T20:51:40.000Z</published>
     </entry>
 </feed>
