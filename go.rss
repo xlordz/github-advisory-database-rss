@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-05-21T18:21:05.664Z</updated>
+    <updated>2026-05-21T20:14:53.187Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,156 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/fission/fission] Fission router exposes /fission-function/<ns>/<name> on its public listener, allowing invocation of any function without an HTTPTrigger]]></title>
+        <id>https://github.com/advisories/GHSA-3g33-6vg6-27m8</id>
+        <link href="https://github.com/advisories/GHSA-3g33-6vg6-27m8"/>
+        <updated>2026-05-21T20:14:51.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The Fission router registers an internal-style route — <code>/fission-function/&lt;name&gt;</code> and <code>/fission-function/&lt;ns&gt;/&lt;name&gt;</code> — for every <code>Function</code> object, independent of whether any <code>HTTPTrigger</code> exists for that function. The route was mounted on the same listener as user-defined <code>HTTPTrigger</code>s (<code>svc/router</code>, port 8888), so any caller who could reach the router could invoke any function by guessing its <code>metadata.name</code> (and namespace), bypassing the host / path / method / method-allow-list restrictions encoded in <code>HTTPTrigger</code> objects.</p>
+<h3 id="affected-component">Affected component</h3>
+<ul>
+<li><code>pkg/router/httpTriggers.go:280-284</code> — <code>internalRoute</code> registration via <code>utils.UrlForFunction(fn.Name, fn.Namespace)</code>, bound to the function handler.</li>
+</ul>
+<h3 id="impact">Impact</h3>
+<p>An external caller who reaches the public router could:</p>
+<ol>
+<li>Invoke functions that the operator intentionally did not publish through an <code>HTTPTrigger</code> (e.g. functions used only as Kubewatcher / Timer / MessageQueue trigger targets, internal helpers, or sample functions).</li>
+<li>Bypass <code>HTTPTrigger</code>-level restrictions: a function published only on <code>POST /api/v2/foo</code> could still be invoked as <code>GET /fission-function/&lt;ns&gt;/&lt;name&gt;</code> with arbitrary headers and body.</li>
+<li>Enumerate function names by probing the response semantics (404 vs 200 vs 502 from cold start).</li>
+</ol>
+<p>In multi-tenant deployments this also crosses tenant boundaries when functions in tenant namespace B are reachable from tenant A's pods (or from anywhere on the internet if the router is ingress-exposed).</p>
+<h3 id="root-cause">Root cause</h3>
+<p><code>/fission-function/...</code> was historically used by internal trigger sources (timer, kubewatcher, mqtrigger) that share the cluster network with the router, but the route was registered on the public listener that also serves user <code>HTTPTrigger</code>s. The two audiences were never separated.</p>
+<h3 id="fix">Fix</h3>
+<p>Released in <a href="https://github.com/fission/fission/releases/tag/v1.23.0">v1.23.0</a>:</p>
+<ul>
+<li><strong>PR #3369</strong> (commit <code>814d232c</code>): the router now runs <strong>two</strong> listeners — a public listener (port 8888, <code>svc/router</code>) that serves only user-defined <code>HTTPTrigger</code>s, <code>/router-healthz</code>, and <code>/_version</code>, and an internal listener (port 8889, <code>svc/router-internal</code>, ClusterIP-only) that exclusively serves <code>/fission-function/&lt;ns&gt;/&lt;name&gt;</code>. The internal listener is wrapped with the <code>pkg/auth/hmac.ServiceVerifier</code> using the <code>ServiceRouterInternal</code> derived key — internal trigger sources sign their requests with a per-service HKDF-derived key from a cluster master secret. Empty master secret falls back to pass-through (preserves compatibility for clusters not yet rotating in a secret).</li>
+<li><strong>PR #3365</strong> (commit <code>0aa24788</code>): added per-service <code>NetworkPolicy</code> resources to <code>charts/fission-all</code>, ensuring <code>svc/router-internal</code> is only reachable from <code>kubewatcher</code>, <code>timer</code>, <code>mqtrigger</code>, and <code>mqt-keda</code> pods inside the release namespace.</li>
+<li>The internal-listener path itself is still <strong><code>/fission-function/&lt;ns&gt;/&lt;name&gt;</code></strong> — only its location moved.</li>
+</ul>
+<h3 id="mitigation-until-upgrade">Mitigation (until upgrade)</h3>
+<ol>
+<li>Apply a <code>NetworkPolicy</code> to the Fission namespace that allows ingress to <code>svc/router</code> (port 8888) only from the consuming project's ingress controller, and blocks <code>/fission-function/...</code> at the ingress layer (path-based filter on the ingress).</li>
+<li>Avoid exposing the router directly via LoadBalancer/NodePort; front it with an ingress that path-filters <code>/fission-function/</code>.</li>
+<li>Treat function <code>metadata.name</code> as <strong>not</strong> a secret — names should not be the access control boundary.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/fission/fission/security/advisories/GHSA-3g33-6vg6-27m8">https://github.com/fission/fission/security/advisories/GHSA-3g33-6vg6-27m8</a></li>
+<li><a href="https://github.com/fission/fission/pull/3365">https://github.com/fission/fission/pull/3365</a></li>
+<li><a href="https://github.com/fission/fission/pull/3369">https://github.com/fission/fission/pull/3369</a></li>
+<li><a href="https://github.com/fission/fission/releases/tag/v1.23.0">https://github.com/fission/fission/releases/tag/v1.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-3g33-6vg6-27m8">https://github.com/advisories/GHSA-3g33-6vg6-27m8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3g33-6vg6-27m8</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-05-21T20:14:51.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/fission/fission] Fission StorageSvc /v1/archive endpoint exposes unauthenticated CRUD over all function archives]]></title>
+        <id>https://github.com/advisories/GHSA-chf8-4hv6-8pg6</id>
+        <link href="https://github.com/advisories/GHSA-chf8-4hv6-8pg6"/>
+        <updated>2026-05-21T20:07:15.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The Fission <code>storagesvc</code> component registers archive CRUD handlers (<code>/v1/archive</code> GET / POST / DELETE and <code>/v1/archives</code> list) directly on its HTTP router without performing any authentication or authorization. Any caller able to reach the <code>storagesvc</code> ClusterIP — including  any other workload in the same Kubernetes cluster — could enumerate archive IDs, download archives belonging to other tenants, upload arbitrary archive content, and delete archives.</p>
+<h3 id="affected-component">Affected component</h3>
+<ul>
+<li><code>pkg/storagesvc/storagesvc.go</code> — handler registration and per-route handler logic at lines   72-95 (list), 167-199 (download/delete), and 263-270 (route wiring).</li>
+</ul>
+<h3 id="impact">Impact</h3>
+<p>A workload elsewhere in the cluster (e.g. a compromised function pod, a noisy-neighbour tenant in a multi-tenant deployment, or any pod whose egress is not constrained by NetworkPolicy) could:</p>
+<ol>
+<li>Enumerate every function deployment archive in the cluster.</li>
+<li>Download the deployment archive of any function in any namespace, exposing the function's source code and any embedded secrets.</li>
+<li>Delete archives, causing the next function specialization or rebuild to fail.</li>
+<li>Upload arbitrary archives that subsequent function specializations would fetch and execute.</li>
+</ol>
+<p>In multi-tenant Fission deployments this completely breaks the tenant boundary for function code.</p>
+<h3 id="root-cause">Root cause</h3>
+<p><code>pkg/storagesvc/storagesvc.go</code> mounts the handlers without an authentication middleware. Network-layer controls (<code>NetworkPolicy</code>) were the only line of defence before this fix, and the chart shipped no <code>NetworkPolicy</code> for <code>storagesvc</code> by default, so reachability was open.</p>
+<h3 id="fix">Fix</h3>
+<p>  Released in <a href="https://github.com/fission/fission/releases/tag/v1.23.0">v1.23.0</a>:</p>
+<ul>
+<li><strong>PR #3368</strong> (commit <code>2455fc0c</code>) wraps the <code>storagesvc</code> archive routes with the application-layer HMAC verifier from <code>pkg/auth/hmac</code> using the <code>ServiceStoragesvc</code> derived key. Callers (executor, fetcher, builder, CLI) sign their requests using a shared cluster master secret derived per-service via HKDF. Mismatched signatures are rejected with <code>401</code>.</li>
+<li>Defence in depth: <strong>PR #3365</strong> added a <code>NetworkPolicy</code> for <code>storagesvc</code> so only the executor/fetcher/builder pods can reach it network-layer (independent of authentication).</li>
+</ul>
+<h3 id="mitigation-until-upgrade">Mitigation (until upgrade)</h3>
+<ol>
+<li>Enable the Helm chart's per-service NetworkPolicy (set <code>networkPolicy.enabled=true</code>).</li>
+<li>Restrict <code>storagesvc</code> egress/ingress to the executor, builder, and fetcher pods only.</li>
+<li>Avoid running untrusted workloads in the cluster that hosts Fission.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/fission/fission/security/advisories/GHSA-chf8-4hv6-8pg6">https://github.com/fission/fission/security/advisories/GHSA-chf8-4hv6-8pg6</a></li>
+<li><a href="https://github.com/fission/fission/pull/3365">https://github.com/fission/fission/pull/3365</a></li>
+<li><a href="https://github.com/fission/fission/pull/3368">https://github.com/fission/fission/pull/3368</a></li>
+<li><a href="https://github.com/fission/fission/releases/tag/v1.23.0">https://github.com/fission/fission/releases/tag/v1.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-chf8-4hv6-8pg6">https://github.com/advisories/GHSA-chf8-4hv6-8pg6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-chf8-4hv6-8pg6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-21T20:07:13.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/openclaw/crabbox] Crabbox: environment variable exposure vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-fm77-94qm-4894</id>
+        <link href="https://github.com/advisories/GHSA-fm77-94qm-4894"/>
+        <updated>2026-05-21T19:29:24.000Z</updated>
+        <content type="html"><![CDATA[<p>Crabbox prior to v0.12.0 contains an environment variable exposure vulnerability that allows attackers with access to a malicious or compromised repository to forward local secrets such as API tokens, cloud credentials, and broker tokens into the remote command environment. Attackers can exploit overly permissive environment variable allowlisting in repo-local Crabbox configuration to serialize sensitive environment variables into remote command execution, exposing credentials to the remote environment.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8634">https://nvd.nist.gov/vuln/detail/CVE-2026-8634</a></li>
+<li><a href="https://github.com/openclaw/crabbox/pull/78">https://github.com/openclaw/crabbox/pull/78</a></li>
+<li><a href="https://github.com/openclaw/crabbox/commit/eaae40ae4ce009e60633f16f7f19600c74557f6f">https://github.com/openclaw/crabbox/commit/eaae40ae4ce009e60633f16f7f19600c74557f6f</a></li>
+<li><a href="https://github.com/openclaw/crabbox/releases/tag/v0.12.0">https://github.com/openclaw/crabbox/releases/tag/v0.12.0</a></li>
+<li><a href="https://www.vulncheck.com/advisories/crabbox-environment-variable-information-disclosure">https://www.vulncheck.com/advisories/crabbox-environment-variable-information-disclosure</a></li>
+<li><a href="https://github.com/advisories/GHSA-fm77-94qm-4894">https://github.com/advisories/GHSA-fm77-94qm-4894</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fm77-94qm-4894</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-05-14T21:30:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/openclaw/crabbox] Crabbox: authentication bypass vulnerability that allows impersonation of others by spoofing identity headers]]></title>
+        <id>https://github.com/advisories/GHSA-4g9m-rffv-h6wq</id>
+        <link href="https://github.com/advisories/GHSA-4g9m-rffv-h6wq"/>
+        <updated>2026-05-21T19:29:08.000Z</updated>
+        <content type="html"><![CDATA[<p>Crabbox prior to v0.12.0 contains an authentication bypass vulnerability that allows non-admin shared-token callers to impersonate other owners or organizations by spoofing identity headers. Attackers can inject malicious X-Crabbox-Owner and X-Crabbox-Org headers in requests authenticated with a shared token to bypass authorization checks and access owner/org-scoped lease operations belonging to victim accounts.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-8621">https://nvd.nist.gov/vuln/detail/CVE-2026-8621</a></li>
+<li><a href="https://github.com/openclaw/crabbox/pull/70">https://github.com/openclaw/crabbox/pull/70</a></li>
+<li><a href="https://github.com/openclaw/crabbox/commit/b657323f1d1c954cefc8444571fa6c45a8896e7f">https://github.com/openclaw/crabbox/commit/b657323f1d1c954cefc8444571fa6c45a8896e7f</a></li>
+<li><a href="https://github.com/openclaw/crabbox/releases/tag/v0.12.0">https://github.com/openclaw/crabbox/releases/tag/v0.12.0</a></li>
+<li><a href="https://www.vulncheck.com/advisories/crabbox-authentication-bypass-via-header-spoofing">https://www.vulncheck.com/advisories/crabbox-authentication-bypass-via-header-spoofing</a></li>
+<li><a href="https://github.com/advisories/GHSA-4g9m-rffv-h6wq">https://github.com/advisories/GHSA-4g9m-rffv-h6wq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4g9m-rffv-h6wq</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-14T21:30:43.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/mvt-project/androidqf] androidqf: APK download Path Traversal in device APK paths]]></title>
         <id>https://github.com/advisories/GHSA-763j-3p5v-jfc6</id>
@@ -987,350 +1137,6 @@ github.com/tomwright/dasel/v3/selector/lexer.(*Tokenizer).parseCurRune(...)
     </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/coder/coder] Coder: PKCS#7 signature bypass in Azure instance identity allows unauthenticated agent token theft]]></title>
-        <id>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</id>
-        <link href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf"/>
-        <updated>2026-05-19T20:04:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>azureidentity.Validate()</code> verifies that the PKCS#7 signer certificate chains to a trusted Azure CA but never verifies the PKCS#7 signature itself. An attacker can embed a legitimate Azure certificate alongside arbitrary content e.g. <code>{"vmId":"&lt;target&gt;"}</code> and the forged <code>vmId</code> will be accepted returning the victim workspace agent's session token.</p>
-<p><strong>No authentication is required.</strong> The attacker only needs to know a target VM's <code>vmId</code> which is a <code>UUIDv4</code>.</p>
-<blockquote>
-<p>that's a practical limitation which would typically require prior access to be exploited</p>
-</blockquote>
-<h2 id="root-cause">Root Cause</h2>
-<p>In unpatched Coder releases the signature over the PKCS#7 content is not validated - only the signing certificate is checked.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker on any Azure VM or with access to a publicly available Azure IMDS certificate from CT logs can:</p>
-<ol>
-<li><strong>Steal an agent session token</strong> by sending a forged PKCS#7 envelope to <code>POST /api/v2/workspaceagents/azure-instance-identity</code> which is unauthenticated.</li>
-<li><strong>With the stolen token</strong> access:<ul>
-<li><strong>Git SSH private key</strong> via <code>GET /workspaceagents/me/gitsshkey</code>: push to repositories and impersonate the workspace owner.</li>
-<li><strong>OAuth access tokens</strong> via <code>GET /workspaceagents/me/external-auth</code>: GitHub, GitLab, and Bitbucket tokens in plaintext.</li>
-<li><strong>Workspace secrets</strong> via the agent manifest: environment variables, file paths, and API keys.</li>
-</ul>
-</li>
-</ol>
-<h2 id="attack-path-diagram">Attack Path Diagram</h2>
-<img src="https://github.com/user-attachments/assets/74e88a89-a995-450d-87ab-6feed03579a5" alt="PKCS7_diagram (1)" height="4176" width="5588">
-
-<h2 id="affected-versions">Affected Versions</h2>
-<p>All versions of Coder v2 are affected.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed in <a href="https://github.com/coder/coder/pull/25286">#25286 </a></p>
-<p>The fix was backported to all supported release lines:</p>
-<table>
-<thead>
-<tr>
-<th>Patched Versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.33.3"><strong>v2.33.3</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.32.2"><strong>v2.32.2</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.31.12"><strong>v2.31.12</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.30.8"><strong>v2.30.8</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.29.13"><strong>v2.29.13</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.24.5"><strong>v2.24.5</strong></a></td>
-</tr>
-</tbody></table>
-<h2 id="workarounds">Workarounds</h2>
-<p>If unable to patch we recommend immediately reconfiguring any Azure templates to use token authentication rather than <code>azure-instance-identity</code> until the patch is released and you are fully upgraded.</p>
-<ol>
-<li>Modify the <a href="https://registry.terraform.io/providers/coder/coder/latest/docs/resources/agent#auth-1"><code>coder_agent.auth</code></a> value to be <code>token</code>.</li>
-<li>Add <code>CODER_AGENT_TOKEN=${coder_agent.main.token}</code> to the set of environment variables for the Coder Workspace Agent initialization script.</li>
-</ol>
-<h2 id="recognition">Recognition</h2>
-<p>We'd like to thank <a href="https://github.com/bencalif">Ben Tran</a> of <a href="http://calif.io">calif.io</a> and Anthropic’s Security Team (<code>ANT-2026-22445</code>) for independently disclosing this issue!</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-<li><a href="https://github.com/coder/coder/pull/25286">https://github.com/coder/coder/pull/25286</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.24.5">https://github.com/coder/coder/releases/tag/v2.24.5</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.29.13">https://github.com/coder/coder/releases/tag/v2.29.13</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.30.8">https://github.com/coder/coder/releases/tag/v2.30.8</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.31.12">https://github.com/coder/coder/releases/tag/v2.31.12</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.32.2">https://github.com/coder/coder/releases/tag/v2.32.2</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.33.3">https://github.com/coder/coder/releases/tag/v2.33.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-19T20:04:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/coder/coder/v2] Coder: PKCS#7 signature bypass in Azure instance identity allows unauthenticated agent token theft]]></title>
-        <id>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</id>
-        <link href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf"/>
-        <updated>2026-05-19T20:04:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>azureidentity.Validate()</code> verifies that the PKCS#7 signer certificate chains to a trusted Azure CA but never verifies the PKCS#7 signature itself. An attacker can embed a legitimate Azure certificate alongside arbitrary content e.g. <code>{"vmId":"&lt;target&gt;"}</code> and the forged <code>vmId</code> will be accepted returning the victim workspace agent's session token.</p>
-<p><strong>No authentication is required.</strong> The attacker only needs to know a target VM's <code>vmId</code> which is a <code>UUIDv4</code>.</p>
-<blockquote>
-<p>that's a practical limitation which would typically require prior access to be exploited</p>
-</blockquote>
-<h2 id="root-cause">Root Cause</h2>
-<p>In unpatched Coder releases the signature over the PKCS#7 content is not validated - only the signing certificate is checked.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker on any Azure VM or with access to a publicly available Azure IMDS certificate from CT logs can:</p>
-<ol>
-<li><strong>Steal an agent session token</strong> by sending a forged PKCS#7 envelope to <code>POST /api/v2/workspaceagents/azure-instance-identity</code> which is unauthenticated.</li>
-<li><strong>With the stolen token</strong> access:<ul>
-<li><strong>Git SSH private key</strong> via <code>GET /workspaceagents/me/gitsshkey</code>: push to repositories and impersonate the workspace owner.</li>
-<li><strong>OAuth access tokens</strong> via <code>GET /workspaceagents/me/external-auth</code>: GitHub, GitLab, and Bitbucket tokens in plaintext.</li>
-<li><strong>Workspace secrets</strong> via the agent manifest: environment variables, file paths, and API keys.</li>
-</ul>
-</li>
-</ol>
-<h2 id="attack-path-diagram">Attack Path Diagram</h2>
-<img src="https://github.com/user-attachments/assets/74e88a89-a995-450d-87ab-6feed03579a5" alt="PKCS7_diagram (1)" height="4176" width="5588">
-
-<h2 id="affected-versions">Affected Versions</h2>
-<p>All versions of Coder v2 are affected.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed in <a href="https://github.com/coder/coder/pull/25286">#25286 </a></p>
-<p>The fix was backported to all supported release lines:</p>
-<table>
-<thead>
-<tr>
-<th>Patched Versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.33.3"><strong>v2.33.3</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.32.2"><strong>v2.32.2</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.31.12"><strong>v2.31.12</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.30.8"><strong>v2.30.8</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.29.13"><strong>v2.29.13</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.24.5"><strong>v2.24.5</strong></a></td>
-</tr>
-</tbody></table>
-<h2 id="workarounds">Workarounds</h2>
-<p>If unable to patch we recommend immediately reconfiguring any Azure templates to use token authentication rather than <code>azure-instance-identity</code> until the patch is released and you are fully upgraded.</p>
-<ol>
-<li>Modify the <a href="https://registry.terraform.io/providers/coder/coder/latest/docs/resources/agent#auth-1"><code>coder_agent.auth</code></a> value to be <code>token</code>.</li>
-<li>Add <code>CODER_AGENT_TOKEN=${coder_agent.main.token}</code> to the set of environment variables for the Coder Workspace Agent initialization script.</li>
-</ol>
-<h2 id="recognition">Recognition</h2>
-<p>We'd like to thank <a href="https://github.com/bencalif">Ben Tran</a> of <a href="http://calif.io">calif.io</a> and Anthropic’s Security Team (<code>ANT-2026-22445</code>) for independently disclosing this issue!</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-<li><a href="https://github.com/coder/coder/pull/25286">https://github.com/coder/coder/pull/25286</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.24.5">https://github.com/coder/coder/releases/tag/v2.24.5</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.29.13">https://github.com/coder/coder/releases/tag/v2.29.13</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.30.8">https://github.com/coder/coder/releases/tag/v2.30.8</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.31.12">https://github.com/coder/coder/releases/tag/v2.31.12</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.32.2">https://github.com/coder/coder/releases/tag/v2.32.2</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.33.3">https://github.com/coder/coder/releases/tag/v2.33.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-19T20:04:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/coder/coder/v2] Coder: PKCS#7 signature bypass in Azure instance identity allows unauthenticated agent token theft]]></title>
-        <id>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</id>
-        <link href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf"/>
-        <updated>2026-05-19T20:04:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>azureidentity.Validate()</code> verifies that the PKCS#7 signer certificate chains to a trusted Azure CA but never verifies the PKCS#7 signature itself. An attacker can embed a legitimate Azure certificate alongside arbitrary content e.g. <code>{"vmId":"&lt;target&gt;"}</code> and the forged <code>vmId</code> will be accepted returning the victim workspace agent's session token.</p>
-<p><strong>No authentication is required.</strong> The attacker only needs to know a target VM's <code>vmId</code> which is a <code>UUIDv4</code>.</p>
-<blockquote>
-<p>that's a practical limitation which would typically require prior access to be exploited</p>
-</blockquote>
-<h2 id="root-cause">Root Cause</h2>
-<p>In unpatched Coder releases the signature over the PKCS#7 content is not validated - only the signing certificate is checked.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker on any Azure VM or with access to a publicly available Azure IMDS certificate from CT logs can:</p>
-<ol>
-<li><strong>Steal an agent session token</strong> by sending a forged PKCS#7 envelope to <code>POST /api/v2/workspaceagents/azure-instance-identity</code> which is unauthenticated.</li>
-<li><strong>With the stolen token</strong> access:<ul>
-<li><strong>Git SSH private key</strong> via <code>GET /workspaceagents/me/gitsshkey</code>: push to repositories and impersonate the workspace owner.</li>
-<li><strong>OAuth access tokens</strong> via <code>GET /workspaceagents/me/external-auth</code>: GitHub, GitLab, and Bitbucket tokens in plaintext.</li>
-<li><strong>Workspace secrets</strong> via the agent manifest: environment variables, file paths, and API keys.</li>
-</ul>
-</li>
-</ol>
-<h2 id="attack-path-diagram">Attack Path Diagram</h2>
-<img src="https://github.com/user-attachments/assets/74e88a89-a995-450d-87ab-6feed03579a5" alt="PKCS7_diagram (1)" height="4176" width="5588">
-
-<h2 id="affected-versions">Affected Versions</h2>
-<p>All versions of Coder v2 are affected.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed in <a href="https://github.com/coder/coder/pull/25286">#25286 </a></p>
-<p>The fix was backported to all supported release lines:</p>
-<table>
-<thead>
-<tr>
-<th>Patched Versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.33.3"><strong>v2.33.3</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.32.2"><strong>v2.32.2</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.31.12"><strong>v2.31.12</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.30.8"><strong>v2.30.8</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.29.13"><strong>v2.29.13</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.24.5"><strong>v2.24.5</strong></a></td>
-</tr>
-</tbody></table>
-<h2 id="workarounds">Workarounds</h2>
-<p>If unable to patch we recommend immediately reconfiguring any Azure templates to use token authentication rather than <code>azure-instance-identity</code> until the patch is released and you are fully upgraded.</p>
-<ol>
-<li>Modify the <a href="https://registry.terraform.io/providers/coder/coder/latest/docs/resources/agent#auth-1"><code>coder_agent.auth</code></a> value to be <code>token</code>.</li>
-<li>Add <code>CODER_AGENT_TOKEN=${coder_agent.main.token}</code> to the set of environment variables for the Coder Workspace Agent initialization script.</li>
-</ol>
-<h2 id="recognition">Recognition</h2>
-<p>We'd like to thank <a href="https://github.com/bencalif">Ben Tran</a> of <a href="http://calif.io">calif.io</a> and Anthropic’s Security Team (<code>ANT-2026-22445</code>) for independently disclosing this issue!</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-<li><a href="https://github.com/coder/coder/pull/25286">https://github.com/coder/coder/pull/25286</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.24.5">https://github.com/coder/coder/releases/tag/v2.24.5</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.29.13">https://github.com/coder/coder/releases/tag/v2.29.13</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.30.8">https://github.com/coder/coder/releases/tag/v2.30.8</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.31.12">https://github.com/coder/coder/releases/tag/v2.31.12</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.32.2">https://github.com/coder/coder/releases/tag/v2.32.2</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.33.3">https://github.com/coder/coder/releases/tag/v2.33.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-19T20:04:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/coder/coder/v2] Coder: PKCS#7 signature bypass in Azure instance identity allows unauthenticated agent token theft]]></title>
-        <id>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</id>
-        <link href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf"/>
-        <updated>2026-05-19T20:04:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>azureidentity.Validate()</code> verifies that the PKCS#7 signer certificate chains to a trusted Azure CA but never verifies the PKCS#7 signature itself. An attacker can embed a legitimate Azure certificate alongside arbitrary content e.g. <code>{"vmId":"&lt;target&gt;"}</code> and the forged <code>vmId</code> will be accepted returning the victim workspace agent's session token.</p>
-<p><strong>No authentication is required.</strong> The attacker only needs to know a target VM's <code>vmId</code> which is a <code>UUIDv4</code>.</p>
-<blockquote>
-<p>that's a practical limitation which would typically require prior access to be exploited</p>
-</blockquote>
-<h2 id="root-cause">Root Cause</h2>
-<p>In unpatched Coder releases the signature over the PKCS#7 content is not validated - only the signing certificate is checked.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker on any Azure VM or with access to a publicly available Azure IMDS certificate from CT logs can:</p>
-<ol>
-<li><strong>Steal an agent session token</strong> by sending a forged PKCS#7 envelope to <code>POST /api/v2/workspaceagents/azure-instance-identity</code> which is unauthenticated.</li>
-<li><strong>With the stolen token</strong> access:<ul>
-<li><strong>Git SSH private key</strong> via <code>GET /workspaceagents/me/gitsshkey</code>: push to repositories and impersonate the workspace owner.</li>
-<li><strong>OAuth access tokens</strong> via <code>GET /workspaceagents/me/external-auth</code>: GitHub, GitLab, and Bitbucket tokens in plaintext.</li>
-<li><strong>Workspace secrets</strong> via the agent manifest: environment variables, file paths, and API keys.</li>
-</ul>
-</li>
-</ol>
-<h2 id="attack-path-diagram">Attack Path Diagram</h2>
-<img src="https://github.com/user-attachments/assets/74e88a89-a995-450d-87ab-6feed03579a5" alt="PKCS7_diagram (1)" height="4176" width="5588">
-
-<h2 id="affected-versions">Affected Versions</h2>
-<p>All versions of Coder v2 are affected.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed in <a href="https://github.com/coder/coder/pull/25286">#25286 </a></p>
-<p>The fix was backported to all supported release lines:</p>
-<table>
-<thead>
-<tr>
-<th>Patched Versions</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.33.3"><strong>v2.33.3</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.32.2"><strong>v2.32.2</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.31.12"><strong>v2.31.12</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.30.8"><strong>v2.30.8</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.29.13"><strong>v2.29.13</strong></a></td>
-</tr>
-<tr>
-<td><a href="https://github.com/coder/coder/releases/tag/v2.24.5"><strong>v2.24.5</strong></a></td>
-</tr>
-</tbody></table>
-<h2 id="workarounds">Workarounds</h2>
-<p>If unable to patch we recommend immediately reconfiguring any Azure templates to use token authentication rather than <code>azure-instance-identity</code> until the patch is released and you are fully upgraded.</p>
-<ol>
-<li>Modify the <a href="https://registry.terraform.io/providers/coder/coder/latest/docs/resources/agent#auth-1"><code>coder_agent.auth</code></a> value to be <code>token</code>.</li>
-<li>Add <code>CODER_AGENT_TOKEN=${coder_agent.main.token}</code> to the set of environment variables for the Coder Workspace Agent initialization script.</li>
-</ol>
-<h2 id="recognition">Recognition</h2>
-<p>We'd like to thank <a href="https://github.com/bencalif">Ben Tran</a> of <a href="http://calif.io">calif.io</a> and Anthropic’s Security Team (<code>ANT-2026-22445</code>) for independently disclosing this issue!</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/coder/coder/security/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-<li><a href="https://github.com/coder/coder/pull/25286">https://github.com/coder/coder/pull/25286</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.24.5">https://github.com/coder/coder/releases/tag/v2.24.5</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.29.13">https://github.com/coder/coder/releases/tag/v2.29.13</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.30.8">https://github.com/coder/coder/releases/tag/v2.30.8</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.31.12">https://github.com/coder/coder/releases/tag/v2.31.12</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.32.2">https://github.com/coder/coder/releases/tag/v2.32.2</a></li>
-<li><a href="https://github.com/coder/coder/releases/tag/v2.33.3">https://github.com/coder/coder/releases/tag/v2.33.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf">https://github.com/advisories/GHSA-6x44-w3xg-hqqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-19T20:04:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/coder/coder/v2] Coder: PKCS#7 signature bypass in Azure instance identity allows unauthenticated agent token theft]]></title>
         <id>https://github.com/advisories/GHSA-6x44-w3xg-hqqf</id>
         <link href="https://github.com/advisories/GHSA-6x44-w3xg-hqqf"/>
         <updated>2026-05-19T20:04:16.000Z</updated>
