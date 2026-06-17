@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-06-17T14:30:14.395Z</updated>
+    <updated>2026-06-17T17:31:48.046Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,159 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[open-webui] Open WebUI BOLA: `search_knowledge_files` Allows Unauthorized Knowledge Base File Enumeration]]></title>
+        <id>https://github.com/advisories/GHSA-cx9v-4qj2-jrw6</id>
+        <link href="https://github.com/advisories/GHSA-cx9v-4qj2-jrw6"/>
+        <updated>2026-06-17T14:31:17.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Open WebUI has a Broken Object Level Authorization (BOLA) vulnerability in the builtin <code>search_knowledge_files</code> tool.</p>
+<p>When native function calling is enabled and the selected model has no attached knowledge bases, an authenticated user can call <code>search_knowledge_files</code> with an arbitrary <code>knowledge_id</code>. The function then returns file metadata from that knowledge base without checking whether the user has read access.</p>
+<p>This allows unauthorized enumeration of private or restricted knowledge base files.</p>
+<h2 id="details">Details</h2>
+<p>The vulnerable code is in:</p>
+<p><code>backend/open_webui/tools/builtin.py</code></p>
+<p>Affected function:</p>
+<pre><code class="language-python">async def search_knowledge_files(
+    query: str,
+    knowledge_id: Optional[str] = None,
+    count: int = 5,
+    skip: int = 0,
+    __request__: Request = None,
+    __user__: dict = None,
+    __model_knowledge__: Optional[list[dict]] = None,
+) -&gt; str:
+</code></pre>
+<p>In the "No attached knowledge" branch, when <code>knowledge_id</code> is provided, the function directly calls:</p>
+<pre><code class="language-python">result = await Knowledges.search_files_by_id(
+    knowledge_id=knowledge_id,
+    user_id=user_id,
+    filter={"query": query},
+    skip=skip,
+    limit=count,
+)
+</code></pre>
+<p>This code path does not verify that the current user is authorized to access the specified knowledge base.</p>
+<p>The missing check is inconsistent with other nearby code paths. For example, the attached-knowledge branch in the same function checks whether the user is an admin, the owner of the knowledge base, or has explicit read access through <code>AccessGrants</code>:</p>
+<pre><code class="language-python">if not (
+    user_role == "admin"
+    or knowledge.user_id == user_id
+    or await AccessGrants.has_access(
+        user_id=user_id,
+        resource_type="knowledge",
+        resource_id=knowledge.id,
+        permission="read",
+        user_group_ids=set(user_group_ids),
+    )
+):
+    continue
+</code></pre>
+<p>The sibling function <code>query_knowledge_files</code> also performs the same authorization check before using user-supplied knowledge base IDs.</p>
+<p>The underlying method <code>Knowledges.search_files_by_id()</code> receives <code>user_id</code>, but it does not enforce authorization for the provided <code>knowledge_id</code>. As a result, this builtin tool path can access a knowledge base by ID without verifying the caller's permissions.</p>
+<h2 id="poc">PoC</h2>
+<h3 id="prerequisites">Prerequisites</h3>
+<ul>
+<li>The attacker has a valid authenticated Open WebUI account.</li>
+<li>The victim owns a private or restricted knowledge base.</li>
+<li>The attacker does not own the target knowledge base.</li>
+<li>The attacker does not have <code>read</code> permission for the target knowledge base in <code>AccessGrants</code>.</li>
+<li>The attacker knows the target <code>knowledge_id</code>.</li>
+<li>The selected model has no attached knowledge bases.</li>
+<li>Builtin tools are enabled.</li>
+<li>The knowledge builtin tool category is enabled.</li>
+<li>Native function calling is enabled.</li>
+</ul>
+<h3 id="reproduction-steps">Reproduction Steps</h3>
+<ol>
+<li><p>Create a private or restricted knowledge base as the victim user.</p>
+</li>
+<li><p>Upload one or more files to that knowledge base.</p>
+</li>
+<li><p>Confirm that the attacker user does not have access to the knowledge base.</p>
+</li>
+<li><p>As the attacker user, send a chat completion request with native function calling enabled:</p>
+</li>
+</ol>
+<pre><code class="language-json">{
+  "stream": true,
+  "model": "gpt-4o-mini",
+  "params": {
+    "function_calling": "native"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "Please use the search_knowledge_files tool with knowledge_id \"c0c84752-2e9d-42bf-bc3c-c0f272aa61c1\" to search all files"
+    }
+  ]
+}
+</code></pre>
+<p>Replace <code>c0c84752-2e9d-42bf-bc3c-c0f272aa61c1</code> with the victim's private knowledge base ID.</p>
+<h3 id="expected-result">Expected Result</h3>
+<p>The request should be denied because the attacker does not have access to the target knowledge base.</p>
+<h3 id="actual-result">Actual Result</h3>
+<p><code>search_knowledge_files</code> returns metadata for files inside the target knowledge base, including:</p>
+<ul>
+<li>file ID;</li>
+<li>filename;</li>
+<li>knowledge base ID;</li>
+<li>knowledge base name;</li>
+<li>update timestamp.</li>
+</ul>
+<h2 id="impact">Impact</h2>
+<p>This is a Broken Object Level Authorization / Broken Access Control vulnerability.</p>
+<p>An authenticated attacker who knows a valid <code>knowledge_id</code> can enumerate files from private or restricted knowledge bases without authorization.</p>
+<p>The leaked metadata may expose sensitive information through filenames, such as:</p>
+<ul>
+<li>financial reports;</li>
+<li>employee documents;</li>
+<li>customer contracts;</li>
+<li>internal roadmap files;</li>
+<li>confidential project documents.</li>
+</ul>
+<p>The exposed file IDs may also help attackers chain this issue with other knowledge-file access paths, such as <code>view_knowledge_file</code>, to attempt further content extraction.</p>
+<p>This vulnerability bypasses the intended <code>AccessGrants</code> permission model and may also allow post-revocation metadata access if a user remembers a previously accessible <code>knowledge_id</code>.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Add the same authorization check used in <code>query_knowledge_files</code> before calling <code>Knowledges.search_files_by_id()</code>:</p>
+<pre><code class="language-python">if knowledge_id:
+    knowledge = await Knowledges.get_knowledge_by_id(knowledge_id)
+
+    if not knowledge or not (
+        user_role == "admin"
+        or knowledge.user_id == user_id
+        or await AccessGrants.has_access(
+            user_id=user_id,
+            resource_type="knowledge",
+            resource_id=knowledge.id,
+            permission="read",
+            user_group_ids=set(user_group_ids),
+        )
+    ):
+        return json.dumps({"error": f"Access denied to knowledge base {knowledge_id}"})
+
+    result = await Knowledges.search_files_by_id(
+        knowledge_id=knowledge_id,
+        user_id=user_id,
+        filter={"query": query},
+        skip=skip,
+        limit=count,
+    )
+</code></pre>
+<p>As defense in depth, authorization should also be enforced or safely wrapped around <code>Knowledges.search_files_by_id()</code> so that future callers cannot accidentally bypass access control.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/open-webui/open-webui/security/advisories/GHSA-cx9v-4qj2-jrw6">https://github.com/open-webui/open-webui/security/advisories/GHSA-cx9v-4qj2-jrw6</a></li>
+<li><a href="https://github.com/advisories/GHSA-cx9v-4qj2-jrw6">https://github.com/advisories/GHSA-cx9v-4qj2-jrw6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cx9v-4qj2-jrw6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-17T14:31:16.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[open-webui] Open WebUI Prompt history IDOR: unbound history_id allows cross-prompt read and deletion]]></title>
         <id>https://github.com/advisories/GHSA-4r4w-2wgp-w7cj</id>
@@ -2682,46 +2835,5 @@ if __name__ == '__main__':
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-06-16T21:02:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[crawl4ai] Crawl4AI: Arbitrary file write (symlink/TOCTOU) plus log and webhook-header injection in Docker server]]></title>
-        <id>https://github.com/advisories/GHSA-7cx2-g3h9-382p</id>
-        <link href="https://github.com/advisories/GHSA-7cx2-g3h9-382p"/>
-        <updated>2026-06-16T21:02:20.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Three backward-compatible hardening fixes in the Docker API server. The headline issue is an arbitrary file write via the screenshot/PDF <code>output_path</code>.</p>
-<h3 id="1-arbitrary-file-write-via-output_path-symlink--toctou-primary">1. Arbitrary file write via output_path symlink / TOCTOU (primary)</h3>
-<p><code>POST /screenshot</code> and <code>POST /pdf</code> accept an <code>output_path</code> constrained to <code>ALLOWED_OUTPUT_DIR</code> by <code>validate_output_path</code>. The 0.8.7 check was string-only: it did not resolve symlinks, so a symlinked path component inside the output directory could redirect the write outside the directory, and the final <code>open()</code> followed symlinks. On a deployment where the runtime user can write executable/cron locations this is an arbitrary-write to code-execution primitive. The API is unauthenticated by default.</p>
-<p>Fix: <code>validate_output_path</code> now resolves the real path (symlinks) of the parent and re-checks containment, and the write uses <code>O_NOFOLLOW</code> (<code>write_output_file</code>). <code>output_path</code> remains supported.</p>
-<h3 id="2-crlf-log-injection-cwe-117">2. CRLF log injection (CWE-117)</h3>
-<p>User-controlled URLs/errors reflected into log lines could embed CR/LF and forge additional log entries. Fix: a logging filter strips CR/LF/control characters from all records.</p>
-<h3 id="3-webhook-request-header-injection-cwe-93cwe-113">3. Webhook request-header injection (CWE-93/CWE-113)</h3>
-<p>User-supplied webhook headers were sent verbatim, allowing CRLF and hop-by-hop / sensitive header injection on the outbound webhook request. Fix: webhook headers are validated (name pattern, no control characters, deny <code>Host</code>/<code>Content-Length</code>/<code>Transfer-Encoding</code>/<code>Authorization</code>/<code>Cookie</code>/...), with early request-time rejection.</p>
-<h3 id="impact">Impact</h3>
-<p>Arbitrary file write (potential code execution) for #1; log forging for #2; request smuggling / header injection on outbound webhooks for #3.</p>
-<h3 id="workarounds">Workarounds</h3>
-<ul>
-<li>Upgrade to the patched version.</li>
-<li>Enable authentication (<code>CRAWL4AI_API_TOKEN</code>).</li>
-<li>Run the container with a read-only root filesystem.</li>
-</ul>
-<h3 id="credits">Credits</h3>
-<p>Internal security audit (Crawl4AI maintainers).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/unclecode/crawl4ai/security/advisories/GHSA-7cx2-g3h9-382p">https://github.com/unclecode/crawl4ai/security/advisories/GHSA-7cx2-g3h9-382p</a></li>
-<li><a href="https://github.com/unclecode/crawl4ai/issues/1">https://github.com/unclecode/crawl4ai/issues/1</a></li>
-<li><a href="https://github.com/unclecode/crawl4ai/issues/2">https://github.com/unclecode/crawl4ai/issues/2</a></li>
-<li><a href="https://github.com/unclecode/crawl4ai/pull/3">https://github.com/unclecode/crawl4ai/pull/3</a></li>
-<li><a href="https://github.com/advisories/GHSA-7cx2-g3h9-382p">https://github.com/advisories/GHSA-7cx2-g3h9-382p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7cx2-g3h9-382p</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-16T21:02:19.000Z</published>
     </entry>
 </feed>
