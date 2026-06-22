@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-06-22T17:52:24.996Z</updated>
+    <updated>2026-06-22T20:26:42.468Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,180 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/containers/buildah] Build breakout using malicious Containerfile and Git Smart HTTP server or GitHub release tar archive]]></title>
+        <id>https://github.com/advisories/GHSA-49p4-px3h-rq49</id>
+        <link href="https://github.com/advisories/GHSA-49p4-px3h-rq49"/>
+        <updated>2026-06-22T20:15:49.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>When processing a build contexts or <code>add</code>/<code>copy</code> instructions, a malicious server serving a Git repository or a tar archive file can cause files outside of the build context directory to be included in the build context or copied into the build.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in Buildah 1.44 and 1.43.2.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/containers/buildah/security/advisories/GHSA-49p4-px3h-rq49">https://github.com/containers/buildah/security/advisories/GHSA-49p4-px3h-rq49</a></li>
+<li><a href="https://github.com/podman-container-tools/buildah/security/advisories/GHSA-49p4-px3h-rq49">https://github.com/podman-container-tools/buildah/security/advisories/GHSA-49p4-px3h-rq49</a></li>
+<li><a href="https://github.com/advisories/GHSA-49p4-px3h-rq49">https://github.com/advisories/GHSA-49p4-px3h-rq49</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-49p4-px3h-rq49</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-22T20:15:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/opencontainers/runc] runc: Malicious image with /dev symlink can trigger limited host filesystem integrity violations ]]></title>
+        <id>https://github.com/advisories/GHSA-xjvp-4fhw-gc47</id>
+        <link href="https://github.com/advisories/GHSA-xjvp-4fhw-gc47"/>
+        <updated>2026-06-22T20:01:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>When setting up the container rootfs, <code>setupPtmx</code> and <code>setupDevSymlinks</code> call <code>os.Remove</code> and <code>os.Symlink</code> with a <code>filepath.Join</code> string which allow an image with <code>/dev</code> as a symlink to trick runc into deleting files called <code>ptmx</code> on the host or creating a hardcoded set of symlinks with specific names and targets in an arbitrary pre-existing host directory.</p>
+<p>Please note that this issue is not exploitable under Docker because <a href="https://github.com/moby/moby/blob/docker-v29.4.1/daemon/initlayer/setup_unix.go">it creates a top-level <code>ro</code> layer that masks any malicious <code>/dev</code> symlink present in the container image</a> (this is also done without mounting the lower layers so there is no opportunity for the malicious <code>/dev</code> symlink to trick it into resolving to some other path). Unfortunately, Podman and containerd<sup>†</sup> do not do this and so users using those higher-level runtimes with runc can be exploited via a malicious image.</p>
+<p>This issue mirrors a <a href="https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5">somewhat similar issue in crun</a>, which was also published recently.</p>
+<h6 id="actually-at-the-time-the-issue-was-analysed-containerd-had-dead-code-that-implemented-this-feature-but-the-implementation-contained-several-security-issues-that-would-arguably-have-made-it-more-exploitable-than-in-runc-luckily-the-code-appears-to-have-never-been-used-at-least-since-2017-and-the-code-has-since-been-removed">† Actually, at the time the issue was analysed, <a href="https://github.com/containerd/containerd/blob/v2.2.3/pkg/rootfs/init_linux.go">containerd had dead code that implemented this feature</a> but the implementation contained several security issues that would arguably have made it more exploitable than in runc. Luckily, the code appears to have never been used (at least since 2017) and <a href="https://github.com/containerd/containerd/issues/13238">the code has since been removed</a>.</h6>
+<h4 id="mitigating-factors">Mitigating Factors</h4>
+<p>There are a few mitigating factors about this issue which reduce the impact for most users quite significantly, and is the reason why we decided to release the fix publicly without an embargo.</p>
+<p>While the deletion of <code>ptmx</code> seems like a significant issue, in practice it is quite limited. Notably, <code>devpts</code> does not permit you to unlink <code>/dev/pts/ptmx</code> regardless of privileges and so it is not a usable target for this attack. Additionally, while <code>/dev/ptmx</code> <em>can</em> be unlinked<sup>‡</sup>, trying to use an image with a symlink from <code>/dev</code> to <code>/dev</code> will cause runc will return an error before it reaches the buggy code (it correctly detects a symlink loop while setting up the mount target and the code correctly scopes the lookup inside the container). Thus, the only files called <code>ptmx</code> that are <em>guaranteed</em> to exist on the system cannot actually be removed by this bug and so only some user file that happens to have that specific name could be deleted, which seems fairly unlikely to happen on real systems.</p>
+<p>As for the issue of symlinks, again the impact is likely quite limited. While the creation of <em>arbitrary</em> symlinks could be used to create drop-in files for system services (and thus lead to a container breakout), the hardcoded set of symlink names and targets that this bug allows you to create on the host make it quite unlikely that you would be able to do much more than pollute the host system with dummy symlinks. Here is the complete list of symlinks that can be created with this attack:</p>
+<ul>
+<li><code>core</code> → <code>/proc/kcore</code></li>
+<li><code>fd</code> → <code>/proc/self/fd/</code></li>
+<li><code>ptmx</code> → <code>pts/ptmx</code></li>
+<li><code>stdin</code> → <code>/proc/self/fd/0</code></li>
+<li><code>stdout</code> → <code>/proc/self/fd/1</code></li>
+<li><code>stderr</code> → <code>/proc/self/fd/2</code></li>
+</ul>
+<p>Note that none of these symlinks are likely to point to user-controlled data -- the <code>/proc/self/fd/$n</code> symlinks are all properties of the process accessing them (so privileged processes will only see the state they were spawned with) and the <code>pts/ptmx</code> symlink is almost certainly in the same privilege scope as the directory the symlink itself is in. It seems the only somewhat plausible impact would be that a service could return an error when trying to parse one of these symlinks and thus treat it as an invalid configuration file. How arbitrary processes deal with this situation is a bit hard to analyse, but most daemons require configuration files to have certain suffixes (such as <code>.conf</code>) so it's not really clear how large the impact is in practice and it seems there are a few barriers to clear to use this to cause a DoS or other problems.</p>
+<h6 id="this-would-actually-be-quite-problematic-if-it-could-occur-because-glibc-seemingly-only-attempts-to-use-devptmx-when-creating-new-terminals-and-thus-most-terminal-managers-including-tmux-and-shell-tools-including-sudo----but-not-su-would-fail-to-start-and-thus-bring-the-system-to-a-halt-setupptmx-does-add-a-symlink-to-devptsptmx-afterwards-but-on-some-systems-the-mode-of-the-host-devptsptmx-is-set-to-0o000-which-would-still-cause-the-same-dos-issue">‡ This would actually be quite problematic if it could occur because <code>glibc</code> seemingly only attempts to use <code>/dev/ptmx</code> when creating new terminals and thus most terminal managers (including <code>tmux</code>) and shell tools (including <code>sudo</code> -- but not <code>su</code>) would fail to start and thus bring the system to a halt. <code>setupPtmx</code> does add a symlink to <code>/dev/pts/ptmx</code> afterwards but on some systems the mode of the host <code>/dev/pts/ptmx</code> is set to <code>0o000</code> which would still cause the same DoS issue.</h6>
+<h3 id="patches">Patches</h3>
+<p>This issue has been patched in runc 1.3.6, runc 1.4.3, and runc 1.5.0-rc.3.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Using user namespaces restricts this attack fairly significantly such that the attacker can only create/delete inodes in directories that the remapped root user/group has write access to. Unless the root user is remapped to an actual user on the host (such as with rootless containers that don't use <code>/etc/sub[ug]id</code>), this in practice means that an attacker would only be able to create or delete inodes in world-writable directories.</p>
+<p>LSMs can restrict the scope of where in the host filesystem runc can be tricked into operating on, though how much this helps is questionable. The default <code>container_runtime_t</code> SELinux label rules (or custom AppArmor rules for the host <code>runc</code> context) may restrict the scope where these filesystem operations can operate on, but we have not done an in-depth analysis on the impact of those kinds of LSM protections.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>commit opencontainers/runc@864db8042dbb ("rootfs: make /dev initialisation code fd-based")</li>
+<li><a href="https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5">https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5</a></li>
+</ul>
+<h3 id="credits">Credits</h3>
+<p>runc thanks "Davias" for initially finding and reporting this issue. The same underlying issue (with varying levels of completeness) was later reported by Arthur Chan (@arthurscchan from Ada Logics), Junyi Liu (@mosskappa), and Derek Manzella (@Dmanzella).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/opencontainers/runc/security/advisories/GHSA-xjvp-4fhw-gc47">https://github.com/opencontainers/runc/security/advisories/GHSA-xjvp-4fhw-gc47</a></li>
+<li><a href="https://github.com/advisories/GHSA-xjvp-4fhw-gc47">https://github.com/advisories/GHSA-xjvp-4fhw-gc47</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xjvp-4fhw-gc47</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-22T20:01:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/opencontainers/runc] runc: Malicious image with /dev symlink can trigger limited host filesystem integrity violations ]]></title>
+        <id>https://github.com/advisories/GHSA-xjvp-4fhw-gc47</id>
+        <link href="https://github.com/advisories/GHSA-xjvp-4fhw-gc47"/>
+        <updated>2026-06-22T20:01:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>When setting up the container rootfs, <code>setupPtmx</code> and <code>setupDevSymlinks</code> call <code>os.Remove</code> and <code>os.Symlink</code> with a <code>filepath.Join</code> string which allow an image with <code>/dev</code> as a symlink to trick runc into deleting files called <code>ptmx</code> on the host or creating a hardcoded set of symlinks with specific names and targets in an arbitrary pre-existing host directory.</p>
+<p>Please note that this issue is not exploitable under Docker because <a href="https://github.com/moby/moby/blob/docker-v29.4.1/daemon/initlayer/setup_unix.go">it creates a top-level <code>ro</code> layer that masks any malicious <code>/dev</code> symlink present in the container image</a> (this is also done without mounting the lower layers so there is no opportunity for the malicious <code>/dev</code> symlink to trick it into resolving to some other path). Unfortunately, Podman and containerd<sup>†</sup> do not do this and so users using those higher-level runtimes with runc can be exploited via a malicious image.</p>
+<p>This issue mirrors a <a href="https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5">somewhat similar issue in crun</a>, which was also published recently.</p>
+<h6 id="actually-at-the-time-the-issue-was-analysed-containerd-had-dead-code-that-implemented-this-feature-but-the-implementation-contained-several-security-issues-that-would-arguably-have-made-it-more-exploitable-than-in-runc-luckily-the-code-appears-to-have-never-been-used-at-least-since-2017-and-the-code-has-since-been-removed">† Actually, at the time the issue was analysed, <a href="https://github.com/containerd/containerd/blob/v2.2.3/pkg/rootfs/init_linux.go">containerd had dead code that implemented this feature</a> but the implementation contained several security issues that would arguably have made it more exploitable than in runc. Luckily, the code appears to have never been used (at least since 2017) and <a href="https://github.com/containerd/containerd/issues/13238">the code has since been removed</a>.</h6>
+<h4 id="mitigating-factors">Mitigating Factors</h4>
+<p>There are a few mitigating factors about this issue which reduce the impact for most users quite significantly, and is the reason why we decided to release the fix publicly without an embargo.</p>
+<p>While the deletion of <code>ptmx</code> seems like a significant issue, in practice it is quite limited. Notably, <code>devpts</code> does not permit you to unlink <code>/dev/pts/ptmx</code> regardless of privileges and so it is not a usable target for this attack. Additionally, while <code>/dev/ptmx</code> <em>can</em> be unlinked<sup>‡</sup>, trying to use an image with a symlink from <code>/dev</code> to <code>/dev</code> will cause runc will return an error before it reaches the buggy code (it correctly detects a symlink loop while setting up the mount target and the code correctly scopes the lookup inside the container). Thus, the only files called <code>ptmx</code> that are <em>guaranteed</em> to exist on the system cannot actually be removed by this bug and so only some user file that happens to have that specific name could be deleted, which seems fairly unlikely to happen on real systems.</p>
+<p>As for the issue of symlinks, again the impact is likely quite limited. While the creation of <em>arbitrary</em> symlinks could be used to create drop-in files for system services (and thus lead to a container breakout), the hardcoded set of symlink names and targets that this bug allows you to create on the host make it quite unlikely that you would be able to do much more than pollute the host system with dummy symlinks. Here is the complete list of symlinks that can be created with this attack:</p>
+<ul>
+<li><code>core</code> → <code>/proc/kcore</code></li>
+<li><code>fd</code> → <code>/proc/self/fd/</code></li>
+<li><code>ptmx</code> → <code>pts/ptmx</code></li>
+<li><code>stdin</code> → <code>/proc/self/fd/0</code></li>
+<li><code>stdout</code> → <code>/proc/self/fd/1</code></li>
+<li><code>stderr</code> → <code>/proc/self/fd/2</code></li>
+</ul>
+<p>Note that none of these symlinks are likely to point to user-controlled data -- the <code>/proc/self/fd/$n</code> symlinks are all properties of the process accessing them (so privileged processes will only see the state they were spawned with) and the <code>pts/ptmx</code> symlink is almost certainly in the same privilege scope as the directory the symlink itself is in. It seems the only somewhat plausible impact would be that a service could return an error when trying to parse one of these symlinks and thus treat it as an invalid configuration file. How arbitrary processes deal with this situation is a bit hard to analyse, but most daemons require configuration files to have certain suffixes (such as <code>.conf</code>) so it's not really clear how large the impact is in practice and it seems there are a few barriers to clear to use this to cause a DoS or other problems.</p>
+<h6 id="this-would-actually-be-quite-problematic-if-it-could-occur-because-glibc-seemingly-only-attempts-to-use-devptmx-when-creating-new-terminals-and-thus-most-terminal-managers-including-tmux-and-shell-tools-including-sudo----but-not-su-would-fail-to-start-and-thus-bring-the-system-to-a-halt-setupptmx-does-add-a-symlink-to-devptsptmx-afterwards-but-on-some-systems-the-mode-of-the-host-devptsptmx-is-set-to-0o000-which-would-still-cause-the-same-dos-issue">‡ This would actually be quite problematic if it could occur because <code>glibc</code> seemingly only attempts to use <code>/dev/ptmx</code> when creating new terminals and thus most terminal managers (including <code>tmux</code>) and shell tools (including <code>sudo</code> -- but not <code>su</code>) would fail to start and thus bring the system to a halt. <code>setupPtmx</code> does add a symlink to <code>/dev/pts/ptmx</code> afterwards but on some systems the mode of the host <code>/dev/pts/ptmx</code> is set to <code>0o000</code> which would still cause the same DoS issue.</h6>
+<h3 id="patches">Patches</h3>
+<p>This issue has been patched in runc 1.3.6, runc 1.4.3, and runc 1.5.0-rc.3.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Using user namespaces restricts this attack fairly significantly such that the attacker can only create/delete inodes in directories that the remapped root user/group has write access to. Unless the root user is remapped to an actual user on the host (such as with rootless containers that don't use <code>/etc/sub[ug]id</code>), this in practice means that an attacker would only be able to create or delete inodes in world-writable directories.</p>
+<p>LSMs can restrict the scope of where in the host filesystem runc can be tricked into operating on, though how much this helps is questionable. The default <code>container_runtime_t</code> SELinux label rules (or custom AppArmor rules for the host <code>runc</code> context) may restrict the scope where these filesystem operations can operate on, but we have not done an in-depth analysis on the impact of those kinds of LSM protections.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>commit opencontainers/runc@864db8042dbb ("rootfs: make /dev initialisation code fd-based")</li>
+<li><a href="https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5">https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5</a></li>
+</ul>
+<h3 id="credits">Credits</h3>
+<p>runc thanks "Davias" for initially finding and reporting this issue. The same underlying issue (with varying levels of completeness) was later reported by Arthur Chan (@arthurscchan from Ada Logics), Junyi Liu (@mosskappa), and Derek Manzella (@Dmanzella).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/opencontainers/runc/security/advisories/GHSA-xjvp-4fhw-gc47">https://github.com/opencontainers/runc/security/advisories/GHSA-xjvp-4fhw-gc47</a></li>
+<li><a href="https://github.com/advisories/GHSA-xjvp-4fhw-gc47">https://github.com/advisories/GHSA-xjvp-4fhw-gc47</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xjvp-4fhw-gc47</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-22T20:01:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/opencontainers/runc] runc: Malicious image with /dev symlink can trigger limited host filesystem integrity violations ]]></title>
+        <id>https://github.com/advisories/GHSA-xjvp-4fhw-gc47</id>
+        <link href="https://github.com/advisories/GHSA-xjvp-4fhw-gc47"/>
+        <updated>2026-06-22T20:01:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>When setting up the container rootfs, <code>setupPtmx</code> and <code>setupDevSymlinks</code> call <code>os.Remove</code> and <code>os.Symlink</code> with a <code>filepath.Join</code> string which allow an image with <code>/dev</code> as a symlink to trick runc into deleting files called <code>ptmx</code> on the host or creating a hardcoded set of symlinks with specific names and targets in an arbitrary pre-existing host directory.</p>
+<p>Please note that this issue is not exploitable under Docker because <a href="https://github.com/moby/moby/blob/docker-v29.4.1/daemon/initlayer/setup_unix.go">it creates a top-level <code>ro</code> layer that masks any malicious <code>/dev</code> symlink present in the container image</a> (this is also done without mounting the lower layers so there is no opportunity for the malicious <code>/dev</code> symlink to trick it into resolving to some other path). Unfortunately, Podman and containerd<sup>†</sup> do not do this and so users using those higher-level runtimes with runc can be exploited via a malicious image.</p>
+<p>This issue mirrors a <a href="https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5">somewhat similar issue in crun</a>, which was also published recently.</p>
+<h6 id="actually-at-the-time-the-issue-was-analysed-containerd-had-dead-code-that-implemented-this-feature-but-the-implementation-contained-several-security-issues-that-would-arguably-have-made-it-more-exploitable-than-in-runc-luckily-the-code-appears-to-have-never-been-used-at-least-since-2017-and-the-code-has-since-been-removed">† Actually, at the time the issue was analysed, <a href="https://github.com/containerd/containerd/blob/v2.2.3/pkg/rootfs/init_linux.go">containerd had dead code that implemented this feature</a> but the implementation contained several security issues that would arguably have made it more exploitable than in runc. Luckily, the code appears to have never been used (at least since 2017) and <a href="https://github.com/containerd/containerd/issues/13238">the code has since been removed</a>.</h6>
+<h4 id="mitigating-factors">Mitigating Factors</h4>
+<p>There are a few mitigating factors about this issue which reduce the impact for most users quite significantly, and is the reason why we decided to release the fix publicly without an embargo.</p>
+<p>While the deletion of <code>ptmx</code> seems like a significant issue, in practice it is quite limited. Notably, <code>devpts</code> does not permit you to unlink <code>/dev/pts/ptmx</code> regardless of privileges and so it is not a usable target for this attack. Additionally, while <code>/dev/ptmx</code> <em>can</em> be unlinked<sup>‡</sup>, trying to use an image with a symlink from <code>/dev</code> to <code>/dev</code> will cause runc will return an error before it reaches the buggy code (it correctly detects a symlink loop while setting up the mount target and the code correctly scopes the lookup inside the container). Thus, the only files called <code>ptmx</code> that are <em>guaranteed</em> to exist on the system cannot actually be removed by this bug and so only some user file that happens to have that specific name could be deleted, which seems fairly unlikely to happen on real systems.</p>
+<p>As for the issue of symlinks, again the impact is likely quite limited. While the creation of <em>arbitrary</em> symlinks could be used to create drop-in files for system services (and thus lead to a container breakout), the hardcoded set of symlink names and targets that this bug allows you to create on the host make it quite unlikely that you would be able to do much more than pollute the host system with dummy symlinks. Here is the complete list of symlinks that can be created with this attack:</p>
+<ul>
+<li><code>core</code> → <code>/proc/kcore</code></li>
+<li><code>fd</code> → <code>/proc/self/fd/</code></li>
+<li><code>ptmx</code> → <code>pts/ptmx</code></li>
+<li><code>stdin</code> → <code>/proc/self/fd/0</code></li>
+<li><code>stdout</code> → <code>/proc/self/fd/1</code></li>
+<li><code>stderr</code> → <code>/proc/self/fd/2</code></li>
+</ul>
+<p>Note that none of these symlinks are likely to point to user-controlled data -- the <code>/proc/self/fd/$n</code> symlinks are all properties of the process accessing them (so privileged processes will only see the state they were spawned with) and the <code>pts/ptmx</code> symlink is almost certainly in the same privilege scope as the directory the symlink itself is in. It seems the only somewhat plausible impact would be that a service could return an error when trying to parse one of these symlinks and thus treat it as an invalid configuration file. How arbitrary processes deal with this situation is a bit hard to analyse, but most daemons require configuration files to have certain suffixes (such as <code>.conf</code>) so it's not really clear how large the impact is in practice and it seems there are a few barriers to clear to use this to cause a DoS or other problems.</p>
+<h6 id="this-would-actually-be-quite-problematic-if-it-could-occur-because-glibc-seemingly-only-attempts-to-use-devptmx-when-creating-new-terminals-and-thus-most-terminal-managers-including-tmux-and-shell-tools-including-sudo----but-not-su-would-fail-to-start-and-thus-bring-the-system-to-a-halt-setupptmx-does-add-a-symlink-to-devptsptmx-afterwards-but-on-some-systems-the-mode-of-the-host-devptsptmx-is-set-to-0o000-which-would-still-cause-the-same-dos-issue">‡ This would actually be quite problematic if it could occur because <code>glibc</code> seemingly only attempts to use <code>/dev/ptmx</code> when creating new terminals and thus most terminal managers (including <code>tmux</code>) and shell tools (including <code>sudo</code> -- but not <code>su</code>) would fail to start and thus bring the system to a halt. <code>setupPtmx</code> does add a symlink to <code>/dev/pts/ptmx</code> afterwards but on some systems the mode of the host <code>/dev/pts/ptmx</code> is set to <code>0o000</code> which would still cause the same DoS issue.</h6>
+<h3 id="patches">Patches</h3>
+<p>This issue has been patched in runc 1.3.6, runc 1.4.3, and runc 1.5.0-rc.3.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Using user namespaces restricts this attack fairly significantly such that the attacker can only create/delete inodes in directories that the remapped root user/group has write access to. Unless the root user is remapped to an actual user on the host (such as with rootless containers that don't use <code>/etc/sub[ug]id</code>), this in practice means that an attacker would only be able to create or delete inodes in world-writable directories.</p>
+<p>LSMs can restrict the scope of where in the host filesystem runc can be tricked into operating on, though how much this helps is questionable. The default <code>container_runtime_t</code> SELinux label rules (or custom AppArmor rules for the host <code>runc</code> context) may restrict the scope where these filesystem operations can operate on, but we have not done an in-depth analysis on the impact of those kinds of LSM protections.</p>
+<h3 id="resources">Resources</h3>
+<ul>
+<li>commit opencontainers/runc@864db8042dbb ("rootfs: make /dev initialisation code fd-based")</li>
+<li><a href="https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5">https://github.com/containers/crun/security/advisories/GHSA-7vwr-4279-7gq5</a></li>
+</ul>
+<h3 id="credits">Credits</h3>
+<p>runc thanks "Davias" for initially finding and reporting this issue. The same underlying issue (with varying levels of completeness) was later reported by Arthur Chan (@arthurscchan from Ada Logics), Junyi Liu (@mosskappa), and Derek Manzella (@Dmanzella).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/opencontainers/runc/security/advisories/GHSA-xjvp-4fhw-gc47">https://github.com/opencontainers/runc/security/advisories/GHSA-xjvp-4fhw-gc47</a></li>
+<li><a href="https://github.com/advisories/GHSA-xjvp-4fhw-gc47">https://github.com/advisories/GHSA-xjvp-4fhw-gc47</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xjvp-4fhw-gc47</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-22T20:01:35.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[gogs.io/gogs] Gogs has an Authentication Bypass via Unvalidated Reverse Proxy Headers]]></title>
         <id>https://github.com/advisories/GHSA-w6j9-vw59-27wv</id>
@@ -1356,201 +1530,5 @@ nginx.ingress.kubernetes.io/auth-secret: "default/missing-basic-auth"
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-06-19T21:15:56.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[go.qbee.io/transport] go.qbee.io/transport: Symlink-chain path traversal in tar extraction (one level outside destination)]]></title>
-        <id>https://github.com/advisories/GHSA-f9m7-vc86-p6jj</id>
-        <link href="https://github.com/advisories/GHSA-f9m7-vc86-p6jj"/>
-        <updated>2026-06-19T21:15:32.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The go.qbee.io/transport library is affected by a symlink-chain path traversal vulnerability in its extractTar routine. The library's path validation is strictly lexical and fails to account for on-disk symlinks created earlier in the extraction process. Consequently, a crafted tar archive can be used to write or overwrite files one directory level above the intended extraction path. In the case of qbee-agent, which runs with root privileges, this vulnerability permits a root-privileged file write outside the intended destination.</p>
-<h3 id="patches">Patches</h3>
-<p>The issue has been addressed in version v1.26.25</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/qbee-io/transport/security/advisories/GHSA-f9m7-vc86-p6jj">https://github.com/qbee-io/transport/security/advisories/GHSA-f9m7-vc86-p6jj</a></li>
-<li><a href="https://github.com/advisories/GHSA-f9m7-vc86-p6jj">https://github.com/advisories/GHSA-f9m7-vc86-p6jj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f9m7-vc86-p6jj</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-19T21:15:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/grafana/grafana-operator] Grafana Operator: Privilege escalation from namespace admin to cluster admin via GrafanaDashboard jsonnetLib fileName]]></title>
-        <id>https://github.com/advisories/GHSA-fcw4-wwqm-m8cf</id>
-        <link href="https://github.com/advisories/GHSA-fcw4-wwqm-m8cf"/>
-        <updated>2026-06-19T20:51:17.000Z</updated>
-        <content type="html"><![CDATA[<p>We have released version 5.24.0 of the Grafana Operator. This patch includes a MODERATE severity security fix for a path traversal/privilege escalation vulnerability in the Grafana Operator.</p>
-<h3 id="summary">Summary</h3>
-<p>The Grafana Operator supports loading dashboards &amp; library panels using the jsonnet data templating language. The jsonnet expression is evaluated in the context of the operator manager pod.</p>
-<h3 id="impact">Impact</h3>
-<p>It is possible for a malicious user who can create <code>Dashboard</code> or <code>LibraryPanel</code> resources for a <code>Grafana</code> instance to obtain the Kubernetes service account token of the Grafana Operator manager.</p>
-<h3 id="affected-versions">Affected versions</h3>
-<p>All Grafana Operator versions &lt;= 5.23</p>
-<h3 id="solutions-and-mitigations">Solutions and mitigations</h3>
-<p>All installations should be upgraded as soon as possible.</p>
-<h2 id="as-a-workaround-the-following-validatingadmissionpolicy-prevent-the-creation-or-modification-of-jsonnet-based-resources--apiversion-admissionregistrationk8siov1-kind-validatingadmissionpolicy-metadata---name-prevent-jsonnet-dashboards-spec---failurepolicy-fail---matchconstraints-----resourcerules---------apigroups-grafanaintegreatlyorg---------apiversions-v1beta1---------operations-create-update---------resources-grafanadashboards-grafanalibrarypanels---validations-------expression-hasobjectspecjsonnetlib">As a workaround, the following ValidatingAdmissionPolicy prevent the creation or modification of jsonnet based resources:
-```
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
-metadata:
-  name: "prevent-jsonnet-dashboards"
-spec:
-  failurePolicy: Fail
-  matchConstraints:
-    resourceRules:
-      - apiGroups: ["grafana.integreatly.org"]
-        apiVersions: ["v1beta1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["grafanadashboards", "grafanalibrarypanels"]
-  validations:
-    - expression: "!has(object.spec.jsonnetLib)"</h2>
-<p>apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicyBinding
-metadata:
-  name: "prevent-jsonnet-dashboards-clusterwide"
-spec:
-  policyName: "prevent-jsonnet-dashboards"
-  validationActions: [Deny]</p>
-<pre><code>
-
-### Acknowledgement
-
-We would like to thank [Artem Cherezov](https://github.com/cherez0ff) for responsibly disclosing the vulnerability.
-### References
-
-- &lt;https://github.com/grafana/grafana-operator/security/advisories/GHSA-fcw4-wwqm-m8cf&gt;
-- &lt;https://nvd.nist.gov/vuln/detail/CVE-2026-11769&gt;
-- &lt;https://grafana.com/security/security-advisories/cve-2026-11769&gt;
-- &lt;https://github.com/advisories/GHSA-fcw4-wwqm-m8cf&gt;
-</code></pre>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fcw4-wwqm-m8cf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-19T20:51:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/grafana/grafana-operator/v5] Grafana Operator: Privilege escalation from namespace admin to cluster admin via GrafanaDashboard jsonnetLib fileName]]></title>
-        <id>https://github.com/advisories/GHSA-fcw4-wwqm-m8cf</id>
-        <link href="https://github.com/advisories/GHSA-fcw4-wwqm-m8cf"/>
-        <updated>2026-06-19T20:51:17.000Z</updated>
-        <content type="html"><![CDATA[<p>We have released version 5.24.0 of the Grafana Operator. This patch includes a MODERATE severity security fix for a path traversal/privilege escalation vulnerability in the Grafana Operator.</p>
-<h3 id="summary">Summary</h3>
-<p>The Grafana Operator supports loading dashboards &amp; library panels using the jsonnet data templating language. The jsonnet expression is evaluated in the context of the operator manager pod.</p>
-<h3 id="impact">Impact</h3>
-<p>It is possible for a malicious user who can create <code>Dashboard</code> or <code>LibraryPanel</code> resources for a <code>Grafana</code> instance to obtain the Kubernetes service account token of the Grafana Operator manager.</p>
-<h3 id="affected-versions">Affected versions</h3>
-<p>All Grafana Operator versions &lt;= 5.23</p>
-<h3 id="solutions-and-mitigations">Solutions and mitigations</h3>
-<p>All installations should be upgraded as soon as possible.</p>
-<h2 id="as-a-workaround-the-following-validatingadmissionpolicy-prevent-the-creation-or-modification-of-jsonnet-based-resources--apiversion-admissionregistrationk8siov1-kind-validatingadmissionpolicy-metadata---name-prevent-jsonnet-dashboards-spec---failurepolicy-fail---matchconstraints-----resourcerules---------apigroups-grafanaintegreatlyorg---------apiversions-v1beta1---------operations-create-update---------resources-grafanadashboards-grafanalibrarypanels---validations-------expression-hasobjectspecjsonnetlib">As a workaround, the following ValidatingAdmissionPolicy prevent the creation or modification of jsonnet based resources:
-```
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
-metadata:
-  name: "prevent-jsonnet-dashboards"
-spec:
-  failurePolicy: Fail
-  matchConstraints:
-    resourceRules:
-      - apiGroups: ["grafana.integreatly.org"]
-        apiVersions: ["v1beta1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["grafanadashboards", "grafanalibrarypanels"]
-  validations:
-    - expression: "!has(object.spec.jsonnetLib)"</h2>
-<p>apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicyBinding
-metadata:
-  name: "prevent-jsonnet-dashboards-clusterwide"
-spec:
-  policyName: "prevent-jsonnet-dashboards"
-  validationActions: [Deny]</p>
-<pre><code>
-
-### Acknowledgement
-
-We would like to thank [Artem Cherezov](https://github.com/cherez0ff) for responsibly disclosing the vulnerability.
-### References
-
-- &lt;https://github.com/grafana/grafana-operator/security/advisories/GHSA-fcw4-wwqm-m8cf&gt;
-- &lt;https://nvd.nist.gov/vuln/detail/CVE-2026-11769&gt;
-- &lt;https://grafana.com/security/security-advisories/cve-2026-11769&gt;
-- &lt;https://github.com/advisories/GHSA-fcw4-wwqm-m8cf&gt;
-</code></pre>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fcw4-wwqm-m8cf</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-19T20:51:16.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/grafana/grafana-operator] Duplicate Advisory: Privilege escalation from namespace admin to cluster admin via GrafanaDashboard jsonnetLib fileName]]></title>
-        <id>https://github.com/advisories/GHSA-v82c-5c2q-hx9g</id>
-        <link href="https://github.com/advisories/GHSA-v82c-5c2q-hx9g"/>
-        <updated>2026-06-19T20:50:35.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-fcw4-wwqm-m8cf. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>We have released version 5.24.0 of the Grafana Operator. This patch includes a CRITICAL severity security fix for a path traversal/privilege escalation vulnerability in the Grafana Operator.</p>
-<h3 id="summary">Summary</h3>
-<p>The Grafana Operator supports loading dashboards &amp; library panels using the jsonnet data templating language. The jsonnet expression is evaluated in the context of the operator manager pod.</p>
-<h3 id="impact">Impact</h3>
-<p>It is possible for a malicious user who can create Dashboard or LibraryPanel resources for a Grafana instance to obtain the Kubernetes service account token of the Grafana Operator manager.</p>
-<h3 id="affected-versions">Affected versions</h3>
-<p>All Grafana Operator versions &lt;= 5.23</p>
-<h3 id="solutions-and-mitigations">Solutions and mitigations</h3>
-<p>All installations should be upgraded as soon as possible.</p>
-<p>As a workaround, the following ValidatingAdmissionPolicy prevent the creation or modification of jsonnet based resources:</p>
-<p>apiVersion: admissionregistration.k8s.io/v1</p>
-<p>kind: ValidatingAdmissionPolicy</p>
-<p>metadata:</p>
-<p>  name: "prevent-jsonnet-dashboards"</p>
-<p>spec:</p>
-<p>  failurePolicy: Fail
-  matchConstraints:
-    resourceRules:
-      - apiGroups: ["grafana.integreatly.org"]
-        apiVersions: ["v1beta1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["grafanadashboards", "grafanalibrarypanels"]
-  validations:
-    - expression: "!has(object.spec.jsonnetLib)"</p>
-<hr>
-<p>apiVersion: admissionregistration.k8s.io/v1</p>
-<p>kind: ValidatingAdmissionPolicyBinding</p>
-<p>metadata:</p>
-<p>  name: "prevent-jsonnet-dashboards-clusterwide"</p>
-<p>spec:</p>
-<p>  policyName: "prevent-jsonnet-dashboards"
-  validationActions: [Deny]</p>
-<h3 id="acknowledgement">Acknowledgement</h3>
-<p>We would like to thank Artem Cherezov for responsibly disclosing the vulnerability.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-11769">https://nvd.nist.gov/vuln/detail/CVE-2026-11769</a></li>
-<li><a href="https://grafana.com/security/security-advisories/cve-2026-11769">https://grafana.com/security/security-advisories/cve-2026-11769</a></li>
-<li><a href="https://github.com/advisories/GHSA-v82c-5c2q-hx9g">https://github.com/advisories/GHSA-v82c-5c2q-hx9g</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v82c-5c2q-hx9g</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-13T06:30:23.000Z</published>
     </entry>
 </feed>
