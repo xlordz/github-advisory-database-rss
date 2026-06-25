@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-06-25T20:26:06.234Z</updated>
+    <updated>2026-06-25T22:00:42.262Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,133 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/sigstore/rekor] Rekor has an OOM Condition due to Unbounded gzip Decompression in Alpine APK Parsing Logic]]></title>
+        <id>https://github.com/advisories/GHSA-47q9-m4ww-924m</id>
+        <link href="https://github.com/advisories/GHSA-47q9-m4ww-924m"/>
+        <updated>2026-06-25T21:33:39.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p>The <code>Package.Unmarshal()</code> function in <code>pkg/types/alpine/apk.go</code> decompresses the signature and control gzip members of an APK file into in-memory buffers without bounding the total decompressed size. The existing <code>max_apk_metadata_size</code> check (default 1MB) is only applied to individual tar entry header sizes after decompression completes, so it does not prevent a decompression bomb from consuming unbounded heap memory.</p>
+<p>An attacker can craft a gzip stream that compresses at a ~1000:1 ratio (e.g., 2MB compressed zeros → 2GB decompressed). When submitted as spec.package.content in an Alpine <code>ProposedEntry</code>, the server decompresses the full payload into memory during request processing, triggering a fatal Go runtime out-of-memory error or OS OOM-kill that cannot be caught by the server's recover() middleware.</p>
+<p>This is reachable via two unauthenticated endpoints:</p>
+<ul>
+<li>POST /api/v1/log/entries (createLogEntry)</li>
+<li>POST /api/v1/log/entries/retrieve (searchLogQuery)</li>
+</ul>
+<p>Both invoke <code>V001Entry.Canonicalize()</code> → <code>fetchExternalEntities()</code> → <code>apk.Unmarshal(packageData)</code>, which performs the unbounded decompression.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>There is no effective workaround. Setting <code>max_request_body_size</code> reduces but does not eliminate exposure due to the ~1000:1 compression ratio (a 1MB body limit still allows ~1GB heap allocation). Setting <code>max_apk_metadata_size</code> has no effect on this vulnerability since the check is applied after decompression.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sigstore/rekor/security/advisories/GHSA-47q9-m4ww-924m">https://github.com/sigstore/rekor/security/advisories/GHSA-47q9-m4ww-924m</a></li>
+<li><a href="https://github.com/advisories/GHSA-47q9-m4ww-924m">https://github.com/advisories/GHSA-47q9-m4ww-924m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-47q9-m4ww-924m</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-25T21:33:36.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/github/github-mcp-server] GitHub MCP Server: Lockdown mode singleton in HTTP server causes cross-user GraphQL client confusion]]></title>
+        <id>https://github.com/advisories/GHSA-pjp5-fpmr-3349</id>
+        <link href="https://github.com/advisories/GHSA-pjp5-fpmr-3349"/>
+        <updated>2026-06-25T21:32:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When running in HTTP mode with --lockdown-mode enabled, the RepoAccessCache is implemented as a process-global singleton initialized with the first authenticated user's GraphQL client. All subsequent requests from different users share this singleton and their lockdown-related GraphQL queries are executed using the first user's credentials. The singleton is never updated to reflect later users' tokens.</p>
+<h3 id="details">Details</h3>
+<p>The singleton is defined in pkg/lockdown/lockdown.go:</p>
+<pre><code class="language-go">var (
+    instance   *RepoAccessCache
+    instanceMu sync.Mutex
+)
+
+func GetInstance(client *githubv4.Client, opts ...RepoAccessOption) *RepoAccessCache {
+    instanceMu.Lock()
+    defer instanceMu.Unlock()
+    if instance == nil {
+        instance = &amp;RepoAccessCache{
+            client: client,  // only stored on first call
+        }
+    }
+    return instance  // subsequent callers receive the same object regardless of their client
+}
+</code></pre>
+<p>In HTTP mode, pkg/github/dependencies.go calls this per request:</p>
+<pre><code class="language-go">func (d *RequestDeps) GetRepoAccessCache(ctx context.Context) (*lockdown.RepoAccessCache, error) {
+    gqlClient, err := d.GetGQLClient(ctx)  // creates client with request's token
+    ...
+    instance := lockdown.GetInstance(gqlClient, d.RepoAccessOpts...)
+    // gqlClient is silently dropped if singleton already exists
+    return instance, nil
+}
+</code></pre>
+<p>The singleton's internal client field is never updated after the first initialization. All lockdown GraphQL queries that check repository access and visibility (queryRepoAccessInfo, called by IsSafeContent) run under the first authenticated user's token for the lifetime of the process.</p>
+<p>IsSafeContent is called in at least six places across pkg/github/issues.go and pkg/github/pullrequests.go to decide whether to trust or sanitize content from external contributors.</p>
+<h3 id="poc">PoC</h3>
+<p>The following program demonstrates that two distinct GraphQL clients produce the same singleton pointer, confirming that the second client is discarded:</p>
+<pre><code class="language-go">package main
+
+import (
+    "fmt"
+    "net/http"
+    "github.com/github/github-mcp-server/pkg/lockdown"
+    "github.com/shurcooL/githubv4"
+)
+
+func main() {
+    httpClientA := &amp;http.Client{}
+    httpClientB := &amp;http.Client{}
+    gqlClientA := githubv4.NewEnterpriseClient("https://api.github.com/graphql", httpClientA)
+    gqlClientB := githubv4.NewEnterpriseClient("https://api.github.com/graphql", httpClientB)
+
+    fmt.Printf("gqlClientA (user A token): %p\n", gqlClientA)
+    fmt.Printf("gqlClientB (user B token): %p\n", gqlClientB)
+    fmt.Printf("clients are different objects: %v\n\n", gqlClientA != gqlClientB)
+
+    instanceForA := lockdown.GetInstance(gqlClientA)
+    instanceForB := lockdown.GetInstance(gqlClientB)
+
+    fmt.Printf("lockdown instance returned for user A: %p\n", instanceForA)
+    fmt.Printf("lockdown instance returned for user B: %p\n", instanceForB)
+    fmt.Printf("same singleton returned for both users: %v\n", instanceForA == instanceForB)
+}
+</code></pre>
+<p>Output:</p>
+<pre><code>gqlClientA (user A token): 0x400044070
+gqlClientB (user B token): 0x400044078
+clients are different objects: true
+
+lockdown instance returned for user A: 0x400002ecc0
+lockdown instance returned for user B: 0x400002ecc0
+same singleton returned for both users: true
+</code></pre>
+<img src="https://github.com/user-attachments/assets/bec46420-9ba7-458e-8710-62f951cb836a" alt="image" height="450" width="1642">
+
+
+<h3 id="impact">Impact</h3>
+<p>This affects deployments running the HTTP server with --lockdown-mode, which is the intended configuration for multi-user scenarios such as GitHub Copilot's managed MCP endpoint.</p>
+<p>Three concrete consequences:</p>
+<p>First, the ViewerLogin field in cache entries always reflects the first authenticated user's identity. The IsSafeContent check <code>repoInfo.ViewerLogin == strings.ToLower(username)</code> compares this stale value against each subsequent user's login, producing incorrect results for all users except the first.</p>
+<p>Second, repository visibility and collaborator access data stored in the cache is evaluated through the first user's token. If user A cannot see a private repository but user B can (or vice versa), the cached isPrivate and hasPushAccess values will reflect user A's view of that repository, causing IsSafeContent to return wrong decisions for user B. In lockdown mode, a wrong true result means potentially injected content from untrusted external contributors is passed to the model without sanitization.</p>
+<p>Third, if the first user's token is revoked or expires, all subsequent lockdown GraphQL queries fail with authentication errors. Since getRepoAccessInfo propagates these errors, IsSafeContent returns an error for every request, breaking lockdown protection for all users until the process is restarted.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/github/github-mcp-server/security/advisories/GHSA-pjp5-fpmr-3349">https://github.com/github/github-mcp-server/security/advisories/GHSA-pjp5-fpmr-3349</a></li>
+<li><a href="https://github.com/advisories/GHSA-pjp5-fpmr-3349">https://github.com/advisories/GHSA-pjp5-fpmr-3349</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pjp5-fpmr-3349</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-25T21:32:09.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/go-chi/chi/v5/middleware] chi Has an IP Spoofing Vulnerability in `middleware.RealIP`]]></title>
         <id>https://github.com/advisories/GHSA-3fxj-6jh8-hvhx</id>
@@ -1763,47 +1890,5 @@ func parseTemplate(source string, data any) (string, error) {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-06-23T22:16:14.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost has a Path Traversal issue]]></title>
-        <id>https://github.com/advisories/GHSA-c4r7-j7pp-r8mp</id>
-        <link href="https://github.com/advisories/GHSA-c4r7-j7pp-r8mp"/>
-        <updated>2026-06-23T22:02:07.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 11.6.x &lt;= 11.6.0, 11.5.x &lt;= 11.5.3, 11.4.x &lt;= 11.4.4, 10.11.x &lt;= 10.11.14 fail to check integration URL for path traversal which allows an malicious authenticated user  to call an arbitrary API via system admin Mattermost auth token using via path traversal in integration action URL. Mattermost Advisory ID: MMSA-2026-00640.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-4858">https://nvd.nist.gov/vuln/detail/CVE-2026-4858</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/advisories/GHSA-c4r7-j7pp-r8mp">https://github.com/advisories/GHSA-c4r7-j7pp-r8mp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c4r7-j7pp-r8mp</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-21T09:32:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost has a Path Traversal issue]]></title>
-        <id>https://github.com/advisories/GHSA-c4r7-j7pp-r8mp</id>
-        <link href="https://github.com/advisories/GHSA-c4r7-j7pp-r8mp"/>
-        <updated>2026-06-23T22:02:07.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 11.6.x &lt;= 11.6.0, 11.5.x &lt;= 11.5.3, 11.4.x &lt;= 11.4.4, 10.11.x &lt;= 10.11.14 fail to check integration URL for path traversal which allows an malicious authenticated user  to call an arbitrary API via system admin Mattermost auth token using via path traversal in integration action URL. Mattermost Advisory ID: MMSA-2026-00640.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-4858">https://nvd.nist.gov/vuln/detail/CVE-2026-4858</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/advisories/GHSA-c4r7-j7pp-r8mp">https://github.com/advisories/GHSA-c4r7-j7pp-r8mp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c4r7-j7pp-r8mp</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-21T09:32:12.000Z</published>
     </entry>
 </feed>
