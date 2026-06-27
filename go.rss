@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-06-26T23:37:11.182Z</updated>
+    <updated>2026-06-27T01:31:17.524Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,95 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/nezhahq/nezha] Nezha Dashboard: DDNS and Notification credential exposure via unredacted list API]]></title>
+        <id>https://github.com/advisories/GHSA-ww5p-j6cj-6mqq</id>
+        <link href="https://github.com/advisories/GHSA-ww5p-j6cj-6mqq"/>
+        <updated>2026-06-26T23:55:28.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>GET /api/v1/ddns</code> and <code>GET /api/v1/notification</code> endpoints return full resource objects including plaintext third-party API credentials — Cloudflare API tokens, TencentCloud SecretKeys, Slack/Discord/Telegram webhook URLs with embedded bot tokens, and Authorization header values — without any field-level redaction. Any authenticated admin who calls these endpoints receives every stored credential in the system in a single API response. A compromised admin session or leaked PAT with <code>nezha:ddns:read</code> or <code>nezha:notification:read</code> scope exposes all third-party integration secrets.</p>
+<h3 id="details">Details</h3>
+<p>The <code>listDDNS</code> and <code>listNotification</code> handlers follow an identical pattern: they call the corresponding singleton <code>GetSortedList()</code>, <code>copier.Copy</code> the full in-memory structs into a response slice, and return them via <code>listHandler</code> with zero field stripping.</p>
+<p><strong>DDNS — <code>cmd/dashboard/controller/ddns.go:25–33</code>:</strong></p>
+<pre><code class="language-go">func listDDNS(c *gin.Context) ([]*model.DDNSProfile, error) {
+    var ddnsProfiles []*model.DDNSProfile
+    list := singleton.DDNSShared.GetSortedList()
+    if err := copier.Copy(&amp;ddnsProfiles, &amp;list); err != nil {
+        return nil, err
+    }
+    return ddnsProfiles, nil
+}
+</code></pre>
+<p>The <code>DDNSProfile</code> struct (<code>model/ddns.go:20–36</code>) serializes <code>AccessSecret</code> with <code>json:"access_secret,omitempty"</code> — non-empty Cloudflare tokens and TencentCloud SecretKeys are returned in cleartext. The <code>WebhookURL</code> and <code>WebhookHeaders</code> fields may also contain embedded secrets.</p>
+<p><strong>Notification — <code>cmd/dashboard/controller/notification.go:25–33</code>:</strong></p>
+<pre><code class="language-go">func listNotification(c *gin.Context) ([]*model.Notification, error) {
+    slist := singleton.NotificationShared.GetSortedList()
+    var notifications []*model.Notification
+    if err := copier.Copy(&amp;notifications, &amp;slist); err != nil {
+        return nil, err
+    }
+    return notifications, nil
+}
+</code></pre>
+<p>The <code>Notification</code> struct (<code>model/notification.go:34–44</code>) serializes <code>URL</code>, <code>RequestHeader</code>, and <code>RequestBody</code> — all of which commonly contain embedded bot tokens (Slack, Discord, Telegram), API keys in Authorization headers, and webhook secrets.</p>
+<p><strong>Route and authorization (<code>cmd/dashboard/controller/controller.go:155, 171</code>):</strong></p>
+<pre><code class="language-go">auth.GET("/notification", restScopeMiddleware(model.ScopeNotificationRead), listHandler(listNotification))
+auth.GET("/ddns", restScopeMiddleware(model.ScopeDDNSRead), listHandler(listDDNS))
+</code></pre>
+<p>Both routes are behind <code>authMw</code> (JWT or PAT) and the corresponding read scope. The <code>listHandler</code> → <code>filter</code> chain uses <code>HasPermission</code> (<code>model/common.go:63–82</code>) which grants admins access to ALL profiles and restricts members to their own. No separate response struct or field masking exists anywhere in the codebase — confirmed by exhaustive search for <code>DDNSResponse</code>, <code>DDNSView</code>, <code>NotificationResponse</code>, <code>NotificationView</code>, or any JSON middleware that strips sensitive fields.</p>
+<p>The codebase already demonstrates awareness of this pattern: <code>serverConfigSensitiveScope()</code> in <code>cmd/dashboard/controller/api_token_scope.go:117</code> was introduced to restrict <code>client_secret</code> exposure via <code>GET /server/config/:id</code>, tightening the scope from <code>ScopeServerRead</code> to <code>ScopeServerWrite</code>. No equivalent protection exists for the DDNS or Notification list endpoints.</p>
+<p><strong>Tested at commit <code>3d74cd94</code> (master, post v2.2.3).</strong> The vulnerable pattern has existed since the DDNS and notification list endpoints were introduced.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li><p>Deploy nezha with at least one admin user. Configure a DDNS profile with a Cloudflare API token (AccessSecret) and a Notification webhook pointing to a Slack incoming webhook URL (<code>https://hooks.slack.com/services/T.../B.../xxx...</code>).</p>
+</li>
+<li><p>Authenticate as the admin user. Call:</p>
+<pre><code class="language-bash"># DDNS credentials exposed
+curl -s -H "Authorization: Bearer &lt;admin_jwt&gt;" \
+  https://dashboard.example.com/api/v1/ddns \
+  | jq '.data[].access_secret'
+
+# Notification webhook secrets exposed
+curl -s -H "Authorization: Bearer &lt;admin_jwt&gt;" \
+  https://dashboard.example.com/api/v1/notification \
+  | jq '.data[].url'
+</code></pre>
+</li>
+<li><p>Observe the full Cloudflare API token, Slack webhook URL with embedded token, and any <code>RequestHeader</code> values (e.g., <code>Authorization: Bearer ...</code>) returned in cleartext.</p>
+</li>
+<li><p>Alternatively, create a PAT with <code>nezha:ddns:read</code> scope:</p>
+<pre><code class="language-bash">curl -s -H "Authorization: Bearer nzp_&lt;pat_secret&gt;" \
+  https://dashboard.example.com/api/v1/ddns \
+  | jq '.data[].access_secret'
+</code></pre>
+<p>If the PAT creator is an admin, all DDNS secrets are returned in a single response.</p>
+</li>
+<li><p><strong>Negative control:</strong> A member (non-admin) calling the same endpoints only sees their own profiles due to the <code>HasPermission</code> filter (<code>model/common.go:63–82</code>). However, an admin sees ALL profiles with ALL secrets. The security boundary crossed is the credential confidentiality boundary — a read-only listing endpoint should not return write-capable credentials.</p>
+</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>An attacker who compromises an admin session or obtains a PAT with the appropriate read scope can exfiltrate all third-party API credentials stored in the dashboard — Cloudflare API tokens, TencentCloud SecretKeys, Slack/Discord/Telegram bot tokens, and any secrets embedded in webhook URLs or Authorization headers. These credentials can then be used to:</p>
+<ul>
+<li>Modify DNS records for any domain managed via Cloudflare/TencentCloud DDNS profiles</li>
+<li>Send messages as the Slack/Discord/Telegram bot to any configured channel</li>
+<li>Access any other API the compromised credentials grant access to</li>
+</ul>
+<p>The attack requires high privileges (admin JWT or PAT with appropriate scope), but the impact is amplified because a single API call exposes ALL stored credentials across ALL DDNS profiles and ALL notification webhooks, with no field-level access control separating metadata from secrets.</p>
+<p><strong>Suggested remediation:</strong> Introduce separate response structs (e.g., <code>DDNSProfileResponse</code>, <code>NotificationResponse</code>) that omit sensitive fields (<code>AccessSecret</code>, <code>WebhookHeaders</code>, <code>URL</code>, <code>RequestHeader</code>) from list/read endpoints, or use <code>json:"-"</code> tags on sensitive fields and provide them only through a dedicated credential-retrieval endpoint with stricter authorization (analogous to the existing <code>serverConfigSensitiveScope()</code> pattern).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nezhahq/nezha/security/advisories/GHSA-ww5p-j6cj-6mqq">https://github.com/nezhahq/nezha/security/advisories/GHSA-ww5p-j6cj-6mqq</a></li>
+<li><a href="https://github.com/advisories/GHSA-ww5p-j6cj-6mqq">https://github.com/advisories/GHSA-ww5p-j6cj-6mqq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-ww5p-j6cj-6mqq</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-06-26T23:55:26.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[go.senan.xyz/gonic] Subsonic API: any authenticated user can delete or read any other user's playlist (IDOR)]]></title>
         <id>https://github.com/advisories/GHSA-hmgp-w9jm-vp95</id>
@@ -1418,27 +1507,6 @@ ok  	github.com/nezhahq/nezha/cmd/dashboard	0.132s
             <uri>https://github.com/advisories/GHSA-7pf2-9c95-w332</uri>
         </author>
         <category label="severity" term="HIGH"/>
-        <published>2026-05-26T13:30:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost-server] Mattermost doesn't sanitize team member data when returned via API to users without elevated permissions]]></title>
-        <id>https://github.com/advisories/GHSA-ffpr-pfr4-g354</id>
-        <link href="https://github.com/advisories/GHSA-ffpr-pfr4-g354"/>
-        <updated>2026-06-26T22:48:00.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 11.6.x &lt;= 11.6.0, 11.5.x &lt;= 11.5.3, 11.4.x &lt;= 11.4.4, 10.11.x &lt;= 10.11.14 fail to sanitize team member data when returned via API to users without elevated permissions which allows a user without permissions to get data about team members roles via invoking various team API endpoints. Mattermost Advisory ID: MMSA-2026-00626.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-3636">https://nvd.nist.gov/vuln/detail/CVE-2026-3636</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/advisories/GHSA-ffpr-pfr4-g354">https://github.com/advisories/GHSA-ffpr-pfr4-g354</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-ffpr-pfr4-g354</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
         <published>2026-05-26T13:30:15.000Z</published>
     </entry>
     <entry>
