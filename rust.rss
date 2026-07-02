@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2026-07-02T20:45:51.207Z</updated>
+    <updated>2026-07-02T21:51:27.147Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,59 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[jxl-grid] jxl-grid on 32-bit platforms has an out-of-bounds writes due to integer overflow]]></title>
+        <id>https://github.com/advisories/GHSA-5pmv-rx8r-wmv5</id>
+        <link href="https://github.com/advisories/GHSA-5pmv-rx8r-wmv5"/>
+        <updated>2026-07-02T20:46:00.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>On 32-bit platforms, decoding a crafted image may lead to out-of-bounds writes due to integer overflow in length calculation.</p>
+<h3 id="details--poc">Details &amp; PoC</h3>
+<p>The test listed below fail under miri with command <code>cargo +nightly miri test --release -p jxl-grid</code></p>
+<p>Or you can use Address Sanitizer, which ignores Rust-specific UB like aliasing but still flags out-of-bounds accesses:</p>
+<p><code>RUSTFLAGS=-Zsanitizer=address cargo +nightly test -Zbuild-std -p jxl-grid --release --target x86_64-unknown-linux-gnu</code></p>
+<p>The following tests should be appended to <code>crates/jxl-grid/src/test/subgrids.rs</code>:</p>
+<pre><code class="language-rust">mod miri_ub {
+    use super::*;
+
+    // `AlignedGrid::with_alloc_tracker` computes `width * height` unchecked. In release, overflow
+    // can create a tiny backing buffer for huge logical dimensions.
+    #[test]
+    fn aligned_grid_dimension_product_overflows() {
+        let width = usize::MAX / 2 + 1;
+        let mut grid = AlignedGrid::&lt;u8&gt;::with_alloc_tracker(width, 2, None).unwrap();
+        let mut subgrid = grid.as_subgrid_mut();
+        *subgrid.get_mut(0, 1) = 1;
+        std::hint::black_box(grid);
+    }
+}
+</code></pre>
+<p>This issue can be reachable through decoding a crafted image in two ways:</p>
+<ol>
+<li><p><strong>Huge actual frame</strong>
+A frame such as <code>65536 x 65536</code> passes the current frame area limit (<code>2^32 &lt;= 2^40</code>) but overflows <code>usize</code> element count on 32-bit. Rendering then allocates too-small <code>AlignedGrid</code>s in modular/VarDCT/filter paths and later writes through mutable subgrids.</p>
+</li>
+<li><p><strong>Huge canvas plus tiny cropped frame</strong>
+This is the more practical “small payload, huge logical output” case. A bitstream-controlled frame crop can be tiny, but if the canvas/default requested region is huge, composition can allocate an output grid sized to the canvas/ROI at crates/jxl-render/src/blend.rs. That is bitstream frame cropping, not API crop. With a 32-bit target and a full requested image region whose area overflows, this can happen through ordinary <code>render_frame()</code>.</p>
+</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>On 32-bit platforms this can cause out-of-bounds writes with attacker-controlled data when decoding a crafted JPEG XL image. This could allow arbitrary code execution.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/tirr-c/jxl-oxide/security/advisories/GHSA-5pmv-rx8r-wmv5">https://github.com/tirr-c/jxl-oxide/security/advisories/GHSA-5pmv-rx8r-wmv5</a></li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0151.html">https://rustsec.org/advisories/RUSTSEC-2026-0151.html</a></li>
+<li><a href="https://github.com/advisories/GHSA-5pmv-rx8r-wmv5">https://github.com/advisories/GHSA-5pmv-rx8r-wmv5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5pmv-rx8r-wmv5</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-02T20:45:59.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[jxl-oxide] jxl-oxide: `FrameBuffer::new` creates out-of-bounds slices on overflow]]></title>
         <id>https://github.com/advisories/GHSA-66m8-c62j-h6v5</id>
@@ -883,53 +936,5 @@ that sets <code>overflow-checks = true</code> in Cargo.toml or <code>[profile.*]
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-07-02T19:42:05.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[zebrad] zebrad has mempool transaction admission denial via single-peer inbound queue saturation]]></title>
-        <id>https://github.com/advisories/GHSA-4fc2-h7jh-287c</id>
-        <link href="https://github.com/advisories/GHSA-4fc2-h7jh-287c"/>
-        <updated>2026-07-02T19:39:02.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="am-i-affected">Am I affected</h3>
-<p>You are affected if:</p>
-<ol>
-<li>You run <code>zebrad</code> up to and including <code>v4.4.1</code>.</li>
-<li>Your node accepts inbound P2P connections (<code>network.listen_addr</code> is set, which is the default).</li>
-<li>Your node's mempool is active (node is synced near the chain tip).</li>
-</ol>
-<p>All default configurations are affected.</p>
-<h3 id="summary">Summary</h3>
-<p>A single unauthenticated P2P peer can monopolize all 25 inbound mempool download/verification slots (<code>MAX_INBOUND_CONCURRENCY</code>) by advertising fake transaction IDs. While the slots are occupied, all other inbound transactions from honest peers and local RPC <code>sendrawtransaction</code> calls are rejected with <code>MempoolError::FullQueue</code>. The attacker peer is never scored for misbehavior and is not disconnected, allowing sustained denial of mempool admission.</p>
-<h3 id="details">Details</h3>
-<p>The mempool download/verification pipeline at <code>zebrad/src/components/mempool/downloads.rs</code> uses a single bounded pool of 25 concurrent tasks. Three architectural gaps combine to produce the vulnerability:</p>
-<ol>
-<li>No per-peer accounting: the 25 slots are shared across all peers with no cap on how many a single peer can hold.</li>
-<li>No overload signaling: when <code>FullQueue</code> is returned, the inbound service at <code>zebrad/src/components/inbound.rs</code> maps it to <code>Response::Nil</code>, hiding the overload from the peer connection layer. The existing <code>handle_inbound_overload</code> disconnection logic never fires.</li>
-<li>No misbehavior attribution: peer identity is not carried through the <code>Gossip</code> type into the download pipeline, so verification failures cannot be attributed to the originating peer.</li>
-</ol>
-<p>The attacker sends <code>inv</code> messages advertising fake transaction IDs. Zebra queues download tasks for each ID. The attacker stays silent; each slot is held until the <code>TRANSACTION_DOWNLOAD_TIMEOUT</code> (20 seconds) fires. The attacker periodically sends fresh <code>inv</code> waves to re-fill slots as they expire.</p>
-<p>Two additional slot-holding techniques have been independently demonstrated: invalid-prevout transactions that park in <code>AwaitOutput</code> for 60 seconds, and expensive shielded proof verification with auth-variant cache bypass. All three techniques are addressed by the same per-peer accounting fix.</p>
-<h3 id="patches">Patches</h3>
-<p>zebrad 4.5.0</p>
-<p>The fix adds per-peer queue accounting to the mempool download pipeline. A single peer is limited to a fraction of <code>MAX_INBOUND_CONCURRENCY</code> (e.g., 5 slots out of 25). <code>FullQueue</code> is surfaced as an overload signal to the peer connection layer. Peer identity is plumbed through the <code>Gossip</code> type for misbehavior attribution.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no complete configuration-level workaround. Reducing <code>network.peerset_initial_target_size</code> limits the total inbound peer count but does not prevent a single peer from holding all mempool slots.</p>
-<h3 id="impact">Impact</h3>
-<p>Mempool transaction admission is denied for all honest peers and local RPC clients while the attack is sustained. Block validation and chain synchronization continue normally. The attacker needs only one TCP connection and minimal bandwidth (~1 KB/s of fake <code>inv</code> messages). The node recovers immediately when the attacker stops. This does not affect consensus, funds, or on-disk state.</p>
-<h3 id="credit">Credit</h3>
-<p>Reported by <code>@dingledropper</code> via a private GitHub Security Advisory submission.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/ZcashFoundation/zebra/security/advisories/GHSA-4fc2-h7jh-287c">https://github.com/ZcashFoundation/zebra/security/advisories/GHSA-4fc2-h7jh-287c</a></li>
-<li><a href="https://github.com/ZcashFoundation/zebra/blob/d4cd662c716382f6397d2a730148025a1ca79fec/zebrad/src/components/mempool/downloads.rs#L82">https://github.com/ZcashFoundation/zebra/blob/d4cd662c716382f6397d2a730148025a1ca79fec/zebrad/src/components/mempool/downloads.rs#L82</a></li>
-<li><a href="https://github.com/advisories/GHSA-4fc2-h7jh-287c">https://github.com/advisories/GHSA-4fc2-h7jh-287c</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4fc2-h7jh-287c</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-02T19:39:02.000Z</published>
     </entry>
 </feed>
