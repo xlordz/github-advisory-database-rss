@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-07-07T21:05:01.711Z</updated>
+    <updated>2026-07-07T22:19:48.181Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,99 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[axios] axios's shouldBypassProxy does not recognize IPv4-mapped IPv6 addresses, allowing NO_PROXY bypass (incomplete fix for CVE-2025-62718)]]></title>
+        <id>https://github.com/advisories/GHSA-pjwm-pj3p-43mv</id>
+        <link href="https://github.com/advisories/GHSA-pjwm-pj3p-43mv"/>
+        <updated>2026-07-07T21:16:19.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>shouldBypassProxy, introduced in v1.15.0 to fix CVE-2025-62718, does not normalise IPv4-mapped IPv6 addresses. When NO_PROXY lists an IPv4 address such as <code>127.0.0.1</code> or <code>169.254.169.254</code>, a request URL using the IPv4-mapped IPv6 form (<code>::ffff:7f00:1</code>, <code>::ffff:a9fe:a9fe</code>) still routes through the configured proxy. Node.js resolves these addresses to the underlying IPv4 host, so the request reaches the internal service via the proxy rather than being blocked.</p>
+<h3 id="details">Details</h3>
+<p>lib/helpers/shouldBypassProxy.js (v1.15.0):                                                                                                                                   </p>
+<pre><code class="language-javascript">  const LOOPBACK_ADDRESSES = new Set(['localhost', '127.0.0.1', '::1']);                                                                                                      
+  const isLoopback = (host) =&gt; LOOPBACK_ADDRESSES.has(host);                                                                                                                    
+                                                                                                                                                                                
+  // normalizeNoProxyHost strips brackets and trailing dots, but not ::ffff: prefix                                                                                             
+  return hostname === entryHost || (isLoopback(hostname) &amp;&amp; isLoopback(entryHost));                                                                                             
+</code></pre>
+<p>The WHATWG URL parser canonicalises <code>http://[::ffff:127.0.0.1]/</code> to hostname <code>[::ffff:7f00:1]</code>. After bracket-stripping: <code>::ffff:7f00:1</code>. This string does not match 127.0.0.1 in NO_PROXY and is not in LOOPBACK_ADDRESSES, so shouldBypassProxy returns false and the proxy is used.  proxy-from-env (called before shouldBypassProxy) has the same gap - it does not equate ::ffff:7f00:1 with 127.0.0.1 - so neither layer catches the bypass.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-javascript">
+// NO_PROXY=127.0.0.1,localhost,::1  HTTP_PROXY=http://attacker:8080
+import shouldBypassProxy from 'axios/lib/helpers/shouldBypassProxy.js';                                                                                                       
+                                                                                                                                                                              
+// All three should return true (bypass proxy). Only the first two do.                                                                                                        
+console.log(shouldBypassProxy('http://127.0.0.1/'));          // true  [OK]                                                                                                     
+console.log(shouldBypassProxy('http://[::1]/'));               // true  [OK]                                                                                                     
+console.log(shouldBypassProxy('http://[::ffff:127.0.0.1]/')); // false &lt;- bypass                                                                                             
+console.log(shouldBypassProxy('http://[::ffff:7f00:1]/'));     // false &lt;- bypass
+</code></pre>
+<p>Node.js routes ::ffff:7f00:1 to 127.0.0.1:                                                                                                                                    </p>
+<pre><code>// net.connect({ host: '::ffff:7f00:1', port: 80 }) reaches a service                                                                                                       
+// bound to 127.0.0.1:80 — confirmed on Node.js v24, Linux and macOS.                                                                                                         
+</code></pre>
+<p>Cloud metadata SSRF: ::ffff:a9fe:a9fe = ::ffff:169.254.169.254. If NO_PROXY=169.254.169.254 is set to block IMDS access, a request to http://[::ffff:a9fe:a9fe]/latest/meta-data/ bypasses it.                                                                                                                      </p>
+<h4 id="fix">Fix</h4>
+<p>Canonicalise IPv4-mapped IPv6 in normalizeNoProxyHost before any comparison:                                                                                                  </p>
+<pre><code class="language-javascript">const ipv4MappedDotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i;                                                                                                    
+const ipv4MappedHex    = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i;                                                                                                         
+                                                                                                                                                                             
+function hexToIPv4(a, b) {                                                                                                                                                    
+ const hi = parseInt(a, 16), lo = parseInt(b, 16);                                                                                                                           
+ return `${hi &gt;&gt; 8}.${hi &amp; 0xff}.${lo &gt;&gt; 8}.${lo &amp; 0xff}`;                                                                                                                   
+}                                                                                                                                                                             
+                                                                                                                                                                             
+const normalizeNoProxyHost = (hostname) =&gt; {                                                                                                                                  
+ if (!hostname) return hostname;                                                                                                                                           
+ if (hostname[0] === '[' &amp;&amp; hostname.at(-1) === ']')
+   hostname = hostname.slice(1, -1);                                                                                                                                         
+ hostname = hostname.replace(/\.+$/, '').toLowerCase();
+                                                                                                                                                                             
+ let m;                                                                                                                                                                    
+ if ((m = hostname.match(ipv4MappedDotted))) return m[1];                                                                                                                    
+ if ((m = hostname.match(ipv4MappedHex)))    return hexToIPv4(m[1], m[2]);                                                                                                   
+ return hostname;                                                                                                                                                            
+};
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Any application that sets NO_PROXY to exclude internal or metadata endpoints and uses an HTTP/HTTPS proxy can have those exclusions bypassed by a URL using IPv4-mapped IPv6 notation. The attacker must control the request URL. In cloud environments with instance metadata services, this can lead to credential exfiltration.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-pjwm-pj3p-43mv">https://github.com/axios/axios/security/advisories/GHSA-pjwm-pj3p-43mv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-62718">https://nvd.nist.gov/vuln/detail/CVE-2025-62718</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-44492">https://nvd.nist.gov/vuln/detail/CVE-2026-44492</a></li>
+<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-44492.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-44492.json</a></li>
+<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2487938">https://bugzilla.redhat.com/show_bug.cgi?id=2487938</a></li>
+<li><a href="https://access.redhat.com/security/cve/CVE-2026-44492">https://access.redhat.com/security/cve/CVE-2026-44492</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:36108">https://access.redhat.com/errata/RHSA-2026:36108</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33574">https://access.redhat.com/errata/RHSA-2026:33574</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33183">https://access.redhat.com/errata/RHSA-2026:33183</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33173">https://access.redhat.com/errata/RHSA-2026:33173</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33163">https://access.redhat.com/errata/RHSA-2026:33163</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33160">https://access.redhat.com/errata/RHSA-2026:33160</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33155">https://access.redhat.com/errata/RHSA-2026:33155</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33005">https://access.redhat.com/errata/RHSA-2026:33005</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:30651">https://access.redhat.com/errata/RHSA-2026:30651</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:30650">https://access.redhat.com/errata/RHSA-2026:30650</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:29197">https://access.redhat.com/errata/RHSA-2026:29197</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:29082">https://access.redhat.com/errata/RHSA-2026:29082</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:28964">https://access.redhat.com/errata/RHSA-2026:28964</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:27063">https://access.redhat.com/errata/RHSA-2026:27063</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:27044">https://access.redhat.com/errata/RHSA-2026:27044</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:26234">https://access.redhat.com/errata/RHSA-2026:26234</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:20938">https://access.redhat.com/errata/RHSA-2026:20938</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:20889">https://access.redhat.com/errata/RHSA-2026:20889</a></li>
+<li><a href="https://github.com/advisories/GHSA-pjwm-pj3p-43mv">https://github.com/advisories/GHSA-pjwm-pj3p-43mv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pjwm-pj3p-43mv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-05-29T15:59:30.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@better-auth/scim] @better-auth/scim: Account/provider takeover via missing owner binding on non-org SCIM providers]]></title>
         <id>https://github.com/advisories/GHSA-j8v8-g9cx-5qf4</id>
@@ -1426,93 +1519,5 @@ Set-Cookie: auth_token=&lt;redacted&gt;; Path=/; HttpOnly; SameSite=lax
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-07-06T21:46:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[9router] 9routers has Exposure of Sensitive Information and Unprotected Database Import/Export, Allowing Complete Credential Theft and Database Takeover]]></title>
-        <id>https://github.com/advisories/GHSA-qvfm-67h2-2qfx</id>
-        <link href="https://github.com/advisories/GHSA-qvfm-67h2-2qfx"/>
-        <updated>2026-07-06T21:37:49.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>/api/settings/database</code> endpoint allows full database export (containing all credentials, API keys, OAuth tokens, and settings) and full database import (complete overwrite) without any authentication requirement beyond the <code>ALWAYS_PROTECTED</code> middleware check, which only validates JWT or CLI token. Combined with other vulnerabilities (e.g., default password, tunnel exposure), this enables complete database takeover.</p>
-<h2 id="description">Description</h2>
-<p>The endpoint <code>/api/settings/database</code> is listed in <code>ALWAYS_PROTECTED</code> in <code>dashboardGuard.js</code> (line 42), which requires a valid JWT token or CLI token. However, this protection is insufficient because:</p>
-<ol>
-<li><p><strong>GET (Export):</strong> Returns the complete database including API keys (<code>key</code> field in <code>apiKeys</code> table), OAuth tokens, and all provider credentials. Line 80 in <code>src/lib/db/index.js</code>: <code>apiKeys: db.all("SELECT * FROM apiKeys").map(...)</code> — the <code>key</code> field contains the plaintext API key value.</p>
-</li>
-<li><p><strong>POST (Import):</strong> Accepts arbitrary JSON and performs a complete database wipe-and-replace in a transaction (lines 102-163 in <code>src/lib/db/index.js</code>). This replaces all settings including the password hash, effectively allowing an attacker to set their own password.</p>
-</li>
-<li><p>The exported data includes <code>apiKeys</code> with their plaintext <code>key</code> values, <code>providerConnections</code> with all OAuth tokens, and <code>settings</code> with OIDC client secrets.</p>
-</li>
-</ol>
-<h3 id="evidence">Evidence</h3>
-<p><strong>File:</strong> <code>src/app/api/settings/database/route.js</code></p>
-<pre><code class="language-javascript">export async function GET() {
-  const payload = await exportDb();
-  return NextResponse.json(payload);
-}
-
-export async function POST(request) {
-  const payload = await request.json();
-  await importDb(payload);
-  // ...
-}
-</code></pre>
-<p><strong>File:</strong> <code>src/lib/db/index.js</code> (lines 96-163)</p>
-<pre><code class="language-javascript">export async function importDb(payload) {
-  db.transaction(() =&gt; {
-    // Wipe all tables
-    db.run(`DELETE FROM settings`);
-    db.run(`DELETE FROM providerConnections`);
-    db.run(`DELETE FROM providerNodes`);
-    db.run(`DELETE FROM proxyPools`);
-    db.run(`DELETE FROM apiKeys`);
-    db.run(`DELETE FROM combos`);
-    db.run(`DELETE FROM kv WHERE scope IN (...)`);
-    // Then insert attacker-controlled data
-    // ...
-  });
-}
-</code></pre>
-<p>The <code>exportDb</code> function at line 80 exposes API key plaintext:</p>
-<pre><code class="language-javascript">apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) =&gt; ({ 
-  id: r.id, key: r.key, name: r.name, ...
-})),
-</code></pre>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<ol>
-<li>Authenticate with any valid JWT (e.g., using the default password "123456")</li>
-<li>Export: <code>curl -b auth_token=&lt;jwt&gt; http://localhost:20128/api/settings/database</code></li>
-<li>Observe: Full database dump with all credentials in plaintext</li>
-<li>Import malicious data: <code>curl -X POST -b auth_token=&lt;jwt&gt; -H "Content-Type: application/json" -d '&lt;modified-db&gt;' http://localhost:20128/api/settings/database</code></li>
-<li>All settings, passwords, API keys are now replaced with attacker-controlled values</li>
-</ol>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Confidentiality:</strong> Complete exposure of all stored secrets (API keys, OAuth tokens, OIDC client secrets)</li>
-<li><strong>Integrity:</strong> Complete database replacement with attacker-controlled data</li>
-<li><strong>Availability:</strong> Database wipe is possible by importing an empty database</li>
-<li><strong>Scope Changed:</strong> Importing new settings affects all users and downstream services</li>
-</ul>
-<h2 id="recommended-fix">Recommended Fix</h2>
-<ol>
-<li>Require re-authentication for database export/import (not just an existing session)</li>
-<li>Mask/redact API keys in export (or require explicit opt-in for key export)</li>
-<li>Add confirmation step for import (require current password verification)</li>
-<li>Implement database backup before import</li>
-<li>Log all export/import operations with audit trail</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/decolua/9router/security/advisories/GHSA-qvfm-67h2-2qfx">https://github.com/decolua/9router/security/advisories/GHSA-qvfm-67h2-2qfx</a></li>
-<li><a href="https://github.com/advisories/GHSA-qvfm-67h2-2qfx">https://github.com/advisories/GHSA-qvfm-67h2-2qfx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qvfm-67h2-2qfx</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-06T21:37:49.000Z</published>
     </entry>
 </feed>
