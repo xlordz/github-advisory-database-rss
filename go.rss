@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-07-10T20:04:59.240Z</updated>
+    <updated>2026-07-10T21:15:53.283Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,94 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Stored XSS to RCE via Unsanitized Attribute View Asset Cell Content]]></title>
+        <id>https://github.com/advisories/GHSA-56mp-4f3v-fgj2</id>
+        <link href="https://github.com/advisories/GHSA-56mp-4f3v-fgj2"/>
+        <updated>2026-07-10T20:37:07.000Z</updated>
+        <content type="html"><![CDATA[<p>SiYuan v3.6.5 and earlier versions contain a stored cross-site scripting (XSS) vulnerability in the Attribute View (database) asset cell renderer that escalates to remote code execution (RCE) in the Electron desktop client. This is a neighbor-bug of CVE-2026-44588: the fix for -44588 used <code>escapeAriaLabel()</code> (double-escapes <code>&lt;</code>), but the AV asset renderers were left using the weaker <code>escapeAttr()</code> (escapes only quotes) or no escaping at all.</p>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<p>  The Electron renderer is configured with <code>nodeIntegration: true</code> and <code>contextIsolation: false</code> (app/electron/main.js:307), allowing any JavaScript executing in the renderer to directly access Node.js APIs including <code>require('child_process')</code>.</p>
+<p>  Two XSS sinks exist.</p>
+<h3 id="sink-1-direct-stored-xss---triggers-on-page-load">Sink 1 (Direct Stored XSS - triggers on page load)</h3>
+<p>  <code>app/src/protyle/render/av/cell.ts:1008</code>:</p>
+<pre><code>  text += `&lt;span class="b3-chip av__celltext--url ariaLabel" aria-label="${escapeAttr(item.content)}" data-name="${escapeAttr(item.name)}"
+</code></pre>
+<p>  data-url="${escapeAttr(item.content)}"&gt;${item.name || item.content}`;</p>
+<p>  The <code>&gt;${item.name || item.content}&lt;/span&gt;</code> portion is raw user input with zero escaping.</p>
+<p>  <code>app/src/protyle/render/av/blockAttr.ts:93</code> (even worse - completely unescaped):</p>
+<pre><code>  html += `&lt;img loading="lazy" class="av__cellassetimg ariaLabel" aria-label="${item.content}" src="${getCompressURL(item.content)}"&gt;`;
+</code></pre>
+<p>  Rendered via <code>action.ts:860</code>: <code>cellElement.innerHTML = renderCell(...)</code> results in immediate XSS on page load.</p>
+<h3 id="sink-2-hover-triggered-xss-via-aria-label-round-trip">Sink 2 (Hover-triggered XSS via aria-label round-trip)</h3>
+<ul>
+<li>Same lines emit <code>aria-label="${escapeAttr(item.content)}"</code> on <code>.ariaLabel</code> elements.</li>
+<li><code>escapeAttr()</code> (util/escape.ts:14) escapes only <code>"</code> and <code>'</code> — NOT <code>&lt;</code> or <code>&gt;</code>.</li>
+<li><code>popover.ts:33</code> global mouseover handler reads <code>aria-label</code> via <code>getAttribute</code> (which attribute-decodes entities).</li>
+<li>Line 144: <code>showTooltip(decodeURIComponent(tip), ...)</code> then <code>tooltip.ts:41</code>: <code>messageElement.innerHTML = message</code> results in XSS on hover.</li>
+</ul>
+<h3 id="source">Source</h3>
+<ul>
+<li><code>app/src/protyle/render/av/asset.ts:405</code>: <code>addAssetLink()</code> reads user input from a free-form <code>&lt;textarea&gt;</code> with no sanitization.</li>
+<li>Kernel stores <code>MAsset.Content</code> raw (kernel/av/value.go:53), no server-side sanitization.</li>
+</ul>
+<h2 id="attack-vector">Attack Vector</h2>
+<ol>
+<li>Attacker creates a malicious note containing an Attribute View (database).</li>
+<li>Attacker adds an asset cell with link content: <code>&lt;img src=x onerror=require('child_process').exec('calc')&gt;</code></li>
+<li>Victim opens the note for immediate RCE (Sink 1), or hovers over the cell for RCE (Sink 2).</li>
+<li>In a sync/collaboration scenario, the malicious note propagates to all users.</li>
+</ol>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>  Payload (Direct XSS) — in an AV asset cell link field, enter:</p>
+<pre><code>  &lt;img src=x onerror=alert(document.domain)&gt;
+</code></pre>
+<p>  For RCE in Electron desktop:</p>
+<pre><code>  &lt;img src=x onerror=require('child_process').exec('calc')&gt;
+</code></pre>
+<h3 id="steps-to-reproduce">Steps to Reproduce</h3>
+<ol>
+<li>Open SiYuan desktop app (v3.6.5).</li>
+<li>Create a new document.</li>
+<li>Insert an Attribute View (database): <code>/</code> then select "Table".</li>
+<li>Add a column of type "Asset".</li>
+<li>Click the asset cell, then "Add Link".</li>
+<li>In the "Link" textarea, paste: <code>&lt;img src=x onerror=alert(1)&gt;</code></li>
+<li>Leave "Title" empty or fill with benign text.</li>
+<li>Click outside the dialog to save.</li>
+<li>Observe: Alert fires immediately (Sink 1). Hovering over the cell also triggers (Sink 2).</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Remote Code Execution on victim's system via malicious note sync/import.</li>
+<li>Data exfiltration: attacker can read all notes, access filesystem, steal credentials.</li>
+<li>Persistence: malicious payload stored in <code>.sy</code> files, executes on every open.</li>
+</ul>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<ol>
+<li>Replace <code>escapeAttr()</code> with <code>escapeAriaLabel()</code> for all <code>aria-label</code> attributes in AV cell renderers.</li>
+<li>Escape <code>item.name</code> and <code>item.content</code> with <code>escapeHtml()</code> before concatenating into element text content.</li>
+</ol>
+<p>  Affected files: <code>app/src/protyle/render/av/cell.ts</code>, <code>app/src/protyle/render/av/blockAttr.ts</code>, <code>app/src/protyle/render/av/asset.ts</code>.</p>
+<h2 id="additional-context">Additional Context</h2>
+<p>  This vulnerability is a neighbor-bug of CVE-2026-44588. The fix for -44588 correctly used <code>escapeAriaLabel()</code> (which double-escapes <code>&lt;</code> to survive the attribute -&gt; <code>getAttribute</code> -&gt; <code>innerHTML</code> round-trip), but the AV asset cell renderers were left using the weaker <code>escapeAttr()</code> or no escaping. This is part of a pattern of incomplete fixes in SiYuan (see also CVE-2026-33066, CVE-2026-29183). The long-term fix should set Electron<code>contextIsolation: true</code> and <code>nodeIntegration: false</code>.</p>
+<h2 id="report">Report</h2>
+<p> Reporter (GitHub: Yunkaiwjs).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-56mp-4f3v-fgj2">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-56mp-4f3v-fgj2</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-50551">https://nvd.nist.gov/vuln/detail/CVE-2026-50551</a></li>
+<li><a href="https://github.com/advisories/GHSA-56mp-4f3v-fgj2">https://github.com/advisories/GHSA-56mp-4f3v-fgj2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-56mp-4f3v-fgj2</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-07-10T20:37:04.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Stored XSS to RCE via attribute-view cell rendering in genAVValueHTML()]]></title>
         <id>https://github.com/advisories/GHSA-5xfx-xj4h-5p7r</id>
@@ -2481,27 +2569,5 @@ return notes, dbErrorToServiceError(tx.Find(&amp;notes).Error)
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-07-09T13:41:29.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/casdoor/casdoor] Casdoor: Arbitrary file write possible through Local File System storage provider]]></title>
-        <id>https://github.com/advisories/GHSA-rmxx-v9rj-vpvg</id>
-        <link href="https://github.com/advisories/GHSA-rmxx-v9rj-vpvg"/>
-        <updated>2026-07-08T21:00:24.000Z</updated>
-        <content type="html"><![CDATA[<p>An arbitrary file write vulnerability exists in Casdoor's Local File System storage provider. Due to insufficient path sanitization, an authenticated attacker with administrative privileges can perform a Path Traversal attack to create or overwrite arbitrary files anywhere on the host filesystem, bypassing the application's intended storage sandbox.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6815">https://nvd.nist.gov/vuln/detail/CVE-2026-6815</a></li>
-<li><a href="https://kb.cert.org/vuls/id/937808">https://kb.cert.org/vuls/id/937808</a></li>
-<li><a href="https://www.kb.cert.org/vuls/id/937808">https://www.kb.cert.org/vuls/id/937808</a></li>
-<li><a href="https://github.com/advisories/GHSA-rmxx-v9rj-vpvg">https://github.com/advisories/GHSA-rmxx-v9rj-vpvg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rmxx-v9rj-vpvg</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-11T18:31:44.000Z</published>
     </entry>
 </feed>
