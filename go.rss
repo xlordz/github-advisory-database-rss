@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-07-20T21:17:40.528Z</updated>
+    <updated>2026-07-20T22:15:38.918Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,147 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/filebrowser/filebrowser/v2] File Browser: ScopedFs follows a dangling symlink on write, letting a scoped user create files outside their scope]]></title>
+        <id>https://github.com/advisories/GHSA-8wc8-hf36-mjh9</id>
+        <link href="https://github.com/advisories/GHSA-8wc8-hf36-mjh9"/>
+        <updated>2026-07-20T21:17:44.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>ScopedFs</code> confines every File Browser user to a scope directory. Its <code>within()</code> guard is meant to reject any operation that follows a symbolic link out of that scope. When the link target does not exist yet, the guard walks up to the nearest existing ancestor and validates that instead. For a dangling symlink (target does not exist), the nearest existing ancestor is the in-scope directory containing the link, so the guard returns "in scope" and the subsequent <code>os.OpenFile(O_CREATE)</code> follows the link and creates the file at its out-of-scope target.</p>
+<p>A post-auth user with <code>Create</code> and <code>Modify</code> permission can write attacker-controlled content to any non-existent path outside their scope that the File Browser process can write to. The precondition is a dangling symlink present inside the user's scope, which is the same out-of-band precondition the rest of <code>ScopedFs</code> is built to defend against.</p>
+<p>This is a patch-gap variant of the GHSA-239w-m3h6-ch8v symlink confinement issue, not a resubmission of the already-published vulnerable-version behavior: GHSA-239w-m3h6-ch8v marks <code>&lt;= 2.63.13</code> vulnerable and <code>2.63.14</code> patched, while this proof reproduces on current <code>master</code> / <code>v2.63.15</code> (<code>be23ab3a15bf957928ecfed88de5ab67850c1b9c</code>). The escaping-symlink-to-an-existing-target case is defended and tested. The dangling case is neither, and the gap is acknowledged in a code comment as "best-effort".</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>files/scoped.go</code> (commit <code>be23ab3</code>). The guard, including the maintainer comment that already flags this exact gap:</p>
+<pre><code class="language-go">// Note: a dangling symlink whose target does not yet exist resolves to its
+// containing directory and is therefore allowed; writing through such a link
+// could still create a file outside the scope. This is treated as best-effort
+// and relies on rejecting existing escaping symlinks, which covers the
+// disclosure and overwrite vectors.
+func (s *ScopedFs) within(p string) (bool, error) {
+    root, err := filepath.EvalSymlinks(afero.FullBaseFsPath(s.base, "/"))
+    if err != nil {
+        return false, err
+    }
+
+    target := afero.FullBaseFsPath(s.base, p)
+    resolved, err := filepath.EvalSymlinks(target)
+    for errors.Is(err, fs.ErrNotExist) {
+        parent := filepath.Dir(target)   // LEXICAL parent of the link path
+        if parent == target {
+            break
+        }
+        target = parent
+        resolved, err = filepath.EvalSymlinks(target)
+    }
+    if err != nil {
+        return false, err
+    }
+    // ...
+    return resolved == root || strings.HasPrefix(resolved, prefix), nil
+}
+</code></pre>
+<p>When <code>p</code> is a symlink whose target does not exist, <code>EvalSymlinks(target)</code> returns <code>fs.ErrNotExist</code>. The loop takes the lexical parent of the link path (<code>filepath.Dir</code>), a real directory inside the scope, and <code>EvalSymlinks</code> of that resolves under the scope root. <code>within()</code> returns <code>true</code> and <code>guard()</code> permits the operation. The write then dereferences the link at the OS layer:</p>
+<pre><code class="language-go">func (s *ScopedFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+    if err := s.guard(name); err != nil {   // returns nil for a dangling escaping symlink
+        return nil, err
+    }
+    return s.base.OpenFile(name, flag, perm) // os.OpenFile(O_CREATE) follows the link
+}
+</code></pre>
+<p>The assumption that breaks: <code>within()</code> treats "target does not exist" as "brand-new in-scope file" and validates the containing directory. But the path component being created is itself a symlink pointing outside the scope. <code>O_CREATE</code> follows it and creates the file at the link target, not inside the validated directory. The existing-target case is correctly blocked, because the walk-up resolves the link itself to an out-of-scope path. Only the dangling case slips through.</p>
+<p>For the layout below:</p>
+<pre><code class="language-text">/tmp/root/scope/escape -&gt; /tmp/root/outside/created-by-http.txt
+/tmp/root/outside/                      # exists
+/tmp/root/outside/created-by-http.txt   # does not exist yet
+</code></pre>
+<p><code>EvalSymlinks(/tmp/root/scope/escape)</code> returns not-exist, and the fallback validates <code>/tmp/root/scope</code>. The final <code>OpenFile</code> still follows <code>/tmp/root/scope/escape</code> and creates <code>/tmp/root/outside/created-by-http.txt</code>.</p>
+<h2 id="reachability-over-http">Reachability over HTTP</h2>
+<p>Endpoint: <code>POST /api/resources/&lt;linkname&gt;?override=true</code> (also <code>PUT</code>, and <code>POST/PATCH /api/tus/...</code>). Verified trace against the audited source:</p>
+<ol>
+<li><code>http/resource.go</code> <code>resourcePostHandler</code> requires <code>d.user.Perm.Create</code> (else 403).</li>
+<li><code>files.NewFileInfo</code> is called. For a dangling symlink, <code>stat()</code> in <code>files/file.go</code> does <code>LstatIfPossible</code> (sees the symlink, <code>err == nil</code>, <code>IsSymlink = true</code>), then <code>Fs.Stat</code> follows the link and fails with ENOENT, so the code returns the symlink <code>FileInfo</code> with <code>err == nil</code>. The handler therefore enters the "file exists" branch.</li>
+<li>The branch requires <code>override == "true"</code> and <code>d.user.Perm.Modify</code>, then proceeds.</li>
+<li><code>writeFile(d.user.Fs, r.URL.Path, r.Body, ...)</code> calls <code>afs.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, fileMode)</code>.</li>
+<li><code>ScopedFs.OpenFile</code> runs <code>guard()</code>, which passes for the dangling link, then <code>os.OpenFile</code> follows the link and creates the file outside the scope with the request body as content.</li>
+</ol>
+<p>The TUS path (<code>http/tus_handlers.go</code> <code>tusPostHandler</code> -&gt; <code>OpenFile</code>, then <code>tusPatchHandler</code>) reaches the same sink.</p>
+<h3 id="why-existing-defenses-do-not-apply">Why existing defenses do not apply</h3>
+<ul>
+<li><code>afero.BasePathFs</code> lexical confinement only neutralizes <code>..</code>. A plain link name passes it unchanged.</li>
+<li><code>ScopedFs.within()</code> is the dedicated symlink defense, and it is the component that fails: the not-exist walk-up validates the link's parent directory instead of the link.</li>
+<li>The project's symlink tests (<code>http/tus_symlink_test.go</code> <code>TestTusHandlersRejectSymlinkScopeEscape</code>, <code>files/file_test.go</code>) only exercise escaping symlinks whose target exists. Those are blocked. The dangling variant is never tested, so the regression suite does not catch it.</li>
+</ul>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<p>The PoC drives the real security boundary, <code>files.NewScopedFs</code>, with the same flags <code>http.writeFile</code> uses, and shows the write landing outside the scope. A control test shows the existing-target case is still blocked, proving the guard is real and the gap is specifically the dangling case.</p>
+<pre><code class="language-go">const writeFlags = os.O_RDWR | os.O_CREATE | os.O_TRUNC // == http.writeFile
+
+scope := filepath.Join(root, "user")      // the low-priv user's jail
+outside := filepath.Join(root, "outside") // sibling dir = another tenant / host path
+
+// Precondition: a dangling escaping symlink inside the scope.
+os.Symlink(filepath.Join(outside, "pwned.txt"), filepath.Join(scope, "evil")) // target does not exist yet
+
+fs := files.NewScopedFs(afero.NewOsFs(), scope)
+f, _ := fs.OpenFile("/evil", writeFlags, 0o644) // not rejected
+f.WriteString("OWNED-OUTSIDE-SCOPE")
+// assert: outside/pwned.txt must NOT exist
+</code></pre>
+<p>Observed result:</p>
+<pre><code class="language-text">=== RUN   TestDanglingSymlinkWriteEscapesScope
+    poc_test.go:49: VULNERABLE: write escaped the scope and created
+        /tmp/.../001/outside/pwned.txt with content "OWNED-OUTSIDE-SCOPE"
+--- FAIL: TestDanglingSymlinkWriteEscapesScope (0.00s)
+=== RUN   TestExistingTargetSymlinkIsBlocked
+    poc_test.go:78: guard correctly blocked existing-target escape: permission denied
+--- PASS: TestExistingTargetSymlinkIsBlocked (0.00s)
+</code></pre>
+<p>The dangling test "fails" by design: the assertion fires because the file escaped. The control test passes: an <code>escape_link -&gt; outside</code> (existing dir) write to <code>escape_link/injected.txt</code> is rejected by <code>OpenFile</code> with <code>permission denied</code> and nothing is created in <code>outside/</code>. That is exactly the scenario the project's own tests cover.</p>
+<p>End-to-end HTTP equivalent:</p>
+<pre><code class="language-text">POST /api/resources/escape?override=true
+X-Auth: &lt;token for user scoped to /tmp/root/scope with Create+Modify&gt;
+body: http-outside
+
+-&gt; ScopedFs.OpenFile("/escape", O_CREATE|O_TRUNC) follows the dangling link
+-&gt; file created at the link's out-of-scope target with the request body
+</code></pre>
+<p>The handler returns <code>200 OK</code>, and the outside file contains the uploaded body.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Direct primitive (live-verified):</strong> arbitrary file creation with attacker-controlled content at any non-existent path outside the user's scope that the File Browser process user can write to.</li>
+<li><strong>Cross-tenant integrity (source-reasoned):</strong> in multi-user deployments the scopes are sibling directories under one server root. A low-priv user can plant files into another user's home (a script, an HTML page later served, a config the victim trusts).</li>
+<li><strong>Persistence / RCE on permissive deployments (source-reasoned):</strong> creating a not-yet-existent <code>~/.ssh/authorized_keys</code> for the service account, a file under a web-served or later-executed directory, a cron or profile fragment. The official Docker image runs as non-root UID 1000, which bounds this to whatever that user owns. Bare-metal/systemd deployments that run File Browser as root raise this to host-level file write and RCE.</li>
+<li><strong>Scope limit (honest):</strong> this is file creation, not overwrite. Overwriting an existing out-of-scope file is genuinely blocked, because an existing target makes the link "escaping" and <code>within()</code> rejects it. The negative control confirms this.</li>
+</ul>
+<h2 id="suggested-remediation">Suggested remediation</h2>
+<p>For write/create/truncate operations, do not treat a dangling final symlink as safe merely because the nearest existing ancestor is inside the scope. The walk-up in <code>within()</code> should treat "the leaf is a symlink" as an escape candidate rather than validating its parent:</p>
+<ul>
+<li>In <code>guard()</code> / <code>within()</code>, <code>Lstat</code> the target. If it is a symlink, <code>Readlink</code> it, resolve the link target lexically (join with the link's directory, <code>Clean</code>), and require that target to be within the scope root, regardless of whether it currently exists.</li>
+<li>More robust: resolve path components one by one for the operation being attempted, or open the final component with <code>O_NOFOLLOW</code> (<code>unix.Openat(... O_NOFOLLOW)</code>) so creating through a symlink fails with <code>ELOOP</code>; or <code>fstat</code> the descriptor after opening and verify it resolves within the scope before writing.</li>
+</ul>
+<p>Add a regression test mirroring <code>TestTusHandlersRejectSymlinkScopeEscape</code> but with a dangling target (<code>os.Symlink(filepath.Join(outside, "newfile"), ...)</code>), asserting both a 4xx and that no file is created outside the scope.</p>
+<h2 id="references">References</h2>
+<ul>
+<li>Incomplete fix of CVE-2026-54094 / <code>GHSA-239w-m3h6-ch8v</code>.</li>
+<li>Affected code: <code>files/scoped.go</code> (<code>ScopedFs.within</code>, <code>ScopedFs.OpenFile</code>, <code>ScopedFs.Create</code>), reached from <code>http/resource.go</code> (<code>resourcePostHandler</code>, <code>writeFile</code>) and <code>http/tus_handlers.go</code>.</li>
+<li>Confirmed unpatched at <code>be23ab3a15bf957928ecfed88de5ab67850c1b9c</code> (<code>v2.63.15</code>).</li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/filebrowser/filebrowser/security/advisories/GHSA-8wc8-hf36-mjh9">https://github.com/filebrowser/filebrowser/security/advisories/GHSA-8wc8-hf36-mjh9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55668">https://nvd.nist.gov/vuln/detail/CVE-2026-55668</a></li>
+<li><a href="https://github.com/filebrowser/filebrowser/commit/64511ce45e3be379e965f7f4fb0929a068d5bb81">https://github.com/filebrowser/filebrowser/commit/64511ce45e3be379e965f7f4fb0929a068d5bb81</a></li>
+<li><a href="https://github.com/filebrowser/filebrowser/releases/tag/v2.63.16">https://github.com/filebrowser/filebrowser/releases/tag/v2.63.16</a></li>
+<li><a href="https://github.com/advisories/GHSA-8wc8-hf36-mjh9">https://github.com/advisories/GHSA-8wc8-hf36-mjh9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8wc8-hf36-mjh9</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-20T21:17:43.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/filebrowser/filebrowser/v2] File Browser: Out-of-scope file deletion by a Create-only scoped user via symlink-following RemoveAll in upload failure-cleanup]]></title>
         <id>https://github.com/advisories/GHSA-fmm7-x4gx-8jhr</id>
@@ -2268,37 +2409,6 @@ for _, repo := range newBuildAttributes.Repositories {
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-07-16T19:40:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/envoyproxy/gateway] Envoy Gateway: xDS Control Plane Information Disclosure when operating in GatewayNamespaceMode ]]></title>
-        <id>https://github.com/advisories/GHSA-22xc-xg2r-9j7v</id>
-        <link href="https://github.com/advisories/GHSA-22xc-xg2r-9j7v"/>
-        <updated>2026-07-16T19:32:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>When Envoy Gateway runs in GatewayNamespaceMode (<code>provider.kubernetes.deploy.type=GatewayNamespace</code>), the xDS gRPC server is configured with a <code>StreamInterceptor</code> for JWT authentication but no UnaryInterceptor. The go-control-plane xDS server exposes both streaming and unary (Fetch) RPC methods for all registered discovery services. Since there is no unary interceptor, these Fetch endpoints are completely unauthenticated. </p>
-<p>Additionally, the JWT authentication interceptor in GatewayNamespaceMode only validates tokens when the received gRPC message is of type <code>discoveryv3.DeltaDiscoveryRequest</code> . If the message is a <code>discoveryv3.DiscoveryRequest</code> — used by the State-of-the-World (SotW) xDS protocol — the type assertion fails, the validation block is skipped entirely, and RecvMsg returns nil (success) without any authentication.</p>
-<p>Any pod in the cluster that can reach the xDS server (port 18000) can use the SotW protocol to bypass JWT authentication and access:</p>
-<ul>
-<li>TLS private keys via StreamSecrets (SDS)</li>
-<li>All xDS resources via StreamAggregatedResources (ADS)</li>
-<li>Backend endpoints via StreamClusters / StreamEndpoints (CDS/EDS)</li>
-<li>Routing rules via StreamRoutes / StreamListeners (RDS/LDS)</li>
-</ul>
-<h3 id="credits">Credits</h3>
-<p>Envoy Gateway thanks @dashingDragon and @Donjon-Cerberus for reporting this issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/envoyproxy/gateway/security/advisories/GHSA-22xc-xg2r-9j7v">https://github.com/envoyproxy/gateway/security/advisories/GHSA-22xc-xg2r-9j7v</a></li>
-<li><a href="https://github.com/advisories/GHSA-22xc-xg2r-9j7v">https://github.com/advisories/GHSA-22xc-xg2r-9j7v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-22xc-xg2r-9j7v</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-16T19:32:23.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/envoyproxy/gateway] Envoy Gateway: xDS Control Plane Information Disclosure when operating in GatewayNamespaceMode ]]></title>
