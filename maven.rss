@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/maven.rss</id>
     <title>Security Advisory for Java artifacts hosted at the Maven central repository</title>
-    <updated>2026-07-24T22:29:06.794Z</updated>
+    <updated>2026-07-24T23:33:59.577Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Amaven"/>
     <subtitle>Security Advisory for Java artifacts hosted at the Maven central repository on GitHub</subtitle>
@@ -11,6 +11,561 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[org.omnifaces:omnifaces] OmniFaces: Forged combined-resource IDs and related output/push boundaries]]></title>
+        <id>https://github.com/advisories/GHSA-fp43-vj7g-pg92</id>
+        <link href="https://github.com/advisories/GHSA-fp43-vj7g-pg92"/>
+        <updated>2026-07-24T22:35:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="1-forged-combined-resource-ids">1. Forged combined-resource IDs</h2>
+<p><code>CombinedResourceInfo</code> accepts a path-derived ID without an authenticity check,
+inflates it without an output limit, converts it to attacker-selected resource
+identifiers, and retains unique IDs in an unbounded static cache. In bounded
+tests, 20,754 encoded bytes inflated to 16,000,000 characters (about 770:1;
+about 49 MB observed heap delta), and 200 unique IDs added 200 permanent cache
+entries. A legitimately shaped short ID remained about 1:1, while malformed
+input was rejected; the missing distinction is between a server-issued ID and
+an attacker-minted but structurally valid ID.</p>
+<p>The minimal application also confirmed three sink tails from the same forged-ID
+root:</p>
+<ul>
+<li>A wildcard CDN mapping performed a server-side fetch and relayed the exact
+loopback-canary body. This requires the documented combined-resource and
+wildcard-CDN configuration.</li>
+<li>A forged inner <code>.xhtml</code> resource bypassed the excluded-resource boundary and
+returned its raw content.</li>
+<li>A forged <code>omnifaces.graphic</code> inner resource plus a canary <code>Host</code> header caused
+an outbound GET to that host. This result is blind and deployment-dependent;
+I am not claiming arbitrary-scheme or arbitrary-destination SSRF.</li>
+</ul>
+<p>These behaviors reproduce after the fix for CVE-2026-41883 /
+GHSA-vp6r-9m58-5xv8. That advisory concerned EL evaluation order in the wildcard
+CDN path. This report has a different root: unsigned combined IDs and missing
+decode/cache bounds, with separately demonstrated residual sink behavior.</p>
+<h2 id="2-source-map-cache">2. Source-map cache</h2>
+<p>With the documented optional source-map handler above a synthetic resource
+handler, 40 unique missing combined-resource requests grew the process-wide
+source-map cache from 13 to 92 entries. It has no size or eviction bound. This
+has a separate cache, configuration prerequisite, and fix from family 1.</p>
+<h2 id="3-hashparam-callback-output">3. HashParam callback output</h2>
+<p>A URL-fragment value containing a single-quote JavaScript payload was stored by
+<code>o:hashParam</code> and later written unescaped into the Ajax callback script. On the
+follow-up Ajax render, real Chrome executed the canary
+<code>window.__omniXss=1337</code>. This requires a page using <code>o:hashParam</code> and the
+follow-up Ajax render.</p>
+<h2 id="4-sessionview-push-channel-replay">4. Session/view push-channel replay</h2>
+<p>A fresh WebSocket client with no HTTP cookie connected using a victim's
+session-scoped channel ID and received the victim's subsequent push. The code
+checks application-wide ID existence but does not bind the handshake to the
+current HTTP session, despite the documented current-session guarantee. The
+UUID remains an unguessable bearer-token prerequisite; this is replay after
+token exposure, not brute force.</p>
+<h2 id="5-push-idle-connection-and-fanout-behavior">5. Push idle-connection and fanout behavior</h2>
+<p>Twelve independent clients joined one application-scoped channel and all 12
+received the same push. Current code sets every accepted session's maximum idle
+timeout to zero, retains sessions in an unbounded per-channel queue, and walks
+the full queue on each push. I am reporting the demonstrated mechanism as a
+bounded design weakness: container connection limits remain an outer bound,
+and I am not claiming unbounded heap growth from the 12-client test.</p>
+<h2 id="intentionally-excluded-leads">Intentionally excluded leads</h2>
+<ul>
+<li>A duplicate-Range response-amplification lead was disproved. Twenty-four
+ranges produced only one response body because the stream wrapper closes
+after the first range. I am not reporting it as a security issue.</li>
+<li>The older <code>Servlets.facesRedirect</code> XML issue is fixed on the current branch.
+I am not reporting it as a new current-upstream issue.</li>
+</ul>
+<h2 id="expected-invariants">Expected invariants</h2>
+<ul>
+<li>Only server-issued combined IDs should be accepted; decoding and caches
+should be bounded; excluded resources and dynamic handlers should not become
+attacker-selected inner resources.</li>
+<li>Dynamic URLs should not derive an outbound destination from an untrusted
+<code>Host</code> header.</li>
+<li>Source-map lookups should not create unbounded process-lifetime state.</li>
+<li><code>HashParam</code> values must be escaped for a JavaScript string inside an XML
+CDATA callback.</li>
+<li>Session/view push subscriptions should be bound to the owning HTTP session or
+authenticated principal; idle limits and per-channel caps should remain
+operator-controllable.</li>
+</ul>
+<h2 id="suggested-fixes-and-available-evidence">Suggested fixes and available evidence</h2>
+<ul>
+<li>Authenticate generated combined IDs with a per-deployment secret, cap
+inflated output, bound the combined cache, and avoid caching failed loads.</li>
+<li>Require an existing/registered inner resource before wildcard remapping and
+reject excluded resource types at serve time.</li>
+<li>Derive dynamic-resource origins from trusted configuration rather than the
+request <code>Host</code> value.</li>
+<li>Bound or evict the source-map cache.</li>
+<li>Apply JavaScript-string plus CDATA-safe encoding to <code>HashParam</code> callback
+values.</li>
+<li>Capture and verify HTTP-session or principal ownership during the WebSocket
+handshake; retain a finite idle timeout and configurable per-channel limits.</li>
+</ul>
+<p>Daniel Birtwhistle</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92">https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1">https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4">https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786">https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7">https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5">https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5</a></li>
+<li><a href="https://github.com/advisories/GHSA-fp43-vj7g-pg92">https://github.com/advisories/GHSA-fp43-vj7g-pg92</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fp43-vj7g-pg92</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T22:35:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[org.omnifaces:omnifaces] OmniFaces: Forged combined-resource IDs and related output/push boundaries]]></title>
+        <id>https://github.com/advisories/GHSA-fp43-vj7g-pg92</id>
+        <link href="https://github.com/advisories/GHSA-fp43-vj7g-pg92"/>
+        <updated>2026-07-24T22:35:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="1-forged-combined-resource-ids">1. Forged combined-resource IDs</h2>
+<p><code>CombinedResourceInfo</code> accepts a path-derived ID without an authenticity check,
+inflates it without an output limit, converts it to attacker-selected resource
+identifiers, and retains unique IDs in an unbounded static cache. In bounded
+tests, 20,754 encoded bytes inflated to 16,000,000 characters (about 770:1;
+about 49 MB observed heap delta), and 200 unique IDs added 200 permanent cache
+entries. A legitimately shaped short ID remained about 1:1, while malformed
+input was rejected; the missing distinction is between a server-issued ID and
+an attacker-minted but structurally valid ID.</p>
+<p>The minimal application also confirmed three sink tails from the same forged-ID
+root:</p>
+<ul>
+<li>A wildcard CDN mapping performed a server-side fetch and relayed the exact
+loopback-canary body. This requires the documented combined-resource and
+wildcard-CDN configuration.</li>
+<li>A forged inner <code>.xhtml</code> resource bypassed the excluded-resource boundary and
+returned its raw content.</li>
+<li>A forged <code>omnifaces.graphic</code> inner resource plus a canary <code>Host</code> header caused
+an outbound GET to that host. This result is blind and deployment-dependent;
+I am not claiming arbitrary-scheme or arbitrary-destination SSRF.</li>
+</ul>
+<p>These behaviors reproduce after the fix for CVE-2026-41883 /
+GHSA-vp6r-9m58-5xv8. That advisory concerned EL evaluation order in the wildcard
+CDN path. This report has a different root: unsigned combined IDs and missing
+decode/cache bounds, with separately demonstrated residual sink behavior.</p>
+<h2 id="2-source-map-cache">2. Source-map cache</h2>
+<p>With the documented optional source-map handler above a synthetic resource
+handler, 40 unique missing combined-resource requests grew the process-wide
+source-map cache from 13 to 92 entries. It has no size or eviction bound. This
+has a separate cache, configuration prerequisite, and fix from family 1.</p>
+<h2 id="3-hashparam-callback-output">3. HashParam callback output</h2>
+<p>A URL-fragment value containing a single-quote JavaScript payload was stored by
+<code>o:hashParam</code> and later written unescaped into the Ajax callback script. On the
+follow-up Ajax render, real Chrome executed the canary
+<code>window.__omniXss=1337</code>. This requires a page using <code>o:hashParam</code> and the
+follow-up Ajax render.</p>
+<h2 id="4-sessionview-push-channel-replay">4. Session/view push-channel replay</h2>
+<p>A fresh WebSocket client with no HTTP cookie connected using a victim's
+session-scoped channel ID and received the victim's subsequent push. The code
+checks application-wide ID existence but does not bind the handshake to the
+current HTTP session, despite the documented current-session guarantee. The
+UUID remains an unguessable bearer-token prerequisite; this is replay after
+token exposure, not brute force.</p>
+<h2 id="5-push-idle-connection-and-fanout-behavior">5. Push idle-connection and fanout behavior</h2>
+<p>Twelve independent clients joined one application-scoped channel and all 12
+received the same push. Current code sets every accepted session's maximum idle
+timeout to zero, retains sessions in an unbounded per-channel queue, and walks
+the full queue on each push. I am reporting the demonstrated mechanism as a
+bounded design weakness: container connection limits remain an outer bound,
+and I am not claiming unbounded heap growth from the 12-client test.</p>
+<h2 id="intentionally-excluded-leads">Intentionally excluded leads</h2>
+<ul>
+<li>A duplicate-Range response-amplification lead was disproved. Twenty-four
+ranges produced only one response body because the stream wrapper closes
+after the first range. I am not reporting it as a security issue.</li>
+<li>The older <code>Servlets.facesRedirect</code> XML issue is fixed on the current branch.
+I am not reporting it as a new current-upstream issue.</li>
+</ul>
+<h2 id="expected-invariants">Expected invariants</h2>
+<ul>
+<li>Only server-issued combined IDs should be accepted; decoding and caches
+should be bounded; excluded resources and dynamic handlers should not become
+attacker-selected inner resources.</li>
+<li>Dynamic URLs should not derive an outbound destination from an untrusted
+<code>Host</code> header.</li>
+<li>Source-map lookups should not create unbounded process-lifetime state.</li>
+<li><code>HashParam</code> values must be escaped for a JavaScript string inside an XML
+CDATA callback.</li>
+<li>Session/view push subscriptions should be bound to the owning HTTP session or
+authenticated principal; idle limits and per-channel caps should remain
+operator-controllable.</li>
+</ul>
+<h2 id="suggested-fixes-and-available-evidence">Suggested fixes and available evidence</h2>
+<ul>
+<li>Authenticate generated combined IDs with a per-deployment secret, cap
+inflated output, bound the combined cache, and avoid caching failed loads.</li>
+<li>Require an existing/registered inner resource before wildcard remapping and
+reject excluded resource types at serve time.</li>
+<li>Derive dynamic-resource origins from trusted configuration rather than the
+request <code>Host</code> value.</li>
+<li>Bound or evict the source-map cache.</li>
+<li>Apply JavaScript-string plus CDATA-safe encoding to <code>HashParam</code> callback
+values.</li>
+<li>Capture and verify HTTP-session or principal ownership during the WebSocket
+handshake; retain a finite idle timeout and configurable per-channel limits.</li>
+</ul>
+<p>Daniel Birtwhistle</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92">https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1">https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4">https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786">https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7">https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5">https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5</a></li>
+<li><a href="https://github.com/advisories/GHSA-fp43-vj7g-pg92">https://github.com/advisories/GHSA-fp43-vj7g-pg92</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fp43-vj7g-pg92</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T22:35:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[org.omnifaces:omnifaces] OmniFaces: Forged combined-resource IDs and related output/push boundaries]]></title>
+        <id>https://github.com/advisories/GHSA-fp43-vj7g-pg92</id>
+        <link href="https://github.com/advisories/GHSA-fp43-vj7g-pg92"/>
+        <updated>2026-07-24T22:35:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="1-forged-combined-resource-ids">1. Forged combined-resource IDs</h2>
+<p><code>CombinedResourceInfo</code> accepts a path-derived ID without an authenticity check,
+inflates it without an output limit, converts it to attacker-selected resource
+identifiers, and retains unique IDs in an unbounded static cache. In bounded
+tests, 20,754 encoded bytes inflated to 16,000,000 characters (about 770:1;
+about 49 MB observed heap delta), and 200 unique IDs added 200 permanent cache
+entries. A legitimately shaped short ID remained about 1:1, while malformed
+input was rejected; the missing distinction is between a server-issued ID and
+an attacker-minted but structurally valid ID.</p>
+<p>The minimal application also confirmed three sink tails from the same forged-ID
+root:</p>
+<ul>
+<li>A wildcard CDN mapping performed a server-side fetch and relayed the exact
+loopback-canary body. This requires the documented combined-resource and
+wildcard-CDN configuration.</li>
+<li>A forged inner <code>.xhtml</code> resource bypassed the excluded-resource boundary and
+returned its raw content.</li>
+<li>A forged <code>omnifaces.graphic</code> inner resource plus a canary <code>Host</code> header caused
+an outbound GET to that host. This result is blind and deployment-dependent;
+I am not claiming arbitrary-scheme or arbitrary-destination SSRF.</li>
+</ul>
+<p>These behaviors reproduce after the fix for CVE-2026-41883 /
+GHSA-vp6r-9m58-5xv8. That advisory concerned EL evaluation order in the wildcard
+CDN path. This report has a different root: unsigned combined IDs and missing
+decode/cache bounds, with separately demonstrated residual sink behavior.</p>
+<h2 id="2-source-map-cache">2. Source-map cache</h2>
+<p>With the documented optional source-map handler above a synthetic resource
+handler, 40 unique missing combined-resource requests grew the process-wide
+source-map cache from 13 to 92 entries. It has no size or eviction bound. This
+has a separate cache, configuration prerequisite, and fix from family 1.</p>
+<h2 id="3-hashparam-callback-output">3. HashParam callback output</h2>
+<p>A URL-fragment value containing a single-quote JavaScript payload was stored by
+<code>o:hashParam</code> and later written unescaped into the Ajax callback script. On the
+follow-up Ajax render, real Chrome executed the canary
+<code>window.__omniXss=1337</code>. This requires a page using <code>o:hashParam</code> and the
+follow-up Ajax render.</p>
+<h2 id="4-sessionview-push-channel-replay">4. Session/view push-channel replay</h2>
+<p>A fresh WebSocket client with no HTTP cookie connected using a victim's
+session-scoped channel ID and received the victim's subsequent push. The code
+checks application-wide ID existence but does not bind the handshake to the
+current HTTP session, despite the documented current-session guarantee. The
+UUID remains an unguessable bearer-token prerequisite; this is replay after
+token exposure, not brute force.</p>
+<h2 id="5-push-idle-connection-and-fanout-behavior">5. Push idle-connection and fanout behavior</h2>
+<p>Twelve independent clients joined one application-scoped channel and all 12
+received the same push. Current code sets every accepted session's maximum idle
+timeout to zero, retains sessions in an unbounded per-channel queue, and walks
+the full queue on each push. I am reporting the demonstrated mechanism as a
+bounded design weakness: container connection limits remain an outer bound,
+and I am not claiming unbounded heap growth from the 12-client test.</p>
+<h2 id="intentionally-excluded-leads">Intentionally excluded leads</h2>
+<ul>
+<li>A duplicate-Range response-amplification lead was disproved. Twenty-four
+ranges produced only one response body because the stream wrapper closes
+after the first range. I am not reporting it as a security issue.</li>
+<li>The older <code>Servlets.facesRedirect</code> XML issue is fixed on the current branch.
+I am not reporting it as a new current-upstream issue.</li>
+</ul>
+<h2 id="expected-invariants">Expected invariants</h2>
+<ul>
+<li>Only server-issued combined IDs should be accepted; decoding and caches
+should be bounded; excluded resources and dynamic handlers should not become
+attacker-selected inner resources.</li>
+<li>Dynamic URLs should not derive an outbound destination from an untrusted
+<code>Host</code> header.</li>
+<li>Source-map lookups should not create unbounded process-lifetime state.</li>
+<li><code>HashParam</code> values must be escaped for a JavaScript string inside an XML
+CDATA callback.</li>
+<li>Session/view push subscriptions should be bound to the owning HTTP session or
+authenticated principal; idle limits and per-channel caps should remain
+operator-controllable.</li>
+</ul>
+<h2 id="suggested-fixes-and-available-evidence">Suggested fixes and available evidence</h2>
+<ul>
+<li>Authenticate generated combined IDs with a per-deployment secret, cap
+inflated output, bound the combined cache, and avoid caching failed loads.</li>
+<li>Require an existing/registered inner resource before wildcard remapping and
+reject excluded resource types at serve time.</li>
+<li>Derive dynamic-resource origins from trusted configuration rather than the
+request <code>Host</code> value.</li>
+<li>Bound or evict the source-map cache.</li>
+<li>Apply JavaScript-string plus CDATA-safe encoding to <code>HashParam</code> callback
+values.</li>
+<li>Capture and verify HTTP-session or principal ownership during the WebSocket
+handshake; retain a finite idle timeout and configurable per-channel limits.</li>
+</ul>
+<p>Daniel Birtwhistle</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92">https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1">https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4">https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786">https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7">https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5">https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5</a></li>
+<li><a href="https://github.com/advisories/GHSA-fp43-vj7g-pg92">https://github.com/advisories/GHSA-fp43-vj7g-pg92</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fp43-vj7g-pg92</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T22:35:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[org.omnifaces:omnifaces] OmniFaces: Forged combined-resource IDs and related output/push boundaries]]></title>
+        <id>https://github.com/advisories/GHSA-fp43-vj7g-pg92</id>
+        <link href="https://github.com/advisories/GHSA-fp43-vj7g-pg92"/>
+        <updated>2026-07-24T22:35:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="1-forged-combined-resource-ids">1. Forged combined-resource IDs</h2>
+<p><code>CombinedResourceInfo</code> accepts a path-derived ID without an authenticity check,
+inflates it without an output limit, converts it to attacker-selected resource
+identifiers, and retains unique IDs in an unbounded static cache. In bounded
+tests, 20,754 encoded bytes inflated to 16,000,000 characters (about 770:1;
+about 49 MB observed heap delta), and 200 unique IDs added 200 permanent cache
+entries. A legitimately shaped short ID remained about 1:1, while malformed
+input was rejected; the missing distinction is between a server-issued ID and
+an attacker-minted but structurally valid ID.</p>
+<p>The minimal application also confirmed three sink tails from the same forged-ID
+root:</p>
+<ul>
+<li>A wildcard CDN mapping performed a server-side fetch and relayed the exact
+loopback-canary body. This requires the documented combined-resource and
+wildcard-CDN configuration.</li>
+<li>A forged inner <code>.xhtml</code> resource bypassed the excluded-resource boundary and
+returned its raw content.</li>
+<li>A forged <code>omnifaces.graphic</code> inner resource plus a canary <code>Host</code> header caused
+an outbound GET to that host. This result is blind and deployment-dependent;
+I am not claiming arbitrary-scheme or arbitrary-destination SSRF.</li>
+</ul>
+<p>These behaviors reproduce after the fix for CVE-2026-41883 /
+GHSA-vp6r-9m58-5xv8. That advisory concerned EL evaluation order in the wildcard
+CDN path. This report has a different root: unsigned combined IDs and missing
+decode/cache bounds, with separately demonstrated residual sink behavior.</p>
+<h2 id="2-source-map-cache">2. Source-map cache</h2>
+<p>With the documented optional source-map handler above a synthetic resource
+handler, 40 unique missing combined-resource requests grew the process-wide
+source-map cache from 13 to 92 entries. It has no size or eviction bound. This
+has a separate cache, configuration prerequisite, and fix from family 1.</p>
+<h2 id="3-hashparam-callback-output">3. HashParam callback output</h2>
+<p>A URL-fragment value containing a single-quote JavaScript payload was stored by
+<code>o:hashParam</code> and later written unescaped into the Ajax callback script. On the
+follow-up Ajax render, real Chrome executed the canary
+<code>window.__omniXss=1337</code>. This requires a page using <code>o:hashParam</code> and the
+follow-up Ajax render.</p>
+<h2 id="4-sessionview-push-channel-replay">4. Session/view push-channel replay</h2>
+<p>A fresh WebSocket client with no HTTP cookie connected using a victim's
+session-scoped channel ID and received the victim's subsequent push. The code
+checks application-wide ID existence but does not bind the handshake to the
+current HTTP session, despite the documented current-session guarantee. The
+UUID remains an unguessable bearer-token prerequisite; this is replay after
+token exposure, not brute force.</p>
+<h2 id="5-push-idle-connection-and-fanout-behavior">5. Push idle-connection and fanout behavior</h2>
+<p>Twelve independent clients joined one application-scoped channel and all 12
+received the same push. Current code sets every accepted session's maximum idle
+timeout to zero, retains sessions in an unbounded per-channel queue, and walks
+the full queue on each push. I am reporting the demonstrated mechanism as a
+bounded design weakness: container connection limits remain an outer bound,
+and I am not claiming unbounded heap growth from the 12-client test.</p>
+<h2 id="intentionally-excluded-leads">Intentionally excluded leads</h2>
+<ul>
+<li>A duplicate-Range response-amplification lead was disproved. Twenty-four
+ranges produced only one response body because the stream wrapper closes
+after the first range. I am not reporting it as a security issue.</li>
+<li>The older <code>Servlets.facesRedirect</code> XML issue is fixed on the current branch.
+I am not reporting it as a new current-upstream issue.</li>
+</ul>
+<h2 id="expected-invariants">Expected invariants</h2>
+<ul>
+<li>Only server-issued combined IDs should be accepted; decoding and caches
+should be bounded; excluded resources and dynamic handlers should not become
+attacker-selected inner resources.</li>
+<li>Dynamic URLs should not derive an outbound destination from an untrusted
+<code>Host</code> header.</li>
+<li>Source-map lookups should not create unbounded process-lifetime state.</li>
+<li><code>HashParam</code> values must be escaped for a JavaScript string inside an XML
+CDATA callback.</li>
+<li>Session/view push subscriptions should be bound to the owning HTTP session or
+authenticated principal; idle limits and per-channel caps should remain
+operator-controllable.</li>
+</ul>
+<h2 id="suggested-fixes-and-available-evidence">Suggested fixes and available evidence</h2>
+<ul>
+<li>Authenticate generated combined IDs with a per-deployment secret, cap
+inflated output, bound the combined cache, and avoid caching failed loads.</li>
+<li>Require an existing/registered inner resource before wildcard remapping and
+reject excluded resource types at serve time.</li>
+<li>Derive dynamic-resource origins from trusted configuration rather than the
+request <code>Host</code> value.</li>
+<li>Bound or evict the source-map cache.</li>
+<li>Apply JavaScript-string plus CDATA-safe encoding to <code>HashParam</code> callback
+values.</li>
+<li>Capture and verify HTTP-session or principal ownership during the WebSocket
+handshake; retain a finite idle timeout and configurable per-channel limits.</li>
+</ul>
+<p>Daniel Birtwhistle</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92">https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1">https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4">https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786">https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7">https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5">https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5</a></li>
+<li><a href="https://github.com/advisories/GHSA-fp43-vj7g-pg92">https://github.com/advisories/GHSA-fp43-vj7g-pg92</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fp43-vj7g-pg92</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T22:35:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[org.omnifaces:omnifaces] OmniFaces: Forged combined-resource IDs and related output/push boundaries]]></title>
+        <id>https://github.com/advisories/GHSA-fp43-vj7g-pg92</id>
+        <link href="https://github.com/advisories/GHSA-fp43-vj7g-pg92"/>
+        <updated>2026-07-24T22:35:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="1-forged-combined-resource-ids">1. Forged combined-resource IDs</h2>
+<p><code>CombinedResourceInfo</code> accepts a path-derived ID without an authenticity check,
+inflates it without an output limit, converts it to attacker-selected resource
+identifiers, and retains unique IDs in an unbounded static cache. In bounded
+tests, 20,754 encoded bytes inflated to 16,000,000 characters (about 770:1;
+about 49 MB observed heap delta), and 200 unique IDs added 200 permanent cache
+entries. A legitimately shaped short ID remained about 1:1, while malformed
+input was rejected; the missing distinction is between a server-issued ID and
+an attacker-minted but structurally valid ID.</p>
+<p>The minimal application also confirmed three sink tails from the same forged-ID
+root:</p>
+<ul>
+<li>A wildcard CDN mapping performed a server-side fetch and relayed the exact
+loopback-canary body. This requires the documented combined-resource and
+wildcard-CDN configuration.</li>
+<li>A forged inner <code>.xhtml</code> resource bypassed the excluded-resource boundary and
+returned its raw content.</li>
+<li>A forged <code>omnifaces.graphic</code> inner resource plus a canary <code>Host</code> header caused
+an outbound GET to that host. This result is blind and deployment-dependent;
+I am not claiming arbitrary-scheme or arbitrary-destination SSRF.</li>
+</ul>
+<p>These behaviors reproduce after the fix for CVE-2026-41883 /
+GHSA-vp6r-9m58-5xv8. That advisory concerned EL evaluation order in the wildcard
+CDN path. This report has a different root: unsigned combined IDs and missing
+decode/cache bounds, with separately demonstrated residual sink behavior.</p>
+<h2 id="2-source-map-cache">2. Source-map cache</h2>
+<p>With the documented optional source-map handler above a synthetic resource
+handler, 40 unique missing combined-resource requests grew the process-wide
+source-map cache from 13 to 92 entries. It has no size or eviction bound. This
+has a separate cache, configuration prerequisite, and fix from family 1.</p>
+<h2 id="3-hashparam-callback-output">3. HashParam callback output</h2>
+<p>A URL-fragment value containing a single-quote JavaScript payload was stored by
+<code>o:hashParam</code> and later written unescaped into the Ajax callback script. On the
+follow-up Ajax render, real Chrome executed the canary
+<code>window.__omniXss=1337</code>. This requires a page using <code>o:hashParam</code> and the
+follow-up Ajax render.</p>
+<h2 id="4-sessionview-push-channel-replay">4. Session/view push-channel replay</h2>
+<p>A fresh WebSocket client with no HTTP cookie connected using a victim's
+session-scoped channel ID and received the victim's subsequent push. The code
+checks application-wide ID existence but does not bind the handshake to the
+current HTTP session, despite the documented current-session guarantee. The
+UUID remains an unguessable bearer-token prerequisite; this is replay after
+token exposure, not brute force.</p>
+<h2 id="5-push-idle-connection-and-fanout-behavior">5. Push idle-connection and fanout behavior</h2>
+<p>Twelve independent clients joined one application-scoped channel and all 12
+received the same push. Current code sets every accepted session's maximum idle
+timeout to zero, retains sessions in an unbounded per-channel queue, and walks
+the full queue on each push. I am reporting the demonstrated mechanism as a
+bounded design weakness: container connection limits remain an outer bound,
+and I am not claiming unbounded heap growth from the 12-client test.</p>
+<h2 id="intentionally-excluded-leads">Intentionally excluded leads</h2>
+<ul>
+<li>A duplicate-Range response-amplification lead was disproved. Twenty-four
+ranges produced only one response body because the stream wrapper closes
+after the first range. I am not reporting it as a security issue.</li>
+<li>The older <code>Servlets.facesRedirect</code> XML issue is fixed on the current branch.
+I am not reporting it as a new current-upstream issue.</li>
+</ul>
+<h2 id="expected-invariants">Expected invariants</h2>
+<ul>
+<li>Only server-issued combined IDs should be accepted; decoding and caches
+should be bounded; excluded resources and dynamic handlers should not become
+attacker-selected inner resources.</li>
+<li>Dynamic URLs should not derive an outbound destination from an untrusted
+<code>Host</code> header.</li>
+<li>Source-map lookups should not create unbounded process-lifetime state.</li>
+<li><code>HashParam</code> values must be escaped for a JavaScript string inside an XML
+CDATA callback.</li>
+<li>Session/view push subscriptions should be bound to the owning HTTP session or
+authenticated principal; idle limits and per-channel caps should remain
+operator-controllable.</li>
+</ul>
+<h2 id="suggested-fixes-and-available-evidence">Suggested fixes and available evidence</h2>
+<ul>
+<li>Authenticate generated combined IDs with a per-deployment secret, cap
+inflated output, bound the combined cache, and avoid caching failed loads.</li>
+<li>Require an existing/registered inner resource before wildcard remapping and
+reject excluded resource types at serve time.</li>
+<li>Derive dynamic-resource origins from trusted configuration rather than the
+request <code>Host</code> value.</li>
+<li>Bound or evict the source-map cache.</li>
+<li>Apply JavaScript-string plus CDATA-safe encoding to <code>HashParam</code> callback
+values.</li>
+<li>Capture and verify HTTP-session or principal ownership during the WebSocket
+handshake; retain a finite idle timeout and configurable per-channel limits.</li>
+</ul>
+<p>Daniel Birtwhistle</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92">https://github.com/omnifaces/omnifaces/security/advisories/GHSA-fp43-vj7g-pg92</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1">https://github.com/omnifaces/omnifaces/commit/59d6c5188c39418546fe500d05036645987a77d1</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4">https://github.com/omnifaces/omnifaces/commit/a52b92461cf39d983f51ce8724fe7e6b944073e4</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786">https://github.com/omnifaces/omnifaces/commit/aa42da361821ddfbb85b126564e71587347d2786</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7">https://github.com/omnifaces/omnifaces/commit/c43eef01174a4dc09cec44eff553ff6284150af7</a></li>
+<li><a href="https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5">https://github.com/omnifaces/omnifaces/commit/d5cae243c4692555efaa4ba774e0f8f60e3f4db5</a></li>
+<li><a href="https://github.com/advisories/GHSA-fp43-vj7g-pg92">https://github.com/advisories/GHSA-fp43-vj7g-pg92</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fp43-vj7g-pg92</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T22:35:27.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[org.http4s:http4s-blaze-server_3] blaze: Unbounded WebSocket message aggregation in http4s-blaze-server]]></title>
         <id>https://github.com/advisories/GHSA-7ppr-r889-mcf2</id>
@@ -549,154 +1104,5 @@ backend (e.g. ember).</li>
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-07-24T21:46:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.openidentityplatform.opendj:opendj-dsml-servlet] OpenDJ unauthenticated SSRF, local file read and unbounded-read DoS in the DSMLv2 gateway]]></title>
-        <id>https://github.com/advisories/GHSA-68r5-9hpg-7qw9</id>
-        <link href="https://github.com/advisories/GHSA-68r5-9hpg-7qw9"/>
-        <updated>2026-07-24T21:46:08.000Z</updated>
-        <content type="html"><![CDATA[<p>The DSMLv2 SOAP gateway (opendj-dsml-servlet) in OpenIdentityPlatform OpenDJ through 5.1.1 dereferences attacker-supplied xsd:anyURI values server-side without a scheme allowlist, egress filtering, or a size cap, and is reachable without authentication by default. A remote unauthenticated attacker can submit a DSML add/modify request whose value is a URI to (1) perform server-side request forgery against internal services and the cloud metadata endpoint (SSRF), (2) read local files via file: URIs, and (3) exhaust memory through an unbounded response read (DoS). Fixed in 5.1.2: anyURI dereferencing is disabled by default; when enabled it is limited to an http/https allowlist, rejects loopback/link-local/private/reserved targets, refuses HTTP redirects, and caps the bytes read. The gateway also now requires container-managed authentication by default.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenDJ/security/advisories/GHSA-68r5-9hpg-7qw9">https://github.com/OpenIdentityPlatform/OpenDJ/security/advisories/GHSA-68r5-9hpg-7qw9</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenDJ/commit/131e8576dcf3613f944c3e02527959bbf52370c3">https://github.com/OpenIdentityPlatform/OpenDJ/commit/131e8576dcf3613f944c3e02527959bbf52370c3</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenDJ/releases/tag/5.1.2">https://github.com/OpenIdentityPlatform/OpenDJ/releases/tag/5.1.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-68r5-9hpg-7qw9">https://github.com/advisories/GHSA-68r5-9hpg-7qw9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-68r5-9hpg-7qw9</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-24T21:46:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.openidentityplatform.openam:openam-core] OpenAM: Unauthenticated Remote Code Execution via Class.forName in AuthXMLUtils.createCustomCallback]]></title>
-        <id>https://github.com/advisories/GHSA-wg5r-wc3x-39vc</id>
-        <link href="https://github.com/advisories/GHSA-wg5r-wc3x-39vc"/>
-        <updated>2026-07-24T21:11:10.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>A pre-authentication remote code execution vulnerability affects OpenAM. The
-remote authentication endpoint (<code>/authservice</code>, PLL) accepts an XML element
-that names an arbitrary Java class, which the server then loads and
-instantiates without validation. On a default configuration this is reachable
-<strong>without authentication</strong> and allows an attacker to run code on the server.</p>
-<h2 id="impact">Impact</h2>
-<p>Unauthenticated remote code execution / full server compromise on any OpenAM
-instance with default settings.</p>
-<h2 id="affected">Affected</h2>
-<p>All releases up to and including 16.1.1 (the defect predates the Open Identity
-Platform fork).</p>
-<h2 id="remediation">Remediation</h2>
-<p>Upgrade to <code>16.1.2</code>.</p>
-<h2 id="interim-mitigation">Interim mitigation</h2>
-<ul>
-<li>Require the remote-auth security token by enabling
-<code>sunRemoteAuthSecurityEnabled</code> (rejects unauthenticated <code>/authservice</code> calls).</li>
-<li>Restrict or block external network access to <code>/authservice</code> until patched.</li>
-</ul>
-<h2 id="credit">Credit</h2>
-<p>Vulnerability discovered by Zhixi "Jace" Sun of ASM/VI at TikTok.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-wg5r-wc3x-39vc">https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-wg5r-wc3x-39vc</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/commit/edcf968cad91a78b932dba4ad559ef94cbf35f5a">https://github.com/OpenIdentityPlatform/OpenAM/commit/edcf968cad91a78b932dba4ad559ef94cbf35f5a</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.1.2">https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.1.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-wg5r-wc3x-39vc">https://github.com/advisories/GHSA-wg5r-wc3x-39vc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wg5r-wc3x-39vc</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-24T21:11:09.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.openidentityplatform.openam:openam-oauth2] OpenAM Reflected XSS in the OAuth2/OIDC `wap` consent page]]></title>
-        <id>https://github.com/advisories/GHSA-vqxv-6xrh-49cp</id>
-        <link href="https://github.com/advisories/GHSA-vqxv-6xrh-49cp"/>
-        <updated>2026-07-24T21:09:37.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p>The OAuth2/OIDC consent page rendered for <code>display=wap</code> authorize requests reflected several request-derived values into the HTML response without escaping. An attacker who induces a user with an active OpenAM session to follow a crafted authorize link can execute arbitrary JavaScript in the OpenAM origin.</p>
-<p>This is the same vulnerability class as CVE-2026-44203; that fix did not cover this code path.</p>
-<h3 id="impact">Impact</h3>
-<p>Arbitrary JavaScript execution in the OpenAM origin in the victim's authenticated context — enabling session/cookie theft, CSRF-token exfiltration, and actions on behalf of the victim, up to administrative takeover if the victim is an administrator. Reachable on any deployment with at least one registered OAuth2 client; no attacker-controlled client and no special configuration required.</p>
-<h3 id="mitigation">Mitigation</h3>
-<ul>
-<li>Upgrade to 16.1.2 (or later).</li>
-<li>Until then, restrict/limit access to the OAuth2 authorize endpoint and treat unsolicited <code>display=wap</code> authorize links as untrusted.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-vqxv-6xrh-49cp">https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-vqxv-6xrh-49cp</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/commit/98cee2dfe701c2e16e5bcee34e6fd9d913925118">https://github.com/OpenIdentityPlatform/OpenAM/commit/98cee2dfe701c2e16e5bcee34e6fd9d913925118</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.1.2">https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.1.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-vqxv-6xrh-49cp">https://github.com/advisories/GHSA-vqxv-6xrh-49cp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vqxv-6xrh-49cp</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-24T21:09:36.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.openidentityplatform.openam:openam-auth-webauthn] OpenAM: WebAuthn Java deserialization RCE via ObjectInputFilter depth>1 bypass]]></title>
-        <id>https://github.com/advisories/GHSA-gf8h-gq53-288j</id>
-        <link href="https://github.com/advisories/GHSA-gf8h-gq53-288j"/>
-        <updated>2026-07-24T21:08:46.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The GHSA-6c99-87fr-6q7r fix wrapped WebAuthn authenticator deserialization in an <code>ObjectInputFilter</code> meant to allow only <code>AuthenticatorImpl</code>, but it short-circuits to <code>ALLOWED</code> for any object at stream <code>depth &gt; 1</code>. Because the Java serialization filter is consulted for every class in the graph (and <code>depth == 1</code> only for the root's concrete class), the allowlist constrains only the root and leaves the entire nested graph unchecked.</p>
-<h3 id="impact">Impact</h3>
-<p>An attacker can craft a stream rooted at <code>AuthenticatorImpl</code> with an arbitrary gadget chain nested inside. The gadget's <code>readObject</code>/<code>readResolve</code> executes during <code>readObject()</code> — before the cast and before any assertion verification — enabling remote code execution when a gadget is on the classpath. The deserialization sink is reached pre-authentication via an attacker-chosen <code>userHandle</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-gf8h-gq53-288j">https://github.com/OpenIdentityPlatform/OpenAM/security/advisories/GHSA-gf8h-gq53-288j</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/commit/9dd0fbe07f70f118cf45042d3a9ffb32f3c21e08">https://github.com/OpenIdentityPlatform/OpenAM/commit/9dd0fbe07f70f118cf45042d3a9ffb32f3c21e08</a></li>
-<li><a href="https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.1.2">https://github.com/OpenIdentityPlatform/OpenAM/releases/tag/16.1.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-gf8h-gq53-288j">https://github.com/advisories/GHSA-gf8h-gq53-288j</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gf8h-gq53-288j</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-24T21:08:46.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.apache.camel:camel-mongodb-gridfs] Apache Camel: camel-mongodb-gridfs producer allows GridFS operation override and NoSQL operator injection via unfiltered  gridfs.*  HTTP headers]]></title>
-        <id>https://github.com/advisories/GHSA-f7g3-2cg6-f5hj</id>
-        <link href="https://github.com/advisories/GHSA-f7g3-2cg6-f5hj"/>
-        <updated>2026-07-24T21:08:31.000Z</updated>
-        <content type="html"><![CDATA[<p>Improper Input Validation, Improper Access Control vulnerability in Apache Camel in Camel Mongodb Gridfs component.</p>
-<p>The camel-mongodb-gridfs producer selects the GridFS operation to perform from the gridfs.operation Exchange header when the endpoint's operation parameter is not set - which is the default. The control-header constants (GridFsConstants.GRIDFS_OPERATION, GRIDFS_OBJECT_ID, GRIDFS_METADATA, GRIDFS_CHUNKSIZE, GRIDFS_FILE_ID_PRODUCED) were the plain strings gridfs.operation, gridfs.objectid, gridfs.metadata, gridfs.chunksize and gridfs.fileid. Because these names do not start with the Camel / camel prefix, HttpHeaderFilterStrategy - which blocks only the Camel header namespace on the HTTP boundary - let them pass from an inbound HTTP request straight into the Exchange.</p>
-<p>In a route that bridges an HTTP consumer (for example platform-http) into a mongodb-gridfs: producer with no explicit operation, any HTTP client could therefore set the gridfs.operation header to override the route's intended operation - switching, for example, a file upload to remove (deleting a file identified by the attacker-supplied gridfs.objectid), listAll (enumerating every file in the bucket) or findOne (reading a file) - and supply a gridfs.metadata value that is parsed as a MongoDB document, enabling NoSQL operator injection. No credentials are required when the bridging consumer is unauthenticated.</p>
-<p>This issue affects Apache Camel: from 4.0.0 before 4.14.8, from 4.15.0 before 4.18.3, from 4.19.0 before 4.21.0.</p>
-<p>Users are recommended to upgrade to version 4.21.0, which fixes the issue. If users are on the 4.14.x LTS releases stream, then they are suggested to upgrade to 4.14.8. If users are on the 4.18.x releases stream, then they are suggested to upgrade to 4.18.3. After upgrading, routes that drive GridFS operations or metadata via the raw header names must use CamelGridFsOperation / CamelGridFsObjectId / CamelGridFsMetadata / CamelGridFsChunkSize / CamelGridFsFileId instead of the gridfs.* names. For deployments that cannot upgrade immediately, set an explicit operation on the mongodb-gridfs: endpoint so the operation is not taken from a header, and strip the gridfs.* headers from any untrusted ingress before the producer.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48204">https://nvd.nist.gov/vuln/detail/CVE-2026-48204</a></li>
-<li><a href="https://camel.apache.org/security/CVE-2026-48204.html">https://camel.apache.org/security/CVE-2026-48204.html</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2026/07/05/18">http://www.openwall.com/lists/oss-security/2026/07/05/18</a></li>
-<li><a href="https://github.com/apache/camel/commit/8f0b1acfb89867bc28805d8281fa5c70192e2122">https://github.com/apache/camel/commit/8f0b1acfb89867bc28805d8281fa5c70192e2122</a></li>
-<li><a href="https://issues.apache.org/jira/browse/CAMEL-23575">https://issues.apache.org/jira/browse/CAMEL-23575</a></li>
-<li><a href="https://github.com/advisories/GHSA-f7g3-2cg6-f5hj">https://github.com/advisories/GHSA-f7g3-2cg6-f5hj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f7g3-2cg6-f5hj</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-06T09:30:29.000Z</published>
     </entry>
 </feed>
