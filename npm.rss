@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-07-31T20:38:41.118Z</updated>
+    <updated>2026-07-31T21:44:24.678Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,157 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[sanitize-html] sanitize-html has incomplete URI scheme validation in that allows javascript: URIs through action, formaction, data, poster, and background attributes]]></title>
+        <id>https://github.com/advisories/GHSA-vccv-cmxp-4j9h</id>
+        <link href="https://github.com/advisories/GHSA-vccv-cmxp-4j9h"/>
+        <updated>2026-07-31T21:43:56.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>sanitize-html uses <code>allowedSchemesAppliedToAttributes</code> (default: <code>['href', 'src', 'cite']</code>) to gate the <code>naughtyHref()</code> function that blocks dangerous URI schemes like <code>javascript:</code> and <code>vbscript:</code>. The HTML specification defines 10+ attributes that accept URIs (<code>action</code>, <code>formaction</code>, <code>data</code>, <code>poster</code>, <code>background</code>, <code>ping</code>, <code>xlink:href</code>, <code>dynsrc</code>, <code>lowsrc</code>), but none of these are included in the default gate list. When a developer allows any of these attributes in their configuration, <code>javascript:</code> URIs pass through completely unmodified, enabling XSS.</p>
+<p>The library has zero awareness of these URI-bearing attributes — none appear anywhere in the 854-line source file (verified by grep). No warning mechanism exists, and the README provides no security guidance about expanding <code>allowedSchemesAppliedToAttributes</code> when allowing form or media attributes.</p>
+<h2 id="severity">Severity</h2>
+<p>Exploitation requires non-default configuration: the developer must explicitly allow a non-default tag (e.g., <code>form</code>) AND a non-default attribute (e.g., <code>action</code>). Default configuration is NOT vulnerable. However, this is a common configuration pattern for CMS platforms, form builders, and rich content editors.</p>
+<h2 id="affected-versions">Affected Versions</h2>
+<p>All versions of sanitize-html from v1.18.0 (which introduced <code>allowedSchemesAppliedToAttributes</code>) through at least v2.17.2. The default list has been <code>['href', 'src', 'cite']</code> since introduction and has never been expanded.</p>
+<h2 id="root-cause">Root Cause</h2>
+<p><strong>File</strong>: <code>index.js:329</code> (sanitize-html 2.10.0, confirmed same in 2.17.x)</p>
+<pre><code class="language-javascript">// Line 329 — The gate that controls scheme validation
+if (options.allowedSchemesAppliedToAttributes.indexOf(a) &gt;= 0) {
+    if (naughtyHref(name, value)) {
+        delete frame.attribs[a];
+        return;
+    }
+}
+</code></pre>
+<p><strong>Default list at line 829</strong>:</p>
+<pre><code class="language-javascript">allowedSchemesAppliedToAttributes: ['href', 'src', 'cite'],
+</code></pre>
+<p>The <code>naughtyHref()</code> function (lines 627-667) correctly blocks <code>javascript:</code>, <code>vbscript:</code>, and other dangerous schemes. However, it has exactly 2 call sites in the entire codebase (lines 330 and 395), both inside the <code>indexOf</code> gate. There is no ungated path.</p>
+<p>When attribute name is <code>action</code>, <code>formaction</code>, <code>data</code>, <code>poster</code>, <code>background</code>, etc.:</p>
+<ul>
+<li><code>indexOf('action')</code> returns <code>-1</code></li>
+<li>The <code>if</code> block is skipped entirely</li>
+<li><code>naughtyHref()</code> is never called</li>
+<li><code>javascript:alert(1)</code> passes through unmodified</li>
+</ul>
+<p>The <code>escapeHtml()</code> function at line 464 provides no defense — it only encodes <code>&amp; &lt; &gt; "</code> characters, which are not present in <code>javascript:alert(1)</code>.</p>
+<p><strong>Data Flow</strong>:</p>
+<pre><code>Attacker input: &lt;form action="javascript:alert(document.cookie)"&gt;
+1. htmlparser2 parses → tag='form', attribs={action:'javascript:alert(document.cookie)'}
+2. index.js:298 → allowedAttributes check: 'action' in developer config → PASS
+3. index.js:329 → ['href','src','cite'].indexOf('action') → -1 → SKIP naughtyHref()
+4. index.js:464 → escapeHtml('javascript:alert(document.cookie)') → unchanged
+5. OUTPUT: &lt;form action="javascript:alert(document.cookie)"&gt;
+</code></pre>
+<h2 id="steps-to-reproduce">Steps to Reproduce</h2>
+<pre><code class="language-javascript">const sanitize = require('sanitize-html');
+
+// ===== VECTOR 1: form action (100% reliable, all modern browsers) =====
+const v1 = sanitize(
+    '&lt;form action="javascript:alert(document.cookie)"&gt;&lt;button&gt;Submit&lt;/button&gt;&lt;/form&gt;',
+    {
+        allowedTags: ['form', 'button'],
+        allowedAttributes: { form: ['action'] }
+    }
+);
+console.log('V1 (action):', v1);
+// OUTPUT: &lt;form action="javascript:alert(document.cookie)"&gt;&lt;button&gt;Submit&lt;/button&gt;&lt;/form&gt;
+// XSS triggers when user submits the form
+
+// ===== VECTOR 2: button formaction (100% reliable) =====
+const v2 = sanitize(
+    '&lt;button formaction="javascript:alert(1)"&gt;Click&lt;/button&gt;',
+    {
+        allowedTags: ['button'],
+        allowedAttributes: { button: ['formaction'] }
+    }
+);
+console.log('V2 (formaction):', v2);
+// OUTPUT: &lt;button formaction="javascript:alert(1)"&gt;Click&lt;/button&gt;
+
+// ===== VECTOR 3: object data =====
+const v3 = sanitize(
+    '&lt;object data="javascript:alert(1)"&gt;&lt;/object&gt;',
+    {
+        allowedTags: ['object'],
+        allowedAttributes: { object: ['data'] }
+    }
+);
+console.log('V3 (data):', v3);
+// OUTPUT: &lt;object data="javascript:alert(1)"&gt;&lt;/object&gt;
+
+// ===== CONTROL: href IS scheme-checked (expected behavior) =====
+const ctrl = sanitize(
+    '&lt;a href="javascript:alert(1)"&gt;click&lt;/a&gt;',
+    {
+        allowedTags: ['a'],
+        allowedAttributes: { a: ['href'] }
+    }
+);
+console.log('Control (href):', ctrl);
+// OUTPUT: &lt;a&gt;click&lt;/a&gt;   ← href correctly stripped by naughtyHref()
+</code></pre>
+<p><strong>Observed behavior</strong>: <code>javascript:</code> preserved on <code>action</code>/<code>formaction</code>/<code>data</code> but correctly stripped on <code>href</code>.</p>
+<p><strong>Expected behavior</strong>: <code>javascript:</code> should be stripped on ALL URI-bearing attributes, or at minimum, the library should warn developers when they allow URI-bearing attributes not covered by scheme validation.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker can achieve XSS in applications that use sanitize-html with non-default configurations allowing URI-bearing attributes:</p>
+<ul>
+<li><code>&lt;form action="javascript:..."&gt;</code> — XSS on form submission (all modern browsers)</li>
+<li><code>&lt;button formaction="javascript:..."&gt;</code> — per-button XSS override (all modern browsers)</li>
+<li><code>&lt;object data="javascript:..."&gt;</code> — object load XSS (Chrome, Firefox)</li>
+<li><code>&lt;video poster="javascript:..."&gt;</code> — limited browser support but spec-valid</li>
+</ul>
+<p><strong>Common vulnerable configurations</strong>:</p>
+<ul>
+<li>CMS platforms allowing form elements for user-generated content</li>
+<li>Form builder applications</li>
+<li>Rich text editors with extended tag allowlists</li>
+<li>Email template editors allowing media/embed tags</li>
+</ul>
+<p><strong>Mitigating factors</strong>:</p>
+<ul>
+<li>Default configuration is NOT vulnerable</li>
+<li>Requires double opt-in: non-default tag + non-default attribute</li>
+<li>CSP <code>form-action</code> directive mitigates form-based vectors</li>
+<li>Developers CAN manually add attributes to <code>allowedSchemesAppliedToAttributes</code></li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p><strong>Option 1 (Recommended)</strong>: Expand the default <code>allowedSchemesAppliedToAttributes</code> list:</p>
+<pre><code class="language-javascript">// index.js line 829, change from:
+allowedSchemesAppliedToAttributes: ['href', 'src', 'cite'],
+
+// to:
+allowedSchemesAppliedToAttributes: [
+    'href', 'src', 'cite', 'action', 'formaction',
+    'data', 'poster', 'background', 'ping',
+    'xlink:href', 'dynsrc', 'lowsrc'
+],
+</code></pre>
+<p><strong>Option 2</strong>: Apply <code>naughtyHref()</code> to ALL attributes by default (invert the gate logic).</p>
+<p><strong>Option 3</strong>: Add a runtime warning when developers allow URI-bearing attributes not in <code>allowedSchemesAppliedToAttributes</code> (analogous to <code>vulnerableTags</code> warning for <code>script</code>/<code>style</code> at lines 124-129).</p>
+<h2 id="reporter">Reporter</h2>
+<p>Kevin Lee (Changseon Lee)
+OPCIA Corp. / PeanutAI Inc.
+Seoul, South Korea
+GitHub: crattack</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-vccv-cmxp-4j9h">https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-vccv-cmxp-4j9h</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53606">https://nvd.nist.gov/vuln/detail/CVE-2026-53606</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/pull/5464">https://github.com/apostrophecms/apostrophe/pull/5464</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/commit/5a88e9630cbbdde33154ef8abe7557ddf7be418b">https://github.com/apostrophecms/apostrophe/commit/5a88e9630cbbdde33154ef8abe7557ddf7be418b</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/releases/tag/sanitize-html@2.17.5">https://github.com/apostrophecms/apostrophe/releases/tag/sanitize-html@2.17.5</a></li>
+<li><a href="https://github.com/advisories/GHSA-vccv-cmxp-4j9h">https://github.com/advisories/GHSA-vccv-cmxp-4j9h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vccv-cmxp-4j9h</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-31T21:43:51.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@nocobase/plugin-notification-in-app-message] NocoBase: SQL injection in /api/myInAppChannels:list filter to PG-superuser RCE]]></title>
         <id>https://github.com/advisories/GHSA-p849-8hwh-84j9</id>
@@ -1838,42 +1989,5 @@ message: Alert for Team
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-07-31T15:56:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@aws-amplify/codegen-ui-react] AWS Amplify Studio UI Component Properties Has an Input Validation Issue]]></title>
-        <id>https://github.com/advisories/GHSA-hf3j-86p7-mfw8</id>
-        <link href="https://github.com/advisories/GHSA-hf3j-86p7-mfw8"/>
-        <updated>2026-07-30T20:57:25.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The AWS Amplify Studio <a href="https://github.com/aws-amplify/amplify-codegen-ui">amplify-codegen-ui</a> is a package that generates front-end code from UI Builder entities (components, forms, views, and themes) primarily used in AWS Amplify Studio for component previews and in AWS Command Line Interface (AWS CLI) for generating component files in customers' local applications.</p>
-<p>An issue exists in the Amplify Studio property binding process of the <code>amplify-codegen-ui </code>package that could potentially allow an authenticated user to run arbitrary JavaScript code during the component rendering and build process.</p>
-<h3 id="impact">Impact</h3>
-<p>When importing a component schema using the <a href="https://awscli.amazonaws.com/v2/documentation/api/latest/reference/amplifyuibuilder/create-component.html">create-component</a> command, Amplify Studio will import and generate the component on the users' behalf. The expression-binding function does not validate the component schema properties before converting them to expressions. As a result, an authenticated user who can create or modify components could run arbitrary JavaScript code during the component rendering and build process. </p>
-<p><strong>Impacted versions: &lt;=2.20.2</strong></p>
-<h3 id="patches">Patches</h3>
-<p>This issue has been addressed partially in version <a href="https://github.com/aws-amplify/amplify-codegen-ui/pull/1174">2.20.3</a> and additional fixes in <a href="https://github.com/aws-amplify/amplify-codegen-ui/pull/1196">2.20.4</a>. We recommend upgrading to the latest version and ensuring any forked or derivative code is patched to incorporate the new fixes.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There are no workarounds. Upgrade to version <a href="https://github.com/aws-amplify/amplify-codegen-ui/releases/tag/v2.20.4">2.20.4</a>.</p>
-<p>If you have any questions or comments about this advisory, AWS asks that you contact AWS/Amazon Security via the <a href="https://aws.amazon.com/security/vulnerability-reporting/">issue-reporting page</a> or directly via email to <a href="mailto:aws-security@amazon.com">aws-security@amazon.com</a>. Please do not create a public GitHub issue.</p>
-<h3 id="credit">Credit</h3>
-<p>AWS would like to thank <code>ray the bounty hunter</code> for collaborating on this issue through the coordinated issue disclosure process.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/aws-amplify/amplify-codegen-ui/security/advisories/GHSA-hf3j-86p7-mfw8">https://github.com/aws-amplify/amplify-codegen-ui/security/advisories/GHSA-hf3j-86p7-mfw8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-4318">https://nvd.nist.gov/vuln/detail/CVE-2025-4318</a></li>
-<li><a href="https://github.com/aws-amplify/amplify-codegen-ui/commit/ca98c38b7c3d69ae7c94d2f62b51e32e8165dae6">https://github.com/aws-amplify/amplify-codegen-ui/commit/ca98c38b7c3d69ae7c94d2f62b51e32e8165dae6</a></li>
-<li><a href="https://aws.amazon.com/security/security-bulletins/AWS-2025-010">https://aws.amazon.com/security/security-bulletins/AWS-2025-010</a></li>
-<li><a href="https://blog.securelayer7.net/cve-2025-4318-aws-amplify-rce">https://blog.securelayer7.net/cve-2025-4318-aws-amplify-rce</a></li>
-<li><a href="https://github.com/aws-amplify/amplify-codegen-ui/releases/tag/v2.20.3">https://github.com/aws-amplify/amplify-codegen-ui/releases/tag/v2.20.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-hf3j-86p7-mfw8">https://github.com/advisories/GHSA-hf3j-86p7-mfw8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hf3j-86p7-mfw8</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-30T20:57:24.000Z</published>
     </entry>
 </feed>
