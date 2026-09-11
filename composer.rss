@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-09-11T18:31:42.672Z</updated>
+    <updated>2026-09-11T21:12:34.257Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,134 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[shopper/framework] Shopper: Authorization bypass in Filament bulk actions allows browse-only staff to mass-delete attributes/tags and mass-toggle visibility of brands/categories/suppliers]]></title>
+        <id>https://github.com/advisories/GHSA-243p-f3cv-c5wh</id>
+        <link href="https://github.com/advisories/GHSA-243p-f3cv-c5wh"/>
+        <updated>2026-09-11T20:47:18.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Five Filament <code>groupedBulkActions</code> blocks across the Shopper admin Livewire pages omit the <code>-&gt;authorize(...)</code> permission gate, while their per-record sibling actions (and other Shopper Index pages such as <code>Pages/Settings/Currencies.php</code>, <code>Pages/Reviews/Index.php</code>, <code>Pages/Collection/Index.php</code>, and <code>Pages/Discount/Index.php</code>) correctly chain <code>-&gt;authorize(...)</code>. Each affected page's <code>mount()</code> only requires the read-only <code>browse_*</code> permission, so a low-privilege staff user holding only the read permission can drive the bulk endpoint via the standard Livewire <code>callTableBulkAction</code> flow and execute state-mutating operations they were never granted. The vulnerability is the same class as GHSA-f946-9qp6-vgch and GHSA-j328-xmgp-j4q3 (read-only permission gating a write action), just on a different surface (Filament 4 <code>groupedBulkActions</code> rather than top-level Livewire methods).</p>
+<p>A staff user holding only <code>browse_attributes</code> can permanently delete every product attribute in the catalog (cascading break of every dependent product variant). A user holding only <code>browse_tags</code> can permanently delete every product tag. Users holding <code>browse_brands</code>, <code>browse_categories</code>, or <code>browse_suppliers</code> can flip the visibility (<code>is_enabled</code>) of every brand/category/supplier in bulk, sabotaging storefront catalog visibility.</p>
+<p>CVSS 3.1: <code>AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:H</code> = 8.1 High. CWE-285 (Improper Authorization) and CWE-862 (Missing Authorization). The attacker has low privilege (browse-only staff role), no user interaction, network reachable.</p>
+<h2 id="vulnerable-components-paths-relative-to-repo-root">Vulnerable components (paths relative to repo root)</h2>
+<p>All references are HEAD = commit <code>ac9a760</code> on <code>master</code> (the very commit that closed the previous wave of authorization-drift bugs from GHSA-j328-xmgp-j4q3).</p>
+<h3 id="1-packagesadminsrclivewirepagesattributebrowsephp">1) <code>packages/admin/src/Livewire/Pages/Attribute/Browse.php</code></h3>
+<p>Mount at line 36–39 requires only <code>browse_attributes</code>.</p>
+<ul>
+<li>Lines 106–122: <code>DeleteBulkAction::make()</code> has NO <code>-&gt;authorize(...)</code> chain (the surrounding per-record <code>delete</code> action at lines 95–104 correctly does <code>-&gt;authorize('delete_attributes')</code>).</li>
+<li>Lines 123–138: <code>BulkAction::make('enabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+<li>Lines 139–155: <code>BulkAction::make('disabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+</ul>
+<p>Net effect: a <code>browse_attributes</code>-only user can <strong>delete every row in the attributes table</strong>, and toggle <code>is_enabled</code> on every attribute in one request. Deleting an attribute cascades into every product variant that references it via the <code>attribute_product</code> pivot.</p>
+<h3 id="2-packagesadminsrclivewirepagestagindexphp">2) <code>packages/admin/src/Livewire/Pages/Tag/Index.php</code></h3>
+<p>Mount at line 39 requires only <code>browse_tags</code>.</p>
+<ul>
+<li>Lines 96–108: <code>DeleteBulkAction::make()</code> has NO <code>-&gt;authorize(...)</code> chain (the per-record <code>delete</code> action at lines 79–94 correctly does <code>-&gt;authorize('delete_tags')</code>).</li>
+</ul>
+<p>Net effect: a <code>browse_tags</code>-only user can delete every <code>ProductTag</code> row.</p>
+<h3 id="3-packagesadminsrclivewirepagesbrandindexphp">3) <code>packages/admin/src/Livewire/Pages/Brand/Index.php</code></h3>
+<p>Mount at line 37–40 requires only <code>browse_brands</code>.</p>
+<ul>
+<li>Lines 97–112: <code>BulkAction::make('enabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+<li>Lines 113–129: <code>BulkAction::make('disabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+</ul>
+<p>Net effect: a <code>browse_brands</code>-only user can flip <code>is_enabled</code> on every brand. Disabling all brands removes them from the storefront catalog. The per-record edit/delete actions and the <code>DeleteBulkAction</code> at lines 130–148 are correctly <code>-&gt;authorize(...)</code> gated — only the visibility bulk actions were missed.</p>
+<h3 id="4-packagesadminsrclivewirepagescategoryindexphp">4) <code>packages/admin/src/Livewire/Pages/Category/Index.php</code></h3>
+<p>Mount at line 38–41 requires only <code>browse_categories</code>.</p>
+<ul>
+<li>Lines 102–117: <code>BulkAction::make('enabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+<li>Lines 118–133: <code>BulkAction::make('disabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+</ul>
+<p>Net effect: a <code>browse_categories</code>-only user can flip <code>is_enabled</code> on every category. Same shape as Brand.</p>
+<h3 id="5-packagesadminsrclivewirepagessupplierindexphp">5) <code>packages/admin/src/Livewire/Pages/Supplier/Index.php</code></h3>
+<p>Mount at line 38 requires only <code>browse_suppliers</code>.</p>
+<ul>
+<li>Lines 93–108: <code>BulkAction::make('enabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+<li>Lines 109–125: <code>BulkAction::make('disabled')</code> has NO <code>-&gt;authorize(...)</code>.</li>
+</ul>
+<p>Net effect: a <code>browse_suppliers</code>-only user can flip <code>is_enabled</code> on every supplier.</p>
+<h2 id="reference-comparison-places-that-are-correctly-gated">Reference comparison: places that ARE correctly gated</h2>
+<p>For reference, here is what the same pattern looks like in files that DID get the fix:</p>
+<ul>
+<li><code>packages/admin/src/Livewire/Pages/Settings/Currencies.php</code> lines 90–129: every <code>BulkAction</code> chains <code>-&gt;authorize('access_setting')</code>.</li>
+<li><code>packages/admin/src/Livewire/Pages/Reviews/Index.php</code> lines 105–119: <code>DeleteBulkAction</code> chains <code>-&gt;authorize('delete_reviews')</code>.</li>
+<li><code>packages/admin/src/Livewire/Pages/Collection/Index.php</code> lines 109–128: <code>DeleteBulkAction</code> chains <code>-&gt;authorize('delete_collections')</code>.</li>
+<li><code>packages/admin/src/Livewire/Pages/Discount/Index.php</code> lines 126–145: <code>DeleteBulkAction</code> chains <code>-&gt;authorize('delete_discounts')</code>.</li>
+</ul>
+<p>The convention is established and applied elsewhere — these five files just missed it.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>The attached file <code>tests/Admin/Livewire/Pages/Brand/AuthBypassPocTest.php</code> (added in this report) contains seven Pest tests, each acting as a <code>browse_*</code>-only staff user and invoking the bulk endpoint. All seven pass on master @ <code>ac9a760</code>:</p>
+<pre><code>   PASS  Tests\Admin\Livewire\Pages\Brand\AuthBypassPocTest
+  ✓ it SHOPPER-2 PoC: read-only viewer can mass-DISABLE all brands via unguarded BulkAction
+  ✓ it SHOPPER-2 PoC: read-only viewer can mass-ENABLE all brands via unguarded BulkAction
+  ✓ it SHOPPER-2 PoC: read-only viewer can mass-DISABLE all categories via unguarded BulkAction
+  ✓ it SHOPPER-2 PoC: read-only viewer can mass-DISABLE all suppliers via unguarded BulkAction
+  ✓ it SHOPPER-2 PoC: read-only viewer can DELETE all attributes via unguarded DeleteBulkAction
+  ✓ it SHOPPER-2 PoC: read-only viewer can mass-DISABLE all attributes via unguarded BulkAction
+  ✓ it SHOPPER-2 PoC: browse_tags viewer can DELETE all product tags via unguarded DeleteBulkAction
+
+  Tests:    7 passed (32 assertions)
+</code></pre>
+<p>Each test seeds three records, signs in a user holding only the corresponding <code>browse_*</code> permission, calls <code>Livewire::test(&lt;Page&gt;::class)-&gt;callTableBulkAction(...)</code>, and asserts the side effect (records flipped or deleted). For example, the attribute mass-delete test:</p>
+<pre><code class="language-php">$this-&gt;viewer = User::factory()-&gt;create();
+$this-&gt;viewer-&gt;givePermissionTo('browse_attributes');
+$this-&gt;actingAs($this-&gt;viewer);
+
+Attribute::factory()-&gt;count(3)-&gt;create();
+expect($this-&gt;viewer-&gt;can('delete_attributes'))-&gt;toBeFalse();
+
+Livewire::test(AttributeBrowse::class)
+    -&gt;callTableBulkAction(\Filament\Actions\DeleteBulkAction::class, Attribute::pluck('id')-&gt;toArray())
+    -&gt;assertHasNoErrors();
+
+expect(Attribute::count())-&gt;toBe(0);
+</code></pre>
+<p>The call uses the same <code>callTableBulkAction</code> helper Shopper's own test suite uses everywhere, which in turn drives the same Livewire <code>update</code> payload the browser would emit — so this is a faithful HTTP-level reproduction.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>Add <code>-&gt;authorize(&lt;correct_permission&gt;)</code> to each of the five vulnerable groups, mirroring the pattern already used elsewhere:</p>
+<pre><code class="language-diff"> // Pages/Attribute/Browse.php
+ -&gt;groupedBulkActions([
+     DeleteBulkAction::make()
++        -&gt;authorize('delete_attributes')
+         -&gt;label(__('shopper::forms.actions.delete'))
+         -&gt;requiresConfirmation()
+         -&gt;action(function (Collection $records): void { /* ... */ }),
+     BulkAction::make('enabled')
++        -&gt;authorize('edit_attributes')
+         -&gt;label(__('shopper::forms.actions.enable'))
+         -&gt;action(function (Collection $records): void { /* ... */ }),
+     BulkAction::make('disabled')
++        -&gt;authorize('edit_attributes')
+         -&gt;label(__('shopper::forms.actions.disable'))
+         -&gt;action(function (Collection $records): void { /* ... */ }),
+ ])
+</code></pre>
+<p>Apply the equivalent change to <code>Pages/Tag/Index.php</code> (<code>delete_tags</code>), <code>Pages/Brand/Index.php</code> (<code>edit_brands</code> for enable/disable), <code>Pages/Category/Index.php</code> (<code>edit_categories</code>), and <code>Pages/Supplier/Index.php</code> (<code>edit_suppliers</code>).</p>
+<p>A regression test for each file (acting as a <code>browse_*</code>-only user and expecting <code>assertHasErrors</code>/<code>AuthorizationException</code>) would lock in the fix, matching the regression tests added for #514.</p>
+<h2 id="resources">Resources</h2>
+<ul>
+<li>Prior advisories of the same class (read-only permission gating a write action): GHSA-f946-9qp6-vgch, GHSA-j328-xmgp-j4q3 / GHSA-vw82-3966-f9mr.</li>
+<li>Same-shape fix: commit <code>ac9a760</code> (PR #514). Five Filament bulk-action groups did not receive the corresponding <code>-&gt;authorize(...)</code> chain.</li>
+<li>CWE-285 Improper Authorization, CWE-862 Missing Authorization.</li>
+</ul>
+<h3 id="credits">Credits</h3>
+<p>Reported by Vishal Shukla(@shukla304) using sechub.dev AI Agent</p>
+<h3 id="support">Support</h3>
+<p>If this disclosure was useful and userswould like to support continued open-source security research and responsible-disclosure work, they can sponsor at <a href="https://github.com/sponsors/therawdev">https://github.com/sponsors/therawdev</a> — Shopper is thankful for those keeping open source safe.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/shopperlabs/shopper/security/advisories/GHSA-243p-f3cv-c5wh">https://github.com/shopperlabs/shopper/security/advisories/GHSA-243p-f3cv-c5wh</a></li>
+<li><a href="https://github.com/advisories/GHSA-243p-f3cv-c5wh">https://github.com/advisories/GHSA-243p-f3cv-c5wh</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-243p-f3cv-c5wh</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-11T20:47:17.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[pimcore/pimcore] Pimcore: SQL Injection in Custom Reports via Malicious Report Configuration]]></title>
         <id>https://github.com/advisories/GHSA-23rh-xw42-fq82</id>
@@ -1189,36 +1317,6 @@ or values; there is no reliable in-application way to neutralize the embedded
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-09-08T20:56:41.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[cakephp/cakephp] CakePHP: SmtpTransport vulnerable to CRLF header injection]]></title>
-        <id>https://github.com/advisories/GHSA-2qh5-382h-3jpc</id>
-        <link href="https://github.com/advisories/GHSA-2qh5-382h-3jpc"/>
-        <updated>2026-09-08T20:56:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Custom mail headers added with <code>Message::setHeaders()</code> or <code>addHeaders()</code> do not have CRLF replaced allowing header injection if user controlled data is added to message headers without stripping CRLF bytes.</p>
-<h3 id="patches">Patches</h3>
-<p>5.3.7, 5.2.14, 5.1.9, 4.6.5, 4.5.12 contain fixes for this issue.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>You can strip CRLF bytes from email header values before setting header values.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/cakephp/cakephp/security/advisories/GHSA-2qh5-382h-3jpc">https://github.com/cakephp/cakephp/security/advisories/GHSA-2qh5-382h-3jpc</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-77634">https://nvd.nist.gov/vuln/detail/CVE-2026-77634</a></li>
-<li><a href="https://github.com/cakephp/cakephp/commit/08188962bcd99a95da1e49f62e786f2d688f1e41">https://github.com/cakephp/cakephp/commit/08188962bcd99a95da1e49f62e786f2d688f1e41</a></li>
-<li><a href="https://github.com/cakephp/cakephp/commit/2afe42b02d8ddc5d442bca5e8bb61910a727646e">https://github.com/cakephp/cakephp/commit/2afe42b02d8ddc5d442bca5e8bb61910a727646e</a></li>
-<li><a href="https://github.com/cakephp/cakephp/commit/3e09dae6cbdc983754fa3a8e6aae74da102a3ea1">https://github.com/cakephp/cakephp/commit/3e09dae6cbdc983754fa3a8e6aae74da102a3ea1</a></li>
-<li><a href="https://github.com/cakephp/cakephp/commit/b67b622457362b075bb37e625a82af73a0b3c9c3">https://github.com/cakephp/cakephp/commit/b67b622457362b075bb37e625a82af73a0b3c9c3</a></li>
-<li><a href="https://github.com/advisories/GHSA-2qh5-382h-3jpc">https://github.com/advisories/GHSA-2qh5-382h-3jpc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2qh5-382h-3jpc</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-08T20:56:26.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[cakephp/cakephp] CakePHP: SmtpTransport vulnerable to CRLF header injection]]></title>
