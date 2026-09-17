@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-09-17T15:03:17.282Z</updated>
+    <updated>2026-09-17T18:57:06.040Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,270 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[vllm] vLLM: Request-selected PyNvVideoCodec GPU decode bypasses static VRAM reservation]]></title>
+        <id>https://github.com/advisories/GHSA-8pw2-6jv3-mj5j</id>
+        <link href="https://github.com/advisories/GHSA-8pw2-6jv3-mj5j"/>
+        <updated>2026-09-17T17:17:41.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>Current vLLM <code>main</code> lets an inference request choose the PyNvVideoCodec GPU video decoder through <code>media_io_kwargs.video.video_backend</code>, but engine GPU memory reservation is computed only from static startup configuration and <code>VLLM_VIDEO_LOADER_BACKEND</code>. If the server starts with the default OpenCV/software backend and no <code>--mm-ipc-gpu-memory-gb</code> budget, a client can still route a video request into the PyNvVideoCodec path after startup, causing frontend CUDA-context, decoder-surface, and decoded-frame GPU allocations that were not carved out of the engine KV-cache budget.</p>
+<h2 id="technical-details">Technical Details</h2>
+<p>The vulnerable boundary is the split between request-time media decoding choices in the API server and startup-time memory budgeting in the engine worker. Request bodies for Chat Completions and Responses expose <code>media_io_kwargs</code>, and those values are forwarded to the shared media connector. For video inputs, <code>MediaConnector.fetch_video()</code> copies <code>self.media_io_kwargs["video"]</code> into <code>video_io_kwargs</code>, only setting a model-derived backend when <code>video_backend</code> is absent. <code>VideoMediaIO.__init__()</code> then consumes <code>video_backend</code> from those kwargs and loads that backend from <code>VIDEO_LOADER_REGISTRY</code>.</p>
+<p>The relevant request-side source path is:</p>
+<pre><code class="language-python">video_io_kwargs = dict(self.media_io_kwargs.get("video", {}))
+if "video_backend" not in video_io_kwargs and (
+    video_backend := get_video_loader_backend_for_processor(video_processor)
+):
+    video_io_kwargs["video_backend"] = video_backend
+video_io = VideoMediaIO(image_io, **video_io_kwargs)
+</code></pre>
+<pre><code class="language-python">video_loader_backend = (
+    kwargs.pop("video_backend", None) or envs.VLLM_VIDEO_LOADER_BACKEND
+)
+self.video_loader = VIDEO_LOADER_REGISTRY.load(video_loader_backend)
+</code></pre>
+<p><code>VideoBackend.load_bytes()</code> then dispatches <code>backend == "pynvvideocodec"</code> into <code>decode_frames_pynvvideocodec()</code>, which constructs a PyNvVideoCodec decoder, creates or uses a CUDA stream, reads stream metadata, decodes selected frames on the GPU, and copies those frames into pinned host memory. The new frontend GPU memory pool accounts only for raw decoded frame bytes when a pool exists; it does not make request-time backend selection safe when no startup reservation was made.</p>
+<p>The engine-side reservation code makes its decision from static model config and environment only:</p>
+<pre><code class="language-python">def _uses_pynvvideocodec_video_backend(mm_config) -&gt; bool:
+    video_kwargs = mm_config.media_io_kwargs.get("video", {})
+    video_loader_backend = (
+        video_kwargs.get("video_backend") or envs.VLLM_VIDEO_LOADER_BACKEND
+    )
+    codec_backend = video_kwargs.get("backend")
+    return (
+        video_loader_backend == PYNVVIDEOCODEC_VIDEO_BACKEND
+        or codec_backend == PYNVVIDEOCODEC_VIDEO_BACKEND
+    )
+</code></pre>
+<pre><code class="language-python">decoder_reserved_bytes = (
+    num_api_servers * per_server_decoder_bytes
+    if self._uses_pynvvideocodec_video_backend(mm_config)
+    else 0
+)
+reserved_bytes = raw_frame_reserved_bytes + decoder_reserved_bytes
+if reserved_bytes &lt;= 0:
+    return available_kv_cache_memory_bytes
+</code></pre>
+<p>With default static video configuration, <code>mm_config.media_io_kwargs["video"]</code> does not name PyNvVideoCodec and <code>VLLM_VIDEO_LOADER_BACKEND</code> defaults to OpenCV/software decoding. The worker therefore reserves no PyNv decoder/CUDA-context bytes. A later request can still set <code>media_io_kwargs.video.video_backend="pynvvideocodec"</code> and reach the GPU decoder path because that runtime field is intentionally honored by <code>VideoMediaIO</code>.</p>
+<h2 id="pov">PoV</h2>
+<p>An ordinary multimodal inference request can carry the backend override in the request body:</p>
+<pre><code class="language-json">{
+  "model": "served-vlm",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "summarize this clip"},
+        {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,&lt;small-mp4&gt;"}}
+      ]
+    }
+  ],
+  "media_io_kwargs": {
+    "video": {
+      "video_backend": "pynvvideocodec"
+    }
+  }
+}
+</code></pre>
+<p>The following bounded source-level check confirms the code path without allocating GPU memory:</p>
+<pre><code class="language-bash">git clone --filter=blob:none https://github.com/vllm-project/vllm.git
+cd vllm
+git checkout ddd3855a28a561a5bb54d380c6e6b8b1e883cc4a
+python3 check_pynv_backend_reservation.py --repo .
+</code></pre>
+<h2 id="poc">PoC</h2>
+<p>The bounded check validates current source markers, simulates the exact static reservation predicate, and compares vulnerable and negative-control configurations. Key output:</p>
+<pre><code class="language-json">{
+  "vulnerable": true,
+  "head": "ddd3855a28a561a5bb54d380c6e6b8b1e883cc4a",
+  "reservation_simulation": {
+    "env_video_loader_backend": "opencv",
+    "request_selects_pynv_after_startup": true,
+    "vulnerable_static_reserved_bytes": 0,
+    "negative_control_static_pynv_reserved_bytes": 2066953011,
+    "raw_frame_only_control_reserved_bytes": 268435456,
+    "unreserved_decoder_bytes_when_only_request_selects_pynv": 2066953011
+  }
+}
+</code></pre>
+<p>The negative control is important: when PyNvVideoCodec is selected statically, the worker reserves <code>2066953011</code> bytes per API process for decoder surfaces plus CUDA context. The vulnerable case reserves <code>0</code> bytes for the same decoder overhead because PyNvVideoCodec is selected only by the later request. A second control with static OpenCV plus <code>mm_ipc_gpu_memory_gb=0.25</code> reserves only the raw-frame semaphore budget and still does not reserve PyNv decoder/CUDA-context bytes.</p>
+<h2 id="impact">Impact</h2>
+<p>An attacker who can submit video requests to a vLLM deployment with PyNvVideoCodec available can force frontend GPU decoding even when the engine did not reserve memory for that decoder during startup. On high-utilization serving deployments, the unreserved CUDA context, retained decoder surfaces, and decoded-frame allocations can reduce or exhaust GPU memory that the engine assumed was available for weights, activations, or KV cache, causing request failures, worker crashes, or service-level denial of service.</p>
+<p>Suggested severity is Medium with conservative CVSS v3.1 <code>CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H</code> (6.5). If a deployment exposes the affected API without authentication, <code>PR:N</code> would raise the deployment-specific score. Suggested weaknesses are <code>CWE-770</code> (Allocation of Resources Without Limits or Throttling) and <code>CWE-400</code> (Uncontrolled Resource Consumption). This should not be rated Low because the affected resource is shared GPU memory in the serving path and the code already treats the PyNv decoder/CUDA-context footprint as large enough to reserve at startup when statically configured.</p>
+<p>Limitations: exploitation requires a GPU deployment where PyNvVideoCodec is installed and usable, and the request must reach a video-capable model/path. The issue does not claim code execution, data disclosure, or SSRF.</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Do not allow untrusted request fields to select a GPU decoder that was not included in startup memory reservation. The simplest fix is to reject request-level <code>media_io_kwargs.video.video_backend="pynvvideocodec"</code> unless the static server configuration already selected PyNvVideoCodec and reserved its decoder/CUDA-context budget.</p>
+<p>If dynamic backend selection remains supported, split software and GPU decoder policies: allow request selection among CPU/software decoders only, require an explicit operator allowlist for GPU decoders, and include every request-selectable GPU decoder in the startup reservation predicate. Add regression coverage for static OpenCV startup config plus request-level PyNvVideoCodec override, and preserve the negative control where static PyNvVideoCodec configuration reserves decoder/CUDA-context bytes.</p>
+<h2 id="affected-packageversions">Affected Package/Versions</h2>
+<p>Package: <code>vllm</code> from <code>vllm-project/vllm</code>.</p>
+<p>Confirmed affected: current <code>main</code> at <code>ddd3855a28a561a5bb54d380c6e6b8b1e883cc4a</code>.</p>
+<p>Introduced by: <code>af16446bf39de047ab57649c933063cf1cbf1e50</code>, <code>Vram semaphore infra (#44465)</code>, committed 2026-06-26T17:32:51-07:00.</p>
+<p>Release status checked: <code>git tag --contains af16446bf</code> returned no release tags in the fresh checkout. GitHub repository metadata reported latest published release <code>v0.23.0</code> published 2026-06-15T05:27:20Z; the local <code>v0.24.0</code> tag also does not contain the introducing commit. The affected range should therefore be current <code>main</code> builds containing <code>af16446bf</code> until fixed, rather than a confirmed released-version range.</p>
+<h2 id="advisory-history">Advisory History</h2>
+<p>Public vLLM advisories checked included audio decompression-bomb DoS, unbounded <code>video/jpeg</code> frame-count DoS, MediaConnector SSRF, video processing RCE, multimodal embedding DoS/RCE, GGUF GPU memory exposure, multimodal hashing, and other request-parameter DoS classes. None matched request-selected PyNvVideoCodec or the static VRAM reservation mismatch.</p>
+<p>Prior local/private vLLM report families checked included request-level <code>media_io_kwargs</code> reopening <code>video/jpeg</code> frame fanout, GLM video metadata amplification, and audio media decode duration-limit bypass. Those reports share the request-level media kwargs boundary, but they target CPU/media decode limits or model metadata amplification. This report targets a different privileged asset and fix surface: GPU decoder selection after engine startup memory reservation.</p>
+<p>Focused GitHub issue/PR searches for <code>pynvvideocodec</code>, <code>mm_ipc_gpu_memory</code>, <code>video_backend media_io_kwargs</code>, <code>Vram semaphore infra</code>, and <code>frontend multimodal GPU decoding</code> found the PyNvVideoCodec zero-copy RFC, an old do-not-review prototype, merged PR <code>#44465</code>, and an unrelated TorchCodec backend PR. No public issue or PR described this security boundary.</p>
+<h2 id="appendix-bounded-source-level-check">Appendix: Bounded Source-Level Check</h2>
+<pre><code class="language-python">#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+from pathlib import Path
+
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+def read(repo: Path, rel: str) -&gt; str:
+    return (repo / rel).read_text(encoding="utf-8")
+
+def const_int(source: str, name: str) -&gt; int:
+    expr = re.search(rf"^{name}\s*=\s*(.+)$", source, flags=re.MULTILINE).group(1).strip()
+    if expr == "128 * MiB_bytes":
+        return 128 * MIB
+    if expr == "int(1.8 * 1024 * MiB_bytes)":
+        return int(1.8 * 1024 * MIB)
+    if expr == "1":
+        return 1
+    raise AssertionError(expr)
+
+def uses_pynv_static(static_media_io_kwargs: dict[str, dict[str, str]], env_backend: str) -&gt; bool:
+    video_kwargs = static_media_io_kwargs.get("video", {})
+    video_loader_backend = video_kwargs.get("video_backend") or env_backend
+    codec_backend = video_kwargs.get("backend")
+    return video_loader_backend == "pynvvideocodec" or codec_backend == "pynvvideocodec"
+
+def reserve_bytes(static_media_io_kwargs, env_backend, mm_ipc_gpu_memory_gb, decoder_bytes, cuda_context_bytes, retained_decoders):
+    raw_frame_reserved_bytes = int(mm_ipc_gpu_memory_gb * GIB)
+    per_server_decoder_bytes = decoder_bytes * retained_decoders + cuda_context_bytes
+    decoder_reserved_bytes = per_server_decoder_bytes if uses_pynv_static(static_media_io_kwargs, env_backend) else 0
+    return raw_frame_reserved_bytes + decoder_reserved_bytes
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--repo", required=True, type=Path)
+repo = parser.parse_args().repo.resolve()
+
+media_video = read(repo, "vllm/multimodal/media/video.py")
+connector = read(repo, "vllm/multimodal/media/connector.py")
+chat_protocol = read(repo, "vllm/entrypoints/openai/chat_completion/protocol.py")
+responses_protocol = read(repo, "vllm/entrypoints/openai/responses/protocol.py")
+gpu_worker = read(repo, "vllm/v1/worker/gpu_worker.py")
+video_core = read(repo, "vllm/multimodal/video.py")
+
+assert "media_io_kwargs: dict[str, dict[str, Any]] | None = Field(" in chat_protocol
+assert "media_io_kwargs: dict[str, dict[str, Any]] | None = Field(" in responses_protocol
+assert 'video_io_kwargs = dict(self.media_io_kwargs.get("video", {}))' in connector
+assert 'if "video_backend" not in video_io_kwargs and (' in connector
+assert 'kwargs.pop("video_backend", None) or envs.VLLM_VIDEO_LOADER_BACKEND' in media_video
+assert "elif backend == PYNVVIDEOCODEC_VIDEO_BACKEND:" in video_core
+assert 'video_kwargs = mm_config.media_io_kwargs.get("video", {})' in gpu_worker
+
+decoder_bytes = const_int(video_core, "PYNVVIDEOCODEC_DECODER_GPU_MEMORY_BYTES")
+retained_decoders = const_int(video_core, "PYNVVIDEOCODEC_MAX_RETAINED_DECODERS")
+cuda_context_bytes = const_int(video_core, "PYNVVIDEOCODEC_CUDA_CONTEXT_BYTES")
+per_server_decoder_bytes = decoder_bytes * retained_decoders + cuda_context_bytes
+
+vulnerable_static_reserved = reserve_bytes({}, "opencv", 0.0, decoder_bytes, cuda_context_bytes, retained_decoders)
+negative_control_reserved = reserve_bytes({"video": {"video_backend": "pynvvideocodec"}}, "opencv", 0.0, decoder_bytes, cuda_context_bytes, retained_decoders)
+raw_frame_only_control = reserve_bytes({}, "opencv", 0.25, decoder_bytes, cuda_context_bytes, retained_decoders)
+
+head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+print(json.dumps({
+    "head": head,
+    "vulnerable": vulnerable_static_reserved == 0 and negative_control_reserved == per_server_decoder_bytes,
+    "reservation_simulation": {
+        "env_video_loader_backend": "opencv",
+        "request_selects_pynv_after_startup": True,
+        "vulnerable_static_reserved_bytes": vulnerable_static_reserved,
+        "negative_control_static_pynv_reserved_bytes": negative_control_reserved,
+        "raw_frame_only_control_reserved_bytes": raw_frame_only_control,
+        "unreserved_decoder_bytes_when_only_request_selects_pynv": per_server_decoder_bytes,
+    },
+}, indent=2, sort_keys=True))
+</code></pre>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/security/advisories/GHSA-8pw2-6jv3-mj5j">https://github.com/vllm-project/vllm/security/advisories/GHSA-8pw2-6jv3-mj5j</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-69147">https://nvd.nist.gov/vuln/detail/CVE-2026-69147</a></li>
+<li><a href="https://github.com/vllm-project/vllm/pull/47259">https://github.com/vllm-project/vllm/pull/47259</a></li>
+<li><a href="https://github.com/vllm-project/vllm/commit/283893c72292ede38d277e3cd2b9b64c3e4f1dda">https://github.com/vllm-project/vllm/commit/283893c72292ede38d277e3cd2b9b64c3e4f1dda</a></li>
+<li><a href="https://github.com/vllm-project/vllm/commit/ba22152096b2484faa3579624a253d54804d876d">https://github.com/vllm-project/vllm/commit/ba22152096b2484faa3579624a253d54804d876d</a></li>
+<li><a href="https://github.com/vllm-project/vllm/releases/tag/v0.25.0">https://github.com/vllm-project/vllm/releases/tag/v0.25.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-8pw2-6jv3-mj5j">https://github.com/advisories/GHSA-8pw2-6jv3-mj5j</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8pw2-6jv3-mj5j</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-17T17:17:39.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[AccessControl] Zope AccessControl vulnerable to information disclosure through Python string `format` and `format_map` functions]]></title>
+        <id>https://github.com/advisories/GHSA-pq59-9fq7-m886</id>
+        <link href="https://github.com/advisories/GHSA-pq59-9fq7-m886"/>
+        <updated>2026-09-17T16:30:38.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Python's string <code>format</code> functionality allows someone controlling the format string to "read" objects accessible (recursively) via attribute access and subscription from accessible objects. Those attribute accesses and subscriptions use Python's full blown <code>getattr</code> and <code>getitem</code>, not the policy restricted <code>AccessControl</code> variants <code>_getattr_</code> and <code>_getitem_</code>. This can lead to critical information disclosure.</p>
+<p>The <code>AccessControl</code> package already guards against direct access to the formatting functions on string instances, but these mitigations did not cover subclasses of <code>str</code>.</p>
+<p>Affected are all users who allow untrusted users to create AccessControl controlled Python code and execute it.</p>
+<h3 id="patches">Patches</h3>
+<p>A fix was published with version 7.4.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>There is no workaround.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/zopefoundation/AccessControl/security/advisories/GHSA-pq59-9fq7-m886">https://github.com/zopefoundation/AccessControl/security/advisories/GHSA-pq59-9fq7-m886</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-77401">https://nvd.nist.gov/vuln/detail/CVE-2026-77401</a></li>
+<li><a href="https://github.com/zopefoundation/AccessControl/commit/f980450eea416718be62847f34dfd51822938e43">https://github.com/zopefoundation/AccessControl/commit/f980450eea416718be62847f34dfd51822938e43</a></li>
+<li><a href="https://github.com/zopefoundation/AccessControl/releases/tag/7.4">https://github.com/zopefoundation/AccessControl/releases/tag/7.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-pq59-9fq7-m886">https://github.com/advisories/GHSA-pq59-9fq7-m886</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pq59-9fq7-m886</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-17T16:30:37.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[RestrictedPython] RestrictedPython vulnerable to sandbox escape via string.Formatter field resolution]]></title>
+        <id>https://github.com/advisories/GHSA-hp3v-5vw7-fx9w</id>
+        <link href="https://github.com/advisories/GHSA-hp3v-5vw7-fx9w"/>
+        <updated>2026-09-17T16:30:23.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>RestrictedPython could allow a sandbox escape when a policy exposes the standard library <code>string</code> module, or otherwise exposes <code>string.Formatter</code>, to restricted code.</p>
+<p><code>string.Formatter</code> field resolution methods such as <code>get_field</code> can perform attribute and item traversal internally and return live object references. This can bypass RestrictedPython's normal attribute guards and may allow access to sensitive objects such as function globals, builtins, file access, or code execution primitives.</p>
+<p>Users are impacted if they run untrusted code with RestrictedPython and expose <code>string.Formatter</code>, directly or indirectly, for example through a custom import policy or globals.</p>
+<h3 id="patches">Patches</h3>
+<p>The problem has been patched by blocking access to <code>string.Formatter</code> and unsafe <code>string.Formatter</code> traversal methods in <code>safer_getattr</code>.</p>
+<p>Users should upgrade to the patched release once available. Affected and patched version numbers should be filled in when the release is published.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Do not expose the standard library <code>string</code> module or <code>string.Formatter</code> to restricted code.</p>
+<p>If a custom import hook is used, deny imports of <code>string</code> or provide only a restricted wrapper that does not expose <code>Formatter</code>. If custom globals are supplied, ensure neither <code>string.Formatter</code> nor <code>Formatter</code> instances are available to restricted code.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/zopefoundation/RestrictedPython/security/advisories/GHSA-hp3v-5vw7-fx9w">https://github.com/zopefoundation/RestrictedPython/security/advisories/GHSA-hp3v-5vw7-fx9w</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-76825">https://nvd.nist.gov/vuln/detail/CVE-2026-76825</a></li>
+<li><a href="https://github.com/zopefoundation/RestrictedPython/commit/3b47440070b91f8807c2b2998aca99e94783639a">https://github.com/zopefoundation/RestrictedPython/commit/3b47440070b91f8807c2b2998aca99e94783639a</a></li>
+<li><a href="https://github.com/zopefoundation/RestrictedPython/releases/tag/8.4">https://github.com/zopefoundation/RestrictedPython/releases/tag/8.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-hp3v-5vw7-fx9w">https://github.com/advisories/GHSA-hp3v-5vw7-fx9w</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hp3v-5vw7-fx9w</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-17T16:30:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[sanic] sanic chunked trailer request smuggling allows hidden second request execution]]></title>
         <id>https://github.com/advisories/GHSA-wmj6-g64g-j7q5</id>
@@ -1151,81 +1415,5 @@ Attacker can use nc tool (nc -l 4444) to create a reverse shell and wait for con
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-09-16T13:55:48.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[djust] djust's observability endpoints are network-exposed: the localhost gate is an opt-in middleware the docs omit, and the views enforce only DEBUG]]></title>
-        <id>https://github.com/advisories/GHSA-8g2f-g3gq-5rjv</id>
-        <link href="https://github.com/advisories/GHSA-8g2f-g3gq-5rjv"/>
-        <updated>2026-09-16T13:49:20.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>djust's observability endpoints expose live view/session state and a remote method-invocation surface (<code>eval_handler</code>). The localhost restriction was an <strong>opt-in middleware that the documented setup omits</strong>; the views themselves enforced only <code>DEBUG</code>. In the misconfigured-but-documented scenario (DEBUG on, middleware not installed) a non-localhost client could read live application state and invoke handlers remotely.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in <strong>djust 1.0.7</strong>. The localhost restriction is enforced <strong>in-view</strong> on every observability endpoint (no longer dependent on a separately-installed middleware), and <code>eval_handler</code> is restricted; gated requests receive a non-disclosing response.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>Ensure <code>DEBUG=False</code> in production, and do not expose the observability endpoints to untrusted networks.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/djust-org/djust/security/advisories/GHSA-8g2f-g3gq-5rjv">https://github.com/djust-org/djust/security/advisories/GHSA-8g2f-g3gq-5rjv</a></li>
-<li><a href="https://github.com/djust-org/djust/releases/tag/v1.0.7">https://github.com/djust-org/djust/releases/tag/v1.0.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-8g2f-g3gq-5rjv">https://github.com/advisories/GHSA-8g2f-g3gq-5rjv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8g2f-g3gq-5rjv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-16T13:49:19.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[litellm] BerriAI litellm: UI User Enumeration leads to System-Wide Information Disclosure]]></title>
-        <id>https://github.com/advisories/GHSA-m2v5-74w2-qhcj</id>
-        <link href="https://github.com/advisories/GHSA-m2v5-74w2-qhcj"/>
-        <updated>2026-09-14T18:11:51.000Z</updated>
-        <content type="html"><![CDATA[<p>A security vulnerability has been detected in BerriAI litellm up to 1.82.2. Affected by this issue is the function ui_view_users of the file litellm/proxy/management_endpoints/internal_user_endpoints.py of the component Incomplete Fix CVE-2025-0628. Such manipulation leads to improper authorization. It is possible to launch the attack remotely. The exploit has been disclosed publicly and may be used. The vendor was contacted early about this disclosure.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12799">https://nvd.nist.gov/vuln/detail/CVE-2026-12799</a></li>
-<li><a href="https://gist.github.com/YLChen-007/3ace22e33e468d0166fe609c9fdf4184">https://gist.github.com/YLChen-007/3ace22e33e468d0166fe609c9fdf4184</a></li>
-<li><a href="https://vuldb.com/cve/CVE-2026-12799">https://vuldb.com/cve/CVE-2026-12799</a></li>
-<li><a href="https://vuldb.com/submit/811291">https://vuldb.com/submit/811291</a></li>
-<li><a href="https://vuldb.com/vuln/372561">https://vuldb.com/vuln/372561</a></li>
-<li><a href="https://vuldb.com/vuln/372561/cti">https://vuldb.com/vuln/372561/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-m2v5-74w2-qhcj">https://github.com/advisories/GHSA-m2v5-74w2-qhcj</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-m2v5-74w2-qhcj</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-21T12:30:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[litellm] BerriAI litellm has SSRF via Unvalidated spec_path URL in MCP OpenAPI Spec Loader]]></title>
-        <id>https://github.com/advisories/GHSA-c693-x898-5g4h</id>
-        <link href="https://github.com/advisories/GHSA-c693-x898-5g4h"/>
-        <updated>2026-09-14T18:11:44.000Z</updated>
-        <content type="html"><![CDATA[<p>A weakness has been identified in BerriAI litellm up to 1.82.2. Affected by this vulnerability is the function load_openapi_spec_async of the file litellm/proxy/_experimental/mcp_server/openapi_to_mcp_generator.py of the component MCP OpenAPI Spec Loader. This manipulation of the argument spec_path causes server-side request forgery. It is possible to initiate the attack remotely. The exploit has been made available to the public and could be used for attacks. The vendor was contacted early about this disclosure.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12798">https://nvd.nist.gov/vuln/detail/CVE-2026-12798</a></li>
-<li><a href="https://gist.github.com/YLChen-007/c1104c529975699ba347feedfbe02c5a">https://gist.github.com/YLChen-007/c1104c529975699ba347feedfbe02c5a</a></li>
-<li><a href="https://vuldb.com/cve/CVE-2026-12798">https://vuldb.com/cve/CVE-2026-12798</a></li>
-<li><a href="https://vuldb.com/submit/811290">https://vuldb.com/submit/811290</a></li>
-<li><a href="https://vuldb.com/vuln/372560">https://vuldb.com/vuln/372560</a></li>
-<li><a href="https://vuldb.com/vuln/372560/cti">https://vuldb.com/vuln/372560/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-c693-x898-5g4h">https://github.com/advisories/GHSA-c693-x898-5g4h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c693-x898-5g4h</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-21T12:30:52.000Z</published>
     </entry>
 </feed>
