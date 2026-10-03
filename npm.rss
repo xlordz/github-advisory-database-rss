@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-10-02T23:16:04.084Z</updated>
+    <updated>2026-10-03T02:03:03.254Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,166 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[probe-image-size] probe-image-size: Quadratic-time Denial of Service in the SVG Parser]]></title>
+        <id>https://github.com/advisories/GHSA-gjj5-9665-rwrc</id>
+        <link href="https://github.com/advisories/GHSA-gjj5-9665-rwrc"/>
+        <updated>2026-10-02T23:18:02.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="overview">Overview</h2>
+<p><code>probe-image-size</code> scans the SVG header with a searching regular expression, <code>/&lt;[-_.:a-zA-Z0-9][^&gt;]*&gt;/</code>. On input that contains many <code>&lt;</code> characters but no <code>&gt;</code>, the engine restarts the <code>[^&gt;]*</code> scan at every <code>&lt;</code> position and runs to end of input each time, giving quadratic time complexity.</p>
+<p>Both the synchronous and the streaming parser are affected.</p>
+<h2 id="impact">Impact</h2>
+<p>Every entry point that reaches the SVG parser is affected: <code>probe.sync()</code>, <code>probe(stream)</code> and <code>probe(url)</code>. The URL form is the most exposed one — the input is fetched from a remote host, so an attacker only needs to supply a link.</p>
+<p>Processing a crafted buffer blocks the Node.js event loop at 100% CPU for the whole duration. In production environments such as upload validators, image proxies or link unfurl services, a small number of concurrent requests is enough to deny service.</p>
+<h2 id="root-cause-analysis">Root Cause Analysis</h2>
+<p>Two independent problems.</p>
+<ol>
+<li><p><strong>Absence of input size cap in the sync path.</strong> <code>lib/parse_sync/svg.js</code> copied the entire buffer into a string and matched against it. There was no size limit at all, so cost scaled with the size of the attacker-supplied buffer.</p>
+</li>
+<li><p><strong>Repeated rescanning in the stream path.</strong> <code>lib/parse_stream/svg.js</code> did cap accumulated data at 64 KB, but called <code>parseSvg(str)</code> on the whole accumulated string on <em>every</em> chunk, giving <code>O(chunks × N²)</code>. The cap does not help here: the more chunks the input is split into, the more times the quadratic scan is repeated.</p>
+<p>Chunk size is influenced by the sender. <code>highWaterMark</code> (16 KB) is a buffering threshold, not a lower bound — a socket read returns whatever has arrived. A server that writes one byte at a time produces one-byte chunks; this was confirmed against the real <code>needle</code> pipeline with default options.</p>
+</li>
+</ol>
+<p>The original report identified (1) only, and stated that the 64 KB cap mitigates the streaming path. It does not.</p>
+<h2 id="proof-of-concept-poc">Proof of Concept (PoC)</h2>
+<p>Synchronous:</p>
+<pre><code class="language-js">const probe = require('probe-image-size')
+
+// ~200 KB of '&lt;a' — contains '&lt;' but never '&gt;'
+probe.sync(Buffer.from('&lt;a'.repeat(100000), 'latin1'))
+</code></pre>
+<p>Streaming — the same payload split into chunks, slower per byte than the synchronous form:</p>
+<pre><code class="language-js">const { Readable } = require('stream')
+const probe = require('probe-image-size')
+
+const payload = Buffer.from('&lt;a'.repeat(32768), 'latin1')
+const chunks = []
+for (let i = 0; i &lt; payload.length; i += 4096) chunks.push(payload.subarray(i, i + 4096))
+
+await probe(Readable.from(chunks))
+</code></pre>
+<p>Measurements on the maintainer's machine:</p>
+<table>
+<thead>
+<tr>
+<th>path</th>
+<th>input</th>
+<th>time</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>probe.sync()</code></td>
+<td>25 KB</td>
+<td>0.9 s</td>
+</tr>
+<tr>
+<td><code>probe.sync()</code></td>
+<td>50 KB</td>
+<td>5.5 s</td>
+</tr>
+<tr>
+<td><code>probe.sync()</code></td>
+<td>100 KB</td>
+<td>18 s</td>
+</tr>
+<tr>
+<td><code>probe.sync()</code></td>
+<td>200 KB</td>
+<td>54 s</td>
+</tr>
+<tr>
+<td><code>probe(stream)</code></td>
+<td>64 KB, 1 chunk</td>
+<td>1.6 s</td>
+</tr>
+<tr>
+<td><code>probe(stream)</code></td>
+<td>64 KB, 4 chunks</td>
+<td>2.9 s</td>
+</tr>
+<tr>
+<td><code>probe(stream)</code></td>
+<td>64 KB, 16 chunks</td>
+<td>9.6 s</td>
+</tr>
+</tbody></table>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/nodeca/probe-image-size/security/advisories/GHSA-gjj5-9665-rwrc">https://github.com/nodeca/probe-image-size/security/advisories/GHSA-gjj5-9665-rwrc</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-104861">https://nvd.nist.gov/vuln/detail/CVE-2026-104861</a></li>
+<li><a href="https://github.com/nodeca/probe-image-size/commit/60cc96ac0b671e79e328213d0a8e831312b09e84">https://github.com/nodeca/probe-image-size/commit/60cc96ac0b671e79e328213d0a8e831312b09e84</a></li>
+<li><a href="https://github.com/nodeca/probe-image-size/commit/9b74656d6f973cc59ea2ab1375c0d88390a402ad">https://github.com/nodeca/probe-image-size/commit/9b74656d6f973cc59ea2ab1375c0d88390a402ad</a></li>
+<li><a href="https://github.com/nodeca/probe-image-size/commit/c032aefabdecf5cb50548ab9ba175db56353078f">https://github.com/nodeca/probe-image-size/commit/c032aefabdecf5cb50548ab9ba175db56353078f</a></li>
+<li><a href="https://github.com/nodeca/probe-image-size/releases/tag/7.4.0">https://github.com/nodeca/probe-image-size/releases/tag/7.4.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-gjj5-9665-rwrc">https://github.com/advisories/GHSA-gjj5-9665-rwrc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gjj5-9665-rwrc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-02T23:18:02.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@fastify/busboy] @fastify/busboy vulnerable to Denial of Service via oversized multipart boundary]]></title>
+        <id>https://github.com/advisories/GHSA-xjh9-v7x6-24jw</id>
+        <link href="https://github.com/advisories/GHSA-xjh9-v7x6-24jw"/>
+        <updated>2026-10-02T23:17:29.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Versions of <code>@fastify/busboy</code> from 3.1.0 and prior to 3.2.1 are vulnerable to a Denial of Service. The vendored streaming multipart search stores its default skip distance in a <code>Uint8Array(256)</code>. A multipart boundary of exactly 252 bytes makes the search needle 256 bytes, and the table entry wraps to zero, so a crafted request keeps the search in a CPU-bound loop and stalls the Node.js event loop. An unauthenticated client can trigger this with a single small request. Applications that use <code>@fastify/busboy</code> to parse multipart/form-data, directly or through <code>@fastify/multipart</code>, are affected.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in version 3.2.1.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Validate the multipart boundary before parsing and reject any boundary longer than the RFC 2046 limit of 70 characters (for example at a reverse proxy or in an onRequest hook). Upgrading to 3.2.1 removes the issue.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/fastify/busboy/security/advisories/GHSA-xjh9-v7x6-24jw">https://github.com/fastify/busboy/security/advisories/GHSA-xjh9-v7x6-24jw</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-19484">https://nvd.nist.gov/vuln/detail/CVE-2026-19484</a></li>
+<li><a href="https://github.com/fastify/busboy/commit/632a237e7fb6b3b7a30e0de8fab2ee72ca5bf722">https://github.com/fastify/busboy/commit/632a237e7fb6b3b7a30e0de8fab2ee72ca5bf722</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/fastify/busboy/releases/tag/v3.2.1">https://github.com/fastify/busboy/releases/tag/v3.2.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-xjh9-v7x6-24jw">https://github.com/advisories/GHSA-xjh9-v7x6-24jw</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-xjh9-v7x6-24jw</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-02T23:16:17.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[@fastify/busboy] @fastify/busboy vulnerable to Denial of Service via prototype-named multipart part header]]></title>
+        <id>https://github.com/advisories/GHSA-x8mw-p69m-v3mx</id>
+        <link href="https://github.com/advisories/GHSA-x8mw-p69m-v3mx"/>
+        <updated>2026-10-02T23:17:27.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
+<p>Versions of <code>@fastify/busboy</code> from 1.0.0 and prior to 3.2.1 are vulnerable to a Denial of Service. The multipart header parser stores part-header names on a plain JavaScript object, so a part header named <code>__proto__</code> or <code>constructor</code> resolves to an inherited value that is not an array, and the parser throws <code>TypeError: this.header[h].push is not a function</code>. Through the documented <code>req.pipe(busboy)</code> integration this surfaces as an <code>error</code> event, while direct <code>write()</code>/<code>end()</code> usage throws synchronously and can terminate the Node.js process if uncaught. The parser runs before application middleware, so any unauthenticated client that can submit multipart/form-data is affected.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in version 3.2.1.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Attach an <code>error</code> listener to the Busboy stream so the parser failure is handled rather than crashing the process, and wrap direct <code>write()</code>/<code>end()</code> calls in a try/catch. Upgrading to 3.2.1 removes the failure entirely.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/fastify/busboy/security/advisories/GHSA-x8mw-p69m-v3mx">https://github.com/fastify/busboy/security/advisories/GHSA-x8mw-p69m-v3mx</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-19481">https://nvd.nist.gov/vuln/detail/CVE-2026-19481</a></li>
+<li><a href="https://github.com/fastify/busboy/commit/957a24b66d5915e6d0a6ac988c9dbcee86373e9b">https://github.com/fastify/busboy/commit/957a24b66d5915e6d0a6ac988c9dbcee86373e9b</a></li>
+<li><a href="https://cna.openjsf.org/security-advisories.html">https://cna.openjsf.org/security-advisories.html</a></li>
+<li><a href="https://github.com/fastify/busboy/releases/tag/v3.2.1">https://github.com/fastify/busboy/releases/tag/v3.2.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-x8mw-p69m-v3mx">https://github.com/advisories/GHSA-x8mw-p69m-v3mx</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-x8mw-p69m-v3mx</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-02T23:16:36.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@a2ui/web_core] @a2ui/web_core: `openUrl` permits `javascript:` URI execution via agent-supplied button actions]]></title>
         <id>https://github.com/advisories/GHSA-72qq-p3r5-f7wq</id>
@@ -850,81 +1010,5 @@ CROSS-TENANT: CONFIRMED (resolved another org's env with no membership check -&g
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-10-02T19:31:17.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[hono] Duplicate Advisory: Hono vulnerable to Vary Header Injection leading to potential CORS Bypass]]></title>
-        <id>https://github.com/advisories/GHSA-cw3j-28qq-x3xh</id>
-        <link href="https://github.com/advisories/GHSA-cw3j-28qq-x3xh"/>
-        <updated>2026-10-02T18:28:40.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-q7jf-gf43-6x6p. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>Hono before 4.10.2 (fixed in 4.10.3) contains a flaw in its CORS middleware: when the origin is not set to "*", the middleware copies the Vary header from the incoming request into the response. Because Vary is a response header that should be managed by the server, an attacker can supply arbitrary Vary values that are reflected into the response, potentially causing cache key pollution and inconsistent CORS enforcement in environments that rely on shared caches or proxies.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/honojs/hono/security/advisories/GHSA-q7jf-gf43-6x6p">https://github.com/honojs/hono/security/advisories/GHSA-q7jf-gf43-6x6p</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2025-71381">https://nvd.nist.gov/vuln/detail/CVE-2025-71381</a></li>
-<li><a href="https://www.vulncheck.com/advisories/hono-vary-header-injection-in-cors-middleware">https://www.vulncheck.com/advisories/hono-vary-header-injection-in-cors-middleware</a></li>
-<li><a href="https://github.com/advisories/GHSA-cw3j-28qq-x3xh">https://github.com/advisories/GHSA-cw3j-28qq-x3xh</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-cw3j-28qq-x3xh</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-01T00:34:02.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[node-forge] node-forge RSA PKCS#1 v1.5 signature verification accepts extra nested DigestAlgorithm elements]]></title>
-        <id>https://github.com/advisories/GHSA-86w9-cpqp-85rv</id>
-        <link href="https://github.com/advisories/GHSA-86w9-cpqp-85rv"/>
-        <updated>2026-10-01T21:09:10.000Z</updated>
-        <content type="html"><![CDATA[<p>node-forge through 1.4.0 fails to validate element count in nested DigestAlgorithm sequences during RSA PKCS#1 v1.5 signature verification. Attackers can embed garbage bytes inside the DigestAlgorithm sequence to forge valid signatures for arbitrary messages using low-exponent RSA keys. This is an incomplete fix for CVE-2026-33894.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-85393">https://nvd.nist.gov/vuln/detail/CVE-2026-85393</a></li>
-<li><a href="https://github.com/digitalbazaar/forge/issues/1149">https://github.com/digitalbazaar/forge/issues/1149</a></li>
-<li><a href="https://github.com/advisories/GHSA-ppp5-5v6c-4jwp">https://github.com/advisories/GHSA-ppp5-5v6c-4jwp</a></li>
-<li><a href="https://github.com/digitalbazaar/forge/blob/v1.4.0/lib/asn1.js">https://github.com/digitalbazaar/forge/blob/v1.4.0/lib/asn1.js</a></li>
-<li><a href="https://github.com/digitalbazaar/forge/blob/v1.4.0/lib/rsa.js">https://github.com/digitalbazaar/forge/blob/v1.4.0/lib/rsa.js</a></li>
-<li><a href="https://www.vulncheck.com/advisories/node-forge-through-1.4.0-rsa-pkcs-1-1.5-signature-forgery-via-nested-digestalgorithm-padding">https://www.vulncheck.com/advisories/node-forge-through-1.4.0-rsa-pkcs-1-1.5-signature-forgery-via-nested-digestalgorithm-padding</a></li>
-<li><a href="https://github.com/digitalbazaar/forge/pull/1152">https://github.com/digitalbazaar/forge/pull/1152</a></li>
-<li><a href="https://github.com/advisories/GHSA-86w9-cpqp-85rv">https://github.com/advisories/GHSA-86w9-cpqp-85rv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-86w9-cpqp-85rv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-09-03T21:31:15.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[react-dev-utils]  react-dev-utils openBrowser permits command injection on macOS]]></title>
-        <id>https://github.com/advisories/GHSA-g9g6-gvq9-j4vp</id>
-        <link href="https://github.com/advisories/GHSA-g9g6-gvq9-j4vp"/>
-        <updated>2026-10-01T21:08:57.000Z</updated>
-        <content type="html"><![CDATA[<p>A vulnerability was detected in react create-react-app up to 5.0.1 on macOS. This affects the function startBrowserProcess of the file openBrowser.js of the component react-dev-utils. Performing a manipulation results in os command injection. Remote exploitation of the attack is possible. The exploit is now public and may be used. The project was informed of the problem early through an issue report but has not responded yet.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-14802">https://nvd.nist.gov/vuln/detail/CVE-2026-14802</a></li>
-<li><a href="https://github.com/react/create-react-app/issues/17269">https://github.com/react/create-react-app/issues/17269</a></li>
-<li><a href="https://vuldb.com/cve/CVE-2026-14802">https://vuldb.com/cve/CVE-2026-14802</a></li>
-<li><a href="https://vuldb.com/submit/850857">https://vuldb.com/submit/850857</a></li>
-<li><a href="https://vuldb.com/vuln/376396">https://vuldb.com/vuln/376396</a></li>
-<li><a href="https://vuldb.com/vuln/376396/cti">https://vuldb.com/vuln/376396/cti</a></li>
-<li><a href="https://github.com/advisories/GHSA-g9g6-gvq9-j4vp">https://github.com/advisories/GHSA-g9g6-gvq9-j4vp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-g9g6-gvq9-j4vp</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-07-06T09:30:27.000Z</published>
     </entry>
 </feed>
