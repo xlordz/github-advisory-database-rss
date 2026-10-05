@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-10-05T09:12:53.459Z</updated>
+    <updated>2026-10-05T18:28:31.114Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,213 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: TLS Private Keys Readable via getFile (Incomplete Blocklist)]]></title>
+        <id>https://github.com/advisories/GHSA-4wwp-f6gw-6qm5</id>
+        <link href="https://github.com/advisories/GHSA-4wwp-f6gw-6qm5"/>
+        <updated>2026-10-05T17:32:48.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary:</h3>
+<p><code>IsForbiddenAbsPath()</code> only blocks <code>conf/conf.json</code> by exact match. The TLS private key (conf/key.pem) and CA private key (conf/ca.key) live in the same conf/ directory and are absent from the blocklist. Any authenticated user can retrieve them via POST <code>/api/file/getFile</code>.</p>
+<h3 id="root-cause">Root cause</h3>
+<p><code>kernel/util/path_guard.go</code>, <code>IsForbiddenAbsPath()</code> has no entry for TLS key material. The <code>getFile</code> handler at kernel/api/file.go:497 skips the blocklist for RoleAdministrator, and in v3.8.1 all authenticated users receive RoleAdministrator (no non-admin role is currently issued to direct API consumers). The files are generated on every boot regardless of whether TLS is active.</p>
+<h3 id="steps-to-reproduce">Steps to reproduce:</h3>
+<pre><code># No token required on a default no-auth-code instance
+curl -s -X POST http://TARGET:6806/api/file/getFile \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/conf/key.pem"}'
+</code></pre>
+<pre><code>curl -s -X POST http://TARGET:6806/api/file/getFile \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/conf/ca.key"}'
+</code></pre>
+<p><strong>Response:</strong> Raw PEM private key bytes.</p>
+<img src="https://github.com/user-attachments/assets/12e0787f-6bfc-416a-b5ad-a22954e45c48" alt="2026-08-19_14-19" height="467" width="927">
+
+<h3 id="impact">Impact:</h3>
+<p>On deployments with TLS enabled (--ssl flag or NetworkServeTLS), possession of <code>key.pem</code> allows decryption of captured HTTPS traffic. Possession of <code>ca.key</code> allows signing certificates trusted by any client that imported SiYuan's locaprompts users to do). The files exist on every installation even whenTLS is currently inactive.</p>
+<h3 id="prior-art">Prior art:</h3>
+<p>This is the same class of bug as GHSA-9jfx-rc58-h23j (conf.json readable via template render) and GHSA-c8r8-95hg-mp34 (MCP file tool blocklist incomplete). The fix is to add <code>conf/key.pem</code>, <code>conf/ca.key</code>, <code>conf/cert.pem</code>, and <code>conf/ca.crt</code> to <code>IsForbiddenAbsPath()</code>.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-4wwp-f6gw-6qm5">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-4wwp-f6gw-6qm5</a></li>
+<li><a href="https://github.com/siyuan-note/siyuan/commit/256d73aa7f94aead7ba255b668e32c140af23137">https://github.com/siyuan-note/siyuan/commit/256d73aa7f94aead7ba255b668e32c140af23137</a></li>
+<li><a href="https://github.com/siyuan-note/siyuan/releases/tag/v3.8.2">https://github.com/siyuan-note/siyuan/releases/tag/v3.8.2</a></li>
+<li><a href="https://github.com/advisories/GHSA-4wwp-f6gw-6qm5">https://github.com/advisories/GHSA-4wwp-f6gw-6qm5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-4wwp-f6gw-6qm5</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-10-05T17:32:48.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: /history/*path and /repo/diff/*path potentially exposing historical snapshots of data/.siyuan/publishAccess.json and data/templates/*]]></title>
+        <id>https://github.com/advisories/GHSA-3cm4-ccvw-6xr6</id>
+        <link href="https://github.com/advisories/GHSA-3cm4-ccvw-6xr6"/>
+        <updated>2026-10-05T17:32:45.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p><code>GHSA-c8r8-95hg-mp34</code> added a centralized guard,
+<code>util.IsForbiddenAbsPath()</code>, specifically to block access to a small
+set of sensitive files: <code>conf/conf.json</code> (plaintext
+<code>accessAuthCode</code>/API token/cookie key), <code>data/snippets/conf.json</code>,
+the entire <code>data/templates/</code> directory, and
+<code>data/.siyuan/publishAccess.json</code> (plaintext publish-mode passwords).
+It was applied to <code>kernel/api/file.go</code> and <code>kernel/mcp/tools/file.go</code>.
+Two other routes in the same server that serve arbitrary files by path,
+<code>/history/*path</code> and <code>/repo/diff/*path</code>, construct their target paths
+independently and were not updated to call this new guard. Since the
+repo/history snapshot system's tracked root is <code>data/</code> (confirmed by
+<code>getSyncIgnoreLines()</code>, whose ignore file lives at
+<code>data/.siyuan/syncignore</code> with entries relative to <code>data/</code>), both
+<code>data/.siyuan/publishAccess.json</code> and <code>data/templates/*</code> fall within
+the scope that can legitimately be captured in historical snapshots,
+meaning a prior version of either file can exist in
+<code>util.HistoryDir</code>/the repo-diff temp checkout even after the live file
+has been protected by the new guard. This is CWE-862 (Missing
+Authorization) applied to a very recently introduced protection
+mechanism.</p>
+<h3 id="details">Details</h3>
+<p><code>kernel/server/serve.go</code>, <code>/history/*path</code> (around line 994):</p>
+<pre><code class="language-go">ginServer.GET("/history/*path", model.CheckAuth, model.CheckAdminRole, func(context *gin.Context) {
+    p := filepath.Join(util.HistoryDir, context.Param("path"))
+    // 加密笔记本的历史是密文（.sy/assets/AV），需先解密再输出
+    if serveEncryptedHistory(context, p) {
+        return
+    }
+    secureAssetContentHeaders(context, p, p)
+    http.ServeFile(context.Writer, context.Request, p)
+})
+</code></pre>
+<p>No call to <code>util.IsForbiddenAbsPath(p)</code> anywhere in this handler.</p>
+<p><code>kernel/server/serve.go</code>, <code>/repo/diff/*path</code> (around line 1241):</p>
+<pre><code class="language-go">ginServer.GET("/repo/diff/*path", model.CheckAuth, model.CheckAdminRole, func(context *gin.Context) {
+    requestPath := filepath.Clean(context.Param("path"))
+    if strings.Contains(requestPath, "..") {
+        context.Status(http.StatusUnauthorized)
+        return
+    }
+    ...
+    p := filepath.Join(repoDiffBaseDir, requestPath)
+    if !gulu.File.IsSubPath(repoDiffBaseDir, p) {
+        context.Status(http.StatusUnauthorized)
+        return
+    }
+    http.ServeFile(context.Writer, context.Request, p)
+})
+</code></pre>
+<p>This route does have its own traversal protection (<code>..</code> rejection and
+<code>IsSubPath</code> containment within <code>repoDiffBaseDir</code>), but that only
+prevents escaping the diff-checkout directory, it does nothing to
+prevent retrieving a <em>legitimately checked-out historical copy</em> of
+<code>publishAccess.json</code> or a templates file from within that directory,
+which is exactly what the new guard exists to prevent regardless of
+which directory the copy currently sits in.</p>
+<p><code>util.IsForbiddenAbsPath()</code> itself (<code>kernel/util/path_guard.go</code>,
+introduced by the referenced fix) confirms the intended scope:</p>
+<pre><code class="language-go">// 禁止访问 data/.siyuan/publishAccess.json（含发布模式明文访问密码）
+publishAccessPath := NormalizeAndResolve(filepath.Join(DataDir, ".siyuan", "publishAccess.json"))
+if fileNorm == publishAccessPath {
+    return true
+}
+</code></pre>
+<p>and</p>
+<pre><code class="language-go">// 禁止访问 data/templates 目录（含目录本身及其全部子路径）
+templatesBase := NormalizeAndResolve(filepath.Join(DataDir, "templates"))
+if fileNorm == templatesBase || gulu.File.IsSubPath(templatesBase, fileNorm) {
+    return true
+}
+</code></pre>
+<p>Both are paths within <code>data/</code>, the same root the sync/history/repo
+system tracks.</p>
+<h3 id="step-by-step-reproduction">Step-by-step reproduction</h3>
+<ol>
+<li>As the workspace admin, enable Publish with a password on at least
+one notebook (creating <code>data/.siyuan/publishAccess.json</code> with a
+plaintext password), then let a sync/backup snapshot capture this
+state (or check whether local history capture already covers
+<code>data/.siyuan/</code> in the deployed version).</li>
+<li>Change or remove the publish password, so the live
+<code>publishAccess.json</code> no longer contains the old plaintext password
+the new guard is meant to hide, going forward.</li>
+<li>As the admin, request the historical/diff version instead of the
+live file:<pre><code class="language-bash">curl -s http://&lt;target&gt;:6806/history/&lt;snapshot-path-to-publishAccess.json&gt; \
+  -u "&lt;workspaceName&gt;:&lt;accessAuthCode&gt;"
+curl -s http://&lt;target&gt;:6806/repo/diff/&lt;diff-path-to-publishAccess.json&gt; \
+  -u "&lt;workspaceName&gt;:&lt;accessAuthCode&gt;"
+</code></pre>
+</li>
+<li>Expected if consistently protected, matching the behavior the new
+guard already provides on the live-file endpoints: rejected.
+Observed: neither handler calls <code>IsForbiddenAbsPath</code>, so the
+historical copy is served if it exists in that location.</li>
+</ol>
+<p><em>(Not run against a live compiled kernel, same sandbox limitation noted
+throughout this review; both handlers are read directly from source at
+the reviewed commit, and <code>IsForbiddenAbsPath</code>'s scope, plus the
+sync-root confirmation via <code>getSyncIgnoreLines()</code>, are quoted directly
+above. Whether these specific files are captured by history/repo
+snapshots in a given deployment depends on the workspace's actual
+usage history and was not independently verified against a live
+instance in this review.)</em></p>
+<h3 id="impact">Impact</h3>
+<p>An admin-authenticated request to either route can potentially retrieve
+a historical copy of <code>data/.siyuan/publishAccess.json</code> (disclosing a
+plaintext publish-mode password even after it has been changed or the
+live file has been protected) or a <code>data/templates/*</code> file, directly
+undermining the protection <code>GHSA-c8r8-95hg-mp34</code> was written four days
+prior to this review specifically to provide, via two routes that
+predate that fix and were not updated alongside it.</p>
+<pre><code>
+## Affected products
+
+| Field | Value |
+|---|---|
+| Ecosystem | **Go** |
+| Package name | `github.com/siyuan-note/siyuan/kernel` |
+| Affected versions | Present as of commit `251596f` (2026-08-12, the version this review confirmed), i.e. postdates and was not covered by the `GHSA-c8r8-95hg-mp34` fix (commit `3542530`, 2026-08-08) |
+| Patched versions | *(none yet, leave blank until a fix is released)* |
+
+## Severity
+
+| Field | Value |
+|---|---|
+| Vector string | `CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:M/I:N/A:N` |
+| Score | **~5.9 (Medium)**, `PR:H` since admin authentication is required at the HTTP layer, confidentiality impact scoped to whatever sensitive historical content happens to exist in the tracked snapshots for a given deployment (a real but deployment-dependent condition, honestly reflected as Medium rather than assumed to always be present), no integrity/availability impact since both are read-only. |
+
+## Weaknesses (CWE)
+
+- **CWE-862**: Missing Authorization (primary)
+- **CWE-200**: Exposure of Sensitive Information to an Unauthorized Actor
+
+## Notes for filing
+- Direct, narrow follow-up to `GHSA-c8r8-95hg-mp34`; recommend
+  referencing that advisory directly when filing, since this is
+  precisely the "sibling caller missed" pattern that fix's own
+  centralization (moving the check into a shared `util` function) was
+  presumably intended to prevent, just for two callers that existed
+  before the shared function did and weren't migrated to it.
+- Suggested fix: add `if util.IsForbiddenAbsPath(p) { ... reject ... }`
+  to both handlers, matching the pattern already applied in
+  `kernel/api/file.go` and `kernel/mcp/tools/file.go`.
+### References
+
+- &lt;https://github.com/siyuan-note/siyuan/security/advisories/GHSA-3cm4-ccvw-6xr6&gt;
+- &lt;https://github.com/siyuan-note/siyuan/commit/035bf9a8c311c6f8468f2f1054b4d5e1711787e2&gt;
+- &lt;https://github.com/siyuan-note/siyuan/releases/tag/v3.8.1&gt;
+- &lt;https://github.com/advisories/GHSA-3cm4-ccvw-6xr6&gt;
+</code></pre>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3cm4-ccvw-6xr6</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-10-05T17:32:44.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[gitea.com/gitea/runner] gitea-runner: workflow container.options passes host namespaces and capability flags to job container when privileged mode is disabled]]></title>
         <id>https://github.com/advisories/GHSA-x4q3-gcj3-m6cf</id>
@@ -1460,119 +1667,5 @@ if bookmark.Count &gt; 0 {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-10-01T16:23:37.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] Duplicate Advisory: getBookmarkLabels returns every bookmark label in the workspace to anonymous readers, with no publish-access filtering]]></title>
-        <id>https://github.com/advisories/GHSA-7v6h-j59w-8qfp</id>
-        <link href="https://github.com/advisories/GHSA-7v6h-j59w-8qfp"/>
-        <updated>2026-10-01T16:23:22.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
-<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-j4ph-9xwf-wcj4. This link is maintained to preserve external references.</p>
-<h2 id="original-description">Original Description</h2>
-<p>SiYuan versions before v3.7.4 contain an information disclosure vulnerability in the getBookmarkLabels endpoint that returns all bookmark labels in the workspace without publish-access filtering. Anonymous readers and publish-mode readers can obtain the complete bookmark vocabulary across the workspace, disclosing subject matter and organizational information from inaccessible documents.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-j4ph-9xwf-wcj4">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-j4ph-9xwf-wcj4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73609">https://nvd.nist.gov/vuln/detail/CVE-2026-73609</a></li>
-<li><a href="https://www.vulncheck.com/advisories/siyuan-before-information-disclosure-via-getbookmarklabels">https://www.vulncheck.com/advisories/siyuan-before-information-disclosure-via-getbookmarklabels</a></li>
-<li><a href="https://github.com/advisories/GHSA-7v6h-j59w-8qfp">https://github.com/advisories/GHSA-7v6h-j59w-8qfp</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-7v6h-j59w-8qfp</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-08-13T12:31:10.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: getUniqueFilename passes an unvalidated client-supplied path to the filesystem, giving anonymous readers an existence oracle over the entire host filesystem]]></title>
-        <id>https://github.com/advisories/GHSA-hf8h-97gm-4x2p</id>
-        <link href="https://github.com/advisories/GHSA-hf8h-97gm-4x2p"/>
-        <updated>2026-10-01T15:46:03.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>/api/file/getUniqueFilename</code> takes a path from the request body and passes it to a filesystem existence check with no validation, confinement or authorization. The response distinguishes paths that exist from paths that do not, so an anonymous reader in publish mode can probe arbitrary locations on the host, one request per probe. Files and directories both work.</p>
-<p>Every neighbouring file route either requires an administrator or confines the path first.</p>
-<h3 id="details">Details</h3>
-<p><strong>Route.</strong> <code>kernel/api/router.go:289</code> on master, <code>:292</code> on the development branch, <code>CheckAuth</code> only.</p>
-<p><strong>Handler,</strong> <code>kernel/api/file.go:84</code>, in full:</p>
-<pre><code class="language-go">util.ParseJsonArgs(arg, ret, util.BindJsonArg("path", &amp;filePath, true, true))
-ret.Data = map[string]any{"path": util.GetUniqueFilename(filePath)}
-</code></pre>
-<p><strong>The argument binder does no path handling.</strong> <code>util.BindJsonArg</code> (<code>kernel/util/net.go:365</code>) takes two booleans, <code>required</code> (the key must be present) and <code>rejectEmpty</code> (the value must be non-empty). That is its entire contract. There is no <code>filepath.Clean</code>, no workspace join, no traversal check. An absolute path outside the workspace reaches <code>gulu.File.IsExist</code> unmodified.</p>
-<p><strong>The oracle.</strong> <code>util/file.go:67</code>:</p>
-<pre><code class="language-go">if !gulu.File.IsExist(filePath) {
-    return filePath
-}
-// otherwise loop, returning the first non-existent dir/base (i).ext
-</code></pre>
-<p>Input echoed back means the path does not exist. A <code>(1)</code> suffix means it does.</p>
-<p><strong>The asymmetry.</strong></p>
-<table>
-<thead>
-<tr>
-<th>Route</th>
-<th>Middleware</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>putFile</code>, <code>copyFile</code>, <code>globalCopyFiles</code>, <code>workspaceCopyFiles</code>, <code>removeFile</code>, <code>renameFile</code></td>
-<td><code>CheckAuth</code>, <code>CheckAdminRole</code>, <code>CheckReadonly</code></td>
-</tr>
-<tr>
-<td><code>readDir</code> (directory enumeration)</td>
-<td><code>CheckAuth</code>, <code>CheckAdminRole</code></td>
-</tr>
-<tr>
-<td><code>getFile</code></td>
-<td><code>CheckAuth</code>, but <code>GetAbsPathInWorkspace</code> returns 403 on escape, plus <code>rejectEncryptedBoxPath</code> and a publish-access check</td>
-</tr>
-<tr>
-<td><code>getUniqueFilename</code></td>
-<td><code>CheckAuth</code>, nothing else</td>
-</tr>
-</tbody></table>
-<p><code>getFile</code> binds the identical <code>BindJsonArg("path", &amp;filePath, true, true)</code> and confines it as its first action.</p>
-<h3 id="proof-of-concept">Proof of Concept</h3>
-<p>Kernel 3.7.2, publish mode on port 6808, <code>Publish.Auth.Enable</code> false, anonymous client. Reader context confirmed by <code>getChildBlocks</code> returning HTTP 403 on the same session.</p>
-<pre><code>{"path":"/etc/passwd"}
-→ {"code":0,"msg":"","data":{"path":"/etc/passwd (1)"}}
-
-{"path":"/etc/shadow"}
-→ {"code":0,"msg":"","data":{"path":"/etc/shadow (1)"}}
-
-{"path":"/etc/definitely-not-here"}
-→ {"code":0,"msg":"","data":{"path":"/etc/definitely-not-here"}}
-</code></pre>
-<p>Directories behave the same way:</p>
-<pre><code>{"path":"/root"}      → {"path":"/root (1)"}
-{"path":"/rootnope"}  → {"path":"/rootnope"}
-</code></pre>
-<p>And within the workspace, confirming whether a specific document file exists:</p>
-<pre><code>{"path":"&lt;workspace&gt;/data/&lt;boxID&gt;/&lt;docID&gt;.sy"}  → "&lt;...&gt; (1).sy"
-{"path":"&lt;workspace&gt;/data/nope-no-such.sy"}     → echoed unchanged
-</code></pre>
-<h3 id="impact">Impact</h3>
-<p>An anonymous reader in publish mode, or any publish <code>RoleReader</code>, determines whether arbitrary paths exist on the host. Because directories respond the same way as files, the filesystem can be walked rather than only guessed at. This supports identifying the operating-system user's home directory, detecting installed software, backup and synchronisation directories, mapping the workspace layout, and confirming the existence of specific documents by probing their storage paths.</p>
-<p>It also composes with the absolute workspace path returned elsewhere, which supplies a concrete prefix rather than requiring guesswork, and it recovers the operating-system username that the browser-request path strip added under issue #17410 was introduced to conceal.</p>
-<p>Scoped precisely: nothing is read and nothing is written. This is an existence and layout disclosure, valuable primarily as a reconnaissance step.</p>
-<h3 id="suggested-fix">Suggested fix</h3>
-<p>Confine the path as the adjacent <code>getFile</code> route does, by routing <code>filePath</code> through <code>util.GetAbsPathInWorkspace</code> and returning 403 on escape, or add <code>CheckAdminRole</code> and <code>CheckReadonly</code> to match <code>readDir</code>. The frontend uses this endpoint only for naming uploads and assets inside the workspace, so neither change affects legitimate use.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-hf8h-97gm-4x2p">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-hf8h-97gm-4x2p</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73605">https://nvd.nist.gov/vuln/detail/CVE-2026-73605</a></li>
-<li><a href="https://www.vulncheck.com/advisories/siyuan-before-path-traversal-via-getuniquefilename">https://www.vulncheck.com/advisories/siyuan-before-path-traversal-via-getuniquefilename</a></li>
-<li><a href="https://github.com/advisories/GHSA-hf8h-97gm-4x2p">https://github.com/advisories/GHSA-hf8h-97gm-4x2p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-hf8h-97gm-4x2p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-10-01T15:46:01.000Z</published>
     </entry>
 </feed>

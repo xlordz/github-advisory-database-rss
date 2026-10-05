@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-10-05T09:12:54.817Z</updated>
+    <updated>2026-10-05T18:28:32.497Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,76 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@orpc/zod] @orpc/zod: Prototype injection in smart coercion]]></title>
+        <id>https://github.com/advisories/GHSA-gcgf-fh7c-8gf2</id>
+        <link href="https://github.com/advisories/GHSA-gcgf-fh7c-8gf2"/>
+        <updated>2026-10-05T17:32:33.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p><code>ZodSmartCoercionPlugin</code> and <code>experimental_ZodSmartCoercionPlugin</code> mishandle object keys that name <code>Object.prototype</code> members. Both coerce request input before validation, so any client that can reach a procedure whose input schema contains an object or a record can:</p>
+<ol>
+<li>replace the prototype of the coerced input object, and</li>
+<li>make a request fail with an unhandled <code>TypeError</code> by sending a key such as <code>constructor</code>.</li>
+</ol>
+<p>This is the same class of bug as GHSA-4h5r-cv8j-4456 in <code>@orpc/json-schema</code>, in a different package.</p>
+<h2 id="this-is-not-global-prototype-pollution">This is not global prototype pollution</h2>
+<p><strong>The global <code>Object.prototype</code> is never modified.</strong> No shared or global state is written, so other objects in the process, other requests, and other users are not affected.</p>
+<p>What changes is the prototype of one object: the value the coercer returns for the request that carried the payload. That object is passed on to validation and to the procedure handler, then discarded when the request ends. An ordinary <code>{}</code> created anywhere else in the application is unaffected.</p>
+<h2 id="details">Details</h2>
+<h3 id="1-__proto__-replaces-the-prototype-of-the-coerced-value">1. <code>__proto__</code> replaces the prototype of the coerced value</h3>
+<p>Coerced properties were collected into a plain <code>{}</code>, so <code>newObj['__proto__'] = value</code> triggers the inherited <code>__proto__</code> setter instead of creating an own property. Verified on 1.14.8 against a record schema, in both plugins:</p>
+<pre><code>schema: z.record(z.string())
+input:  {"a":"1","__proto__":{"polluted":true}}
+
+Object.keys(result)  =&gt; ["a"]      // the __proto__ entry is dropped from the output
+result.polluted      =&gt; true       // the attacker object is now this object's prototype
+({}).polluted        =&gt; undefined  // Object.prototype is untouched
+</code></pre>
+<p>The returned value inherits attacker controlled properties, and any consumer reading them through the prototype chain, such as a handler checking <code>input.isAdmin</code>, an <code>Object.assign</code> copy, or a config lookup, sees data the client never legitimately supplied. How far that goes depends on what the application does with the coerced input. There is no generic escalation path.</p>
+<p>This affects the <code>record</code> branch of both plugins, and the <code>object</code> branch of both plugins for any key that does not first trigger the error below.</p>
+<h3 id="2-sub-schemas-resolved-through-the-prototype-chain">2. Sub-schemas resolved through the prototype chain</h3>
+<p>The <code>object</code> branch looked up sub-schemas with <code>shape[key]</code>, which returns inherited members for keys such as <code>constructor</code>, <code>toString</code> and <code>__proto__</code>. Those values, for example the <code>Object</code> constructor, were then dereferenced as Zod schemas:</p>
+<pre><code>schema: z.object({ a: z.number() })
+input:  { a: '123', constructor: '456' }
+
+zod 3 =&gt; TypeError: Cannot read properties of undefined (reading 'Symbol(ORPC_CUSTOM_ZOD_DEF)')
+zod 4 =&gt; TypeError: Cannot read properties of undefined (reading 'def')
+</code></pre>
+<p>Coercion throws before the assignment, so for object schemas these keys break the request rather than injecting a prototype. Any client can trigger this on its own requests. It does not affect other clients or the process as a whole.</p>
+<h2 id="impact">Impact</h2>
+<p>Any oRPC server that installs <code>ZodSmartCoercionPlugin</code> or <code>experimental_ZodSmartCoercionPlugin</code> from <code>@orpc/zod</code> and has at least one procedure whose input schema contains an object or a record. No authentication or user interaction is required beyond what the procedure itself demands.</p>
+<p>The effect is scoped to the request that sent the payload. Because no global state is written, one request cannot influence another, and restarting the process is not needed to recover.</p>
+<h2 id="patch">Patch</h2>
+<p>Fixed in 1.14.10.</p>
+<p>In <code>packages/zod/src/coercer.ts</code> and <code>packages/zod/src/zod4/coercer.ts</code>:</p>
+<ul>
+<li>collect coerced object and record properties into <code>NullProtoObj</code>, the null prototype helper already used for untrusted keys in <code>bracket-notation.ts</code> and <code>rpc-matcher.ts</code>, so <code>__proto__</code> stays an ordinary own property and is preserved in the output</li>
+<li>guard the shape lookup with <code>Object.hasOwn</code>, so unknown keys fall through to <code>catchall</code> as they already do for every other name</li>
+</ul>
+<p>PR: middleapi/orpc#1727</p>
+<h2 id="workarounds">Workarounds</h2>
+<p>Reject or strip request payloads containing <code>__proto__</code>, <code>constructor</code> or <code>prototype</code> keys before they reach the handler, or remove the plugin if automatic coercion is not required.</p>
+<p>Note that <code>SmartCoercionPlugin</code> from <code>@orpc/json-schema</code>, the recommended replacement for these plugins, was affected by the same class of issue (GHSA-4h5r-cv8j-4456) and is fixed in the same release.</p>
+<h2 id="credit">Credit</h2>
+<p>Reported and fixed internally.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/middleapi/orpc/security/advisories/GHSA-gcgf-fh7c-8gf2">https://github.com/middleapi/orpc/security/advisories/GHSA-gcgf-fh7c-8gf2</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-103918">https://nvd.nist.gov/vuln/detail/CVE-2026-103918</a></li>
+<li><a href="https://github.com/middleapi/orpc/pull/1727">https://github.com/middleapi/orpc/pull/1727</a></li>
+<li><a href="https://github.com/middleapi/orpc/commit/26314dfb443237c495116c5794d3d30a7a22c570">https://github.com/middleapi/orpc/commit/26314dfb443237c495116c5794d3d30a7a22c570</a></li>
+<li><a href="https://github.com/middleapi/orpc/releases/tag/v1.14.10">https://github.com/middleapi/orpc/releases/tag/v1.14.10</a></li>
+<li><a href="https://github.com/advisories/GHSA-gcgf-fh7c-8gf2">https://github.com/advisories/GHSA-gcgf-fh7c-8gf2</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-gcgf-fh7c-8gf2</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-10-05T17:32:32.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[probe-image-size] probe-image-size: Quadratic-time Denial of Service in the SVG Parser]]></title>
         <id>https://github.com/advisories/GHSA-gjj5-9665-rwrc</id>
@@ -943,72 +1013,5 @@ SSRF: CONFIRMED (control-plane POSTed signed payload to internal/metadata URL, n
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-10-02T19:31:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[trigger.dev] Trigger.dev: Run replay injects a task run into an attacker-chosen environment (cross-tenant write)]]></title>
-        <id>https://github.com/advisories/GHSA-qxpp-qjg8-x4jv</id>
-        <link href="https://github.com/advisories/GHSA-qxpp-qjg8-x4jv"/>
-        <updated>2026-10-02T19:31:17.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The dashboard replay action authorizes the source run (it must belong to the caller's org), but the target environment for the replayed run is taken verbatim from the request body and is never checked for org or project membership. The environment lookup used by the replay path filters by id only. As a result, an authenticated user can replay one of their own runs into another organization's or project's environment, creating a task run there that consumes the victim tenant's queue and compute and pollutes their run history.</p>
-<h3 id="details">Details</h3>
-<p>The replay action member-scopes the source run correctly (apps/webapp/app/routes/resources.taskruns.$runParam.replay.ts, the findFirst on taskRun filtered by <code>project.organization.members.some.userId</code>), but passes the target environment straight from the submitted form, resources.taskruns.$runParam.replay.ts:344-346:</p>
-<pre><code class="language-js">const replayRunService = new ReplayTaskRunService();
-const newRun = await replayRunService.call(taskRun, {
-  environmentId: submission.value.environment,   // attacker-controlled, unvalidated
-  payload: submission.value.payload,
-  ...
-});
-</code></pre>
-<p><code>submission.value.environment</code> comes from ReplayRunData (apps/webapp/app/v3/replayTask.ts: <code>environment: z.string().optional()</code>), so it is fully client-controlled.</p>
-<p>ReplayTaskRunService resolves it with no ownership check, apps/webapp/app/v3/services/replayTaskRun.server.ts:26-28:</p>
-<pre><code class="language-js">const authenticatedEnvironment = await findEnvironmentById(
-  overrideOptions.environmentId ?? existingTaskRun.runtimeEnvironmentId
-);
-</code></pre>
-<p>findEnvironmentById, apps/webapp/app/models/runtimeEnvironment.server.ts:197-211:</p>
-<pre><code class="language-js">export async function findEnvironmentById(id) {
-  const environment = await $replica.runtimeEnvironment.findFirst({
-    where: { id },                 // no membership / org / project filter
-    include: authIncludeWithParent,
-  });
-  if (!environment || environment.project.deletedAt !== null) return null;
-  return toAuthenticated(environment);
-}
-</code></pre>
-<p>The resolved environment is then handed to TriggerTaskService.call (apps/webapp/app/v3/services/triggerTask.server.ts), which trusts the passed authenticatedEnvironment and performs no further authorization. The replay loader does constrain the environment picker to the run's own project (replay.ts around 178-184), but the action does not re-impose that constraint, so the server-side control is missing (UI-gated only).</p>
-<h3 id="poc">PoC</h3>
-<p>As an authenticated user who owns a run in their own org (run param runParam), and who knows a target environment id belonging to another org or project (a CUID, obtained or guessed):</p>
-<pre><code class="language-http">POST /resources/taskruns/&lt;own runParam&gt;/replay
-Content-Type: application/x-www-form-urlencoded
-
-environment=&lt;environment id of the victim org/project&gt;&amp;failedRedirect=/...
-</code></pre>
-<p>The replay resolves the victim environment with no membership check and calls TriggerTaskService against it, creating a run in the victim tenant.</p>
-<p>Live-validated: a Postgres database was seeded with two tenants (orgA with env_A, orgB with env_B_victim) and the verbatim findEnvironmentById lookup (findFirst joining the environment to its project, <code>WHERE id = $1</code>, the exact query the replay path runs) was executed with the victim env id as an orgA attacker. Captured:</p>
-<pre><code>[002 replay findEnvironmentById] attacker(orgA) supplied env_B_victim -&gt; {"id":"env_B_victim","organization_id":"orgB","project_id":"proj_B","deleted_at":null}
-CROSS-TENANT: CONFIRMED (resolved another org's env with no membership check -&gt; replay would run there)
-</code></pre>
-<p>The lookup returned another organization's environment with no membership filter. That the replay action passes the client-supplied environmentId straight into this lookup (and TriggerTaskService trusts the returned env) is verified at source.</p>
-<h3 id="impact">Impact</h3>
-<p>An authenticated user can create task runs in another tenant's environment (including production), consuming that tenant's queue concurrency and compute and inserting entries into their run history. Practical exploitation requires knowing a target environment id (not enumerable) and, for the injected run to actually execute rather than error, a task identifier that exists in the target environment; this bounds reliability but not the unauthorized cross-tenant write itself.</p>
-<h3 id="remediation">Remediation</h3>
-<p>In the replay action (or in ReplayTaskRunService), require the resolved target environment to belong to the source run's project/organization, for example assert <code>environment.projectId === existingTaskRun.projectId</code>, or re-validate the supplied environment id against the caller's membership (findEnvironmentBySlug with the validated projectId, or a members.some.userId filter), mirroring the constraint the loader already applies to the picker.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/triggerdotdev/trigger.dev/security/advisories/GHSA-qxpp-qjg8-x4jv">https://github.com/triggerdotdev/trigger.dev/security/advisories/GHSA-qxpp-qjg8-x4jv</a></li>
-<li><a href="https://github.com/triggerdotdev/trigger.dev/pull/4199">https://github.com/triggerdotdev/trigger.dev/pull/4199</a></li>
-<li><a href="https://github.com/triggerdotdev/trigger.dev/commit/34b1a181c2a1d33a53ebab88f84b05f81fea4254">https://github.com/triggerdotdev/trigger.dev/commit/34b1a181c2a1d33a53ebab88f84b05f81fea4254</a></li>
-<li><a href="https://github.com/triggerdotdev/trigger.dev/releases/tag/v4.5.2">https://github.com/triggerdotdev/trigger.dev/releases/tag/v4.5.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-qxpp-qjg8-x4jv">https://github.com/advisories/GHSA-qxpp-qjg8-x4jv</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-qxpp-qjg8-x4jv</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-10-02T19:31:17.000Z</published>
     </entry>
 </feed>
