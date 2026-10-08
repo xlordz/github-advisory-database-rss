@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-10-08T19:31:43.742Z</updated>
+    <updated>2026-10-08T23:53:50.165Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,182 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/rabbitmq/amqp091-go] amqp091-go: Pre-negotiation frame limit is not enforced to 4KB]]></title>
+        <id>https://github.com/advisories/GHSA-w6r9-248c-frg8</id>
+        <link href="https://github.com/advisories/GHSA-w6r9-248c-frg8"/>
+        <updated>2026-10-08T19:40:19.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>The frame-size mitigation released in <code>amqp091-go</code> v1.13.0 can be bypassed before <code>connection.tune</code> completes. A malicious or compromised AMQP peer can send only a seven-byte body-frame header containing a large attacker-controlled <code>uint32</code> payload length. The client allocates a slice of that declared length before it verifies that the payload exists or rejects the frame for its invalid protocol state.</p>
+<p>The bypass occurs because <code>Connection.maxFrameSize</code> starts at zero. The reader interprets zero as both “negotiated unlimited” and “not negotiated yet,” and skips the pre-allocation size check in either case. <code>Open</code> starts the reader goroutine before negotiation and does not store a limit until after it receives <code>connection.tune</code>.</p>
+<p>This remains reachable even if the caller explicitly uses <code>Config{FrameSize: frameMinSize}</code>. A malicious broker can therefore cause excessive memory allocation, potentially terminating the Go client process through memory exhaustion, before authentication and connection setup complete.</p>
+<h2 id="relationship-to-the-existing-advisory">Relationship to the existing advisory</h2>
+<p><a href="https://github.com/rabbitmq/amqp091-go/security/advisories/GHSA-r9c8-gcjp-xfwh">GHSA-r9c8-gcjp-xfwh</a> describes attacker-controlled, unbounded allocation by a malicious broker and identifies v1.13.0 as the patched version. <a href="https://github.com/rabbitmq/amqp091-go/pull/369">Pull request 369</a> added a frame-size check before parser allocation, but the check is active only when the stored maximum is nonzero.</p>
+<p>The v1.13.0 source still:</p>
+<ol>
+<li>starts the reader before protocol negotiation;</li>
+<li>skips the bound while <code>maxFrameSize == 0</code>;</li>
+<li>allocates the body using the peer-declared size; and</li>
+<li>stores the negotiated maximum only after <code>connection.tune</code>.</li>
+</ol>
+<p>This appears to be an incomplete-fix or state-boundary bypass of the existing advisory rather than an unrelated allocation issue.</p>
+<h2 id="affected-source-and-root-cause">Affected source and root cause</h2>
+<p>The issue was reproduced at commit <a href="https://github.com/rabbitmq/amqp091-go/commit/9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde"><code>9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde</code></a>, dated 2026-07-30. The same relevant control flow is in the v1.13.0 tag.</p>
+<p>The vulnerable sequence is:</p>
+<ol>
+<li><a href="https://github.com/rabbitmq/amqp091-go/blob/9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde/connection.go#L373-L392"><code>Open</code> starts <code>c.reader(conn)</code> before calling <code>c.open(config)</code></a>.</li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/blob/9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde/connection.go#L971-L979">The reader receives a pointer to the initially zero-valued <code>c.maxFrameSize</code></a>.</li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/blob/9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde/read.go#L46-L79"><code>ReadFrame</code> decodes the peer-controlled <code>uint32</code> size but rejects it only when <code>max &gt; 0</code></a>.</li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/blob/9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde/read.go#L459-L466"><code>parseBodyFrame</code> executes <code>make([]byte, size)</code> before <code>io.ReadFull</code></a>.</li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/blob/9313fd9ea47bdb4e8f7f5db9bef94d5534d0bdde/connection.go#L1297-L1305"><code>maxFrameSize</code> is first stored after processing <code>connection.tune</code></a>.</li>
+</ol>
+<p>The source comments and regression tests explicitly combine “negotiated unlimited” with “not yet negotiated” as the same zero state. Those states need different security behavior.</p>
+<h2 id="safe-reproduction">Safe reproduction</h2>
+<p>This reproducer does not start RabbitMQ, contact any hosted service, send a large payload, or attempt to crash the process. It declares a 2 MiB body and observes the size of the slice passed to the transport's payload <code>Read</code>. Receiving a 2 MiB destination slice proves that the allocation occurred; the test then releases the blocked read and exits.</p>
+<ol>
+<li>Check out v1.13.0.</li>
+<li>Save the following as <code>pre_negotiation_frame_limit_test.go</code> in the repository root.</li>
+<li>Run <code>go test -run '^TestPreNegotiationFrameLimitBypass$' -count=1 -v .</code>.</li>
+</ol>
+<pre><code class="language-go">package amqp091
+
+import (
+    "encoding/binary"
+    "io"
+    "sync"
+    "testing"
+    "time"
+)
+
+const declaredBodySize = 2 &lt;&lt; 20
+
+type stagedFrameConn struct {
+    mu          sync.Mutex
+    header      []byte
+    headerRead  bool
+    bodyRead    chan int
+    bodyOnce    sync.Once
+    release     chan struct{}
+    releaseOnce sync.Once
+}
+
+func newStagedFrameConn() *stagedFrameConn {
+    header := make([]byte, 7)
+    header[0] = frameBody
+    binary.BigEndian.PutUint16(header[1:3], 1)
+    binary.BigEndian.PutUint32(header[3:7], declaredBodySize)
+    return &amp;stagedFrameConn{
+        header:   header,
+        bodyRead: make(chan int, 1),
+        release:  make(chan struct{}),
+    }
+}
+
+func (c *stagedFrameConn) Read(p []byte) (int, error) {
+    c.mu.Lock()
+    if !c.headerRead {
+        c.headerRead = true
+        n := copy(p, c.header)
+        c.mu.Unlock()
+        return n, nil
+    }
+    c.mu.Unlock()
+
+    c.bodyOnce.Do(func() { c.bodyRead &lt;- len(p) })
+    &lt;-c.release
+    return 0, io.EOF
+}
+
+func (c *stagedFrameConn) Write(p []byte) (int, error) { return len(p), nil }
+
+func (c *stagedFrameConn) Close() error {
+    c.releaseOnce.Do(func() { close(c.release) })
+    return nil
+}
+
+func TestPreNegotiationFrameLimitBypass(t *testing.T) {
+    conn := newStagedFrameConn()
+    openDone := make(chan error, 1)
+
+    go func() {
+        _, err := Open(conn, Config{FrameSize: frameMinSize})
+        openDone &lt;- err
+    }()
+
+    select {
+    case got := &lt;-conn.bodyRead:
+        if got != declaredBodySize {
+            t.Fatalf("payload Read received a %d-byte slice; want %d", got, declaredBodySize)
+        }
+    case &lt;-time.After(5 * time.Second):
+        t.Fatal("payload Read was not reached")
+    }
+
+    _ = conn.Close()
+    select {
+    case &lt;-openDone:
+    case &lt;-time.After(5 * time.Second):
+        t.Fatal("Open did not exit after the test connection closed")
+    }
+}
+</code></pre>
+<h3 id="expected-secure-behavior">Expected secure behavior</h3>
+<p>The pre-negotiation reader rejects the oversized declared frame before allocating its payload buffer. The transport should never receive a payload <code>Read</code> with a 2 MiB destination slice.</p>
+<h3 id="actual-behavior">Actual behavior</h3>
+<p>The test passes because the transport receives a payload <code>Read</code> whose destination slice is exactly 2 MiB, despite the caller setting <code>Config.FrameSize</code> to <code>frameMinSize</code>. This slice was created by <code>make([]byte, size)</code> using the untrusted frame header.</p>
+<h2 id="additional-local-validation">Additional local validation</h2>
+<p>A five-test differential harness was run against the exact tested commit. All tests passed:</p>
+<pre><code class="language-text">=== RUN   TestCounterfactualZeroFrameLimitAllocatesBeforePayloadRead
+--- PASS: TestCounterfactualZeroFrameLimitAllocatesBeforePayloadRead
+=== RUN   TestCounterfactualNegotiatedLimitRejectsBeforePayloadAllocation
+--- PASS: TestCounterfactualNegotiatedLimitRejectsBeforePayloadAllocation
+=== RUN   TestCounterfactualZeroLimitAllowsSmallFrameControl
+--- PASS: TestCounterfactualZeroLimitAllowsSmallFrameControl
+=== RUN   TestCounterfactualNegotiatedLimitAllowsSmallFrameControl
+--- PASS: TestCounterfactualNegotiatedLimitAllowsSmallFrameControl
+=== RUN   TestCounterfactualPublicOpenReachesZeroLimitAllocation
+--- PASS: TestCounterfactualPublicOpenReachesZeroLimitAllocation
+PASS
+ok github.com/rabbitmq/amqp091-go 0.907s
+</code></pre>
+<p>The controls establish that:</p>
+<ul>
+<li>the zero pre-negotiation state reaches attacker-sized allocation;</li>
+<li>a <code>frameMinSize</code> bound rejects the same declaration before allocation;</li>
+<li>both states continue to accept a valid small frame; and</li>
+<li>the vulnerable state is reachable through public <code>Open</code>, not only through an internal helper.</li>
+</ul>
+<h2 id="impact">Impact</h2>
+<p>The frame body length is a network-controlled 32-bit unsigned integer, so one seven-byte frame header can request an allocation approaching 4 GiB on a 64-bit client. The attacker does not need to transmit the declared body before allocation occurs. On memory-constrained clients or containers, this can cause severe memory pressure, an out-of-memory condition, or process termination.</p>
+<p>The required attacker position is a malicious or compromised broker, or an equivalent peer able to provide the AMQP transport during connection establishment. No application credentials, user interaction, confidentiality impact, or integrity impact is required or claimed. The primary impact is availability of the client process and potentially dependent services.</p>
+<h2 id="protocol-relevance">Protocol relevance</h2>
+<p>The <a href="https://github.com/rabbitmq/amqp-0.9.1-spec/blob/main/docs/amqp-0-9-1-reference.md#L395-L398">AMQP 0-9-1 reference</a> requires peers to accept frames up to the 4096-byte <code>frame-min-size</code> before <code>frame-max</code> is negotiated. It does not require accepting arbitrarily large pre-negotiation frames. A provisional 4096-byte receive limit is therefore compatible with the stated pre-negotiation requirement.</p>
+<h2 id="suggested-remediation">Suggested remediation</h2>
+<p>Represent these states separately:</p>
+<ul>
+<li>pre-negotiation, with a provisional <code>frameMinSize</code> receive bound;</li>
+<li>negotiated with a finite <code>frame_max</code>; and</li>
+<li>explicitly negotiated unlimited, if that behavior remains supported.</li>
+</ul>
+<p>Initialize the provisional bound before the reader goroutine starts, then replace it with the negotiated result after <code>connection.tune</code>. Reject any declared payload that would make the total frame exceed the active limit before calling a frame parser or allocating a payload buffer. A protocol-state check that rejects body frames before connection setup completes would add defense in depth.</p>
+<p>Please add a regression through public <code>Open</code> that sends an oversized body-frame header before <code>connection.tune</code> and verifies rejection before payload allocation, while retaining small valid-frame controls.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/rabbitmq/amqp091-go/security/advisories/GHSA-w6r9-248c-frg8">https://github.com/rabbitmq/amqp091-go/security/advisories/GHSA-w6r9-248c-frg8</a></li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/pull/377">https://github.com/rabbitmq/amqp091-go/pull/377</a></li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/commit/6723e8cff8710f0a6bf5fb4af375e285052535b3">https://github.com/rabbitmq/amqp091-go/commit/6723e8cff8710f0a6bf5fb4af375e285052535b3</a></li>
+<li><a href="https://github.com/rabbitmq/amqp091-go/releases/tag/v1.14.0">https://github.com/rabbitmq/amqp091-go/releases/tag/v1.14.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-w6r9-248c-frg8">https://github.com/advisories/GHSA-w6r9-248c-frg8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w6r9-248c-frg8</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-10-08T19:40:19.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/xuri/excelize/v2] Excelize: Unchecked pivot-cache field index in extractPivotTableFields causes unrecoverable panic]]></title>
         <id>https://github.com/advisories/GHSA-mx22-3794-2vpv</id>
@@ -2103,37 +2279,5 @@ v2.11.0   panic: slice bounds out of range [-1:]
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-10-07T20:23:26.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/xuri/excelize/v2] Excelize: Unbounded spinCount in agile decryption burns CPU during OpenFile]]></title>
-        <id>https://github.com/advisories/GHSA-jrfj-fhj2-jjvm</id>
-        <link href="https://github.com/advisories/GHSA-jrfj-fhj2-jjvm"/>
-        <updated>2026-10-07T20:23:23.000Z</updated>
-        <content type="html"><![CDATA[<p>Opening a file whose first eight bytes are the OLE magic number sends excelize down the decryption path whether or not the caller set a password, or supports encrypted workbooks at all. <code>openReaderAt</code> (excelize.go:198-215) branches on the header alone, and <code>agileDecrypt</code> calls <code>convertPasswdToKey</code> before the verifier hash is checked, so the key-derivation loop runs <code>spinCount</code> times regardless.</p>
-<p><code>spinCount</code> (crypt.go:98) is a plain <code>int</code> filled by a bare <code>xml.Unmarshal</code> of the file's own EncryptionInfo stream. Nothing bounds it.</p>
-<p>A 3072-byte file with spinCount 100000000 makes <code>OpenFile</code> take 58.65s on v2.11.0 with default options, then return <code>zip: not a valid zip file</code>. It is linear at about 0.6 microseconds per iteration and the attacker picks the number, so 1e9 is roughly ten minutes. Nothing on the path takes a <code>context.Context</code>, so the caller cannot cancel it; in an HTTP handler the write timeout returns a response while the goroutine keeps spinning. Memory stays flat at 24 MB, so nothing reclaims it either.</p>
-<pre><code>v2.5.0   spinCount=10000000   5.307s
-v2.9.1   spinCount=10000000   5.444s
-v2.11.0  spinCount=10000000   7.529s
-v2.11.0  spinCount=100000000  58.654s
-</code></pre>
-<p>The loop arrived with <code>crypt.go</code> in v2.3.1 and is unchanged through v2.11.0.</p>
-<p>Excel and LibreOffice write spinCount 100000, which costs 61ms here, so a ceiling well above the legitimate value would cost real files nothing. </p>
-<p>This is availability only, and it is not a vulnerability for a program that only opens files its own operator produced.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/qax-os/excelize/security/advisories/GHSA-jrfj-fhj2-jjvm">https://github.com/qax-os/excelize/security/advisories/GHSA-jrfj-fhj2-jjvm</a></li>
-<li><a href="https://github.com/qax-os/excelize/pull/2389">https://github.com/qax-os/excelize/pull/2389</a></li>
-<li><a href="https://github.com/qax-os/excelize/commit/2badfcd5841d0d88b0ffea119f5a2f3c53b4910b">https://github.com/qax-os/excelize/commit/2badfcd5841d0d88b0ffea119f5a2f3c53b4910b</a></li>
-<li><a href="https://github.com/advisories/GHSA-jrfj-fhj2-jjvm">https://github.com/advisories/GHSA-jrfj-fhj2-jjvm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-jrfj-fhj2-jjvm</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-10-07T20:23:22.000Z</published>
     </entry>
 </feed>
