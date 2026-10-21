@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/npm.rss</id>
     <title>Security Advisory for JavaScript packages hosted at npmjs.com</title>
-    <updated>2026-10-21T10:33:22.969Z</updated>
+    <updated>2026-10-21T15:32:48.748Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"/>
     <subtitle>Security Advisory for JavaScript packages hosted at npmjs.com on GitHub</subtitle>
@@ -11,6 +11,320 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[@apostrophecms/import-export] ApostropheCMS: Unauthenticated resource exhaustion via pre-auth aposBigUpload processing in @apostrophecms/import-export]]></title>
+        <id>https://github.com/advisories/GHSA-86wm-68pq-5jwq</id>
+        <link href="https://github.com/advisories/GHSA-86wm-68pq-5jwq"/>
+        <updated>2026-10-21T13:51:22.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A potential unauthenticated denial-of-service vulnerability exists in the chunked import upload path used by <code>@apostrophecms/import-export</code>.</p>
+<p>The affected import API routes invoke:</p>
+<p><code>self.apos.http.bigUploadMiddleware()</code></p>
+<p>before the actual import handler performs its authentication check.</p>
+<p>Because no <code>authorize</code> callback is supplied to <code>bigUploadMiddleware()</code>, unauthenticated requests can reach the <code>aposBigUpload</code> <code>start</code>, <code>chunk</code>, and <code>end</code> operations before the later <code>req.user</code> check rejects the import.</p>
+<p>As a result, an unauthenticated remote attacker can create server-side upload state, write chunk data to upload storage, trigger temporary-file processing, and cause attacker-controlled cleanup operations before authentication is enforced.</p>
+<h2 id="affected-component">Affected Component</h2>
+<p>Package:</p>
+<p><code>@apostrophecms/import-export</code></p>
+<p>Confirmed affected version:</p>
+<p><code>3.6.2</code></p>
+<p>Potential earlier affected versions:</p>
+<p>The issue may affect earlier 3.x releases in which the current big-upload-based import implementation is present. I have not yet fully verified the exact introduction version and recommend that the maintainers confirm the affected version range.</p>
+<h2 id="vulnerability-type">Vulnerability Type</h2>
+<p>Primary:</p>
+<p><strong>CWE-400 — Uncontrolled Resource Consumption</strong></p>
+<p>Related:</p>
+<p><strong>CWE-306 — Missing Authentication for Critical Function</strong></p>
+<p><strong>CWE-770 — Allocation of Resources Without Limits or Throttling</strong></p>
+<h2 id="technical-details">Technical Details</h2>
+<p>The page import route registers the following middleware chain:</p>
+<p><code>packages/import-export/modules/@apostrophecms/import-export-page/index.js</code></p>
+<pre><code class="language-javascript">importExportImport: [
+  self.apos.http.bigUploadMiddleware(),
+  async (req) =&gt; {
+    return self.apos.modules['@apostrophecms/import-export']
+      .import(req, self.__meta.name);
+  }
+]
+</code></pre>
+<p>No <code>authorize</code> callback is passed to <code>bigUploadMiddleware()</code>.</p>
+<p>The <code>bigUploadMiddleware()</code> implementation explicitly supports an <code>authorize</code> callback and performs that authorization before processing the <code>aposBigUpload</code> protocol when supplied.</p>
+<p>Without that callback, requests containing:</p>
+<p><code>aposBigUpload[type]=start</code></p>
+<p><code>aposBigUpload[type]=chunk</code></p>
+<p>or</p>
+<p><code>aposBigUpload[type]=end</code></p>
+<p>are processed immediately.</p>
+<p>The actual authentication check occurs later in:</p>
+<p><code>packages/import-export/lib/methods/import.js</code></p>
+<pre><code class="language-javascript">async import(req, moduleName) {
+  if (!req.user) {
+    throw self.apos.error('forbidden');
+  }
+</code></pre>
+<p>This means authentication occurs only after the chunked-upload middleware has already performed server-side work.</p>
+<h2 id="attack-flow">Attack Flow</h2>
+<h3 id="1-start">1. Start</h3>
+<p>An unauthenticated attacker submits an <code>aposBigUpload[type]=start</code> request.</p>
+<p>The server generates an upload ID and stores attacker-supplied upload metadata, including the declared <code>chunks</code> count.</p>
+<h3 id="2-chunk">2. Chunk</h3>
+<p>The attacker can upload chunk data.</p>
+<p><code>bigUploadChunk()</code> copies attacker-controlled data into:</p>
+<p><code>/big-uploads/&lt;id&gt;-&lt;n&gt;-&lt;chunk&gt;</code></p>
+<h3 id="3-end">3. End</h3>
+<p>The attacker sends an <code>aposBigUpload[type]=end</code> request.</p>
+<p><code>bigUploadEnd()</code> begins processing the upload and creates temporary files before invoking the downstream import handler.</p>
+<p>Only after this processing completes does execution reach the later authentication check in <code>import()</code>.</p>
+<h3 id="4-cleanup-amplification">4. Cleanup amplification</h3>
+<p>The attacker-controlled <code>chunks</code> value is also used by <code>bigUploadCleanupOne()</code>:</p>
+<pre><code class="language-javascript">for (const { chunks } of Object.values(bigUpload.files)) {
+  for (let i = 0; (i &lt; chunks); i++) {
+    await ufs.remove(...);
+  }
+}
+</code></pre>
+<p>No small upper bound on the declared chunk count appears to be enforced at upload initialization.</p>
+<p>This allows an unauthenticated attacker to increase the number of filesystem cleanup operations performed for an upload.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>The following reproduction was performed only against an isolated test environment.</p>
+<h3 id="start-an-upload-without-authentication">Start an upload without authentication</h3>
+<pre><code class="language-bash">curl -s -X POST \
+  'http://localhost:3000/api/v1/@apostrophecms/page/importExportImport?aposBigUpload[type]=start' \
+  -H 'Content-Type: application/json' \
+  --data '{"files":{"file":{"name":"evil.tar.gz","size":4,"type":"application/gzip","chunks":1}}}'
+</code></pre>
+<p>The server returns an upload ID despite the request having no authenticated session.</p>
+<h3 id="upload-a-chunk">Upload a chunk</h3>
+<pre><code class="language-bash">printf 'PWN!' &gt;/tmp/chunk.bin
+
+curl -s -X POST \
+  'http://localhost:3000/api/v1/@apostrophecms/page/importExportImport?aposBigUpload[type]=chunk&amp;aposBigUpload[id]=&lt;ID&gt;&amp;aposBigUpload[n]=0&amp;aposBigUpload[chunk]=0' \
+  -F 'chunk=@/tmp/chunk.bin;type=application/octet-stream'
+</code></pre>
+<p>The request succeeds and causes server-side upload storage to be used.</p>
+<h3 id="finalize-the-upload">Finalize the upload</h3>
+<pre><code class="language-bash">curl -i -X POST \
+  'http://localhost:3000/api/v1/@apostrophecms/page/importExportImport?aposBigUpload[type]=end&amp;aposBigUpload[id]=&lt;ID&gt;'
+</code></pre>
+<p>Observed behavior:</p>
+<ul>
+<li><code>start</code> returns HTTP 200 and an upload ID without authentication.</li>
+<li><code>chunk</code> returns HTTP 200 and results in server-side chunk storage.</li>
+<li><code>end</code> eventually reaches the downstream authentication check and is rejected.</li>
+<li>However, the server-side big-upload processing has already occurred before that authentication rejection.</li>
+</ul>
+<p>In my isolated harness:</p>
+<ul>
+<li><code>chunks=1</code> resulted in one cleanup removal attempt.</li>
+<li><code>chunks=50</code> resulted in 50 cleanup removal attempts.</li>
+</ul>
+<p>This demonstrates that the attacker-controlled chunk count directly influences server-side cleanup work.</p>
+<h2 id="security-impact">Security Impact</h2>
+<p>The vulnerability allows an unauthenticated remote attacker to cause server-side storage and filesystem operations that should only be reachable by authorized import users.</p>
+<p>Possible consequences include:</p>
+<ul>
+<li>Consumption of upload and temporary storage.</li>
+<li>Creation of server-side upload state by unauthenticated users.</li>
+<li>Repeated filesystem I/O.</li>
+<li>Cleanup amplification based on attacker-controlled chunk counts.</li>
+<li>Potential service degradation or denial of service when the attack is repeated or sufficiently amplified.</li>
+</ul>
+<h2 id="root-cause">Root Cause</h2>
+<p>Authentication is enforced in the downstream import handler rather than before the chunked-upload middleware.</p>
+<p>The middleware itself already supports an <code>authorize</code> callback specifically for preventing unauthorized use of the big-upload functionality.</p>
+<h2 id="suggested-remediation">Suggested Remediation</h2>
+<p>Require authentication before any <code>aposBigUpload</code> operation is processed.</p>
+<p>For example:</p>
+<ul>
+<li>Pass an appropriate <code>authorize</code> callback to <code>bigUploadMiddleware()</code> on all import routes.</li>
+<li>Reject unauthenticated users before <code>start</code>, <code>chunk</code>, or <code>end</code>.</li>
+<li>Enforce reasonable limits on declared chunk counts.</li>
+<li>Validate declared size against actual uploaded data.</li>
+<li>Introduce per-user and global storage/rate limits.</li>
+<li>Ensure temporary files are removed when downstream processing fails.</li>
+<li>Add regression tests confirming that anonymous <code>start</code>, <code>chunk</code>, and <code>end</code> requests are rejected before upload state or files are created.</li>
+</ul>
+<p>Relevant reviewed commit:</p>
+<p><code>d3ff8c9bb001be1acf7fdc3f035190250ac64b45</code></p>
+<h2 id="researcher-credit">Researcher Credit</h2>
+<p><strong>Kai Zhi</strong></p>
+<p>GitHub:</p>
+<p><strong><a href="https://github.com/kaizhi888">https://github.com/kaizhi888</a></strong></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-86wm-68pq-5jwq">https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-86wm-68pq-5jwq</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-113711">https://nvd.nist.gov/vuln/detail/CVE-2026-113711</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/commit/9500b8b0e1d630d5e07fbb5fd2c25ed0943845ce">https://github.com/apostrophecms/apostrophe/commit/9500b8b0e1d630d5e07fbb5fd2c25ed0943845ce</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/commit/f84fd41cbf6c22eb8d0008fc9c25df1f7130b350">https://github.com/apostrophecms/apostrophe/commit/f84fd41cbf6c22eb8d0008fc9c25df1f7130b350</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/releases/tag/apostrophe@4.33.0">https://github.com/apostrophecms/apostrophe/releases/tag/apostrophe@4.33.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-86wm-68pq-5jwq">https://github.com/advisories/GHSA-86wm-68pq-5jwq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-86wm-68pq-5jwq</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-21T13:51:21.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[apostrophe] ApostropheCMS: Unauthenticated resource exhaustion via pre-auth aposBigUpload processing in @apostrophecms/import-export]]></title>
+        <id>https://github.com/advisories/GHSA-86wm-68pq-5jwq</id>
+        <link href="https://github.com/advisories/GHSA-86wm-68pq-5jwq"/>
+        <updated>2026-10-21T13:51:22.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>A potential unauthenticated denial-of-service vulnerability exists in the chunked import upload path used by <code>@apostrophecms/import-export</code>.</p>
+<p>The affected import API routes invoke:</p>
+<p><code>self.apos.http.bigUploadMiddleware()</code></p>
+<p>before the actual import handler performs its authentication check.</p>
+<p>Because no <code>authorize</code> callback is supplied to <code>bigUploadMiddleware()</code>, unauthenticated requests can reach the <code>aposBigUpload</code> <code>start</code>, <code>chunk</code>, and <code>end</code> operations before the later <code>req.user</code> check rejects the import.</p>
+<p>As a result, an unauthenticated remote attacker can create server-side upload state, write chunk data to upload storage, trigger temporary-file processing, and cause attacker-controlled cleanup operations before authentication is enforced.</p>
+<h2 id="affected-component">Affected Component</h2>
+<p>Package:</p>
+<p><code>@apostrophecms/import-export</code></p>
+<p>Confirmed affected version:</p>
+<p><code>3.6.2</code></p>
+<p>Potential earlier affected versions:</p>
+<p>The issue may affect earlier 3.x releases in which the current big-upload-based import implementation is present. I have not yet fully verified the exact introduction version and recommend that the maintainers confirm the affected version range.</p>
+<h2 id="vulnerability-type">Vulnerability Type</h2>
+<p>Primary:</p>
+<p><strong>CWE-400 — Uncontrolled Resource Consumption</strong></p>
+<p>Related:</p>
+<p><strong>CWE-306 — Missing Authentication for Critical Function</strong></p>
+<p><strong>CWE-770 — Allocation of Resources Without Limits or Throttling</strong></p>
+<h2 id="technical-details">Technical Details</h2>
+<p>The page import route registers the following middleware chain:</p>
+<p><code>packages/import-export/modules/@apostrophecms/import-export-page/index.js</code></p>
+<pre><code class="language-javascript">importExportImport: [
+  self.apos.http.bigUploadMiddleware(),
+  async (req) =&gt; {
+    return self.apos.modules['@apostrophecms/import-export']
+      .import(req, self.__meta.name);
+  }
+]
+</code></pre>
+<p>No <code>authorize</code> callback is passed to <code>bigUploadMiddleware()</code>.</p>
+<p>The <code>bigUploadMiddleware()</code> implementation explicitly supports an <code>authorize</code> callback and performs that authorization before processing the <code>aposBigUpload</code> protocol when supplied.</p>
+<p>Without that callback, requests containing:</p>
+<p><code>aposBigUpload[type]=start</code></p>
+<p><code>aposBigUpload[type]=chunk</code></p>
+<p>or</p>
+<p><code>aposBigUpload[type]=end</code></p>
+<p>are processed immediately.</p>
+<p>The actual authentication check occurs later in:</p>
+<p><code>packages/import-export/lib/methods/import.js</code></p>
+<pre><code class="language-javascript">async import(req, moduleName) {
+  if (!req.user) {
+    throw self.apos.error('forbidden');
+  }
+</code></pre>
+<p>This means authentication occurs only after the chunked-upload middleware has already performed server-side work.</p>
+<h2 id="attack-flow">Attack Flow</h2>
+<h3 id="1-start">1. Start</h3>
+<p>An unauthenticated attacker submits an <code>aposBigUpload[type]=start</code> request.</p>
+<p>The server generates an upload ID and stores attacker-supplied upload metadata, including the declared <code>chunks</code> count.</p>
+<h3 id="2-chunk">2. Chunk</h3>
+<p>The attacker can upload chunk data.</p>
+<p><code>bigUploadChunk()</code> copies attacker-controlled data into:</p>
+<p><code>/big-uploads/&lt;id&gt;-&lt;n&gt;-&lt;chunk&gt;</code></p>
+<h3 id="3-end">3. End</h3>
+<p>The attacker sends an <code>aposBigUpload[type]=end</code> request.</p>
+<p><code>bigUploadEnd()</code> begins processing the upload and creates temporary files before invoking the downstream import handler.</p>
+<p>Only after this processing completes does execution reach the later authentication check in <code>import()</code>.</p>
+<h3 id="4-cleanup-amplification">4. Cleanup amplification</h3>
+<p>The attacker-controlled <code>chunks</code> value is also used by <code>bigUploadCleanupOne()</code>:</p>
+<pre><code class="language-javascript">for (const { chunks } of Object.values(bigUpload.files)) {
+  for (let i = 0; (i &lt; chunks); i++) {
+    await ufs.remove(...);
+  }
+}
+</code></pre>
+<p>No small upper bound on the declared chunk count appears to be enforced at upload initialization.</p>
+<p>This allows an unauthenticated attacker to increase the number of filesystem cleanup operations performed for an upload.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>The following reproduction was performed only against an isolated test environment.</p>
+<h3 id="start-an-upload-without-authentication">Start an upload without authentication</h3>
+<pre><code class="language-bash">curl -s -X POST \
+  'http://localhost:3000/api/v1/@apostrophecms/page/importExportImport?aposBigUpload[type]=start' \
+  -H 'Content-Type: application/json' \
+  --data '{"files":{"file":{"name":"evil.tar.gz","size":4,"type":"application/gzip","chunks":1}}}'
+</code></pre>
+<p>The server returns an upload ID despite the request having no authenticated session.</p>
+<h3 id="upload-a-chunk">Upload a chunk</h3>
+<pre><code class="language-bash">printf 'PWN!' &gt;/tmp/chunk.bin
+
+curl -s -X POST \
+  'http://localhost:3000/api/v1/@apostrophecms/page/importExportImport?aposBigUpload[type]=chunk&amp;aposBigUpload[id]=&lt;ID&gt;&amp;aposBigUpload[n]=0&amp;aposBigUpload[chunk]=0' \
+  -F 'chunk=@/tmp/chunk.bin;type=application/octet-stream'
+</code></pre>
+<p>The request succeeds and causes server-side upload storage to be used.</p>
+<h3 id="finalize-the-upload">Finalize the upload</h3>
+<pre><code class="language-bash">curl -i -X POST \
+  'http://localhost:3000/api/v1/@apostrophecms/page/importExportImport?aposBigUpload[type]=end&amp;aposBigUpload[id]=&lt;ID&gt;'
+</code></pre>
+<p>Observed behavior:</p>
+<ul>
+<li><code>start</code> returns HTTP 200 and an upload ID without authentication.</li>
+<li><code>chunk</code> returns HTTP 200 and results in server-side chunk storage.</li>
+<li><code>end</code> eventually reaches the downstream authentication check and is rejected.</li>
+<li>However, the server-side big-upload processing has already occurred before that authentication rejection.</li>
+</ul>
+<p>In my isolated harness:</p>
+<ul>
+<li><code>chunks=1</code> resulted in one cleanup removal attempt.</li>
+<li><code>chunks=50</code> resulted in 50 cleanup removal attempts.</li>
+</ul>
+<p>This demonstrates that the attacker-controlled chunk count directly influences server-side cleanup work.</p>
+<h2 id="security-impact">Security Impact</h2>
+<p>The vulnerability allows an unauthenticated remote attacker to cause server-side storage and filesystem operations that should only be reachable by authorized import users.</p>
+<p>Possible consequences include:</p>
+<ul>
+<li>Consumption of upload and temporary storage.</li>
+<li>Creation of server-side upload state by unauthenticated users.</li>
+<li>Repeated filesystem I/O.</li>
+<li>Cleanup amplification based on attacker-controlled chunk counts.</li>
+<li>Potential service degradation or denial of service when the attack is repeated or sufficiently amplified.</li>
+</ul>
+<h2 id="root-cause">Root Cause</h2>
+<p>Authentication is enforced in the downstream import handler rather than before the chunked-upload middleware.</p>
+<p>The middleware itself already supports an <code>authorize</code> callback specifically for preventing unauthorized use of the big-upload functionality.</p>
+<h2 id="suggested-remediation">Suggested Remediation</h2>
+<p>Require authentication before any <code>aposBigUpload</code> operation is processed.</p>
+<p>For example:</p>
+<ul>
+<li>Pass an appropriate <code>authorize</code> callback to <code>bigUploadMiddleware()</code> on all import routes.</li>
+<li>Reject unauthenticated users before <code>start</code>, <code>chunk</code>, or <code>end</code>.</li>
+<li>Enforce reasonable limits on declared chunk counts.</li>
+<li>Validate declared size against actual uploaded data.</li>
+<li>Introduce per-user and global storage/rate limits.</li>
+<li>Ensure temporary files are removed when downstream processing fails.</li>
+<li>Add regression tests confirming that anonymous <code>start</code>, <code>chunk</code>, and <code>end</code> requests are rejected before upload state or files are created.</li>
+</ul>
+<p>Relevant reviewed commit:</p>
+<p><code>d3ff8c9bb001be1acf7fdc3f035190250ac64b45</code></p>
+<h2 id="researcher-credit">Researcher Credit</h2>
+<p><strong>Kai Zhi</strong></p>
+<p>GitHub:</p>
+<p><strong><a href="https://github.com/kaizhi888">https://github.com/kaizhi888</a></strong></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-86wm-68pq-5jwq">https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-86wm-68pq-5jwq</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-113711">https://nvd.nist.gov/vuln/detail/CVE-2026-113711</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/commit/9500b8b0e1d630d5e07fbb5fd2c25ed0943845ce">https://github.com/apostrophecms/apostrophe/commit/9500b8b0e1d630d5e07fbb5fd2c25ed0943845ce</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/commit/f84fd41cbf6c22eb8d0008fc9c25df1f7130b350">https://github.com/apostrophecms/apostrophe/commit/f84fd41cbf6c22eb8d0008fc9c25df1f7130b350</a></li>
+<li><a href="https://github.com/apostrophecms/apostrophe/releases/tag/apostrophe@4.33.0">https://github.com/apostrophecms/apostrophe/releases/tag/apostrophe@4.33.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-86wm-68pq-5jwq">https://github.com/advisories/GHSA-86wm-68pq-5jwq</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-86wm-68pq-5jwq</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-21T13:51:21.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[@angular/common] @angular/common: XSRF Token Leakage via URL Parsing Discrepancy in Angular HTTP Client (Incomplete fix for CVE-2025-66035)]]></title>
         <id>https://github.com/advisories/GHSA-jfgx-762w-99vr</id>
@@ -1283,78 +1597,6 @@ console.log({
     </entry>
     <entry>
         <title type="html"><![CDATA[[vite-plus] launch-editor: `fs.existsSync()` existence check can be bypassed on Windows]]></title>
-        <id>https://github.com/advisories/GHSA-587h-7wmj-h5pm</id>
-        <link href="https://github.com/advisories/GHSA-587h-7wmj-h5pm"/>
-        <updated>2026-10-20T19:48:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>launch-editor</code> checked <code>fs.existsSync(fileName)</code> before passing a supplied path to an editor command. On Windows, an attacker can bypass this check with a crafted path ending in <code>\\..:line:column</code>. This removes the requirement that the attacker be able to place a file with a malicious filename.</p>
-<p>Combined with the <code>%</code> escaping issue described in <a href="https://github.com/vitejs/launch-editor/security/advisories/GHSA-698v-4r3x-3vcv">GHSA-698v-4r3x-3vcv</a>, this bypass can lead to OS command injection when an attacker controls the file argument.</p>
-<h3 id="impact">Impact</h3>
-<p>Only apps that runs on Windows is affected.</p>
-<h3 id="details">Details</h3>
-<p>The earlier advisory assumed that <code>fs.existsSync()</code> required an attacker-controlled filename to exist. This advisory covers a bypass of that requirement.</p>
-<p>A crafted value ending in <code>\\..:1:1</code> is interpreted differently by <code>launch-editor-middleware</code>, <code>launch-editor</code>, and Windows:</p>
-<ol>
-<li><code>launch-editor-middleware</code> calls <code>path.resolve()</code> while the final path component is <code>..:1:1</code>, so it is not treated as a parent-directory component.</li>
-<li><code>launch-editor</code> treats <code>:1:1</code> as a line-and-column suffix and removes it, leaving a path ending in <code>\\..</code>.</li>
-<li>On Windows, <code>fs.existsSync()</code> accepts the resulting path as the existing parent directory even though the attacker-controlled preceding component does not exist.</li>
-<li>Because the existence check passes, the crafted filename reaches the Windows shell command.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vitejs/launch-editor/security/advisories/GHSA-587h-7wmj-h5pm">https://github.com/vitejs/launch-editor/security/advisories/GHSA-587h-7wmj-h5pm</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-112942">https://nvd.nist.gov/vuln/detail/CVE-2026-112942</a></li>
-<li><a href="https://github.com/vitejs/launch-editor/commit/f13cd835d4b8e860b1d4d080ad8a490cc2463679">https://github.com/vitejs/launch-editor/commit/f13cd835d4b8e860b1d4d080ad8a490cc2463679</a></li>
-<li><a href="https://github.com/vitejs/launch-editor/releases/tag/v2.14.2">https://github.com/vitejs/launch-editor/releases/tag/v2.14.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-587h-7wmj-h5pm">https://github.com/advisories/GHSA-587h-7wmj-h5pm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-587h-7wmj-h5pm</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-10-20T19:48:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vite] launch-editor: `fs.existsSync()` existence check can be bypassed on Windows]]></title>
-        <id>https://github.com/advisories/GHSA-587h-7wmj-h5pm</id>
-        <link href="https://github.com/advisories/GHSA-587h-7wmj-h5pm"/>
-        <updated>2026-10-20T19:48:26.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p><code>launch-editor</code> checked <code>fs.existsSync(fileName)</code> before passing a supplied path to an editor command. On Windows, an attacker can bypass this check with a crafted path ending in <code>\\..:line:column</code>. This removes the requirement that the attacker be able to place a file with a malicious filename.</p>
-<p>Combined with the <code>%</code> escaping issue described in <a href="https://github.com/vitejs/launch-editor/security/advisories/GHSA-698v-4r3x-3vcv">GHSA-698v-4r3x-3vcv</a>, this bypass can lead to OS command injection when an attacker controls the file argument.</p>
-<h3 id="impact">Impact</h3>
-<p>Only apps that runs on Windows is affected.</p>
-<h3 id="details">Details</h3>
-<p>The earlier advisory assumed that <code>fs.existsSync()</code> required an attacker-controlled filename to exist. This advisory covers a bypass of that requirement.</p>
-<p>A crafted value ending in <code>\\..:1:1</code> is interpreted differently by <code>launch-editor-middleware</code>, <code>launch-editor</code>, and Windows:</p>
-<ol>
-<li><code>launch-editor-middleware</code> calls <code>path.resolve()</code> while the final path component is <code>..:1:1</code>, so it is not treated as a parent-directory component.</li>
-<li><code>launch-editor</code> treats <code>:1:1</code> as a line-and-column suffix and removes it, leaving a path ending in <code>\\..</code>.</li>
-<li>On Windows, <code>fs.existsSync()</code> accepts the resulting path as the existing parent directory even though the attacker-controlled preceding component does not exist.</li>
-<li>Because the existence check passes, the crafted filename reaches the Windows shell command.</li>
-</ol>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/vitejs/launch-editor/security/advisories/GHSA-587h-7wmj-h5pm">https://github.com/vitejs/launch-editor/security/advisories/GHSA-587h-7wmj-h5pm</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-112942">https://nvd.nist.gov/vuln/detail/CVE-2026-112942</a></li>
-<li><a href="https://github.com/vitejs/launch-editor/commit/f13cd835d4b8e860b1d4d080ad8a490cc2463679">https://github.com/vitejs/launch-editor/commit/f13cd835d4b8e860b1d4d080ad8a490cc2463679</a></li>
-<li><a href="https://github.com/vitejs/launch-editor/releases/tag/v2.14.2">https://github.com/vitejs/launch-editor/releases/tag/v2.14.2</a></li>
-<li><a href="https://github.com/advisories/GHSA-587h-7wmj-h5pm">https://github.com/advisories/GHSA-587h-7wmj-h5pm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-587h-7wmj-h5pm</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-10-20T19:48:25.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[vite] launch-editor: `fs.existsSync()` existence check can be bypassed on Windows]]></title>
         <id>https://github.com/advisories/GHSA-587h-7wmj-h5pm</id>
         <link href="https://github.com/advisories/GHSA-587h-7wmj-h5pm"/>
         <updated>2026-10-20T19:48:26.000Z</updated>
