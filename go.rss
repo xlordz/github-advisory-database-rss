@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-10-27T07:45:16.093Z</updated>
+    <updated>2026-10-27T13:37:56.519Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,138 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/wailsapp/wails/v2] Wails: wildcardPatternToRegex allows Origin bypass via suffix match in BindingsAllowedOrigins]]></title>
+        <id>https://github.com/advisories/GHSA-47hv-j4px-h3c9</id>
+        <link href="https://github.com/advisories/GHSA-47hv-j4px-h3c9"/>
+        <updated>2026-10-27T13:29:48.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="security-vulnerability-report-wails-v2--origin-validator-bypass-via-wildcard-pattern">Security Vulnerability Report: Wails v2 — Origin Validator Bypass via Wildcard Pattern</h1>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Product</strong></td>
+<td>wailsapp/wails (v2)</td>
+</tr>
+<tr>
+<td><strong>Affected File</strong></td>
+<td><code>v2/internal/frontend/originvalidator/originValidator.go</code></td>
+</tr>
+<tr>
+<td><strong>Affected Versions</strong></td>
+<td>All versions containing originValidator (latest as of 2026-03-26)</td>
+</tr>
+<tr>
+<td><strong>CVSSv4.0</strong></td>
+<td><strong>7.6 HIGH</strong> — <code>CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:H/VI:H/VA:L/SC:L/SI:L/SA:N</code></td>
+</tr>
+<tr>
+<td><strong>CWE</strong></td>
+<td>CWE-625: Permissive Regular Expression</td>
+</tr>
+<tr>
+<td><strong>Platforms</strong></td>
+<td>Windows / Linux / macOS (all desktop targets)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="summary">Summary</h2>
+<p>Wails v2 provides <code>BindingsAllowedOrigins</code> to restrict which web origins can invoke Go backend methods via IPC. The wildcard pattern matching in <code>wildcardPatternToRegex</code> converts <code>*</code> to <code>.*</code> without anchoring subcomponents, allowing suffix-matched origins to bypass the restriction.</p>
+<p>An attacker who controls a domain sharing a prefix with the allowed origin (e.g., <code>myapp.community</code> when <code>myapp.com*</code> is configured) can invoke arbitrary bound Go methods, potentially achieving file system access, data exfiltration, or code execution depending on the application's exposed API surface.</p>
+<hr>
+<h2 id="vulnerability-details">Vulnerability Details</h2>
+<h3 id="root-cause">Root Cause</h3>
+<p><code>wildcardPatternToRegex</code> converts a wildcard pattern to a regular expression by escaping special characters and replacing <code>*</code> with <code>.*</code>. The substituted <code>.*</code> has no restriction — it matches any character sequence including dots and additional domain components.</p>
+<h3 id="vulnerable-code">Vulnerable Code</h3>
+<p><strong>File:</strong> <code>v2/internal/frontend/originvalidator/originValidator.go</code></p>
+<pre><code class="language-go">func (v *OriginValidator) wildcardPatternToRegex(wildcardPattern string) string {
+    specialChars := []string{"\\", ".", "+", "?", "^", "$", "{", "}", "(", ")", "|", "[", "]"}
+
+    escaped := wildcardPattern
+    for _, specialChar := range specialChars {
+        escaped = strings.ReplaceAll(escaped, specialChar, "\\"+specialChar)
+    }
+
+    // * becomes .* — matches ANY character sequence, including dots and domain separators
+    escaped = strings.ReplaceAll(escaped, "*", ".*")
+
+    return "^" + escaped + "$"
+}
+</code></pre>
+<p>The generated regex for <code>https://myapp.com*</code> is:</p>
+<pre><code>^https://myapp\.com.*$
+</code></pre>
+<p>This matches any string beginning with <code>https://myapp.com</code>, including:</p>
+<ul>
+<li><code>https://myapp.community</code> — different TLD</li>
+<li><code>https://myapp.com.attacker.com</code> — attacker-controlled subdomain</li>
+<li><code>https://myapp.comXXXXX</code> — any arbitrary suffix</li>
+</ul>
+<h3 id="scope-note">Scope Note</h3>
+<p>The official comment in <code>options.go</code> gives <code>https://*.myapp.com</code> as the example pattern (subdomain prefix wildcard). This pattern is <strong>not affected</strong>. The vulnerability only manifests when developers use a trailing wildcard (<code>myapp.com*</code>), which is a natural misuse when intending to permit a domain and all its subpaths or ports.</p>
+<hr>
+<h2 id="impact">Impact</h2>
+<p>Any Go method registered with Wails bindings becomes callable from the attacker's origin. Depending on the application:</p>
+<ul>
+<li>File system read / write (common in desktop apps)</li>
+<li>Database queries</li>
+<li>OS command execution (if exposed via bindings)</li>
+<li>Sensitive configuration or credential access</li>
+</ul>
+<hr>
+<h2 id="fix">Fix</h2>
+<p><strong>PR:</strong> <a href="https://github.com/wailsapp/wails/pull/5074">https://github.com/wailsapp/wails/pull/5074</a></p>
+<p>Wildcards are now only expanded when they represent a full domain component (immediately after <code>://</code>, <code>.</code>, or <code>:</code>). A wildcard appended to a partial label (e.g. <code>com*</code>) is stripped, preventing suffix-based bypasses. Comprehensive test suite added.</p>
+<hr>
+<h2 id="disclosure-timeline">Disclosure Timeline</h2>
+<table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Event</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>2026-03-26</td>
+<td>Vulnerability discovered during source code audit by @Saku0512</td>
+</tr>
+<tr>
+<td>2026-03-26</td>
+<td>Private report submitted via GitHub Security Advisory</td>
+</tr>
+<tr>
+<td>2026-03-26</td>
+<td>Vendor acknowledgement and fix PR opened (#5074)</td>
+</tr>
+<tr>
+<td>TBD</td>
+<td>Patch release</td>
+</tr>
+<tr>
+<td>TBD + 90 days</td>
+<td>Public disclosure deadline</td>
+</tr>
+</tbody></table>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/wailsapp/wails/security/advisories/GHSA-47hv-j4px-h3c9">https://github.com/wailsapp/wails/security/advisories/GHSA-47hv-j4px-h3c9</a></li>
+<li><a href="https://github.com/wailsapp/wails/pull/5074">https://github.com/wailsapp/wails/pull/5074</a></li>
+<li><a href="https://github.com/wailsapp/wails/commit/bcc5941b72fdab6a13942b58871a2696faa85b81">https://github.com/wailsapp/wails/commit/bcc5941b72fdab6a13942b58871a2696faa85b81</a></li>
+<li><a href="https://github.com/advisories/GHSA-47hv-j4px-h3c9">https://github.com/advisories/GHSA-47hv-j4px-h3c9</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-47hv-j4px-h3c9</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-27T13:29:47.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/siderolabs/talos] Talos Linux: Support bundle does not redact registry credentials]]></title>
         <id>https://github.com/advisories/GHSA-7cxh-94cf-mfp6</id>
@@ -945,117 +1077,5 @@ return "auth" == id
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-08-14T12:31:28.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/siyuan-note/siyuan/kernel] SiYuan: The publish filter for local storage returns the administrator's entire storage map with only three keys sanitized]]></title>
-        <id>https://github.com/advisories/GHSA-xp3q-r38w-vgqm</id>
-        <link href="https://github.com/advisories/GHSA-xp3q-r38w-vgqm"/>
-        <updated>2026-10-23T18:29:47.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="relationship-to-ghsa-hgfg-j9pg-43xw">Relationship to GHSA-hgfg-j9pg-43xw</h3>
-<p>That advisory concerned the administrator's live UI layout, and commit <code>63c7d5474</code> resolved it by removing <code>FilterUILayoutByPublishIgnore</code> and nulling <code>Conf.UILayout</code> for readers. That fix is correct and complete for the live layout.</p>
-<p>This report concerns a different endpoint, a different filter function and a different storage backing. <code>/api/storage/getLocalStorage</code> reads <code>data/storage/local.json</code> rather than <code>Conf.UILayout</code>, and its filter <code>FilterLocalStorageByPublishAccess</code> was not touched by that commit. The consequence is that the same serialized tab objects the earlier fix withheld continue to be served, from the closed-tab history rather than the live layout.</p>
-<h3 id="summary">Summary</h3>
-<p>Three routes, <code>/api/storage/getLocalStorage</code>, <code>getLocalStorageVal</code> and <code>getLocalStorageVals</code>, are registered with <code>CheckAuth</code> only and are reachable by the publish <code>RoleReader</code> token and anonymously when <code>Publish.Auth.Enable</code> is <code>false</code>. All three call <code>model.GetLocalStorage()</code> and then, for read-only roles, <code>FilterLocalStorageByPublishAccess</code>.</p>
-<p>That filter begins by assigning the administrator's entire storage map to its return value and then removes three specific fields. Everything else in the map is returned unmodified. A single unauthenticated POST with an empty body returns the administrator's recently closed tabs with their document titles and identifiers, their current search keywords and the paths those searches cover, the expanded private paths in their file tree, and per-document identifiers from several other keys.</p>
-<h3 id="details">Details</h3>
-<p><strong>Routes.</strong> <code>kernel/api/router.go:87-89</code> on master, the same block on the development branch:</p>
-<pre><code class="language-go">ginServer.Handle("POST", "/api/storage/getLocalStorage",     model.CheckAuth, getLocalStorage)
-ginServer.Handle("POST", "/api/storage/getLocalStorageVal",  model.CheckAuth, getLocalStorageVal)
-ginServer.Handle("POST", "/api/storage/getLocalStorageVals", model.CheckAuth, getLocalStorageVals)
-</code></pre>
-<p>No <code>CheckAdminRole</code>, no <code>CheckReadonly</code>.</p>
-<p><strong>The filter is an allowlist inverted into a blocklist.</strong> <code>kernel/model/publish_access.go:911</code> on master and <code>:1481</code> on the development branch, byte-identical on both:</p>
-<pre><code class="language-go">func FilterLocalStorageByPublishAccess(publishAccess PublishAccess, localStorage map[string]any) (ret map[string]any) {
-    ret = localStorage            // the entire administrator map
-    publishIgnore := GetInvisiblePublishAccess(publishAccess)
-    // clears local-searchkeys["keys"]
-    // clears local-searchasset["k"] and ["keys"]
-    // blanks local-docinfo["id"], only when bt != nil, visible tier only, no password check
-    return
-}
-</code></pre>
-<p><code>local.json</code> holds roughly thirty keys. Three are sanitized. The rest are returned as stored.</p>
-<p><strong>What survives.</strong> Taking the client's own list of keys it round-trips through this endpoint (<code>app/src/protyle/util/compatibility.ts:563</code>), the notable survivors are:</p>
-<ul>
-<li><code>local-closed-tabs</code>. Up to <code>SIZE_UNDO</code> entries, each produced by <code>layoutToJSON(item, tabJSON)</code> at <code>app/src/layout/Wnd.ts:779</code>. This is the same serializer that produced the data in the earlier advisory: tab title, <code>docIcon</code>, <code>rootId</code>, <code>notebookId</code>, <code>blockId</code>, <code>mode</code>, <code>action</code>, and for a Search tab the entire config object. Unfiltered.</li>
-<li><code>local-searchdata</code>. The live document-search configuration, including <code>k</code> (the search text), <code>r</code> (replace text), <code>hPath</code>, <code>idPath</code> (the paths the search was scoped to) and <code>types</code>. Note the filter clears the search <em>history</em> array and the <em>asset</em>-search keyword, but leaves the document-search keyword itself. The project's own standard is applied to two of the three related fields.</li>
-<li><code>local-filespaths</code>. <code>IFilesPath[]</code> of <code>{notebookId, openPaths[]}</code>, the expanded private notebook and folder paths in the file-tree dock.</li>
-<li><code>local-fileposition</code>, <code>local-outline</code>, <code>local-zoom</code>. Keyed by document or block identifier, so each discloses private document identifiers.</li>
-<li><code>local-move-path</code>. <code>{keys[], k}</code>, the move-document dialog's path history and last keyword.</li>
-<li><code>local-recent-docs</code>, <code>local-history</code>, <code>local-flashcard</code>, <code>local-dailynoteid</code>, <code>local-layouts</code>.</li>
-</ul>
-<p><strong>The asymmetry is visible in the function signature.</strong> In the same file, <code>kernel/api/storage.go</code>:</p>
-<table>
-<thead>
-<tr>
-<th>Handler</th>
-<th>Filter</th>
-<th>Receives <code>*gin.Context</code></th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>getCriteria</code></td>
-<td><code>FilterCriteriaByPublishAccess(c, ...)</code></td>
-<td>yes</td>
-</tr>
-<tr>
-<td><code>getRecentDocs</code></td>
-<td><code>FilterRecentDocsByPublishAccess(c, ...)</code></td>
-<td>yes</td>
-</tr>
-<tr>
-<td><code>getLocalStorage</code> / <code>Val</code> / <code>Vals</code></td>
-<td><code>FilterLocalStorageByPublishAccess(publishAccess, data)</code></td>
-<td>no</td>
-</tr>
-</tbody></table>
-<p>The two sibling filters take the request context and can therefore call <code>CheckPublishAuthCookie</code> to evaluate the password tier. <code>FilterLocalStorageByPublishAccess</code> does not receive the context, so it cannot perform that check at all. The visible-only limitation is fixed in the parameter list rather than in the body.</p>
-<p>Separately, <code>local-recent-docs</code> passes through this endpoint unfiltered, which bypasses the dedicated <code>FilterRecentDocsByPublishAccess</code> that guards the same data on <code>getRecentDocs</code>.</p>
-<p><strong>Note on a prior assessment.</strong> <code>getLocalStorage</code> appears on lists of endpoints considered correctly filtered, on the basis that it calls a <code>Filter*ByPublishAccess</code> function. That observation is accurate and this report does not contradict it. The filter is called. What it does is assign the whole map and remove three fields.</p>
-<p><strong>No persistence side effect.</strong> The in-place mutations the filter performs do not corrupt the administrator's stored state, because <code>GetLocalStorage</code> re-reads and unmarshals <code>storage/local.json</code> on each call (<code>kernel/model/storage.go:82</code>), so the map is per-request. This is noted to pre-empt the concern rather than as part of the finding.</p>
-<h3 id="proof-of-concept">Proof of Concept</h3>
-<p>Precondition: publish mode enabled (default port 6808), anonymous when <code>Publish.Auth.Enable</code> is <code>false</code>, otherwise any publish reader account. An administrator who has used the client normally, closing some document tabs and running a search.</p>
-<pre><code>POST http://127.0.0.1:6808/api/storage/getLocalStorage
-{}
-
-→ 200. The returned map includes, among others:
-     local-closed-tabs   entries carrying title, docIcon, rootId, notebookId,
-                         blockId for recently closed documents, including
-                         documents the reader has no publish access to
-     local-searchdata    k, r, hPath, idPath for the administrator's current
-                         document search
-     local-filespaths    notebookId and openPaths for expanded private folders
-     local-fileposition  keys are private document identifiers
-</code></pre>
-<p><code>getLocalStorageVal</code> returns any single key by name, so a caller who only wants the closed-tab history can request it directly.</p>
-<p>For contrast, requesting the same underlying data through the sibling endpoint shows the filtering that is applied elsewhere:</p>
-<pre><code>POST http://127.0.0.1:6808/api/storage/getRecentDocs
-{}
-
-→ 200, filtered by FilterRecentDocsByPublishAccess
-</code></pre>
-<p>while <code>local-recent-docs</code> inside the storage response is not.</p>
-<h3 id="impact">Impact</h3>
-<p>An anonymous reader in publish mode, or any publish <code>RoleReader</code>, obtains the administrator's working context: the titles and identifiers of documents they recently had open, what they have been searching for and where, which private folders they have expanded, and per-document identifiers across several other keys. Titles and search keywords are author-written text and routinely describe the subject of the documents they refer to.</p>
-<p>The document and notebook identifiers disclosed here are also the input required by identifier-to-path and path-to-content resolution, so the value is not limited to the metadata itself.</p>
-<p>No document bodies are returned, and nothing is written. Confidentiality only.</p>
-<h3 id="suggested-fix">Suggested fix</h3>
-<p>Invert the filter into an actual allowlist. Return only the keys a publish reader needs to render published content, which is a short list along the lines of <code>local-images</code>, <code>local-emojis</code>, <code>local-pdftheme</code>, <code>local-fontstyles</code> and the theme and zoom preferences, and drop everything else by default. New keys added in future then default to withheld rather than exposed.</p>
-<p>Additionally, pass <code>*gin.Context</code> into <code>FilterLocalStorageByPublishAccess</code> so that any retained per-document entry can be gated with the full <code>CheckBlockIdAccessableByPublishAccess</code> including the password tier, matching the sibling filters in the same file.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/siyuan-note/siyuan/security/advisories/GHSA-xp3q-r38w-vgqm">https://github.com/siyuan-note/siyuan/security/advisories/GHSA-xp3q-r38w-vgqm</a></li>
-<li><a href="https://github.com/siyuan-note/siyuan/commit/4daee87d41521d119979f2edda67e87f2be7b6ef">https://github.com/siyuan-note/siyuan/commit/4daee87d41521d119979f2edda67e87f2be7b6ef</a></li>
-<li><a href="https://github.com/siyuan-note/siyuan/releases/tag/v3.7.4-alpha.3">https://github.com/siyuan-note/siyuan/releases/tag/v3.7.4-alpha.3</a></li>
-<li><a href="https://github.com/advisories/GHSA-xp3q-r38w-vgqm">https://github.com/advisories/GHSA-xp3q-r38w-vgqm</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-xp3q-r38w-vgqm</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-10-23T18:29:45.000Z</published>
     </entry>
 </feed>
