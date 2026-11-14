@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-11-13T22:00:20.009Z</updated>
+    <updated>2026-11-14T02:11:37.611Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,89 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[github.com/filebrowser/filebrowser/v2] File Browser: Trailing-slash directory deletion leaves public shares active for recreated paths]]></title>
+        <id>https://github.com/advisories/GHSA-pp88-jhwj-5qh5</id>
+        <link href="https://github.com/advisories/GHSA-pp88-jhwj-5qh5"/>
+        <updated>2026-11-13T23:12:07.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
+<p>File Browser v2.63.15 can leave a public directory share behind when the shared directory is deleted through a path with a trailing slash. The share cleanup path calls <code>DeleteWithPathPrefix(file.Path, userID)</code>, but the Bolt backend performs the database prefix query with the unnormalized argument before trimming the slash for boundary checks. For a stored share at <code>/a</code>, deleting <code>/a/</code> queries for paths prefixed by <code>/a/</code>, so the exact <code>/a</code> share is never loaded and never deleted.</p>
+<p>If a directory with the same path is later recreated, the stale public share becomes active again and exposes the new directory contents through the old public URL.</p>
+<h2 id="impact">Impact</h2>
+<p>An authenticated user with share, download, and delete permissions can create a valid public share, delete the shared path with a trailing slash, and leave the public link in storage. The link is dormant while the path does not exist, but it exposes future content if the same path is recreated later. The final data exposure is unauthenticated through the public share URL.</p>
+<p>This bypasses the intended lifecycle cleanup around public shares and is adjacent to the recent public-share path-existence and prefix-boundary fixes.</p>
+<h2 id="reproduction">Reproduction</h2>
+<p>The following test was run against v2.63.15, commit <code>be23ab3a15bf957928ecfed88de5ab67850c1b9c</code>.</p>
+<ol>
+<li>Create a scoped user with share, download, and delete permissions.</li>
+<li>Create <code>/a/old.txt</code> in that user's scope.</li>
+<li>Store a valid public share row with <code>Hash: "h"</code>, <code>UserID: 1</code>, and <code>Path: "/a"</code>.</li>
+<li>Send an authenticated delete request for <code>/a/</code> through the resource delete handler.</li>
+<li>Confirm the directory is deleted.</li>
+<li>Confirm share hash <code>h</code> still exists in storage.</li>
+<li>Recreate <code>/a/future.txt</code>.</li>
+<li>Request the public share handler at <code>h/</code> and observe that the unauthenticated response includes <code>future.txt</code>.</li>
+</ol>
+<p>Command used for the local proof:</p>
+<pre><code class="language-bash">go test ./http -run TestValidationTrailingSlashDeleteLeavesExactDirectoryShare -count=1 -v
+</code></pre>
+<p>Observed result:</p>
+<pre><code class="language-text">=== RUN   TestValidationTrailingSlashDeleteLeavesExactDirectoryShare
+--- PASS: TestValidationTrailingSlashDeleteLeavesExactDirectoryShare (0.03s)
+PASS
+ok  github.com/filebrowser/filebrowser/v2/http  0.044s
+</code></pre>
+<h2 id="root-cause">Root cause</h2>
+<p><code>storage/bolt/share.go</code> queries the share index before normalizing the path:</p>
+<pre><code class="language-go">func (s shareBackend) DeleteWithPathPrefix(pathPrefix string, userID uint) error {
+    var links []share.Link
+    if err := s.db.Prefix("Path", pathPrefix, &amp;links); err != nil {
+        ...
+    }
+
+    prefix := strings.TrimRight(pathPrefix, "/")
+
+    for _, link := range links {
+        if link.UserID != userID {
+            continue
+        }
+
+        if link.Path != prefix &amp;&amp; !strings.HasPrefix(link.Path, prefix+"/") {
+            continue
+        }
+        ...
+    }
+}
+</code></pre>
+<p>For <code>pathPrefix == "/a/"</code>, the database prefix query can return descendants such as <code>/a/child</code>, but it does not return the exact share path <code>/a</code>. The later <code>TrimRight</code> cannot delete the exact share because that row was not loaded from storage.</p>
+<p><code>http/resource.go</code> passes the request-derived path into this cleanup before removing the resource:</p>
+<pre><code class="language-go">file, err := files.NewFileInfo(... Path: r.URL.Path ...)
+...
+err = d.store.Share.DeleteWithPathPrefix(file.Path, d.user.ID)
+...
+return d.user.Fs.RemoveAll(r.URL.Path)
+</code></pre>
+<p>A request for <code>/a/</code> therefore removes the directory but misses the exact <code>/a</code> share row.</p>
+<h2 id="remediation">Remediation</h2>
+<p>Normalize the path before querying the share index, and cover both the exact normalized path and its descendants. Add regression tests where a stored share path <code>/a</code> is removed by <code>DeleteWithPathPrefix("/a/", userID)</code> and where <code>DELETE /api/resources/a/</code> deletes the exact public share row.</p>
+<p>Fixed in version 2.63.17.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/filebrowser/filebrowser/security/advisories/GHSA-pp88-jhwj-5qh5">https://github.com/filebrowser/filebrowser/security/advisories/GHSA-pp88-jhwj-5qh5</a></li>
+<li><a href="https://github.com/filebrowser/filebrowser/commit/f30fca636c1af9ef401e9a82ff60391cb3db97e1">https://github.com/filebrowser/filebrowser/commit/f30fca636c1af9ef401e9a82ff60391cb3db97e1</a></li>
+<li><a href="https://github.com/filebrowser/filebrowser/releases/tag/v2.63.17">https://github.com/filebrowser/filebrowser/releases/tag/v2.63.17</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/cve-2026-62683">https://nvd.nist.gov/vuln/detail/cve-2026-62683</a></li>
+<li><a href="https://github.com/advisories/GHSA-pp88-jhwj-5qh5">https://github.com/advisories/GHSA-pp88-jhwj-5qh5</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pp88-jhwj-5qh5</uri>
+        </author>
+        <category label="severity" term="LOW"/>
+        <published>2026-11-13T23:12:06.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[go.opentelemetry.io/otel/propagation] OpenTelemetry-Go: Eager W3C baggage-property materialization causes bounded memory-allocation amplification]]></title>
         <id>https://github.com/advisories/GHSA-rrfc-gjm9-cgrj</id>
@@ -1849,42 +1932,5 @@ B) Default (recovering)    -&gt; err=Packet decoding error: runtime error: slice
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-11-09T23:25:00.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/kubeflow/pipelines] Kubeflow Pipelines: RBAC bypass on shared pipelines allows any authenticated user to delete or modify global pipelines]]></title>
-        <id>https://github.com/advisories/GHSA-ghgh-57qv-h687</id>
-        <link href="https://github.com/advisories/GHSA-ghgh-57qv-h687"/>
-        <updated>2026-11-09T22:48:03.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="summary">Summary</h2>
-<p>In multi-user mode, the Kubeflow Pipelines API server skipped authorization checks for shared/global pipelines with an empty namespace. This exception applied to write and delete operations as well as reads, allowing an authenticated user to modify or delete shared pipelines without the required Kubernetes RBAC permissions.</p>
-<h2 id="impact">Impact</h2>
-<p>Unauthorized modification compromises the integrity of shared pipeline definitions and versions. Unauthorized deletion can make shared pipelines unavailable.</p>
-<p>Execution of a modified pipeline can cause attacker-controlled workload behavior, but this is a conditional downstream consequence requiring the modified pipeline to be executed. Modification alone does not demonstrate immediate worker code execution.</p>
-<p>Reading shared pipelines is intentionally permitted and remains permitted after the fix. Consequently, access to shared pipeline configuration does not establish an additional confidentiality impact from this write-authorization defect. The confidentiality metric is None; the integrity and availability metrics reflect unauthorized modification and deletion of shared pipelines.</p>
-<p>The affected authorization boundary is shared pipelines in multi-user deployments. Single-user deployments intentionally bypass these multi-user authorization checks.</p>
-<h2 id="patches">Patches</h2>
-<p>Fixed by <a href="https://github.com/kubeflow/pipelines/pull/13288">kubeflow/pipelines#13288</a>, with the fix included in 2.16.1.</p>
-<p>Read-only operations on shared pipelines remain allowed. For write and delete operations, the API server checks Kubernetes RBAC permissions against the KFP system namespace, because shared pipelines have no namespace of their own.</p>
-<h2 id="scope-of-this-fix">Scope of this fix</h2>
-<p>The 2.16.1 fix addresses the shared-pipeline authorization paths described above. It does not fix every shared-pipeline write path: the separate shared-pipeline upload authorization defect is tracked in <a href="https://github.com/kubeflow/pipelines/security/advisories/GHSA-rjr3-43j3-4q8g">GHSA-rjr3-43j3-4q8g / CVE-2026-77596</a>. Consult that advisory for its affected versions and remediation; 2.16.1 must not be interpreted as fixing that separate upload defect.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Until upgrading, restrict access to the Pipelines API to trusted users through deployment-level access controls. Namespace RBAC alone does not correct the affected shared-pipeline authorization path.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/kubeflow/pipelines/security/advisories/GHSA-ghgh-57qv-h687">https://github.com/kubeflow/pipelines/security/advisories/GHSA-ghgh-57qv-h687</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-88984">https://nvd.nist.gov/vuln/detail/CVE-2026-88984</a></li>
-<li><a href="https://github.com/kubeflow/pipelines/pull/13288">https://github.com/kubeflow/pipelines/pull/13288</a></li>
-<li><a href="https://github.com/kubeflow/pipelines/commit/186dd1f3b0403af841c9b4ea7ab94f405339ef6c">https://github.com/kubeflow/pipelines/commit/186dd1f3b0403af841c9b4ea7ab94f405339ef6c</a></li>
-<li><a href="https://github.com/kubeflow/pipelines/releases/tag/2.16.1">https://github.com/kubeflow/pipelines/releases/tag/2.16.1</a></li>
-<li><a href="https://github.com/advisories/GHSA-ghgh-57qv-h687">https://github.com/advisories/GHSA-ghgh-57qv-h687</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-ghgh-57qv-h687</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-11-09T22:48:03.000Z</published>
     </entry>
 </feed>
