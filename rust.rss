@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2026-11-18T09:10:54.915Z</updated>
+    <updated>2026-11-18T18:01:08.761Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,37 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[snark-verifier] snark-verifier accepts non-canonical KZG accumulator limb encodings]]></title>
+        <id>https://github.com/advisories/GHSA-265x-v3qf-ff6p</id>
+        <link href="https://github.com/advisories/GHSA-265x-v3qf-ff6p"/>
+        <updated>2026-11-18T16:13:36.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>KZG accumulator public-instance limbs were decoded without consistently enforcing canonical limb bounds before reconstructing elliptic-curve coordinates.</p>
+<p>In the generated EVM verifier, accumulator coordinates were reconstructed from public-instance limbs using shifted additions before point validation. The verifier checked the reconstructed point, but did not independently check that every limb was below the configured limb bound before reconstruction.</p>
+<h3 id="details">Details</h3>
+<p><code>PlonkProof::read</code> takes accumulator public-instance scalars selected by <code>accumulator_indices</code> and passes them into <code>AccumulatorEncoding::from_repr</code>. For the EVM loader, <code>LimbsEncoding::from_repr</code> forwards those limbs to <code>EvmLoader::ec_point_from_limbs</code>, where each coordinate was reconstructed with <code>shl</code> and <code>add</code> before <code>validate_ec_point</code> was applied. That validation checked the reconstructed affine point, not whether the original limb encoding was canonical.</p>
+<p>The native verifier path had a related robustness issue: malformed accumulator limb encodings could reach assertion or unwrap-based decoding and panic instead of returning a verification error.</p>
+<p>The affected code is in <code>snark-verifier/src/loader/evm/loader.rs</code> and <code>snark-verifier/src/pcs/kzg/accumulator.rs</code>, specifically <code>EvmLoader::ec_point_from_limbs</code> and <code>LimbsEncoding::from_repr</code>.</p>
+<h3 id="impact">Impact</h3>
+<p>For standard SDK aggregation circuits, accumulator limbs are expected to be constrained by the circuit before reaching the verifier boundary, which limits practical exploitability. The missing verifier-side checks nevertheless allowed non-canonical encodings at the boundary, and the native verifier path could be crashed by malformed accumulator public inputs.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/axiom-crypto/snark-verifier/security/advisories/GHSA-265x-v3qf-ff6p">https://github.com/axiom-crypto/snark-verifier/security/advisories/GHSA-265x-v3qf-ff6p</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-61618">https://nvd.nist.gov/vuln/detail/CVE-2026-61618</a></li>
+<li><a href="https://github.com/axiom-crypto/snark-verifier/commit/d6aaf66d4706f5317cf61d5dbe00c14e7fbdbb70">https://github.com/axiom-crypto/snark-verifier/commit/d6aaf66d4706f5317cf61d5dbe00c14e7fbdbb70</a></li>
+<li><a href="https://github.com/axiom-crypto/snark-verifier/releases/tag/v0.2.5">https://github.com/axiom-crypto/snark-verifier/releases/tag/v0.2.5</a></li>
+<li><a href="https://github.com/advisories/GHSA-265x-v3qf-ff6p">https://github.com/advisories/GHSA-265x-v3qf-ff6p</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-265x-v3qf-ff6p</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-11-18T16:13:34.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[russh] russh kex_done: Shared-secret callback runs before server host-key verification]]></title>
         <id>https://github.com/advisories/GHSA-9264-jvgf-6w2f</id>
@@ -2814,48 +2845,5 @@ test test_cvss_9_9_dual_header_exploit_chain ... ok
         </author>
         <category label="severity" term="CRITICAL"/>
         <published>2026-10-28T21:09:50.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[rustls] rustls: ECH rejection can expose buffered application data to authenticated outer server before `ech_required` alert]]></title>
-        <id>https://github.com/advisories/GHSA-vp88-798v-h67f</id>
-        <link href="https://github.com/advisories/GHSA-vp88-798v-h67f"/>
-        <updated>2026-10-27T16:09:02.000Z</updated>
-        <content type="html"><![CDATA[<p>In rustls 0.23.44 and 0.23.45, application data that a client buffers before the handshake completes is sent to the server even when the server rejects Encrypted Client Hello (ECH).</p>
-<p>When the server rejects ECH, the client completes the handshake with the outer ClientHello and authenticates the server against the ECH config's <code>public_name</code>. At the end of the handshake, <code>start_traffic()</code> encrypts and queues any plaintext buffered by <code>ClientConnection::writer()</code>. It does this <em>before</em> checking for <code>EchStatus::Rejected</code> and queueing the <code>ech_required</code> alert.</p>
-<p>The application then receives <code>Error::PeerIncompatible(ServerRejectedEncryptedClientHello)</code>, as expected. However, the client is still expected to call <code>write_tls()</code> to send the fatal alert, and that call also sends the encrypted application data. The server decrypts the data and only then receives the alert.</p>
-<p>The ordering bug is older than 0.23.44. Before 0.23.44, the client checked the server certificate against the inner server name rather than <code>public_name</code>, so a correctly configured server failed certificate verification first and no data was sent. 0.23.44 fixed that check, which makes the ordinary rejection path reachable.</p>
-<h1 id="impact">Impact</h1>
-<p>Plaintext meant for the inner server, the one named in the encrypted ClientHello, goes to the client-facing server identified by <code>public_name</code>. That server is properly authenticated, so this is not an attack by an unauthenticated party. However this violates <a href="https://www.rfc-editor.org/info/rfc9849">RFC 9849</a>, which says the following:</p>
-<ul>
-<li>Section 6.1.6: if the handshake and authentication succeed after ECH rejection, the client "MUST ... abort the connection with an "ech_required" alert <strong>before sending any application data to the server.</strong>"</li>
-<li>Section 6.1.7: the certificate is checked only against <code>public_name</code>, and the connection "MUST NOT" be reported as successful to the application. rustls does report failure correctly. The problem is only that data is sent before the alert.</li>
-</ul>
-<p>This affects only clients that meet all of these conditions:</p>
-<ul>
-<li>They use <code>EchMode::Enable</code>. GREASE ECH is not affected.</li>
-<li>They write application data before the handshake completes.</li>
-<li>They connect to a server that rejects their ECH config, for example because the config is stale. This is the same case where the server returns retry configs.</li>
-</ul>
-<p>The usual client response to rejection is to retry with the server's retry configs. In that case, the data has already gone to the outer server.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/rustls/rustls/security/advisories/GHSA-vp88-798v-h67f">https://github.com/rustls/rustls/security/advisories/GHSA-vp88-798v-h67f</a></li>
-<li><a href="https://github.com/rustls/rustls/pull/3300">https://github.com/rustls/rustls/pull/3300</a></li>
-<li><a href="https://github.com/rustls/rustls/pull/3354">https://github.com/rustls/rustls/pull/3354</a></li>
-<li><a href="https://github.com/rustls/rustls/commit/2bd5c0cefabb2c5fd4100383a736d59f9671b9b4">https://github.com/rustls/rustls/commit/2bd5c0cefabb2c5fd4100383a736d59f9671b9b4</a></li>
-<li><a href="https://github.com/rustls/rustls/commit/4de14a508fbfa2273203ec17d9dfdd0fbd29e8d1">https://github.com/rustls/rustls/commit/4de14a508fbfa2273203ec17d9dfdd0fbd29e8d1</a></li>
-<li><a href="https://github.com/rustls/rustls/commit/7dcbe4c1ae12185237d22e9197583329630a2014">https://github.com/rustls/rustls/commit/7dcbe4c1ae12185237d22e9197583329630a2014</a></li>
-<li><a href="https://github.com/rustls/rustls/releases/tag/v/0.23.46">https://github.com/rustls/rustls/releases/tag/v/0.23.46</a></li>
-<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0347.html">https://rustsec.org/advisories/RUSTSEC-2026-0347.html</a></li>
-<li><a href="https://github.com/advisories/GHSA-vp88-798v-h67f">https://github.com/advisories/GHSA-vp88-798v-h67f</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-vp88-798v-h67f</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-10-27T16:08:59.000Z</published>
     </entry>
 </feed>
