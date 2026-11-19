@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/go.rss</id>
     <title>Security Advisory for Go modules</title>
-    <updated>2026-11-19T00:12:09.768Z</updated>
+    <updated>2026-11-19T07:25:10.267Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Ago"/>
     <subtitle>Security Advisory for Go modules on GitHub</subtitle>
@@ -11,6 +11,94 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[miren.dev/runtime] Miren Runtime: Authentication bypass in RPC layer: unverified TLS client certificates grant cluster superuser access]]></title>
+        <id>https://github.com/advisories/GHSA-8fh7-7q4q-cq52</id>
+        <link href="https://github.com/advisories/GHSA-8fh7-7q4q-cq52"/>
+        <updated>2026-11-19T00:45:46.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>  The Miren Runtime RPC server (QUIC/HTTP3, default port <code>:8443</code>) requested TLS
+  client certificates but never verified that a presented certificate chained to
+  the cluster Certificate Authority. Because a client-certificate identity is
+  granted a blanket RBAC bypass, any party able to reach the RPC listener could
+  present a forged, self-signed certificate and be authenticated as a cluster
+  <strong>superuser</strong> — no valid CA signature, credential, or prior authorization
+  required.</p>
+<h3 id="impact">Impact</h3>
+<p>  This is a complete, unauthenticated authentication bypass against the cluster
+  control plane. An attacker who can reach the RPC port can perform any RPC
+  operation with full privileges: enumerate and manipulate entities, apps,
+  sandboxes, disks, and other cluster resources. This yields full compromise of
+  confidentiality, integrity, and availability of the cluster and everything it
+  orchestrates.</p>
+<p>  Exposure is network-reachability–gated only. Deployments that expose <code>:8443</code>
+  beyond a trusted network (e.g. <code>0.0.0.0/0</code>) are remotely exploitable from the
+  internet by anyone; deployments that restrict <code>:8443</code> to a trusted network are
+  exploitable by any party with access to that network.</p>
+<p>Due to a lack of ability to detect if the RPC has been accessed unauthorized,
+Miren recommends that all applications are redeployed and any credentials reference
+in environment variables are rotated. A read-only script to help review standing access,
+recent changes, and the exact secrets to rotate is available at <a href="https://github.com/mirendev/runtime/tree/089582a132f7fc1e1d5b5c0aee1e0911535fed53/scripts/security/audit-exposure">https://github.com/mirendev/runtime/tree/089582a132f7fc1e1d5b5c0aee1e0911535fed53/scripts/security/audit-exposure</a>.</p>
+<h3 id="details">Details</h3>
+<p>  Three independent factors combined to produce the bypass:</p>
+<ol>
+<li><p><strong>The listener never verified the client-certificate chain.</strong> When a cluster
+CA was configured, the RPC listener used <code>tls.RequestClientCert</code>, which
+requests a client certificate but does not verify it against the configured
+<code>ClientCAs</code>. <code>tls.ConnectionState.VerifiedChains</code> was therefore always empty,
+and no <code>VerifyPeerCertificate</code>/<code>VerifyConnection</code> hook re-checked the chain.</p>
+</li>
+<li><p><strong>The authenticator derived identity from an unverified certificate.</strong> The
+RPC authenticators read <code>PeerCertificates[0].Subject.CommonName</code> directly as
+the caller identity, with method <code>cert</code>, without checking that the chain had
+been verified.</p>
+</li>
+<li><p><strong>Authorization granted a blanket bypass to certificate identities.</strong> The
+authorizer returned "allowed" for any <code>cert</code>-method identity, skipping all
+RBAC checks.</p>
+</li>
+</ol>
+<p>  Go's TLS client only presents a certificate whose issuer Distinguished Name
+  matches a CA advertised by the server, but that comparison is on the (public,
+  non-secret) DN bytes only — it does not require a valid signature from the CA.
+  An attacker can therefore mint a self-signed certificate whose <strong>issuer DN is
+  byte-identical to the cluster CA subject</strong>, signed with an attacker-controlled
+  key. The stock client presents it, and the vulnerable server accepts it and
+  trusts its CommonName as a superuser identity.</p>
+<h3 id="patches">Patches</h3>
+<p>  Fixed by verifying the client-certificate chain before trusting it:</p>
+<ul>
+<li>The listener now uses <code>tls.VerifyClientCertIfGiven</code> when a cluster CA is
+configured. A presented certificate must chain to the configured CA to
+complete the handshake, while certless callers (JWT/OIDC, which authenticate
+via the <code>Authorization</code> header) are still admitted.</li>
+<li>As defense in depth, both RPC authenticators now require a non-empty
+<code>VerifiedChains</code> before deriving an identity from a client certificate.</li>
+</ul>
+<p>  Users should upgrade to the patched release and restart the server so the
+  new listener configuration takes effect.</p>
+<h3 id="workarounds">Workarounds</h3>
+<p>  Until the patch is deployed, restrict network access to the RPC port (<code>:8443</code>)
+  so that it is not reachable from untrusted networks — remove any
+  <code>0.0.0.0/0</code> ingress and limit it to trusted management networks. This is a
+  containment measure only and does not remove the underlying vulnerability.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/mirendev/runtime/security/advisories/GHSA-8fh7-7q4q-cq52">https://github.com/mirendev/runtime/security/advisories/GHSA-8fh7-7q4q-cq52</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-75521">https://nvd.nist.gov/vuln/detail/CVE-2026-75521</a></li>
+<li><a href="https://github.com/mirendev/runtime/commit/e2159c8c8559da3f1c1485b463c794d656cd2fe4">https://github.com/mirendev/runtime/commit/e2159c8c8559da3f1c1485b463c794d656cd2fe4</a></li>
+<li><a href="https://github.com/mirendev/runtime/releases/tag/v0.11.1">https://github.com/mirendev/runtime/releases/tag/v0.11.1</a></li>
+<li><a href="https://github.com/advisories/GHSA-8fh7-7q4q-cq52">https://github.com/advisories/GHSA-8fh7-7q4q-cq52</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8fh7-7q4q-cq52</uri>
+        </author>
+        <category label="severity" term="CRITICAL"/>
+        <published>2026-11-19T00:45:46.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/OliveTin/OliveTin] OliveTin: Second-Order OS Command Injection via shellAfterCompleted]]></title>
         <id>https://github.com/advisories/GHSA-vc6p-m6vx-6cwq</id>
@@ -2531,38 +2619,6 @@ for a caller who does reach the endpoint.</p>
     </entry>
     <entry>
         <title type="html"><![CDATA[[github.com/sigstore/cosign] Cosign's verify-blob-attestation reports false positive when payload parsing fails]]></title>
-        <id>https://github.com/advisories/GHSA-w6c6-c85g-mmv6</id>
-        <link href="https://github.com/advisories/GHSA-w6c6-c85g-mmv6"/>
-        <updated>2026-11-12T18:18:54.000Z</updated>
-        <content type="html"><![CDATA[<h2 id="description">Description</h2>
-<p><code>cosign verify-blob-attestation</code> may erroneously report a "Verified OK" result for attestations with malformed payloads or mismatched predicate types. For old-format bundles and detached signatures, this was due to a logic flaw in the error handling of the predicate type validation. For new-format bundles, the predicate type validation was bypassed completely.</p>
-<h2 id="impact">Impact</h2>
-<p>When <code>cosign verify-blob-attestation</code> is used without <code>--check-claims</code> set to <code>true</code>, an attestation that has a valid signature but a malformed or unparsable payload would be incorrectly validated. Additionally, systems relying on <code>--type &lt;predicate type&gt;</code> to reject attestations with mismatched types would be lead to trust the unexpected attestation type.</p>
-<h2 id="patches">Patches</h2>
-<p>v3.0.6, v2.6.3</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>Always set <code>--check-claims=true</code> for attestation verification.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/sigstore/cosign/security/advisories/GHSA-w6c6-c85g-mmv6">https://github.com/sigstore/cosign/security/advisories/GHSA-w6c6-c85g-mmv6</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-39395">https://nvd.nist.gov/vuln/detail/CVE-2026-39395</a></li>
-<li><a href="https://github.com/sigstore/cosign/pull/4801">https://github.com/sigstore/cosign/pull/4801</a></li>
-<li><a href="https://github.com/sigstore/cosign/commit/f1ad3ee952313be5d74a49d67ba0aa8d0d5e351f">https://github.com/sigstore/cosign/commit/f1ad3ee952313be5d74a49d67ba0aa8d0d5e351f</a></li>
-<li><a href="https://github.com/sigstore/cosign/releases/tag/v2.6.3">https://github.com/sigstore/cosign/releases/tag/v2.6.3</a></li>
-<li><a href="https://github.com/sigstore/cosign/releases/tag/v3.0.6">https://github.com/sigstore/cosign/releases/tag/v3.0.6</a></li>
-<li><a href="https://github.com/advisories/GHSA-w6c6-c85g-mmv6">https://github.com/advisories/GHSA-w6c6-c85g-mmv6</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-w6c6-c85g-mmv6</uri>
-        </author>
-        <category label="severity" term="MODERATE"/>
-        <published>2026-04-08T00:15:44.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[github.com/sigstore/cosign/v2] Cosign's verify-blob-attestation reports false positive when payload parsing fails]]></title>
         <id>https://github.com/advisories/GHSA-w6c6-c85g-mmv6</id>
         <link href="https://github.com/advisories/GHSA-w6c6-c85g-mmv6"/>
         <updated>2026-11-12T18:18:54.000Z</updated>
