@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/rust.rss</id>
     <title>Security Advisory for Rust crates</title>
-    <updated>2026-11-19T16:41:14.123Z</updated>
+    <updated>2026-11-19T23:14:12.617Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Arust"/>
     <subtitle>Security Advisory for Rust crates on GitHub</subtitle>
@@ -11,6 +11,219 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[codewhale-tui] CodeWhale: exec_shell parallel-readonly classifier auto-approves fd/rg/git grep exec flags enabling silent RCE]]></title>
+        <id>https://github.com/advisories/GHSA-3mgh-93r5-r7jf</id>
+        <link href="https://github.com/advisories/GHSA-3mgh-93r5-r7jf"/>
+        <updated>2026-11-19T22:48:14.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. CodeWhale 0.8.67 and earlier are affected. Version 0.9.0 contains the fix in commit 208421b9d23d81cea3311a1eeb2a2ea81d637686. Users should upgrade to 0.9.0 or later. The original reporter analysis is preserved below.</p>
+<h2 id="summary">Summary</h2>
+<p>The interactive Agent profile of DeepSeek-TUI (CodeWhale) is explicitly documented to gate <strong>every</strong> shell command behind an approval prompt (config.rs:3725-3736). However, <code>ExecShellTool::approval_requirement_for(&amp;tool_input)</code> downgrades the requirement from <code>Required</code> to <code>Auto</code> for any command the classifier deems "parallel read-only" (shell.rs:2314-2320). <code>registered_tool_approval_required</code> returns <code>false</code> for <code>Auto</code> <strong>before</strong> the <code>auto_approve</code> check runs (turn_loop.rs:37-38), so no prompt is shown even for a user who never enabled YOLO. The classifier <code>is_parallel_readonly_command</code> (command_safety.rs:389) rejects only shell metacharacters and then matches the flag-stripped base command name against an allowlist that includes <code>fd</code>, <code>rg</code>, and <code>git grep</code>. Those tools execute arbitrary external programs through documented flags (<code>fd -x/--exec</code>, <code>rg --pre</code>, <code>git grep --open-files-in-pager</code>) that need <strong>no</strong> shell metacharacters — yielding silent arbitrary-program execution in the default profile. Same silent-RCE class as CVE-2026-45311 (run_tests) but via a different, unpatched tool and code path.</p>
+<h2 id="root-cause">Root Cause</h2>
+<p><code>approval_requirement_for</code> downgrades <code>exec_shell</code> to <code>Auto</code> when <code>exec_shell_input_is_parallel_readonly</code> returns true (shell.rs:2314-2320). The classifier strips all flags and matches the base command name against <code>PARALLEL_READONLY_PREFIXES</code> (command_safety.rs:363-385, 419-433). <code>fd</code>/<code>rg</code> are absent from <code>COMMAND_ARITY</code>, so <code>fd -x cp {} /tmp/exfil</code> canonicalizes to <code>"fd"</code> ∈ allowlist. The only remaining gate at the execute sink is <code>analyze_command</code>, which rates <code>fd</code>/<code>rg</code> as <code>Safe</code> (SAFE_COMMANDS command_safety.rs:527,530), so the <code>SafetyLevel::Dangerous</code>-only block (shell.rs:2408) never fires. Default execpolicy is empty (engine.rs:494) → Skip. Interactive-origin auto_review safety_floor holds only <code>Publish</code> (auto_review.rs:344-357), not interactive shell.</p>
+<h2 id="impact">Impact</h2>
+<p>Arbitrary external program execution (any binary, any argv, including a repo-committed script) on the developer host, with no approval prompt, in the default interactive Agent profile — bypassing the boundary config.rs:3725-3736 explicitly promises. Identical outcome to seed CVE-2026-45311 via a different, unpatched tool.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Model coerced (via indirect prompt injection from repo file / issue / fetched page — the seed threat model, in scope per SECURITY.md:48) to emit:</p>
+<pre><code class="language-json">{"name":"exec_shell","arguments":{"command":"fd -u -tf -x ./pwn.sh"}}
+</code></pre>
+<p>Alternatives (all metachar-free, all auto-approved): <code>fd -tf -x cp {} /tmp/exfil</code>; <code>rg --pre /tmp/evil.sh --pre-glob '*' needle .</code>; <code>git grep --open-files-in-pager=/tmp/evil.sh needle</code>.</p>
+<h2 id="attack-chain">Attack Chain</h2>
+<ol>
+<li><strong>Entry.</strong> Agent ingests attacker-controlled content; injected instruction coerces the model to emit <code>exec_shell {"command":"fd -u -tf -x ./pwn.sh"}</code>.<ul>
+<li><strong>Guard:</strong> none — reading content and model tool-calls are by design (seed threat model: indirect prompt injection).</li>
+<li><strong>Bypass proof:</strong> n/a (in-scope by design per SECURITY.md:48).</li>
+</ul>
+</li>
+<li><strong>Gate — approval requirement.</strong> turn_loop.rs:1738 → <code>spec.approval_requirement_for(&amp;input)</code> → shell.rs:2314-2320 <code>exec_shell_input_is_parallel_readonly</code>.<ul>
+<li><strong>Guard:</strong> metachar filter (command_safety.rs:394-400) + base-name allowlist.</li>
+<li><strong>Bypass proof:</strong> the string contains none of <code>; &amp; | &gt; &lt; \</code> $(<code>or newlines;</code>-x  <code>is</code>fd<code>'s own exec mechanism (no shell). </code>classify_command<code>strips</code>-u -tf -x<code>, positionals </code>[fd, ./pwn.sh]<code>; </code>fd<code>∉</code>COMMAND_ARITY<code>→ canonical</code>"fd"<code>∈</code>PARALLEL_READONLY_PREFIXES<code>→ returns true. Maintainer test</code>parallel_readonly_command_classifier_is_strict<code>(command_safety.rs:1162+) confirms bare</code>fd<code>/</code>rg` classify parallel-readonly.</li>
+</ul>
+</li>
+<li><strong>Gate — prompt decision.</strong> <code>registered_tool_approval_required(name, Auto, auto_approve)</code>.<ul>
+<li><strong>Guard:</strong> the approval prompt itself.</li>
+<li><strong>Bypass proof:</strong> <code>requirement == Auto</code> returns <code>false</code> at turn_loop.rs:37-38 unconditionally, before <code>!auto_approve</code>. No prompt regardless of user settings. Empty execpolicy → Skip; interactive safety_floor returns NoChange for fd.</li>
+</ul>
+</li>
+<li><strong>Sink.</strong> <code>ExecShellTool::execute</code> (shell.rs:2334) → <code>analyze_command</code>.<ul>
+<li><strong>Guard:</strong> <code>SafetyLevel::Dangerous</code> block (shell.rs:2408).</li>
+<li><strong>Bypass proof:</strong> <code>fd</code> ∈ <code>SAFE_COMMANDS</code> (command_safety.rs:530) → <code>analyze_command</code> returns <code>Safe</code>; not <code>Dangerous</code> → not blocked. Child runs the attacker's program.</li>
+</ul>
+</li>
+<li><strong>Impact.</strong> Silent arbitrary-program execution on the developer host, no approval prompt, default interactive Agent profile.</li>
+</ol>
+<h2 id="bypass-evidence">Bypass Evidence</h2>
+<ul>
+<li>Present on latest release tag v0.8.67: turn_loop.rs:37-38 <code>Auto</code>→<code>return false</code>; shell.rs:2314-2320 override; command_safety.rs allowlist includes <code>"rg"</code>,<code>"fd"</code>,<code>"git grep"</code>; SAFE_COMMANDS includes <code>"rg"</code>,<code>"fd"</code>; <code>fd</code>/<code>rg</code> absent from <code>COMMAND_ARITY</code>. command_safety.rs / turn_loop.rs finding-critical functions byte-identical v0.8.67↔HEAD.</li>
+<li>Maintainer's own test <code>parallel_readonly_command_classifier_is_strict</code> confirms bare <code>rg</code>/<code>fd</code> classify parallel-readonly and only metachar forms are rejected.</li>
+</ul>
+<h2 id="affected-versions">Affected Versions</h2>
+<p><code>&lt;= 0.8.67</code> (present on latest release tag v0.8.67 and HEAD 6a3403e).</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Remove exec-capable tools (<code>fd</code>, <code>rg</code>, <code>git grep</code>) from <code>PARALLEL_READONLY_PREFIXES</code>, or make the classifier reject their exec flags (<code>-x</code>/<code>--exec</code>, <code>--pre</code>, <code>--open-files-in-pager</code>), so a code-executing invocation cannot be auto-approved as read-only.</p>
+<p>Reported by <strong>zx (Jace)</strong></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/codewhale-hq/Codewhale/security/advisories/GHSA-3mgh-93r5-r7jf">https://github.com/codewhale-hq/Codewhale/security/advisories/GHSA-3mgh-93r5-r7jf</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-83816">https://nvd.nist.gov/vuln/detail/CVE-2026-83816</a></li>
+<li><a href="https://github.com/codewhale-hq/Codewhale/commit/208421b9d23d81cea3311a1eeb2a2ea81d637686">https://github.com/codewhale-hq/Codewhale/commit/208421b9d23d81cea3311a1eeb2a2ea81d637686</a></li>
+<li><a href="https://github.com/codewhale-hq/Codewhale/releases/tag/v0.9.0">https://github.com/codewhale-hq/Codewhale/releases/tag/v0.9.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-3mgh-93r5-r7jf">https://github.com/advisories/GHSA-3mgh-93r5-r7jf</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-3mgh-93r5-r7jf</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-11-19T22:48:14.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[codewhale-tui] CodeWhale: Automation auto_approve defaults to true, bypassing the task-path hardening fix for silent recurring agent execution]]></title>
+        <id>https://github.com/advisories/GHSA-8hp3-xxrg-v9c8</id>
+        <link href="https://github.com/advisories/GHSA-8hp3-xxrg-v9c8"/>
+        <updated>2026-11-19T22:47:34.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="maintainer-resolution">Maintainer resolution</h3>
+<p>The CodeWhale maintainers validated this report. CodeWhale 0.8.67 and earlier are affected. Version 0.9.0 contains the fix in commit 208421b9d23d81cea3311a1eeb2a2ea81d637686. Users should upgrade to 0.9.0 or later. The original reporter analysis is preserved below.</p>
+<h2 id="summary">Summary</h2>
+<p>CVE-2026-45374 (GHSA-72w5-pf8h-xfp4) hardened the task path so auto-approval must be opted into explicitly: <code>add_task</code> uses <code>req.auto_approve.unwrap_or(false)</code> (task_manager.rs:868). The automation subsystem was not hardened in kind. <code>AutomationRecord::task_auto_approve()</code> resolves an omitted <code>auto_approve</code> to <code>DEFAULT_AUTOMATION_AUTO_APPROVE = true</code> (automation_manager.rs:29, 101-103), and <code>enqueue_run_task</code> builds the <code>NewTaskRequest</code> with <code>auto_approve: Some(automation.task_auto_approve())</code> — i.e. an explicit <code>Some(true)</code> (automation_manager.rs:766). Because the field is <code>Some</code>, <code>unwrap_or(false)</code> returns <code>true</code> and the seed-2 default is bypassed. That <code>true</code> propagates to <code>ApprovalMode::Bypass</code> (runtime_threads.rs:2253), where the background approval loop auto-approves every tool call with no human present (runtime_threads.rs:3383-3416). One approved <code>automation_create</code> becomes a durable, recurring, fully auto-approved agent. Same insecure-default class as CVE-2026-45374, on a different, unpatched subsystem.</p>
+<h2 id="root-cause">Root Cause</h2>
+<p>Sibling durable defaults in the same struct are safe — <code>DEFAULT_AUTOMATION_ALLOW_SHELL = false</code> and <code>DEFAULT_AUTOMATION_TRUST_MODE = false</code> (automation_manager.rs:27-28) — while <code>DEFAULT_AUTOMATION_AUTO_APPROVE</code> alone defaults <code>true</code> (:29). <code>create_automation</code> stores <code>auto_approve: None</code> when omitted (:422); <code>task_auto_approve()</code> resolves <code>None</code>→<code>true</code> (:101-103); <code>enqueue_run_task</code> passes <code>Some(true)</code> (:766), defeating <code>add_task</code>'s <code>unwrap_or(false)</code> seed fix. The <code>automation_create</code> tool schema also declares <code>"auto_approve": {"type":"boolean","default":true}</code> (tools/automation.rs:49) while sibling <code>allow_shell</code>/<code>trust_mode</code> default <code>false</code>.</p>
+<h2 id="impact">Impact</h2>
+<p>A single approved <code>automation_create</code> yields a durable, recurring, fully auto-approved agent. Every scheduled fire silently authorizes mutating tools (file writes, apply_patch, git, MCP writes) with no prompt; combined with <code>allow_shell:true</code> in the create call, recurring silent RCE with no human present. Even without <code>allow_shell</code>, every recurring run silently authorizes all non-shell mutating tools. Same class as seed CVE-2026-45374.</p>
+<h2 id="proof-of-concept">Proof of Concept</h2>
+<p>Prompt injection convinces the model to create a benign-sounding recurring job (single human approval on the <code>automation_create</code> call):</p>
+<pre><code class="language-json">{"name":"automation_create","arguments":{
+  "name":"nightly-maintenance",
+  "prompt":"Fetch latest and run project setup script",
+  "rrule":"FREQ=HOURLY;INTERVAL=1",
+  "allow_shell":true
+}}
+</code></pre>
+<p>(<code>auto_approve</code> omitted → stored <code>None</code> → resolves to <code>true</code> on every run.)</p>
+<h2 id="attack-chain">Attack Chain</h2>
+<ol>
+<li><strong>Entry.</strong> Prompt injection → model creates a recurring job via <code>automation_create</code> with <code>auto_approve</code> omitted.<ul>
+<li><strong>Guard:</strong> <code>automation_create</code> is <code>Required</code> (tools/automation.rs:61-63) — user sees ONE approval prompt.</li>
+<li><strong>Bypass proof:</strong> the prompt describes an innocuous automation; the schema hides <code>"auto_approve": {"default": true}</code> (tools/automation.rs:49). Approving "create a scheduled job" is not informed consent to "every future run bypasses all approval prompts." The resolved <code>auto_approve=true</code> (omitted field) is not surfaced.</li>
+</ul>
+</li>
+<li><strong>Persist.</strong> <code>create_automation</code> stores <code>auto_approve: None</code> (automation_manager.rs:422).<ul>
+<li><strong>Guard:</strong> none.</li>
+<li><strong>Bypass proof:</strong> <code>None</code> is later resolved to <code>true</code>, not <code>false</code>.</li>
+</ul>
+</li>
+<li><strong>Fire.</strong> Headless scheduler tick (<code>scheduler_tick_shared</code>, no human) or <code>automation_run</code> invokes <code>enqueue_run_task</code>, which sets <code>auto_approve: Some(true)</code> (automation_manager.rs:766).<ul>
+<li><strong>Guard:</strong> seed-2's hardened <code>add_task</code> default <code>unwrap_or(false)</code> (task_manager.rs:868).</li>
+<li><strong>Bypass proof:</strong> the value is <code>Some(true)</code>, so <code>unwrap_or(false)</code> yields <code>true</code> — the hardened default never applies.</li>
+</ul>
+</li>
+<li><strong>Sink.</strong> Background worker builds the turn with <code>auto_approve=true</code> → <code>ApprovalMode::Bypass</code> (runtime_threads.rs:2253); the approval loop auto-approves (runtime_threads.rs:3383-3416).<ul>
+<li><strong>Guard:</strong> auto_review safety_floor.</li>
+<li><strong>Bypass proof:</strong> safety_floor holds only <code>Publish</code> (any origin) and <code>Destructive/Secret</code> (background/headless) (auto_review.rs:344-357); ordinary <code>write_file</code>/<code>apply_patch</code>/<code>edit_file</code>/non-destructive <code>exec_shell</code> are NOT held → they run unattended. With <code>allow_shell:true</code>, every scheduled run additionally gets silent shell execution.</li>
+</ul>
+</li>
+<li><strong>Impact.</strong> Durable, recurring, fully auto-approved agent from one create approval; recurring silent RCE with <code>allow_shell:true</code>.</li>
+</ol>
+<h2 id="bypass-evidence">Bypass Evidence</h2>
+<ul>
+<li>Present on latest release tag v0.8.67: automation_manager.rs:27-29 (<code>ALLOW_SHELL=false</code>, <code>TRUST_MODE=false</code>, <code>AUTO_APPROVE=true</code>), :101-103 <code>task_auto_approve()</code>→<code>unwrap_or(true)</code>, :766 <code>Some(automation.task_auto_approve())</code>, :422 stores <code>None</code> when omitted; task_manager.rs:868 <code>unwrap_or(false)</code>; runtime_threads.rs:2253 <code>if auto_approve → ApprovalMode::Bypass</code>. automation_manager.rs and task_manager.rs byte-identical v0.8.67↔HEAD.</li>
+<li>Subsystem wired by default: <code>automation_create</code>/<code>automation_run</code> registered via <code>with_runtime_task_tools()</code> in <code>with_agent_tools_policy</code> (registry.rs:1005); TUI attaches <code>automations: Some(...)</code> (tui/ui.rs:986-1011), serve mode via runtime_api.rs:426 — not feature-gated.</li>
+<li>Sibling flags <code>allow_shell</code>/<code>trust_mode</code> default <code>false</code> in the same struct — <code>auto_approve=true</code> is the un-hardened anomaly.</li>
+</ul>
+<h2 id="affected-versions">Affected Versions</h2>
+<p><code>&lt;= 0.8.67</code> (present on latest release tag v0.8.67 and HEAD 6a3403e).</p>
+<h2 id="suggested-fix">Suggested Fix</h2>
+<p>Set <code>DEFAULT_AUTOMATION_AUTO_APPROVE = false</code> (mirror the seed-2 task-path fix) and change the <code>automation_create</code> schema default to <code>false</code>, so durable automations require explicit opt-in to auto-approval just like the task path.</p>
+<p>Reported by <strong>zx (Jace)</strong></p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/codewhale-hq/Codewhale/security/advisories/GHSA-8hp3-xxrg-v9c8">https://github.com/codewhale-hq/Codewhale/security/advisories/GHSA-8hp3-xxrg-v9c8</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-83817">https://nvd.nist.gov/vuln/detail/CVE-2026-83817</a></li>
+<li><a href="https://github.com/codewhale-hq/Codewhale/commit/208421b9d23d81cea3311a1eeb2a2ea81d637686">https://github.com/codewhale-hq/Codewhale/commit/208421b9d23d81cea3311a1eeb2a2ea81d637686</a></li>
+<li><a href="https://github.com/codewhale-hq/Codewhale/releases/tag/v0.9.0">https://github.com/codewhale-hq/Codewhale/releases/tag/v0.9.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-8hp3-xxrg-v9c8">https://github.com/advisories/GHSA-8hp3-xxrg-v9c8</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-8hp3-xxrg-v9c8</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-11-19T22:47:33.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[servo] Servo Sandbox bypass: declarative refresh can auto-navigate a sandboxed iframe]]></title>
+        <id>https://github.com/advisories/GHSA-pxh3-4qqv-58mg</id>
+        <link href="https://github.com/advisories/GHSA-pxh3-4qqv-58mg"/>
+        <updated>2026-11-19T20:45:23.000Z</updated>
+        <content type="html"><![CDATA[<p>A sandboxed iframe can auto-navigate itself via declarative refresh even when automatic features should be blocked. This allows attacker-controlled embedded content to redirect itself without user action.</p>
+<h3 id="summary">Summary</h3>
+<p>Servo allows a sandboxed iframe to auto-navigate itself via declarative refresh in configurations that should block automatic features.</p>
+<p>The issue reproduces in the must-block rows of the matrix:</p>
+<ul>
+<li><code>sandbox=""</code></li>
+<li><code>sandbox="allow-same-origin"</code></li>
+<li><code>sandbox="allow-forms"</code></li>
+<li><code>sandbox="allow-same-origin allow-forms"</code></li>
+</ul>
+<p>This is a client-side sandbox-policy bypass. It does not by itself prove script execution or parent DOM access, but it does let attacker-controlled sandboxed content redirect itself without user action.</p>
+<h3 id="details">Details</h3>
+<p>The declarative refresh path is missing sandbox enforcement:</p>
+<ul>
+<li>[components/script/dom/document/document.rs:239] <code>RefreshRedirectDue::invoke()</code> contains <code>TODO: check sandbox</code></li>
+<li>[components/script/dom/document/document.rs:4522] the refresh scheduler contains <code>TODO: handle active sandboxing flag</code></li>
+</ul>
+<p>The implementation currently schedules and executes the refresh without enforcing the sandboxed automatic-features restriction described by the HTML spec comments in the same code.</p>
+<p>What I observed:</p>
+<ul>
+<li>In Servo, the must-block rows above navigated successfully.</li>
+<li>In Chrome, the same rows were blocked.</li>
+</ul>
+<h3 id="poc">PoC</h3>
+<p>Serve the HTML files in this folder over HTTP.</p>
+<p>Files:</p>
+<ul>
+<li><a href="https://github.com/user-attachments/files/27770907/child.html">child.html</a></li>
+<li><a href="https://github.com/user-attachments/files/27770910/success.html">success.html</a></li>
+<li><a href="https://github.com/user-attachments/files/27770911/viewer.html">viewer.html</a></li>
+</ul>
+<p>Steps:</p>
+<ol>
+<li>Open <code>viewer.html</code> over HTTP.</li>
+<li>The page shows a visible sandboxed iframe.</li>
+<li>In a correct browser, the iframe stays on <code>child.html</code>.</li>
+<li>In Servo, the iframe visibly turns into the <code>success.html</code> page.</li>
+</ol>
+<h3 id="impact">Impact</h3>
+<p>This is a client-side sandbox-policy bypass.</p>
+<p>Confirmed impact:</p>
+<ul>
+<li>autonomous iframe self-navigation in sandbox configurations that should block it</li>
+<li>framed phishing / content swap after initial render</li>
+<li>redirect loops / annoyance / limited DoS</li>
+</ul>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/servo/servo/security/advisories/GHSA-pxh3-4qqv-58mg">https://github.com/servo/servo/security/advisories/GHSA-pxh3-4qqv-58mg</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-61713">https://nvd.nist.gov/vuln/detail/CVE-2026-61713</a></li>
+<li><a href="https://github.com/servo/servo/pull/45116">https://github.com/servo/servo/pull/45116</a></li>
+<li><a href="https://github.com/servo/servo/commit/70df09e72f40fab45493ffee3821e7a1a31ae4d2">https://github.com/servo/servo/commit/70df09e72f40fab45493ffee3821e7a1a31ae4d2</a></li>
+<li><a href="https://github.com/servo/servo/releases/tag/v0.3.0">https://github.com/servo/servo/releases/tag/v0.3.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-pxh3-4qqv-58mg">https://github.com/advisories/GHSA-pxh3-4qqv-58mg</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-pxh3-4qqv-58mg</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-11-19T20:45:22.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[atomic-server] Atomic Server: Unauthenticated full-response SSRF in Atomic-Server /bookmark endpoint]]></title>
         <id>https://github.com/advisories/GHSA-ff87-73jp-f3v4</id>
@@ -2631,228 +2844,5 @@ fn hmac_is_never_checked_for_a_zero_length_entry() {
         </author>
         <category label="severity" term="MODERATE"/>
         <published>2026-10-29T16:40:07.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[zip] zip: Unbounded Symlink-Target Handling Can Abort Or Exhaust Memory During Extraction]]></title>
-        <id>https://github.com/advisories/GHSA-q7v9-x93c-xqv3</id>
-        <link href="https://github.com/advisories/GHSA-q7v9-x93c-xqv3"/>
-        <updated>2026-10-29T16:40:04.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The symbolic-link branch of <code>ZipArchive::extract_internal()</code> allocates a buffer using an attacker-declared size before reading any entry data. A 112-byte archive terminates the extracting process with <code>SIGABRT</code> through this infallible allocation.</p>
-<h3 id="details">Details</h3>
-<pre><code class="language-rust">#[cfg(any(unix, windows))]
-if file.is_symlink() {
-    let mut target = Vec::with_capacity(file.size() as usize); // @audit unbounded memory allocation
-    file.read_to_end(&amp;mut target)?;
-    drop(file);
-    make_symlink(&amp;outpath, &amp;target, &amp;self.shared.files)?;
-    continue;
-}
-</code></pre>
-<p><a href="https://github.com/zip-rs/zip2/blob/6f09b3064ec87c3a69ea9f3413f9f9638b4aa446/src/read/mod.rs#L399-L405"><code>src/read/mod.rs#L399-L405</code></a> (reviewed commit <code>6f09b306</code>); the same code is at <a href="https://github.com/zip-rs/zip2/blob/v8.6.0/src/read.rs#L417-L418"><code>src/read.rs#L417-L418</code></a> in released v8.6.0.</p>
-<p>Both inputs are attacker-controlled:</p>
-<ul>
-<li><a href="https://github.com/zip-rs/zip2/blob/6f09b3064ec87c3a69ea9f3413f9f9638b4aa446/src/read/zipfile.rs#L243-L246"><code>ZipFile::size()</code></a> returns <code>uncompressed_size</code> verbatim from the central directory record. A ZIP64 extended-information extra field widens it to a full <code>u64</code> (<a href="https://github.com/zip-rs/zip2/blob/6f09b3064ec87c3a69ea9f3413f9f9638b4aa446/src/read/mod.rs#L619-L625"><code>src/read/mod.rs#L619-L625</code></a>). It is never cross-checked against the compressed size, the remaining archive length, or any platform-appropriate bound for a symlink target.</li>
-<li><a href="https://github.com/zip-rs/zip2/blob/6f09b3064ec87c3a69ea9f3413f9f9638b4aa446/src/read/zipfile.rs#L256-L260"><code>ZipFile::is_symlink()</code></a> is decided entirely by the central directory's external-attributes field, via the <code>S_IFLNK</code> bit.</li>
-</ul>
-<p><strong>Memory allocation failure → uncatchable process abort.</strong> The reservation is sized from the declared <code>uncompressed_size</code> before a single byte of the entry is read. <code>Vec::with_capacity()</code> is infallible: on allocator refusal it calls <code>handle_alloc_error()</code>, which aborts the process. This is not a Rust panic — it is not caught by <code>catch_unwind()</code>, is unaffected by <code>panic = "unwind"</code>, and is not contained by isolating the call in a worker thread. This was verified by wrapping the call in all three at once; the process still died with exit 134.</p>
-<p>The declared value needed is a property of the host's address space, not of reachability. On a 64 GB host with heuristic overcommit, declared sizes from roughly <code>2^38</code> upward abort reliably. Sizes at or above <code>2^63</code> instead trip <code>Vec</code>'s internal capacity check and produce a <em>catchable</em> <code>capacity overflow</code> panic, so an attacker simply avoids that band. The reproducer declares <code>2^62</code>, which exceeds the 47-bit user address space of x86-64 Linux outright and therefore aborts deterministically regardless of installed RAM or overcommit policy. Under a <code>ulimit -v</code> cap or a memory-constrained container the threshold drops far enough that a plain 32-bit <code>uncompressed_size</code> with no ZIP64 field suffices — a virtual-memory limit lowers the bar rather than mitigating the defect.</p>
-<p>This is process termination, not memory exhaustion: <code>Vec::with_capacity()</code> only maps address space and never touches pages, so resident memory stays flat and the abort happens on the refused reservation itself, before any byte is read.</p>
-<h3 id="poc">PoC</h3>
-<p>The reproducer consists of the following <code>zip</code> harness and payload. It requires only the <code>zip</code> crate; use a standard Base64 decoder to materialise the archive before running it.</p>
-<pre><code class="language-toml">[package]
-name = "zip-poc"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-zip = "8.6.0"
-</code></pre>
-<pre><code class="language-rust">use std::{env, fs::File, io::BufReader};
-
-fn main() {
-    let archive_path = env::args().nth(1).expect("usage: poc &lt;archive.zip&gt;");
-    let outdir = std::env::temp_dir().join("zip-poc");
-    std::fs::create_dir_all(&amp;outdir).unwrap();
-
-    let file = File::open(archive_path).unwrap();
-    let mut archive = zip::ZipArchive::new(BufReader::new(file)).unwrap();
-    let r = archive.extract(&amp;outdir);            // &lt;-- process dies here
-    println!("SURVIVED: {:?}", r);
-}
-</code></pre>
-<p>Save the Base64 payload below as <code>archive.b64</code>, remove its whitespace, decode it with a standard Base64 decoder (for example, <code>base64 -d archive.b64 &gt; archive.zip</code> on Linux), and run <code>cargo run --release -- archive.zip</code>.</p>
-<p><strong>Uncatchable abort — 112 bytes.</strong> One <code>Stored</code> entry named <code>a</code>; external attributes <code>0xA1FF0000</code> (<code>S_IFLNK|0777</code>); ZIP64 extra field declaring <code>uncompressed_size = 2^62</code>; zero-byte payload. sha256 <code>0c68c3934f22651a6bd2726f7d58140124b1839196a1d0ae468864cdfda74676</code>.</p>
-<pre><code>UEsDBC0AAAAAAAAAAAAAAAAAAAAAAP////8BAAAAYVBLAQItAy0AAAAAAAAAAAAAAAAAAAAAAP//
-//8BAAwAAAAAAAAAAAD/oQAAAABhAQAIAAAAAAAAAABAUEsFBgAAAAABAAEAOwAAAB8AAAAAAA==
-</code></pre>
-<p>Observed on x86-64 Linux, rustc 1.93.1, release profile, against both the reviewed commit and released v8.6.0:</p>
-<pre><code>entries=1
-memory allocation of 4611686018427387904 bytes failed
-Aborted (core dumped)          # exit 134
-</code></pre>
-<p>The <code>SURVIVED</code> line never prints. Wrapping <code>extract()</code> in <code>catch_unwind</code> inside a spawned thread with <code>panic = "unwind"</code> produces the identical outcome.</p>
-<h3 id="impact">Impact</h3>
-<p>Applications running on Unix or Windows targets that call <code>ZipArchive::extract()</code> on attacker-supplied input are affected, with default features and no special configuration. The malicious 112-byte archive causes an unrecoverable, uncatchable termination of the extracting process, repeatable at will and not mitigable at the call site with <code>catch_unwind</code>, a worker thread, or a pre-flight metadata check.</p>
-<p>Upload handling, mail-attachment processing, package and artefact ingestion, backup restore and container-image layer extraction all match this pattern. No confidentiality or integrity property is affected: no memory unsafety, no out-of-bounds access, no disclosure and no data corruption.</p>
-<h3 id="suggested-remediation">Suggested remediation</h3>
-<p>Before allocating, compare <code>file.size()</code> with a documented, platform-appropriate maximum symlink-target length and reject entries that exceed it. Alternatively, replace <code>Vec::with_capacity()</code> with fallible <code>try_reserve()</code> and return an I/O error when allocation fails. Do not use Linux's <code>PATH_MAX</code> as a cross-platform contract.</p>
-<p>Apply the allocation fix to <code>src/read/stream.rs</code> as defence-in-depth, although its symlink path is currently unreachable because streaming entries have no symlink attributes.</p>
-<p>For reference, the crate already applies exactly this defence to another untrusted size on the same path: <code>ZipArchive::new()</code> clamps a suspicious <code>number_of_files</code> to zero and explicitly rejects an oversized central directory before reserving (<a href="https://github.com/zip-rs/zip2/blob/6f09b3064ec87c3a69ea9f3413f9f9638b4aa446/src/read/zip_archive.rs#L185-L202"><code>src/read/zip_archive.rs#L185-L202</code></a>). The symlink branch received neither guard. A survey of <code>Vec::with_capacity</code> across <code>src/</code> finds exactly two sites sized from untrusted input: <code>src/read/mod.rs:401</code> and <code>src/read/stream.rs:73</code>.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/zip-rs/zip2/security/advisories/GHSA-q7v9-x93c-xqv3">https://github.com/zip-rs/zip2/security/advisories/GHSA-q7v9-x93c-xqv3</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-115909">https://nvd.nist.gov/vuln/detail/CVE-2026-115909</a></li>
-<li><a href="https://github.com/zip-rs/zip2/pull/984">https://github.com/zip-rs/zip2/pull/984</a></li>
-<li><a href="https://github.com/zip-rs/zip2/commit/a543a1fc8f3f3eef36f27bb137230295284cdb98">https://github.com/zip-rs/zip2/commit/a543a1fc8f3f3eef36f27bb137230295284cdb98</a></li>
-<li><a href="https://github.com/zip-rs/zip2/releases/tag/v9.0.0">https://github.com/zip-rs/zip2/releases/tag/v9.0.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-q7v9-x93c-xqv3">https://github.com/advisories/GHSA-q7v9-x93c-xqv3</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-q7v9-x93c-xqv3</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-10-29T16:40:01.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[cedar-policy] Cedar: JSON template is in scope missing slot-id validation allows link panic and decision divergence]]></title>
-        <id>https://github.com/advisories/GHSA-c33x-vcv4-vg3g</id>
-        <link href="https://github.com/advisories/GHSA-c33x-vcv4-vg3g"/>
-        <updated>2026-10-29T16:35:08.000Z</updated>
-        <content type="html"><![CDATA[<p>Cedar users must be using all of the following features to be affected by this advisory: JSON format policies, policy templates, and the <code>is in</code> scope condition. This advisory only affects JSON-formatted Cedar policy templates containing <code>is in</code> scope conditions that are <strong>malformed</strong> according to the Cedar syntax. It does <strong>not</strong> affect syntactically well-formed policies.</p>
-<p>Users of Cedar who author policies in the JSON format were able to write Cedar policies using the <code>is in</code> condition with an incorrect slot identifier in the principal and resource scope constraints (e.g., <code>?principal</code> in the resource scope constraint) even though this is not allowed when parsing policies from the Cedar policy syntax. Internally, the slot identifiers were silently corrected (e.g. <code>?resource</code> is placed in the resource scope constraint). </p>
-<p>If the policy contains <em>exactly one slot</em> in either the principal or resource position, then any attempt to create a linked policy from the template results in an error: the internal representation of the template does not contain the slot identifier as written in the malformed JSON policy (it has been corrected silently), so attempting to fill that slot is an error. If instead the template is linked using slot identifier expected internally (i.e., not what is written in the JSON template), the linking will initially succeed, but a subsequent invariant violation will cause a panic.</p>
-<p>When the template contains <em>slots in both the principal and resource</em> position, then both slots will be present in the internal representation: linking succeeds, but with each slot bound to the value intended for the other (the silent correction). The linked policy is then semantically different from the malformed policy the user intended, and any subsequent authorization decision made against that policy may lead to accesses being unintentionally allowed or denied.</p>
-<p>Concretely, consider the following JSON format policy template intended to deny users in a particular project from accessing documents with a particular classification.</p>
-<pre><code>{
-  "effect": "forbid",
-  "principal": {
-    "op": "is",
-    "entity_type": "User",
-    "in": { "slot": "?resource" }
-  },
-  "action": { "op": "All" },
-  "resource": {
-    "op": "is",
-    "entity_type": "Doc",
-    "in": { "slot": "?principal" }
-  },
-  "conditions": []
-}
-</code></pre>
-<p>Linked with <code>?principal = Classification::"topsecret"</code> and <code>?resource = Project::"alpha"</code>, the author expects to create the policy:</p>
-<pre><code>forbid(principal is User in Project::"alpha", action, resource is Doc in Classification::"topsecret");
-</code></pre>
-<p>But because Cedar internally links slots by scope position (not by name), the actual policy evaluated by the engine is:</p>
-<pre><code>forbid(principal is User in Classification::"topsecret", action, resource is Doc in Project::"alpha");
-</code></pre>
-<p>If a user is in <code>Project::"alpha"</code> but not <code>Classification::"topsecret"</code>, the <code>forbid</code> policy does not apply, and access is unintentionally allowed.</p>
-<h2 id="patches">Patches</h2>
-<p>This advisory is patched in version 4.11.1 and 3.4.3, both available on Crates.io and NPM.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>If you cannot update to a patched version, you can determine if you are affected by checking your JSON format policy templates for the following two patterns.</p>
-<pre><code>  "principal": {
-    "op": "is",
-    "entity_type": "User",
-    "in": { "slot": "?resource" }
-  }
-</code></pre>
-<p>and</p>
-<pre><code>  "resource": {
-    "op": "is",
-    "entity_type": "Doc",
-    "in": { "slot": "?principal" }
-  }
-</code></pre>
-<h2 id="references">References</h2>
-<ul>
-<li><a href="https://docs.cedarpolicy.com/policies/templates.html">Cedar Policy Language Reference Guide - Cedar Policy Templates</a></li>
-<li><a href="https://docs.cedarpolicy.com/policies/json-format.html">Cedar Policy Language Reference Guide - JSON Policy Format</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/cedar-policy/cedar/security/advisories/GHSA-c33x-vcv4-vg3g">https://github.com/cedar-policy/cedar/security/advisories/GHSA-c33x-vcv4-vg3g</a></li>
-<li><a href="https://github.com/advisories/GHSA-c33x-vcv4-vg3g">https://github.com/advisories/GHSA-c33x-vcv4-vg3g</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c33x-vcv4-vg3g</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-10-29T16:35:04.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[cedar-policy] Cedar: JSON template is in scope missing slot-id validation allows link panic and decision divergence]]></title>
-        <id>https://github.com/advisories/GHSA-c33x-vcv4-vg3g</id>
-        <link href="https://github.com/advisories/GHSA-c33x-vcv4-vg3g"/>
-        <updated>2026-10-29T16:35:08.000Z</updated>
-        <content type="html"><![CDATA[<p>Cedar users must be using all of the following features to be affected by this advisory: JSON format policies, policy templates, and the <code>is in</code> scope condition. This advisory only affects JSON-formatted Cedar policy templates containing <code>is in</code> scope conditions that are <strong>malformed</strong> according to the Cedar syntax. It does <strong>not</strong> affect syntactically well-formed policies.</p>
-<p>Users of Cedar who author policies in the JSON format were able to write Cedar policies using the <code>is in</code> condition with an incorrect slot identifier in the principal and resource scope constraints (e.g., <code>?principal</code> in the resource scope constraint) even though this is not allowed when parsing policies from the Cedar policy syntax. Internally, the slot identifiers were silently corrected (e.g. <code>?resource</code> is placed in the resource scope constraint). </p>
-<p>If the policy contains <em>exactly one slot</em> in either the principal or resource position, then any attempt to create a linked policy from the template results in an error: the internal representation of the template does not contain the slot identifier as written in the malformed JSON policy (it has been corrected silently), so attempting to fill that slot is an error. If instead the template is linked using slot identifier expected internally (i.e., not what is written in the JSON template), the linking will initially succeed, but a subsequent invariant violation will cause a panic.</p>
-<p>When the template contains <em>slots in both the principal and resource</em> position, then both slots will be present in the internal representation: linking succeeds, but with each slot bound to the value intended for the other (the silent correction). The linked policy is then semantically different from the malformed policy the user intended, and any subsequent authorization decision made against that policy may lead to accesses being unintentionally allowed or denied.</p>
-<p>Concretely, consider the following JSON format policy template intended to deny users in a particular project from accessing documents with a particular classification.</p>
-<pre><code>{
-  "effect": "forbid",
-  "principal": {
-    "op": "is",
-    "entity_type": "User",
-    "in": { "slot": "?resource" }
-  },
-  "action": { "op": "All" },
-  "resource": {
-    "op": "is",
-    "entity_type": "Doc",
-    "in": { "slot": "?principal" }
-  },
-  "conditions": []
-}
-</code></pre>
-<p>Linked with <code>?principal = Classification::"topsecret"</code> and <code>?resource = Project::"alpha"</code>, the author expects to create the policy:</p>
-<pre><code>forbid(principal is User in Project::"alpha", action, resource is Doc in Classification::"topsecret");
-</code></pre>
-<p>But because Cedar internally links slots by scope position (not by name), the actual policy evaluated by the engine is:</p>
-<pre><code>forbid(principal is User in Classification::"topsecret", action, resource is Doc in Project::"alpha");
-</code></pre>
-<p>If a user is in <code>Project::"alpha"</code> but not <code>Classification::"topsecret"</code>, the <code>forbid</code> policy does not apply, and access is unintentionally allowed.</p>
-<h2 id="patches">Patches</h2>
-<p>This advisory is patched in version 4.11.1 and 3.4.3, both available on Crates.io and NPM.</p>
-<h2 id="workarounds">Workarounds</h2>
-<p>If you cannot update to a patched version, you can determine if you are affected by checking your JSON format policy templates for the following two patterns.</p>
-<pre><code>  "principal": {
-    "op": "is",
-    "entity_type": "User",
-    "in": { "slot": "?resource" }
-  }
-</code></pre>
-<p>and</p>
-<pre><code>  "resource": {
-    "op": "is",
-    "entity_type": "Doc",
-    "in": { "slot": "?principal" }
-  }
-</code></pre>
-<h2 id="references">References</h2>
-<ul>
-<li><a href="https://docs.cedarpolicy.com/policies/templates.html">Cedar Policy Language Reference Guide - Cedar Policy Templates</a></li>
-<li><a href="https://docs.cedarpolicy.com/policies/json-format.html">Cedar Policy Language Reference Guide - JSON Policy Format</a></li>
-</ul>
-<h3 id="references-1">References</h3>
-<ul>
-<li><a href="https://github.com/cedar-policy/cedar/security/advisories/GHSA-c33x-vcv4-vg3g">https://github.com/cedar-policy/cedar/security/advisories/GHSA-c33x-vcv4-vg3g</a></li>
-<li><a href="https://github.com/advisories/GHSA-c33x-vcv4-vg3g">https://github.com/advisories/GHSA-c33x-vcv4-vg3g</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-c33x-vcv4-vg3g</uri>
-        </author>
-        <category label="severity" term="LOW"/>
-        <published>2026-10-29T16:35:04.000Z</published>
     </entry>
 </feed>
