@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://xlordz.github.io/github-advisory-database-rss/composer.rss</id>
     <title>Security Advisory for PHP packages hosted at packagist.org</title>
-    <updated>2026-11-25T11:06:14.423Z</updated>
+    <updated>2026-11-25T20:26:53.550Z</updated>
     <generator>github-advisory-database-rss</generator>
     <link rel="alternate" href="https://github.com/advisories?query=type%3Areviewed+ecosystem%3Acomposer"/>
     <subtitle>Security Advisory for PHP packages hosted at packagist.org on GitHub</subtitle>
@@ -11,6 +11,135 @@
     <category term="HIGH"/>
     <category term="MODERATE"/>
     <category term="LOW"/>
+    <entry>
+        <title type="html"><![CDATA[[power-components/livewire-powergrid] livewire-powergrid: SQL injection via sortDirection in naturalSort queries]]></title>
+        <id>https://github.com/advisories/GHSA-7fgc-3h6c-698r</id>
+        <link href="https://github.com/advisories/GHSA-7fgc-3h6c-698r"/>
+        <updated>2026-11-25T19:44:58.000Z</updated>
+        <content type="html"><![CDATA[<h2 id="description">[Description]</h2>
+<p>The public Livewire property <code>sortDirection</code> is interpolated <strong>verbatim</strong> into a
+raw SQL <code>ORDER BY</code> clause and is not restricted to <code>asc</code>/<code>desc</code>, allowing arbitrary
+SQL injection through <code>POST /livewire/update</code>.</p>
+<p><strong>Data flow</strong></p>
+<ul>
+<li><strong>Source</strong> — <code>src/Concerns/Sorting.php</code>: <code>public string $sortDirection;</code> is a
+Livewire-bound property with no whitelist/validation (it is only assigned and
+flipped by <code>reverseSort()</code>), so it is fully attacker-controlled via the standard
+Livewire update endpoint.</li>
+<li><strong>Taint</strong> — <code>src/DataSource/Processors/Database/Pipelines/ColumnRawQueries.php</code>,
+<code>resolvePlaceholders()</code>:<pre><code class="language-php">preg_replace_callback('/\{(\w+)\}/', fn ($m) =&gt; data_get($this-&gt;component, $m[1], ''), $sql);
+</code></pre>
+substitutes <code>{sortDirection}</code> with the raw property value.</li>
+<li><strong>Sink</strong> — <code>src/DataSource/Support/Sql.php::getSortSqlByDriver()</code> builds the
+<code>naturalSort</code> expression, e.g. <code>"... {sortDirection}"</code> / <code>"CAST(...) {sortDirection}"</code>,
+which is passed to <code>orderByRaw()</code>. The tainted direction lands directly in the SQL
+string.</li>
+</ul>
+<p><strong>Why the framework mitigation does not apply (the bypass)</strong></p>
+<p>Normally the <code>Sorting</code> pipeline calls <code>orderBy(resolveSortField($sortField), $sortDirection)</code>,
+and Laravel validates the direction (<code>Order direction must be "asc" or "desc".</code>).
+Setting <strong><code>sortField=""</code></strong> makes the <code>Sorting</code> pipeline skip (<code>filled('')</code> is false),
+so the validating <code>orderBy</code> never runs — but the <code>ColumnRawQueries</code> pipeline still
+applies the <code>naturalSort</code> <code>orderByRaw</code> unconditionally with the attacker-controlled
+<code>{sortDirection}</code>. The result is arbitrary SQL in the <code>ORDER BY</code>, bypassing Laravel's
+direction validation entirely.</p>
+<h2 id="proof-of-concept">[Proof of Concept]</h2>
+<p>Lab: Laravel 11.53 + Livewire 3.8 + livewire-powergrid 6.10 + MariaDB, with a
+PowerGrid table whose <code>name</code> column uses <code>-&gt;naturalSort(true)</code>.</p>
+<p>Request (standard Livewire update; CSRF token taken from the page as any Livewire call):</p>
+<pre><code>POST /livewire/update
+components[0].snapshot = &lt;the PowerGrid component snapshot from the page&gt;
+components[0].updates  = {"sortField": "", "sortDirection": "asc, (SELECT SLEEP(3))"}
+</code></pre>
+<p>Observed results:</p>
+<ul>
+<li><strong>Error-based</strong> (HTTP 500, <code>SQLSTATE[HY000] 1105</code>) — the injected subquery reaches
+the database verbatim:<pre><code>select * from `rooms` order by CAST(NULLIF(REGEXP_REPLACE(name, ...) ...) asc,
+  (select extractvalue(1, concat(0x7e, (select secret from rooms limit 1)))) limit 3 offset 0
+</code></pre>
+</li>
+<li><strong>Blind time-based</strong> (arbitrary data extraction):<pre><code>asc                                 -&gt; 0.02s   (baseline)
+asc, (SELECT SLEEP(3))              -&gt; 9.04s   (injection executes)
+asc, (SELECT SLEEP(3) WHERE (SELECT secret FROM rooms LIMIT 1) LIKE 'TOPSECRET%')  -&gt; 9.03s  (TRUE — value leaks)
+... LIKE 'ZZZ%'                     -&gt; 0.02s   (FALSE — boolean oracle)
+</code></pre>
+</li>
+</ul>
+<p>A parameterised PoC script is available and can be attached privately on request.</p>
+<h2 id="impact">[Impact]</h2>
+<p>Any actor who can reach a PowerGrid table using <code>naturalSort</code> and control the
+<code>sortDirection</code> property can read arbitrary data from the database (other tables,
+password hashes, tokens) via a blind boolean/time-based oracle. Stacked queries are
+blocked by the default PDO MySQL driver, so impact is read-oriented (confidentiality),
+but complete for readable data. In multi-tenant/admin apps this enables full
+cross-tenant data exfiltration.</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/Power-Components/livewire-powergrid/security/advisories/GHSA-7fgc-3h6c-698r">https://github.com/Power-Components/livewire-powergrid/security/advisories/GHSA-7fgc-3h6c-698r</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-65971">https://nvd.nist.gov/vuln/detail/CVE-2026-65971</a></li>
+<li><a href="https://github.com/Power-Components/livewire-powergrid/commit/13d047bf1637e82926e6914aa3ca0f29a4c9704a">https://github.com/Power-Components/livewire-powergrid/commit/13d047bf1637e82926e6914aa3ca0f29a4c9704a</a></li>
+<li><a href="https://github.com/Power-Components/livewire-powergrid/releases/tag/v6.10.4">https://github.com/Power-Components/livewire-powergrid/releases/tag/v6.10.4</a></li>
+<li><a href="https://github.com/advisories/GHSA-7fgc-3h6c-698r">https://github.com/advisories/GHSA-7fgc-3h6c-698r</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-7fgc-3h6c-698r</uri>
+        </author>
+        <category label="severity" term="HIGH"/>
+        <published>2026-11-25T19:44:57.000Z</published>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[[petebishwhip/laradocs] laradocs  Command injection via unescaped Node.js binary path in KaTeX SSR]]></title>
+        <id>https://github.com/advisories/GHSA-h746-qpxh-ph7g</id>
+        <link href="https://github.com/advisories/GHSA-h746-qpxh-ph7g"/>
+        <updated>2026-11-25T19:41:55.000Z</updated>
+        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
+<p>Local command injection (CWE-78) in server-side KaTeX rendering via an unescaped Node.js binary path in a <code>proc_open()</code> command string.</p>
+<h3 id="affected-versions">Affected versions</h3>
+<blockquote>
+<p>= 0.4.0, &lt; 1.0.0</p>
+</blockquote>
+<h3 id="patched-versions">Patched versions</h3>
+<blockquote>
+<p>= 1.0.0 (fixed in commit <code>100cb1e</code>)</p>
+</blockquote>
+<h3 id="impact">Impact</h3>
+<p>When rendering KaTeX math <strong>server-side</strong>, Laradocs invoked Node via <code>proc_open()</code> with a command string in which the Node binary argument was not passed through <code>escapeshellarg()</code>.</p>
+<p><code>MarkdownPipelineFactory</code> constructs <code>KatexExtension</code> with the configured binary, which the render path resolved as:</p>
+<pre><code class="language-php">$node = $this-&gt;nodeBin ?? 'node';
+$cmd = $node . ' ' . escapeshellarg($tmpFile) . ' ' . escapeshellarg($input);
+</code></pre>
+<p><code>$this-&gt;nodeBin</code> comes from <code>Config::nullableString('laradocs.parser.katex.node_bin')</code>. Both possible sources — the configured <code>node_bin</code> value, or the <code>'node'</code> default resolved from <code>PATH</code> — are operator-controlled. Neither is derived from untrusted request data or documentation content.</p>
+<p>The vulnerable branch is reached only when server-side rendering is enabled. The default KaTeX path is client-side (browser-rendered via the configured <code>js</code>/<code>css</code> assets) and never calls <code>proc_open()</code>. SSR is opt-in via <code>laradocs.parser.katex.ssr</code>, which ships <strong>disabled</strong>.</p>
+<h3 id="exploit-scenario">Exploit scenario</h3>
+<p>Exploitation requires SSR to be turned on <strong>and</strong> an untrusted party to control <code>laradocs.parser.katex.node_bin</code> or the process <code>PATH</code> — a precondition that on its own already implies code execution on the host.</p>
+<h3 id="severity">Severity</h3>
+<p><strong>Low.</strong> This is best treated as a hardening / defence-in-depth fix rather than a remotely exploitable RCE, since no untrusted input (request data, documentation content, or network input) reaches the vulnerable code path under normal operation.</p>
+<h3 id="patch">Patch</h3>
+<p>The Node binary argument is now passed through <code>escapeshellarg()</code> like the other command components:</p>
+<pre><code class="language-php">$cmd = escapeshellarg($node) . ' ' . escapeshellarg($tmpFile) . ' ' . escapeshellarg($input);
+</code></pre>
+<h3 id="credit">Credit</h3>
+<p>Reported via automated security scanning (Aikido).</p>
+<h3 id="references">References</h3>
+<ul>
+<li><a href="https://github.com/PeteBishwhip/laradocs/security/advisories/GHSA-h746-qpxh-ph7g">https://github.com/PeteBishwhip/laradocs/security/advisories/GHSA-h746-qpxh-ph7g</a></li>
+<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-65973">https://nvd.nist.gov/vuln/detail/CVE-2026-65973</a></li>
+<li><a href="https://github.com/PeteBishwhip/laradocs/commit/100cb1e83920b8d3c9d8d53f98712df80df99435">https://github.com/PeteBishwhip/laradocs/commit/100cb1e83920b8d3c9d8d53f98712df80df99435</a></li>
+<li><a href="https://github.com/PeteBishwhip/laradocs/releases/tag/v1.0.0">https://github.com/PeteBishwhip/laradocs/releases/tag/v1.0.0</a></li>
+<li><a href="https://github.com/advisories/GHSA-h746-qpxh-ph7g">https://github.com/advisories/GHSA-h746-qpxh-ph7g</a></li>
+</ul>
+]]></content>
+        <author>
+            <name>GitHub</name>
+            <email>GitHub@noreply.github.com</email>
+            <uri>https://github.com/advisories/GHSA-h746-qpxh-ph7g</uri>
+        </author>
+        <category label="severity" term="MODERATE"/>
+        <published>2026-11-25T19:41:53.000Z</published>
+    </entry>
     <entry>
         <title type="html"><![CDATA[[cakephp/twig-view] TwigView FileLoader may allow arbitrary file reads through user-controlled template paths]]></title>
         <id>https://github.com/advisories/GHSA-hq9r-72jq-2pxp</id>
@@ -707,116 +836,6 @@ This was a piece of dead code and has been removed</p>
         </author>
         <category label="severity" term="HIGH"/>
         <published>2026-11-20T14:56:03.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[poweradmin/poweradmin] Poweradmin: The email second factor is an mt_rand() six-digit code verified with no attempt limit or lockout, so an attacker holding the password can brute-force it within the validity window]]></title>
-        <id>https://github.com/advisories/GHSA-9657-8vc2-7g2p</id>
-        <link href="https://github.com/advisories/GHSA-9657-8vc2-7g2p"/>
-        <updated>2026-11-20T14:52:33.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The email second factor is an mt_rand() six-digit code verified with no attempt limit or lockout</p>
-<p>The email second factor is a six-digit code drawn from <code>mt_rand()</code> and verified with no attempt limit, so an attacker who already has the password can brute-force it inside its validity window.</p>
-<p><code>lib/Domain/Service/MfaService.php</code>, in <code>generateEmailVerificationCode()</code>:</p>
-<pre><code class="language-php">$numericCode = mt_rand(100000, 999999);
-</code></pre>
-<p>That is a 900,000-value space, and <code>mt_rand()</code> is a Mersenne Twister rather than a CSPRNG, so it is not appropriate for a security token in the first place. PHP provides <code>random_int()</code> for exactly this.</p>
-<p>The bigger problem is that nothing limits guesses. <code>lib/Application/Controller/MfaVerifyController.php</code> calls:</p>
-<pre><code class="language-php">$isValid = $this-&gt;mfaService-&gt;verifyCode($userId, $code);
-</code></pre>
-<p>and on failure the only action taken is:</p>
-<pre><code class="language-php">$this-&gt;logger-&gt;warning('[MfaVerifyController] Verification failed for user ID: {user_id}', ['user_id' =&gt; $userId]);
-</code></pre>
-<p>I grepped that controller for any counter, lockout, throttle or rate limit and found nothing beyond log statements. So an attacker holding valid credentials submits codes until one lands. Against 900,000 values with no ceiling on attempts, the only thing standing in the way is the code's validity window and however fast requests can be issued.</p>
-<p>That defeats the purpose of the second factor: it is meant to hold even when the password is known, and here it reduces to a race the attacker is likely to win with sustained requests.</p>
-<p>Two separate fixes, and I would treat the second as the urgent one:</p>
-<ol>
-<li>Generate the code with <code>random_int(100000, 999999)</code> so it is not predictable from RNG state.</li>
-<li>Enforce a failed-attempt counter tied to the user and the pending MFA session, invalidating the code and requiring a fresh one after a small number of wrong guesses, plus a per-account and per-IP rate limit on the verify endpoint.</li>
-</ol>
-<p>Scope: source-verified at <code>master</code>. I confirmed the generator, the verify call site, the log-only failure handling and the absence of any throttling construct in that controller. I did not stand up a Poweradmin instance and run a brute-force against a live code, so the rate at which the space can be covered in practice is not something I measured. If throttling is applied at a layer I did not look at, such as a web-server or reverse-proxy rule shipped with your deployment docs, then the second half of this weakens considerably and I would want to know that.</p>
-<p>I used AI assistance while reading the code and preparing this report.</p>
-<hr>
-<p>Confirmed, and thanks for the detail. I've widened the affected range: this reaches back to 4.0.0, where MFA was first added, and 4.4.0 still ships it, so the original &lt;= 4.3.4 was too narrow. The 3.x line has no MFA at all and is unaffected. Fixes are in for 4.2.x, 4.3.x, 4.4.x and the development branch.</p>
-<p>To answer your question about other layers, there is nothing. No middleware runs in front of that controller, so what you found missing in the controller is the whole picture.</p>
-<p>I've adjusted the score down from 9.1 to 7.4. Walking 900,000 values inside the code's ten minute life needs sustained request rates, and MFA is off by default, so there are real preconditions beyond knowing the password. It is still a second factor that does not hold, which is the point of the report.</p>
-<p>The mt_rand swap is in as well, though I would treat that as hardening rather than the bug. Recovering the generator state from these codes is not practical in this setup. The missing attempt limit was the actual problem.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/poweradmin/poweradmin/security/advisories/GHSA-9657-8vc2-7g2p">https://github.com/poweradmin/poweradmin/security/advisories/GHSA-9657-8vc2-7g2p</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-115463">https://nvd.nist.gov/vuln/detail/CVE-2026-115463</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/021e5fea029cf8787247517cde752f9a6af1647c">https://github.com/poweradmin/poweradmin/commit/021e5fea029cf8787247517cde752f9a6af1647c</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/541e31fec32f0eae0d93a13de125a06ee19ecd92">https://github.com/poweradmin/poweradmin/commit/541e31fec32f0eae0d93a13de125a06ee19ecd92</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/ce3ccace7e80f1c1424f1bb1d9ce63a33ee90f19">https://github.com/poweradmin/poweradmin/commit/ce3ccace7e80f1c1424f1bb1d9ce63a33ee90f19</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/d1c1f23ee27d4607efb616e2d935158b4fc21b61">https://github.com/poweradmin/poweradmin/commit/d1c1f23ee27d4607efb616e2d935158b4fc21b61</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.2.6">https://github.com/poweradmin/poweradmin/releases/tag/v4.2.6</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.3.5">https://github.com/poweradmin/poweradmin/releases/tag/v4.3.5</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.4.1">https://github.com/poweradmin/poweradmin/releases/tag/v4.4.1</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.5.0">https://github.com/poweradmin/poweradmin/releases/tag/v4.5.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-9657-8vc2-7g2p">https://github.com/advisories/GHSA-9657-8vc2-7g2p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9657-8vc2-7g2p</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-11-20T14:52:33.000Z</published>
-    </entry>
-    <entry>
-        <title type="html"><![CDATA[[poweradmin/poweradmin] Poweradmin: The email second factor is an mt_rand() six-digit code verified with no attempt limit or lockout, so an attacker holding the password can brute-force it within the validity window]]></title>
-        <id>https://github.com/advisories/GHSA-9657-8vc2-7g2p</id>
-        <link href="https://github.com/advisories/GHSA-9657-8vc2-7g2p"/>
-        <updated>2026-11-20T14:52:33.000Z</updated>
-        <content type="html"><![CDATA[<h3 id="summary">Summary</h3>
-<p>The email second factor is an mt_rand() six-digit code verified with no attempt limit or lockout</p>
-<p>The email second factor is a six-digit code drawn from <code>mt_rand()</code> and verified with no attempt limit, so an attacker who already has the password can brute-force it inside its validity window.</p>
-<p><code>lib/Domain/Service/MfaService.php</code>, in <code>generateEmailVerificationCode()</code>:</p>
-<pre><code class="language-php">$numericCode = mt_rand(100000, 999999);
-</code></pre>
-<p>That is a 900,000-value space, and <code>mt_rand()</code> is a Mersenne Twister rather than a CSPRNG, so it is not appropriate for a security token in the first place. PHP provides <code>random_int()</code> for exactly this.</p>
-<p>The bigger problem is that nothing limits guesses. <code>lib/Application/Controller/MfaVerifyController.php</code> calls:</p>
-<pre><code class="language-php">$isValid = $this-&gt;mfaService-&gt;verifyCode($userId, $code);
-</code></pre>
-<p>and on failure the only action taken is:</p>
-<pre><code class="language-php">$this-&gt;logger-&gt;warning('[MfaVerifyController] Verification failed for user ID: {user_id}', ['user_id' =&gt; $userId]);
-</code></pre>
-<p>I grepped that controller for any counter, lockout, throttle or rate limit and found nothing beyond log statements. So an attacker holding valid credentials submits codes until one lands. Against 900,000 values with no ceiling on attempts, the only thing standing in the way is the code's validity window and however fast requests can be issued.</p>
-<p>That defeats the purpose of the second factor: it is meant to hold even when the password is known, and here it reduces to a race the attacker is likely to win with sustained requests.</p>
-<p>Two separate fixes, and I would treat the second as the urgent one:</p>
-<ol>
-<li>Generate the code with <code>random_int(100000, 999999)</code> so it is not predictable from RNG state.</li>
-<li>Enforce a failed-attempt counter tied to the user and the pending MFA session, invalidating the code and requiring a fresh one after a small number of wrong guesses, plus a per-account and per-IP rate limit on the verify endpoint.</li>
-</ol>
-<p>Scope: source-verified at <code>master</code>. I confirmed the generator, the verify call site, the log-only failure handling and the absence of any throttling construct in that controller. I did not stand up a Poweradmin instance and run a brute-force against a live code, so the rate at which the space can be covered in practice is not something I measured. If throttling is applied at a layer I did not look at, such as a web-server or reverse-proxy rule shipped with your deployment docs, then the second half of this weakens considerably and I would want to know that.</p>
-<p>I used AI assistance while reading the code and preparing this report.</p>
-<hr>
-<p>Confirmed, and thanks for the detail. I've widened the affected range: this reaches back to 4.0.0, where MFA was first added, and 4.4.0 still ships it, so the original &lt;= 4.3.4 was too narrow. The 3.x line has no MFA at all and is unaffected. Fixes are in for 4.2.x, 4.3.x, 4.4.x and the development branch.</p>
-<p>To answer your question about other layers, there is nothing. No middleware runs in front of that controller, so what you found missing in the controller is the whole picture.</p>
-<p>I've adjusted the score down from 9.1 to 7.4. Walking 900,000 values inside the code's ten minute life needs sustained request rates, and MFA is off by default, so there are real preconditions beyond knowing the password. It is still a second factor that does not hold, which is the point of the report.</p>
-<p>The mt_rand swap is in as well, though I would treat that as hardening rather than the bug. Recovering the generator state from these codes is not practical in this setup. The missing attempt limit was the actual problem.</p>
-<h3 id="references">References</h3>
-<ul>
-<li><a href="https://github.com/poweradmin/poweradmin/security/advisories/GHSA-9657-8vc2-7g2p">https://github.com/poweradmin/poweradmin/security/advisories/GHSA-9657-8vc2-7g2p</a></li>
-<li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-115463">https://nvd.nist.gov/vuln/detail/CVE-2026-115463</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/021e5fea029cf8787247517cde752f9a6af1647c">https://github.com/poweradmin/poweradmin/commit/021e5fea029cf8787247517cde752f9a6af1647c</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/541e31fec32f0eae0d93a13de125a06ee19ecd92">https://github.com/poweradmin/poweradmin/commit/541e31fec32f0eae0d93a13de125a06ee19ecd92</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/ce3ccace7e80f1c1424f1bb1d9ce63a33ee90f19">https://github.com/poweradmin/poweradmin/commit/ce3ccace7e80f1c1424f1bb1d9ce63a33ee90f19</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/commit/d1c1f23ee27d4607efb616e2d935158b4fc21b61">https://github.com/poweradmin/poweradmin/commit/d1c1f23ee27d4607efb616e2d935158b4fc21b61</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.2.6">https://github.com/poweradmin/poweradmin/releases/tag/v4.2.6</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.3.5">https://github.com/poweradmin/poweradmin/releases/tag/v4.3.5</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.4.1">https://github.com/poweradmin/poweradmin/releases/tag/v4.4.1</a></li>
-<li><a href="https://github.com/poweradmin/poweradmin/releases/tag/v4.5.0">https://github.com/poweradmin/poweradmin/releases/tag/v4.5.0</a></li>
-<li><a href="https://github.com/advisories/GHSA-9657-8vc2-7g2p">https://github.com/advisories/GHSA-9657-8vc2-7g2p</a></li>
-</ul>
-]]></content>
-        <author>
-            <name>GitHub</name>
-            <email>GitHub@noreply.github.com</email>
-            <uri>https://github.com/advisories/GHSA-9657-8vc2-7g2p</uri>
-        </author>
-        <category label="severity" term="HIGH"/>
-        <published>2026-11-20T14:52:33.000Z</published>
     </entry>
     <entry>
         <title type="html"><![CDATA[[poweradmin/poweradmin] Poweradmin: The email second factor is an mt_rand() six-digit code verified with no attempt limit or lockout, so an attacker holding the password can brute-force it within the validity window]]></title>
